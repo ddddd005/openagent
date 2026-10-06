@@ -17,7 +17,7 @@ from phase1_agent.host_sdk import WriteIntent
 from test_graph_service import create, gate_graph, service, text_graph
 from test_graph_session_objects import object_graph, task_package
 from test_graph_server import host_server, request
-from test_workbench_resources import resource
+from resource_fixtures import resource
 
 
 def public_document(service):
@@ -164,7 +164,7 @@ def test_actions_and_control_remain_callable_while_graph_is_paused(service):
 
 def test_object_commands_use_original_service_permissions_and_receipts(tmp_path):
     with closing(GraphWorkflowService(tmp_path / "application-objects.sqlite", capability_packages=[task_package()],
-                                      enabled_packages={"example.tasks": "1.0.0"})) as service:
+                                      enabled_packages={"workflow.compat": "1.0.0", "example.tasks": "1.0.0"})) as service:
         app = GraphApplication(service)
         doc = object_graph(service)
         view = create(service, doc)

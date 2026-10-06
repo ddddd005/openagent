@@ -9,6 +9,7 @@ import { createWorkspaceDrafts, MAIN_WORKFLOW_ID } from "../fixtures/workflows";
 import { createPreparationDraft } from "../fixtures/preparation";
 import { dependencyTarget, isChatProvider, isModelConfigurationSnapshot, type ChatProvider } from "../domain/modelConfiguration";
 import { readWorkbench, WORKBENCH_STORAGE_KEY } from "../adapters/workbenchPersistence";
+import { legacyWorkbenchStorage } from "../testUtils/legacyWorkbenchStorage";
 
 const PROVIDER = "00000000-0000-4000-8000-000000000101";
 function provider(): ChatProvider {
@@ -19,8 +20,7 @@ function provider(): ChatProvider {
   };
 }
 function memory() {
-  let raw: string | null = null;
-  return { getItem: () => raw, setItem: (_key: string, value: string) => { raw = value; } };
+  return legacyWorkbenchStorage();
 }
 const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 beforeEach(() => { setActivePinia(createPinia()); vi.useFakeTimers(); });

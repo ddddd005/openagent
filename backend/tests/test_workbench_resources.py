@@ -15,20 +15,13 @@ from phase1_agent.storage import SqliteStore
 from phase1_agent.workflow import A_BINDING, B_BINDING, WorkflowService
 from phase1_agent.workbench_resources import CORE_SESSION_NOTE
 
+from resource_fixtures import resource
 from test_preparation_program import node, program, root, view
 from test_server_prompt_configs import request, running_server
 from test_workflow_preparation_program import draft, fence, publish, current_state
 from test_workflow_prepared_context import factory, snapshots
 from test_workflow_prompt_selection import choice
 
-
-def resource(text="global v1"):
-    return {
-        "schema_version": 1, "kind": "global_prompt", "resource_id": str(uuid4()),
-        "revision": 1, "name": "Global", "enabled": True,
-        "members": [{"id": str(uuid4()), "name": "Global member", "text": text,
-                     "role": "system", "placement": "before", "depth": None, "order": 1, "enabled": True}],
-    }
 
 def test_migration_11_keeps_existing_session_and_program_state(tmp_path):
     path = tmp_path / "migration.sqlite"

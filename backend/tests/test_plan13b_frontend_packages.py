@@ -12,6 +12,8 @@ from phase1_agent.frontend_package import FRONTEND_EXTENSIONS, create_frontend_p
 from phase1_agent.frontend_business import create_frontend_business_package
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import HostContractError
+from phase1_agent.model_package import MODEL_FRONTEND_EXTENSIONS
+from phase1_agent.prompt_package import PROMPT_FRONTEND_EXTENSIONS
 
 from test_graph_service import create
 from test_plan13a_frontend_public import frontend_graph
@@ -20,6 +22,17 @@ from test_tools_integration import run
 
 def loader():
     return CapabilityPackageLoader(builtin_capability_packages())
+
+
+def expected_workbench_extensions(*, frontend):
+    declarations = [*MODEL_FRONTEND_EXTENSIONS, *PROMPT_FRONTEND_EXTENSIONS]
+    if frontend:
+        declarations.extend(FRONTEND_EXTENSIONS)
+    return {row["extension_id"] for row in declarations}
+
+
+def service_extension_ids(service):
+    return {row["extension_id"] for row in service.platform_capabilities()["frontend_extensions"]}
 
 
 def local_extension(identity="local", *, target=None, entrypoint="local.panel", protocol=1):
@@ -71,7 +84,9 @@ def test_business_package_remains_independent_without_ui_and_disable_uses_detach
 def test_business_only_service_executes_frontend_graph_without_ui(tmp_path):
     selected = {key: value for key, value in DEFAULT_PACKAGES.items() if key != "workflow.frontend"}
     with closing(GraphWorkflowService(tmp_path / "business-only.sqlite", enabled_packages=selected)) as service:
-        assert {row["package_id"] for row in service.platform_capabilities()["frontend_extensions"]} == {"workflow.models"}
+        assert {row["package_id"] for row in service.platform_capabilities()["frontend_extensions"]} == {
+            "workflow.models", "workflow.prompts"}
+        assert service_extension_ids(service) == expected_workbench_extensions(frontend=False)
         doc, _, _, _, presentation = frontend_graph(service)
         completed = run(service, create(service, doc), inputs={"text": "business-only"})
         assert completed["status"] == "succeeded"
@@ -186,16 +201,16 @@ def test_new_project_defaults_complete_package_and_old_saved_selection_is_not_up
     database = tmp_path / "selection.sqlite"
     legacy = {key: value for key, value in DEFAULT_PACKAGES.items() if key != "workflow.frontend"}
     with closing(GraphWorkflowService(database, enabled_packages=legacy)) as service:
-        assert {row["package_id"] for row in service.platform_capabilities()["frontend_extensions"]} == {"workflow.models"}
+        assert service_extension_ids(service) == expected_workbench_extensions(frontend=False)
         assert service.registry.get("frontend.state.append", "1") is not None
     with closing(GraphWorkflowService(database)) as service:
-        assert {row["package_id"] for row in service.platform_capabilities()["frontend_extensions"]} == {"workflow.models"}
+        assert service_extension_ids(service) == expected_workbench_extensions(frontend=False)
         service.configure_capability_packages(DEFAULT_PACKAGES)
-        assert len(service.platform_capabilities()["frontend_extensions"]) == 6
+        assert service_extension_ids(service) == expected_workbench_extensions(frontend=True)
     with closing(GraphWorkflowService(database)) as service:
-        assert len(service.platform_capabilities()["frontend_extensions"]) == 6
+        assert service_extension_ids(service) == expected_workbench_extensions(frontend=True)
     with closing(GraphWorkflowService(tmp_path / "new.sqlite")) as service:
-        assert len(service.platform_capabilities()["frontend_extensions"]) == 6
+        assert service_extension_ids(service) == expected_workbench_extensions(frontend=True)
 
 
 def test_ui_disable_reopen_and_reenable_preserve_state_and_public_history(tmp_path):
@@ -252,13 +267,27 @@ def test_missing_ui_package_on_reopen_does_not_activate_fallback_or_delete_saved
         parameters = {"workflow_definition_id": doc["workflow_definition_id"], "definition_revision": doc["revision"],
                       "node_id": presentation["node_binding_id"], "port_id": "display"}
         old = service.read_public_output(sid, **parameters)["output"]
+        historical = service.get_run(sid, final["selected_chain_run_id"])
     original = builtin_packages.builtin_capability_packages
     monkeypatch.setattr(builtin_packages, "builtin_capability_packages", lambda **kwargs: tuple(
         item for item in original(**kwargs) if item.manifest.package_id != "workflow.frontend"))
+    from phase1_agent import graph_nodes
+
+    def no_compat_registry():
+        pytest.fail("A missing saved UI package constructed a compatibility registry")
+
+    monkeypatch.setattr(graph_nodes, "create_default_registry", no_compat_registry)
     with closing(GraphWorkflowService(database)) as service:
         catalog = service.platform_capabilities()
         assert catalog["package_diagnostics"][0]["reason_code"] == "package_missing_dependency"
+        assert catalog["package_diagnostics"][0]["enabled_packages"] == DEFAULT_PACKAGES
+        assert catalog["package_lock"] == [] and service.registry.catalog() == []
         assert catalog["frontend_extensions"] == []
         assert service.registry.get("frontend.state.append", "1") is None
         assert service.read_public_output(sid, **parameters)["output"] == old
         assert service.get_session(sid)["objects"]["frontend"]["value"]["entries"] == final["objects"]["frontend"]["value"]["entries"]
+        assert service.get_run(sid, final["selected_chain_run_id"]) == historical
+        with pytest.raises(ContractValidationError) as denied:
+            run(service, service.get_session(sid), inputs={"text": "must not execute"})
+        assert denied.value.reason_code == "package_missing_dependency"
+        assert service._native_runtime is None

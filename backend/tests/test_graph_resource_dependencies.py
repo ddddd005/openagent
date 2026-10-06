@@ -9,7 +9,7 @@ import pytest
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.graph_contracts import NodeDefinition, NodePort, text_value
 from test_graph_service import create, document, edge, node, run, service
-from test_workbench_resources import resource
+from resource_fixtures import resource
 
 
 def save_resource(service, text):

@@ -2,7 +2,7 @@ import { clonePreparation, type PreparationDraft, type PreparationNode } from ".
 import type { ExposureRegistration } from "../domain/exposure";
 import { AGENT_BINDINGS } from "./workbenchApi";
 import { createWorkspaceDrafts, workspaceWorkflows } from "../fixtures/workflows";
-import type { DraftStorage } from "./localDraft";
+import type { DraftStorage } from "./browserStorage";
 import { isModelConfigurationSnapshot, type ModelConfigurationSnapshot } from "../domain/modelConfiguration";
 import { isExposureSnapshot, type ExposureSnapshot } from "../domain/exposureConfiguration";
 import { isWorkflowIdentity } from "../domain/workflowIdentity";

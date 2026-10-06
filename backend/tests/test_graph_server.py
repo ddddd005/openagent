@@ -2,9 +2,11 @@
 
 import http.client
 import json
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from threading import Thread
 
+from phase1_agent.builtin_packages import DEFAULT_PACKAGES
+from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.server import MAX_GRAPH_BODY_BYTES, create_server
 from phase1_agent.workflow_host import WorkflowHost
 from test_graph_service import text_graph
@@ -15,7 +17,12 @@ def host_server(tmp_path, monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("Generic routes must not initialize legacy Agents")
     monkeypatch.setattr("phase1_agent.workflow.WorkflowService", forbidden)
-    host = WorkflowHost(tmp_path / "http.sqlite", mode="deepseek")
+    database = tmp_path / "http.sqlite"
+    with closing(GraphWorkflowService(
+        database, enabled_packages={**DEFAULT_PACKAGES, "workflow.compat": "1.0.0"},
+    )):
+        pass
+    host = WorkflowHost(database, mode="deepseek")
     server = create_server(host, port=0, mode="deepseek")
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()

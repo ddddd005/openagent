@@ -16,7 +16,7 @@ from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import ResourceIdentity
 from phase1_agent.storage import SqliteStore
 from test_graph_service import create, document, edge, node, run
-from test_workbench_resources import resource
+from resource_fixtures import resource
 
 
 def identity(record):

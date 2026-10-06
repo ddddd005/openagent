@@ -16,7 +16,7 @@ from phase1_agent.global_resources import (
 from phase1_agent.host_sdk import DataTypeDefinition, ResourceIdentity, TypeRegistry
 from phase1_agent.storage import SqliteStore
 from phase1_agent.workbench_resources import WorkbenchResourceStore
-from test_workbench_resources import resource
+from resource_fixtures import resource
 
 
 def current(text="current-only-original"):

@@ -11,6 +11,7 @@ import { useWorkspaceStore } from "../stores/workspace";
 import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 import { MAIN_WORKFLOW_ID } from "../fixtures/workflows";
 import { dependencyTarget } from "../domain/modelConfiguration";
+import { legacyWorkbenchRaw } from "../testUtils/legacyWorkbenchStorage";
 
 vi.mock("@vue-flow/core", () => ({
   MarkerType: { ArrowClosed: "arrowclosed" }, Position: { Left: "left", Right: "right" },
@@ -54,7 +55,7 @@ describe("model configuration component rendering", () => {
   it("renders sidebar navigation without removing the current workbench", async () => {
     const pinia = createPinia();
     const workspace = useWorkspaceStore(pinia);
-    let raw: string | null = null;
+    let raw: string | null = legacyWorkbenchRaw();
     const persistence = useWorkbenchPersistenceStore(pinia);
     persistence.initialize({ getItem: () => raw, setItem: (_key, value) => { raw = value; } });
     workspace.sidebarSection = "providers";

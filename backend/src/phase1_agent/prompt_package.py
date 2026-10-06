@@ -30,6 +30,17 @@ PROMPT_RESOURCE_TYPE = "workflow.prompt-resource"
 PROMPT_PACKAGE_ID = "workflow.prompts"
 _DEFAULT_MEMBER = "59e405d0-debd-4d7a-aa7f-ce6445d72665"
 
+PROMPT_FRONTEND_EXTENSIONS = (
+    {"extension_id": "workflow.prompts.workbench-panel", "kind": "workbench-panel",
+     "entrypoint": "workflow.prompts.workbench.panel", "component_id": None, "component_version": None,
+     "binding": {"surface": "workbench", "slot": "panel", "target": {}}},
+    {"extension_id": "workflow.prompts.node-fields", "kind": "field-editor",
+     "entrypoint": "workflow.prompts.workbench.node-fields",
+     "component_id": "prompts.global-reference", "component_version": "1",
+     "binding": {"surface": "workbench", "slot": "node-fields",
+                 "target": {"component_id": "prompts.global-reference", "component_version": "1"}}},
+)
+
 
 def _schema(properties: dict, *, required: tuple[str, ...] | None = None) -> dict:
     return {"type": "object", "additionalProperties": False,
@@ -133,6 +144,8 @@ def create_prompt_package(*, tool_catalog: Mapping | None = None) -> CapabilityP
     text_port = lambda name="input", **kwargs: NodePort(name, "TEXT", data_schema_version=2, **kwargs)
 
     def register(host):
+        for extension in PROMPT_FRONTEND_EXTENSIONS:
+            host.register_frontend_extension(**extension, host_protocol_version=1)
         host.register_data_type(DataTypeDefinition(
             PROMPT_RESOURCE_TYPE, 1,
             _schema({"enabled": {"type": "boolean"}, "members": _members_schema()}),
@@ -247,7 +260,14 @@ def create_prompt_package(*, tool_catalog: Mapping | None = None) -> CapabilityP
              inputs=tuple(prompt_port(port.port_id, required=False, multiple=True) for port in tool_ports),
              outputs=tool_ports)
 
-    return CapabilityPackage(
-        PackageManifest(PROMPT_PACKAGE_ID, "1.0.0", (PackageDependency("workflow.content", "1.0.0"),)),
-        register,
-    )
+    exports = {
+        "data_types": [{"scope": "global", "type_id": PROMPT_RESOURCE_TYPE, "schema_version": 1}],
+        "nodes": [{"component_id": "prompts." + name, "component_version": "1"} for name in (
+            "item", "group", "source", "summary", "assembly", "global-reference", "global-resolve",
+            "tool", "tool-summary",
+        )],
+        "frontend_extensions": [{"extension_id": row["extension_id"]} for row in PROMPT_FRONTEND_EXTENSIONS],
+    }
+    return CapabilityPackage(PackageManifest(
+        PROMPT_PACKAGE_ID, "1.0.0", (PackageDependency("workflow.content", "1.0.0"),), exports=exports,
+    ), register)

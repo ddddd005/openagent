@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 import pytest
 
 from phase1_agent.workflow import WorkflowService
+from phase1_agent.workflow_host import WorkflowHost
 from test_server import call, running_server as fake_server
 from test_server_prompt_configs import running_server
 
@@ -30,8 +31,10 @@ def test_valid_handoff_page_queries_serve_html_without_service_calls():
                 f"{FULL_QUERY}&model_config={CONFIG_A}&model_revision=3",
                 f"{FULL_QUERY}&exposure_config={CONFIG_A}&exposure_revision=3",
                 A_QUERY.replace("revision=1", "revision=9007199254740991"),
+                SESSION_QUERY.replace("session=", "%73ession="),
                 f"?graph_workflow={CONFIG_A}",
                 f"?graph_workflow={CONFIG_A}&graph_session={SESSION}",
+                f"?graph_workflow={CONFIG_A.replace('-', '%2D')}",
             ):
                 status, headers, body = call(port, "GET", path + query)
                 assert status == 200 and b"<!doctype html>" in body
@@ -63,10 +66,24 @@ def test_invalid_handoffs_and_non_page_queries_stay_not_found_without_service_ca
         SESSION_QUERY + "&", SESSION_QUERY + "#fragment",
         "?session=%FF", SESSION_QUERY + "&unknown",
         f"?graph_session={SESSION}", f"?graph_workflow=bad&graph_session={SESSION}",
+        "?graph_workflow=", "?graph_workflow=%FF",
+        "?graph_workflow=" + CONFIG_A.replace("-4000-", "-1000-"),
+        "?graph_workflow=" + CONFIG_A.replace("-8000-", "-0000-"),
         f"?graph_workflow={CONFIG_A}&graph_session=bad",
+        f"?graph_workflow={CONFIG_A}&graph_session=",
+        f"?graph_workflow={CONFIG_A}&graph_session",
+        f"?graph_workflow={CONFIG_A}&graph_session={SESSION}&graph_session={SESSION}",
         f"?graph_workflow={CONFIG_A}&session={SESSION}",
         f"?graph_workflow={CONFIG_A}&prompt_a={CONFIG_A}&prompt_a_revision=1",
         f"?graph_workflow={CONFIG_A}&graph_workflow={CONFIG_A}",
+        f"?graph_workflow={CONFIG_A}&unknown=value",
+        f"?graph_workflow={CONFIG_A}&",
+        f"?graph_workflow={CONFIG_A}&&graph_session={SESSION}",
+        f"?graph_workflow={CONFIG_A}#fragment",
+        f"{SESSION_QUERY}&&prompt_a={CONFIG_A}&prompt_a_revision=1",
+        f"{SESSION_QUERY}&prompt_a={CONFIG_A}&prompt_a_revision=%FF",
+        SESSION_QUERY.replace("session=", "%FF="),
+        f"{SESSION_QUERY}&{'unknown=' + 'x' * 1024}",
     ]
     invalid.extend(
         f"{SESSION_QUERY}&prompt_a={CONFIG_A}&prompt_a_revision={revision}"
@@ -76,19 +93,58 @@ def test_invalid_handoffs_and_non_page_queries_stay_not_found_without_service_ca
         for path in PAGE_PATHS:
             for query in invalid:
                 assert call(port, "GET", path + query)[0] == 404
-            assert call(port, "POST", path + FULL_QUERY, b"{}", {
-                "Content-Type": "application/json",
-            })[0] == 404
+            for query in (FULL_QUERY, f"?graph_workflow={CONFIG_A}"):
+                assert call(port, "POST", path + query, b"{}", {
+                    "Content-Type": "application/json",
+                })[0] == 404
         for path in (
-            "/static/app.js", "/static/style.css", "/static/other",
+            "/static/app.js", "/static/chat-entry.js", "/static/graph-chat-core.js",
+            "/static/graph-chat.js", "/static/frontend-package-host.js",
+            "/static/frontend-package.js", "/static/style.css", "/static/other",
             "/api/health", "/api/sessions", "/api/active-session",
             "/api/prompt-configs/config", f"/api/sessions/{SESSION}",
         ):
-            assert call(port, "GET", path + FULL_QUERY)[0] == 404
+            for query in (FULL_QUERY, f"?graph_workflow={CONFIG_A}"):
+                assert call(port, "GET", path + query)[0] == 404
         assert call(port, "POST", "/api/sessions" + FULL_QUERY, b"{}", {
             "Content-Type": "application/json",
         })[0] == 404
         assert service.calls == []
+
+
+def test_anonymous_and_explicit_identity_pages_and_static_files_do_not_initialize_lazy_host(
+    tmp_path, monkeypatch,
+):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Page and static GETs cannot construct either workflow service")
+
+    monkeypatch.setattr("phase1_agent.workflow.WorkflowService", forbidden)
+    monkeypatch.setattr("phase1_agent.graph_service.GraphWorkflowService", forbidden)
+    database = tmp_path / "page-only.sqlite"
+    with closing(WorkflowHost(database)) as host:
+        with running_server(host) as port:
+            for path in PAGE_PATHS:
+                for query in (
+                    "", SESSION_QUERY, FULL_QUERY,
+                    f"?graph_workflow={CONFIG_A}",
+                    f"?graph_workflow={CONFIG_A}&graph_session={SESSION}",
+                ):
+                    status, headers, body = call(port, "GET", path + query)
+                    assert status == 200 and b'src="/static/chat-entry.js"' in body
+                    assert b'src="/static/app.js"' not in body
+                    assert headers["Cache-Control"] == "no-store"
+                    assert host._graph is None and host._legacy is None
+                    assert not database.exists()
+            for path in (
+                "/static/app.js", "/static/chat-entry.js", "/static/graph-chat-core.js",
+                "/static/graph-chat.js", "/static/frontend-package-host.js",
+                "/static/frontend-package.js", "/static/style.css", "/api/health",
+            ):
+                assert call(port, "GET", path)[0] == 200
+                assert host._graph is None and host._legacy is None
+                assert not database.exists()
+    assert not database.exists()
+    assert not database.with_name(database.name + ".graph.lock").exists()
 
 
 def test_real_database_page_handoff_does_not_create_switch_or_execute():

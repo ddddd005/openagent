@@ -17,7 +17,7 @@ from test_graph_session_objects import task_package, object_graph
 
 def test_public_v2_catalog_object_http_and_strict_old_catalog(tmp_path):
     with closing(GraphWorkflowService(tmp_path / "http.sqlite", capability_packages=[task_package()],
-                                      enabled_packages={"example.tasks": "1.0.0"})) as service:
+                                      enabled_packages={"workflow.compat": "1.0.0", "example.tasks": "1.0.0"})) as service:
         v1 = dispatch_graph(service, "GET", "/api/graph/node-types")[1]
         v2 = dispatch_graph(service, "GET", "/api/graph/node-types/v2")[1]
         assert v1["schema_version"] == 1 and v2["schema_version"] == 2
@@ -51,7 +51,7 @@ def test_package_changes_and_object_edit_refuse_active_run_and_paused_manifests_
 
     gate_package = CapabilityPackage(PackageManifest("example.gate", "1"), register)
     with closing(GraphWorkflowService(tmp_path / "active.sqlite", capability_packages=[task_package(), gate_package],
-        enabled_packages={"example.tasks": "1.0.0", "example.gate": "1"})) as service:
+        enabled_packages={"workflow.compat": "1.0.0", "example.tasks": "1.0.0", "example.gate": "1"})) as service:
         doc = object_graph(service)
         gate = node(service.registry, "example.gate", 0)
         output = node(service.registry, "output", 10)

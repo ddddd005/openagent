@@ -11,8 +11,10 @@
   <main>
     <header>
       <h1>聊天前端</h1>
-      <span id="mode" class="mode">正在连接</span>
+      <span id="mode" class="mode">入口未绑定</span>
     </header>
+    <div id="error" class="error" role="alert" hidden></div>
+    <div id="chat-client" hidden>
     <div class="session-bar">
       <label for="sessions">会话</label>
       <select id="sessions" aria-label="选择会话"><option value="">暂无会话</option></select>
@@ -39,7 +41,6 @@
       <input id="additional-model-attempts" type="number" min="0" max="256" step="1" value="4" inputmode="numeric">
       <button id="extend-budget" class="icon-button" type="button" title="增加当前运行额度，随后可继续运行" aria-label="增加当前运行额度" disabled>+</button>
     </div>
-    <div id="error" class="error" role="alert" hidden></div>
     <section id="public-exposures" class="public-exposures" aria-label="公开状态与结果" hidden>
       <h2>公开状态与结果</h2>
       <p id="public-exposure-status" class="muted" role="status"></p>
@@ -82,6 +83,7 @@
         <button id="submit" type="submit" disabled>提交</button>
       </div>
     </form>
+    </div>
   </main>
 </body>
 </html>

@@ -7,6 +7,7 @@ import { graphClone, type GraphDocument, type GraphNodeType, type GraphSession }
 import { MAIN_WORKFLOW_ID } from "../fixtures/workflows";
 import { useWorkbenchPersistenceStore } from "./workbenchPersistence";
 import { usePreparationStore } from "./preparation";
+import { legacyWorkbenchStorage } from "../testUtils/legacyWorkbenchStorage";
 function setup() {
   const graph = useWorkflowGraphStore(); graph.setPersistenceGuard(() => true);
   const binding = crypto.randomUUID();
@@ -133,8 +134,7 @@ describe("original migration request recovery", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it("restores a pending generic migration without redirecting later legacy edits into its graph", async () => {
-    let raw: string | null = null;
-    const storage = { getItem: () => raw, setItem: (_key: string, value: string) => { raw = value; } };
+    const storage = legacyWorkbenchStorage();
     const { graph, document, workspace } = setup();
     const persistence = useWorkbenchPersistenceStore(); persistence.initialize(storage);
     stubGraphApplicationFetch( vi.fn().mockRejectedValue(new Error("lost migration receipt")));

@@ -11,6 +11,7 @@ import { CORE_SESSION_NOTE } from "../domain/workbenchResources";
 import { createPreparationDraft } from "../fixtures/preparation";
 import { createPreparationNode } from "../domain/preparation";
 import { readWorkbench } from "../adapters/workbenchPersistence";
+import { legacyWorkbenchStorage } from "../testUtils/legacyWorkbenchStorage";
 
 beforeEach(() => setActivePinia(createPinia()));
 describe("unified workflow", () => {
@@ -106,8 +107,7 @@ describe("unified workflow", () => {
     expect(isBackendPreparationProgram(compiled)).toBe(false);
   });
   it("explicit save produces a saved workflow and its next edit makes another copy", () => {
-    let raw: string | null = null;
-    const storage = { getItem: () => raw, setItem: (_key: string, value: string) => { raw = value; } };
+    const storage = legacyWorkbenchStorage();
     const persistence = useWorkbenchPersistenceStore();
     persistence.initialize(storage);
     const preparation = usePreparationStore();

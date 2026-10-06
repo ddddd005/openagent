@@ -17,7 +17,7 @@ from phase1_agent.graph_contracts import GraphCompiler, NodeDefinition, NodePort
 from phase1_agent.graph_execution import execute_graph
 from phase1_agent.host_sdk import ResourceIdentity
 from phase1_agent.prompt_package import (
-    PROMPT_RESOURCE_TYPE, assemble_prompt, create_prompt_package, merge_prompt_materials,
+    PROMPT_FRONTEND_EXTENSIONS, PROMPT_RESOURCE_TYPE, assemble_prompt, create_prompt_package, merge_prompt_materials,
     validate_prompt_resource, validate_ready_prompt,
 )
 
@@ -97,6 +97,34 @@ def test_prompt_package_loads_with_only_content_and_no_agent_or_tools_dependency
     assert registry.get("workflow.agent", "1") is None
     assert registry.data_types.get(PROMPT_RESOURCE_TYPE, 1, scope="global") is not None
     assert registry.get("prompts.global-resolve", "1").resource_input_ports == ("input",)
+
+
+def test_prompt_package_declares_exact_current_panel_and_reference_editor_without_compat():
+    package = create_prompt_package()
+    capabilities = CapabilityPackageLoader((create_content_package(), package)).load(
+        {"workflow.prompts": "1.0.0"})
+    expected = sorted([
+        {**deepcopy(row), "schema_version": 2, "host_protocol_version": 1,
+         "package_id": "workflow.prompts", "package_version": "1.0.0"}
+        for row in PROMPT_FRONTEND_EXTENSIONS
+    ], key=lambda row: row["extension_id"])
+    assert list(capabilities.frontend_extensions) == expected
+    assert {(row["extension_id"], row["entrypoint"]) for row in expected} == {
+        ("workflow.prompts.workbench-panel", "workflow.prompts.workbench.panel"),
+        ("workflow.prompts.node-fields", "workflow.prompts.workbench.node-fields"),
+    }
+    manifest = package.manifest.to_dict()
+    assert manifest["schema_version"] == 1
+    assert manifest["exports"]["frontend_extensions"] == [
+        {"extension_id": row["extension_id"]} for row in PROMPT_FRONTEND_EXTENSIONS]
+    assert next(row for row in expected if row["kind"] == "field-editor")["binding"]["target"] == {
+        "component_id": "prompts.global-reference", "component_version": "1"}
+    loaded_manifest = next(row for row in capabilities.package_manifests
+                           if row["package_id"] == "workflow.prompts")
+    assert loaded_manifest["exports"] == manifest["exports"]
+    assert capabilities.registry.execution_package_lock == capabilities.package_lock
+    assert capabilities.registry.get("workflow.global-content", "2") is None
+    assert capabilities.registry.data_types.get("workflow.global-content", 1, scope="global") is None
 
 
 def test_material_order_is_independent_of_input_arrays_and_uses_integer_uuid_tiebreak():

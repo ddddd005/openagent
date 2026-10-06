@@ -8,6 +8,7 @@ import { useModelConfigurationStore } from "./modelConfiguration";
 import { useWorkbenchPersistenceStore } from "./workbenchPersistence";
 import { MAIN_WORKFLOW_ID } from "../fixtures/workflows";
 import { AGENT_BINDINGS } from "../adapters/workbenchApi";
+import { legacyWorkbenchStorage } from "../testUtils/legacyWorkbenchStorage";
 beforeEach(() => setActivePinia(createPinia()));
 afterEach(() => { useWorkbenchPersistenceStore().$dispose(); vi.unstubAllGlobals(); });
 describe("architecture findings B01 B02 B03", () => {
@@ -31,8 +32,8 @@ describe("architecture findings B01 B02 B03", () => {
     expect(exposures.referenceFor(MAIN_WORKFLOW_ID)).toEqual(first); expect(exposures.referenceFor(second)).not.toBeNull();
   });
   it("B03 undoes a mixed preparation/main/model movement as one edit", () => {
-    let raw:string|null = null; const persistence = useWorkbenchPersistenceStore();
-    persistence.initialize({ getItem:() => raw,setItem:(_key,value) => { raw=value; } });
+    const persistence = useWorkbenchPersistenceStore();
+    persistence.initialize(legacyWorkbenchStorage());
     const workspace = useWorkspaceStore(); const preparation = usePreparationStore(); const models = useModelConfigurationStore();
     const prompt = preparation.getDraft(MAIN_WORKFLOW_ID,"A").nodes.find(n => n.kind === "prompt-item")!;
     preparation.updateNodeConfig(MAIN_WORKFLOW_ID,"A",prompt.id,{ text:"draft" });

@@ -21,14 +21,19 @@ export function resolveLegacyUiUrl(configuredUrl?: string): string {
 
 export const legacyUiUrl = resolveLegacyUiUrl(import.meta.env.VITE_LEGACY_UI_URL);
 
-export function graphChatInterfaceUrl(base: string, definitionId: string, sessionId: string | null) {
-  const url = new URL(resolveLegacyUiUrl(base));
-  if (!["http:", "https:"].includes(url.protocol) || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
-    || url.username || url.password || !sessionUuid(definitionId)
-    || sessionId !== null && !sessionUuid(sessionId)) return url.href;
-  for (const key of ["session", "prompt_a", "prompt_a_revision", "prompt_b", "prompt_b_revision",
-    "model_config", "model_revision", "exposure_config", "exposure_revision", "graph_session"])
-    url.searchParams.delete(key);
+function localPage(base: string): URL | null {
+  try {
+    const url = new URL(base);
+    return ["http:", "https:"].includes(url.protocol) && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
+      && !url.username && !url.password && ["/", "/static/index.html"].includes(url.pathname) ? url : null;
+  } catch { return null; }
+}
+const strictUuid = (value: unknown): value is string => sessionUuid(value) && value.length === 36;
+
+export function graphChatInterfaceUrl(base: string, definitionId: string, sessionId: string | null): string | null {
+  const url = localPage(base);
+  if (!url || !strictUuid(definitionId) || sessionId !== null && !strictUuid(sessionId)) return null;
+  url.search = "";
   url.searchParams.set("graph_workflow", definitionId);
   if (sessionId) url.searchParams.set("graph_session", sessionId);
   return url.href;
@@ -38,21 +43,22 @@ export function workbenchUserInterfaceUrl(
   base: string, sessionId: string | null, selection: ExactPromptSelection | null,
   modelSelection: ExactModelSelection | null = null,
   exposureReference: ExposureReference | null = null,
-) {
-  const url = new URL(resolveLegacyUiUrl(base));
+): string | null {
+  const url = localPage(base);
   // Only the configured local backend shares the workbench's session identities.
-  if (url.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(url.hostname)
-    || url.port !== "8765" || !sessionUuid(sessionId)) return url.href;
+  if (!url || url.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(url.hostname)
+    || url.port !== "8765" || !strictUuid(sessionId)) return null;
+  url.search = "";
   url.searchParams.set("session", sessionId);
-  if (exposureReference && isExposureReference(exposureReference)) {
+  if (exposureReference && isExposureReference(exposureReference) && strictUuid(exposureReference.config_id)) {
     url.searchParams.set("exposure_config", exposureReference.config_id);
     url.searchParams.set("exposure_revision", String(exposureReference.revision));
   }
-  if (modelSelection && isExactModelSelection(modelSelection)) {
+  if (modelSelection && isExactModelSelection(modelSelection) && strictUuid(modelSelection.config_id)) {
     url.searchParams.set("model_config", modelSelection.config_id);
     url.searchParams.set("model_revision", String(modelSelection.revision));
   }
-  if (selection && isExactPromptSelection(selection))
+  if (selection && isExactPromptSelection(selection) && Object.values(selection.nodes).every(ref => strictUuid(ref.config_id)))
     for (const stage of ["A", "B"] as const) {
       url.searchParams.set(`prompt_${stage.toLowerCase()}`, selection.nodes[stage].config_id);
       url.searchParams.set(`prompt_${stage.toLowerCase()}_revision`, String(selection.nodes[stage].revision));

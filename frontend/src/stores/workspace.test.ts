@@ -161,4 +161,21 @@ describe("workflow workbench state", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it("keeps only saved-catalog projections when restoring a current-only workspace", () => {
+    const workspace = useWorkspaceStore(), id = crypto.randomUUID();
+    workspace.restoreCatalog([{ id, title: "Current workspace", description: "", nodeCount: 0, state: "draft" }]);
+    workspace.restoreLayouts({ [id]: {} }, id, id);
+    expect(workspace.workflows.map(workflow => workflow.id)).toEqual([id]);
+    expect(Object.keys(workspace.drafts)).toEqual([id]);
+    expect(Object.keys(workspace.initialLayouts)).toEqual([id]);
+    expect(Object.keys(workspace.histories)).toEqual([id]);
+    expect(workspace.drafts[MAIN_WORKFLOW_ID]).toBeUndefined();
+    expect(workspace.activeWorkflowId).toBe(id);
+    expect(workspace.selectedWorkflowId).toBe(id);
+    expect(workspace.nodes).toEqual([]);
+    expect(workspace.edges).toEqual([]);
+    expect(workspace.canUndo).toBe(false);
+    expect(workspace.dirty).toBe(false);
+  });
 });

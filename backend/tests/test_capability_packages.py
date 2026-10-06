@@ -28,7 +28,8 @@ def test_independent_package_declares_types_node_and_optional_frontend_without_c
         host.register_frontend_extension("sample.upper.editor", "field-editor", "sample/frontend:Upper",
                                          component_id="sample.upper", component_version="1")
 
-    loaded = create_package_registry(packages=(package("sample", register),), enabled={"sample": "1.0.0"})
+    loaded = create_package_registry(packages=(package("sample", register),),
+                                    enabled={"sample": "1.0.0", "workflow.compat": "1.0.0"})
     graph = document([node(1, config={"text": "ready"}), node(2, "sample.upper", registry=loaded.registry),
                       node(3, "workflow.output")], [edge(10, 1, 2), edge(11, 2, 3)])
     assert run_graph(graph, loaded.registry).outputs[node(3)["node_binding_id"]]["output"]["text"] == "READY"

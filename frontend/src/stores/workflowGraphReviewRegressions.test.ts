@@ -5,6 +5,7 @@ import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkspaceStore } from "./workspace";
 import { useWorkbenchPersistenceStore } from "./workbenchPersistence";
 import { graphClone, newGraph, type GraphDocument, type GraphNodeType, type GraphSession } from "../domain/workflowGraph";
+import { legacyWorkbenchStorage } from "../testUtils/legacyWorkbenchStorage";
 
 const textType: GraphNodeType = { component_id: "workflow.text", component_version: "1", display_name: "text",
   category: "content", config_schema: { type: "object" }, default_config: {}, inputs: [], outputs: [],
@@ -23,8 +24,9 @@ function canonical(value: unknown): unknown {
   return value;
 }
 function memory() {
-  let raw: string | null = null;
-  return { getItem: () => raw, setItem: (_key: string, value: string) => { raw = value; } };
+  const workspace = useWorkspaceStore();
+  return legacyWorkbenchStorage({ graph: useWorkflowGraphStore().storeSnapshot(), catalog: workspace.workflows,
+    activeWorkflowId: workspace.activeWorkflowId, selectedWorkflowId: workspace.selectedWorkflowId });
 }
 function view(document: GraphDocument, status = "idle"): GraphSession {
   return { schema_version: 2, execution_model: "graph", workflow_session_id: crypto.randomUUID(),

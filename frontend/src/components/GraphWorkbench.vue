@@ -190,7 +190,7 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; initialFit = 
 </template>
 
 <style scoped>
-.graph-workbench { display:flex; flex-direction:column; height:100%; min-height:0; outline:none; }
+.graph-workbench { display:flex; flex:1; flex-direction:column; height:100%; min-width:0; min-height:0; outline:none; }
 .graph-toolbar { flex:0 0 36px; display:flex; align-items:center; gap:12px; padding:0 11px; border-bottom:1px solid #424248; font-size:11px; color:#b8bec2; }
 .graph-toolbar-actions { display:flex; margin-left:auto; gap:3px; }
 button { display:inline-flex; align-items:center; justify-content:center; min-width:25px; min-height:25px; padding:4px; border-radius:3px; }

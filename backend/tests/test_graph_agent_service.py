@@ -58,8 +58,10 @@ def graph(service, *, budget=8, context=False):
 def harness(tmp_path, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-test-credential")
     scripts, requests, hooks = [], [], []
-    service = GraphWorkflowService(tmp_path / "graph-agent.sqlite", model_factory=lambda binding: ScriptModel(
-        scripts.pop(0), requests, hooks.pop(0) if hooks else None))
+    service = GraphWorkflowService(
+        tmp_path / "graph-agent.sqlite", enabled_packages={"workflow.compat": "1.0.0"},
+        model_factory=lambda binding: ScriptModel(
+            scripts.pop(0), requests, hooks.pop(0) if hooks else None))
     with closing(service._store()) as store:
         ModelConfigurationStore(store).write("provider", default_provider(), expected_revision=0, idempotency_key="provider")
     yield service, scripts, requests, hooks

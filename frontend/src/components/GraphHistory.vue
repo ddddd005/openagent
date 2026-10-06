@@ -58,7 +58,7 @@ onUnmounted(() => { generation++; });
   </section>
 </template>
 <style scoped>
-.graph-history { display:flex; height:100%; min-height:0; background:#252529; }
+.graph-history { display:flex; flex:1; height:100%; min-width:0; min-height:0; background:#252529; }
 aside { width:220px; flex:0 0 220px; overflow:auto; border-right:1px solid #45454c; }
 header { padding:12px; font-size:12px; border-bottom:1px solid #43434a; }
 button { display:flex; flex-direction:column; gap:5px; text-align:left; width:100%; padding:12px; font-size:11px; border-bottom:1px solid #3d3d44; }

@@ -8,12 +8,12 @@ import { useWorkbenchRuntimeStore } from "./workbenchRuntime";
 import { AGENT_BINDINGS } from "../adapters/workbenchApi";
 import { MAIN_WORKFLOW_ID } from "../fixtures/workflows";
 import { readWorkbench } from "../adapters/workbenchPersistence";
+import { legacyWorkbenchStorage } from "../testUtils/legacyWorkbenchStorage";
 
 const SID = "00000000-0000-4000-8000-000000000901";
 const REQUEST = "00000000-0000-4000-8000-000000000902";
 function memory() {
-  let raw: string | null = null;
-  return { getItem: () => raw, setItem: (_key: string, value: string) => { raw = value; } };
+  return legacyWorkbenchStorage();
 }
 function idle() {
   return {

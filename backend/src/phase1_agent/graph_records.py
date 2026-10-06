@@ -171,7 +171,7 @@ def validate_graph_record(record_type: str, value: Any) -> dict:
             require(snapshot["workflow_session_id"] == value["workflow_session_id"]
                     and snapshot["node_binding_id"] == value["node_binding_id"],
                     "storage_contract_violation", "Agent snapshot owner differs", 500)
-            from .graph_agent_runtime import GraphAgentIdentity, _validated_facts, _validate_limits
+            from .graph_agent_contracts import GraphAgentIdentity, _validated_facts, _validate_limits
             identity = GraphAgentIdentity(**snapshot["config"]["payload"]["graph_identity"])
             require((identity.workflow_session_id, identity.node_binding_id, identity.chain_run_id, identity.node_run_id)
                     == (value["workflow_session_id"], value["node_binding_id"], value["chain_run_id"], value["run_id"]),
@@ -182,7 +182,7 @@ def validate_graph_record(record_type: str, value: Any) -> dict:
                     and snapshot["config"]["payload"]["graph_agent"] == value["config"],
                     "storage_contract_violation", "Agent snapshot differs from its graph inputs", 500)
             if agent["accepted"] is not None:
-                from .graph_agent_runtime import validate_graph_agent_accepted
+                from .graph_agent_contracts import validate_graph_agent_accepted
                 accepted = validate_graph_agent_accepted(agent["accepted"])
                 require(accepted["snapshot"] == snapshot and accepted["facts"] == agent["facts"]
                         and accepted["identity"]["node_run_id"] == value["run_id"]

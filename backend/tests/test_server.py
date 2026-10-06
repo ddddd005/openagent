@@ -198,7 +198,13 @@ def test_routes_and_static_allowlist():
     with running_server() as (service, port):
         for path, marker in (
             ("/", b"<!doctype html>"),
+            ("/static/index.html", b"<!doctype html>"),
             ("/static/app.js", b"textContent"),
+            ("/static/chat-entry.js", b"/static/graph-chat.js"),
+            ("/static/graph-chat-core.js", b"GraphChatClient"),
+            ("/static/graph-chat.js", b"GraphChatClient"),
+            ("/static/frontend-package-host.js", b"ConsumerFrontendHost"),
+            ("/static/frontend-package.js", b"WorkflowFrontendPackage"),
             ("/static/style.css", b".workflow"),
         ):
             status, headers, data = call(port, "GET", path)

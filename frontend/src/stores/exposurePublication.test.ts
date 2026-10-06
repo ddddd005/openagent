@@ -88,9 +88,9 @@ describe("backend published declarations and scoped reads", () => {
   });
   it("passes only exact declaration identities to the local user interface", () => {
     const ref = { config_id: HEAD, revision: 2 };
-    const url = new URL(workbenchUserInterfaceUrl("http://127.0.0.1:8765/", SID, null, null, ref));
+    const url = new URL(workbenchUserInterfaceUrl("http://127.0.0.1:8765/", SID, null, null, ref)!);
     expect(url.searchParams.get("exposure_config")).toBe(HEAD);
     expect(url.searchParams.get("exposure_revision")).toBe("2");
-    expect(new URL(workbenchUserInterfaceUrl("https://elsewhere.invalid/", SID, null, null, ref)).search).toBe("");
+    expect(workbenchUserInterfaceUrl("https://elsewhere.invalid/", SID, null, null, ref)).toBeNull();
   });
 });

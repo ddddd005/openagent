@@ -14,13 +14,13 @@ import { dependencyTarget } from "../domain/modelConfiguration";
 import { clonePreparation } from "../domain/preparation";
 import { readWorkbench, WORKBENCH_STORAGE_KEY } from "../adapters/workbenchPersistence";
 import type { ExposureConfiguration } from "../domain/exposureConfiguration";
+import { legacyWorkbenchStorage } from "../testUtils/legacyWorkbenchStorage";
 
 const id = (number: number) => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const SID = id(1), OTHER = id(2), CONFIG = id(3), PROVIDER = id(4);
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 function memory() {
-  let raw: string | null = null;
-  return { getItem: () => raw, setItem: (_key: string, value: string) => { raw = value; } };
+  return legacyWorkbenchStorage();
 }
 function transport() {
   const requests = new Map<string, { body: Record<string, unknown>; receipt: unknown }>();

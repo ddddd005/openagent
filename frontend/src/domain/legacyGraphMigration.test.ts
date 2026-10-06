@@ -5,6 +5,7 @@ import { graphClone, isGraphDocument, type GraphDocument, type GraphNodeType } f
 import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { MAIN_WORKFLOW_ID } from "../fixtures/workflows";
+import { legacyWorkbenchStorage } from "../testUtils/legacyWorkbenchStorage";
 
 export function migrationCatalog(): GraphNodeType[] {
   const port = (port_id: string, data_type = "PROMPT") => ({ port_id, data_type, required: true, multiple: false });
@@ -21,9 +22,10 @@ export function migrationCatalog(): GraphNodeType[] {
     row("variable-register", ["text"], ["text"]), row("variable-assign", ["text"], ["text"]), row("session-data-write", ["text"], ["json"])];
 }
 export function legacyFixture(): GraphDocument {
-  let raw: string | null = null;
-  useWorkbenchPersistenceStore().initialize({ getItem: () => raw, setItem: (_key, value) => { raw = value; } });
-  return JSON.parse(raw!).documents[MAIN_WORKFLOW_ID].document;
+  const storage = legacyWorkbenchStorage(), persistence = useWorkbenchPersistenceStore();
+  persistence.initialize(storage);
+  persistence.save();
+  return JSON.parse(storage.getItem()!).documents[MAIN_WORKFLOW_ID].document;
 }
 beforeEach(() => setActivePinia(createPinia()));
 afterEach(() => { useWorkbenchPersistenceStore().$dispose(); useWorkflowGraphStore().$dispose(); });

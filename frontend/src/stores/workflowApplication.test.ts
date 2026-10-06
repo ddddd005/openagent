@@ -6,6 +6,7 @@ import { useWorkspaceStore } from "./workspace";
 import { useWorkbenchPersistenceStore } from "./workbenchPersistence";
 import { useWorkbenchNoticesStore } from "./workbenchNotices";
 import { graphClone, newGraph, type GraphDocument, type GraphSession } from "../domain/workflowGraph";
+import { legacyWorkbenchStorage } from "../testUtils/legacyWorkbenchStorage";
 
 const json = (value: unknown) => new Response(JSON.stringify(value));
 function deferred<T>() {
@@ -14,8 +15,9 @@ function deferred<T>() {
   return { promise, resolve };
 }
 function memory() {
-  let raw: string | null = null;
-  return { getItem: () => raw, setItem: (_key: string, value: string) => { raw = value; } };
+  const workspace = useWorkspaceStore();
+  return legacyWorkbenchStorage({ graph: useWorkflowGraphStore().storeSnapshot(), catalog: workspace.workflows,
+    activeWorkflowId: workspace.activeWorkflowId, selectedWorkflowId: workspace.selectedWorkflowId });
 }
 function fixture() {
   const graph = useWorkflowGraphStore();

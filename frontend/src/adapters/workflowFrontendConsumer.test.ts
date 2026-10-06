@@ -142,7 +142,7 @@ describe("trusted consumer frontend packages", () => {
   });
   it("keeps loading the platform shell when optional package scripts are missing", async () => {
     const calls: string[] = [], box = { textContent: "", hidden: true };
-    const scope = { URLSearchParams, location: { search: "?graph_workflow=workflow" },
+    const scope = { URLSearchParams, location: { search: "?graph_workflow=00000000-0000-4000-8000-000000000021" },
       document: { getElementById: () => box, createElement: () => ({}),
         head: { append(script: any) { calls.push(script.src); queueMicrotask(() => {
           if (script.src.includes("frontend-package")) script.onerror(); else script.onload();

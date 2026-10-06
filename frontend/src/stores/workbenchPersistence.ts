@@ -4,8 +4,7 @@ import {
   readWorkbench, writeWorkbench, WORKBENCH_STORAGE_KEY,
   type SavedWorkbench, type WorkbenchConfiguration,
 } from "../adapters/workbenchPersistence";
-import type { DraftStorage } from "../adapters/localDraft";
-import { MAIN_WORKFLOW_ID } from "../fixtures/workflows";
+import type { DraftStorage } from "../adapters/browserStorage";
 import { clonePreparation } from "../domain/preparation";
 import { usePreparationStore } from "./preparation";
 import { useWorkspaceStore } from "./workspace";
@@ -138,6 +137,7 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
   }
   function initialize(target?: DraftStorage) {
     if (ready.value) return;
+    let fresh = false;
     try {
       storage = target ?? window.localStorage;
       const loaded = readWorkbench(storage);
@@ -159,18 +159,20 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
         revision = loaded.value.revision;
         savedSchema = loaded.value.schemaVersion;
         savedAt.value = loaded.value.savedAt;
+      } else if (loaded.raw === null) {
+        graph.createWorkflow();
+        workspace.initializeFreshWorkspace(workspace.activeWorkflow);
+        fresh = true;
+      } else {
+        throw new Error("保存记录无法安全恢复，原始保存未覆盖");
       }
-      preparation.getDraft(MAIN_WORKFLOW_ID, "A");
-      preparation.getDraft(MAIN_WORKFLOW_ID, "B");
       for (const workflow of workspace.workflows)
         if (!graph.isGeneric(workflow.id) && workflow.nodeCount) preparation.enableUnified(workflow.id);
-        else if (!workflow.nodeCount) graph.ensureEmpty(workflow.id);
       const copying = workspace.workflows.find(workflow => workflow.copyPending);
       if (copying?.sourceId && !graph.isGeneric(copying.id)) editing = { source: copying.sourceId, target: copying.id };
       signature = JSON.stringify(capture());
       ready.value = true;
       status.value = expectedRaw ? "saved" : "pending";
-      if (!expectedRaw) save();
     } catch (failure) {
       ready.value = true;
       status.value = "blocked";
@@ -185,6 +187,7 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
     workspace.setEditGuard(edit);
     models.setEditGuard(edit);
     exposures.setEditGuard(edit);
+    if (fresh && status.value !== "blocked") save();
   }
   let editing: { source: string; target: string } | null = null;
   const edit: WorkflowEditGuard = (source, change) => {

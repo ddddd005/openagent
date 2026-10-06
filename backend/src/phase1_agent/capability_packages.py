@@ -472,3 +472,20 @@ def create_compatibility_package(existing_registry: NodeRegistry) -> CapabilityP
     schema_version = (4 if source.information_sources.registrations() else
                       3 if source.services.registrations() else 2 if source.executors.registrations() else 1)
     return CapabilityPackage(PackageManifest("workflow.compat", "1.0.0", schema_version=schema_version), register)
+
+
+def create_builtin_compatibility_package() -> CapabilityPackage:
+    """Construct the legacy registry only when its exact package is selected."""
+    compatibility = None
+
+    def register(host: HostRegistration) -> None:
+        nonlocal compatibility
+        if compatibility is None:
+            from .graph_nodes import create_default_registry
+            candidate = create_compatibility_package(create_default_registry())
+            ensure(candidate.manifest.schema_version == 1, "package_invalid_manifest",
+                   "The builtin compatibility manifest schema must remain stable")
+            compatibility = candidate
+        compatibility.register(host)
+
+    return CapabilityPackage(PackageManifest("workflow.compat", "1.0.0"), register)

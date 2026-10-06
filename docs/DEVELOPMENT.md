@@ -19,6 +19,7 @@
 | 上下文读、装配、写回 | `context_package.py`、`context_v3_nodes.py`、`context_v3.py` |
 | 前端业务节点 | `frontend_package.py`、`frontend_business.py` |
 | 定义、会话、对象与运行存储 | `storage.py`、`graph_store.py`、`graph_records.py`、`session_objects.py`、`runtime_fact_store.py` |
+| 冻结旧 Agent 证据的纯校验 | `graph_agent_contracts.py`；旧执行器保留同名导出，不参与历史读取 |
 | 信息源与事实读取 | `graph_information.py`、`runtime_information.py` |
 | 独立聊天客户端 | `static/graph-chat.js`、`static/graph-chat-core.js` |
 
@@ -29,6 +30,7 @@
 | 应用与工作台 | `frontend/src/App.vue`、`components/GraphWorkbench.vue` |
 | 通用图、串行示例 | `domain/workflowGraph.ts`、`domain/serialAgentDemo.ts` |
 | 图与会话状态 | `stores/workflowGraph.ts`、`stores/workspace.ts` |
+| 浏览器持久化接口与档案 | `adapters/browserStorage.ts`、`adapters/workbenchPersistence.ts`、`stores/workbenchPersistence.ts` |
 | 应用边界 | `application/workflowCommands.ts`、`workflowEditing.ts`、`workflowInformation.ts` |
 | HTTP 适配 | `adapters/workflowApplicationApi.ts`、`workflowGraphApi.ts`、`workflowResourcesApi.ts` |
 | 供应商与模型源编辑 | `components/CurrentProviderPanel.vue`、`ModelSourceFields.vue`、`application/workflowResources.ts` |
@@ -87,5 +89,9 @@
 ## 新旧路径
 
 `workflow.py`、`workflow_control.py` 等保留旧固定流程兼容；新版普通图以 `graph_*`、公共 Runtime 与能力包为主。新增工作流能力应先选择新版路径，不因已有旧 UI 或 `--mode deepseek` 就接回固定 A/B。不要在本次 demo 发布中顺带删除全部兼容层。
+
+无正式入口调用者的早期 mock 原型已退役，旧 Agent 历史读取改用纯契约校验，见 [历史校验与原型退役](REPLACE-HISTORY-RETIREMENT.md)。正式兼容客户端、旧宿主及默认共享 prepared-context 导入链仍待退出；不能从局部退役推断所有兼容实现已删除，也不能改写原型旧存储键或既存档案。
+
+下一步支持边界见 [联合处置矩阵](REPLACE-SUPPORT-MATRIX.md)：当前独立包及精确可信扩展保留，旧固定流程/compat 图以整份冻结只读为目标；判定包含完整包锁，不按前缀或版本数字直接删节点。冻结、历史/当前执行配置、纯 archive/receipt-only 和前端 passthrough 尚待实现，当前 start 仍调用旧 GraphAgentHost 资源预检。先迁出公共依赖与纯读取，再退役正式旧入口，不清旧 active/status/facts，也不靠重 POST 核实退役操作。
 
 安装、测试和调试分别见 [快速启动](QUICKSTART.md)、[测试说明](TESTING.md)、[调试说明](DEBUGGING.md)。来源边界见 [第三方说明](../THIRD_PARTY_NOTICES.md)。

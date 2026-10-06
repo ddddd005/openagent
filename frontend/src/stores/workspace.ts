@@ -271,11 +271,22 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   function restoreCatalog(values: WorkspaceWorkflow[]) {
     workflows.value = clonePreparation(values);
     const defaults = createWorkspaceDrafts();
-    for (const workflow of workflows.value) {
-      drafts.value[workflow.id] ??= clonePreparation(workflow.nodeCount ? defaults[MAIN_WORKFLOW_ID]! : defaults["frontend:empty-test"]!);
-      histories.value[workflow.id] ??= { past: [], future: [] };
-      initialLayouts.value[workflow.id] ??= layoutOf(drafts.value[workflow.id]!);
-    }
+    drafts.value = Object.fromEntries(workflows.value.map(workflow => [workflow.id,
+      drafts.value[workflow.id] ?? clonePreparation(workflow.nodeCount ? defaults[MAIN_WORKFLOW_ID]! : defaults["frontend:empty-test"]!)]));
+    histories.value = Object.fromEntries(workflows.value.map(workflow => [workflow.id,
+      histories.value[workflow.id] ?? { past: [], future: [] }]));
+    initialLayouts.value = Object.fromEntries(workflows.value.map(workflow => [workflow.id,
+      initialLayouts.value[workflow.id] ?? layoutOf(drafts.value[workflow.id]!)]));
+    if (!workflows.value.some(workflow => workflow.id === activeWorkflowId.value))
+      activeWorkflowId.value = workflows.value[0]!.id;
+    if (!workflows.value.some(workflow => workflow.id === selectedWorkflowId.value))
+      selectedWorkflowId.value = activeWorkflowId.value;
+  }
+  function initializeFreshWorkspace(workflow: WorkspaceWorkflow) {
+    restoreCatalog([workflow]);
+    restoreLayouts({ [workflow.id]: {} }, workflow.id, workflow.id);
+    interactionMode.value = "select";
+    sidebarSection.value = "workflows";
   }
 
   return {
@@ -309,7 +320,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     exportLayouts,
     restoreLayouts,
     markSaved,
-    cloneWorkflow, saveDraft, restoreCatalog, setEditGuard,
+    cloneWorkflow, saveDraft, restoreCatalog, initializeFreshWorkspace, setEditGuard,
     registerGraphWorkflow, updateWorkflowProjection, setCopyPending, markWorkflowSaved,
     clearWorkflowHistory, restoreWorkflowLayout, removeWorkflow,
   };

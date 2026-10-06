@@ -55,7 +55,7 @@ def task_package():
 @pytest.fixture
 def service(tmp_path):
     with closing(GraphWorkflowService(tmp_path / "objects.sqlite", capability_packages=[task_package()],
-                                      enabled_packages={"example.tasks": "1.0.0"})) as service:
+                                      enabled_packages={"workflow.compat": "1.0.0", "example.tasks": "1.0.0"})) as service:
         yield service
 
 
@@ -193,7 +193,7 @@ def test_failed_effect_is_rejected_and_has_no_success_candidate(service):
 def test_missing_package_read_export_keeps_objects_and_blocks_run(tmp_path):
     path = tmp_path / "missing.sqlite"
     with closing(GraphWorkflowService(path, capability_packages=[task_package()],
-                                      enabled_packages={"example.tasks": "1.0.0"})) as service:
+                                      enabled_packages={"workflow.compat": "1.0.0", "example.tasks": "1.0.0"})) as service:
         doc = object_graph(service)
         final = run(service, create(service, doc))
         sid = final["workflow_session_id"]
@@ -288,17 +288,34 @@ def test_tombstone_restore_reopen_and_unrelated_manifest_access(service):
         assert reopened.get_session(sid)["objects"] == restored["objects"]
 
 
-def test_project_selection_survives_restart_and_missing_install_is_diagnosed(tmp_path):
+def test_project_selection_survives_restart_and_missing_install_is_diagnosed(tmp_path, monkeypatch):
     path = tmp_path / "project.sqlite"
     with closing(GraphWorkflowService(path, capability_packages=[task_package()],
-                                      enabled_packages={"example.tasks": "1.0.0"})) as service:
+                                      enabled_packages={"workflow.compat": "1.0.0", "example.tasks": "1.0.0"})) as service:
         final = run(service, create(service, object_graph(service)))
     with closing(GraphWorkflowService(path, capability_packages=[task_package()])) as reopened:
         assert any(row["package_id"] == "example.tasks" for row in reopened.platform_capabilities()["package_lock"])
         assert run(reopened, reopened.get_session(final["workflow_session_id"]))["objects"]["main"]["value"] == {"count": 2}
+        before = reopened.get_session(final["workflow_session_id"])
+        historical = reopened.get_run(final["workflow_session_id"], before["selected_chain_run_id"])
+    from phase1_agent import graph_nodes
+
+    def no_compat_registry():
+        pytest.fail("A missing saved package constructed a compatibility registry")
+
+    monkeypatch.setattr(graph_nodes, "create_default_registry", no_compat_registry)
     with closing(GraphWorkflowService(path)) as missing:
-        assert missing.platform_capabilities()["package_diagnostics"][0]["reason_code"] == "package_missing_dependency"
+        catalog = missing.platform_capabilities()
+        assert catalog["package_diagnostics"][0]["reason_code"] == "package_missing_dependency"
+        assert catalog["package_diagnostics"][0]["enabled_packages"] == {
+            "workflow.compat": "1.0.0", "example.tasks": "1.0.0"}
+        assert catalog["package_lock"] == [] and missing.registry.catalog() == []
         assert missing.get_session(final["workflow_session_id"])["objects"]["main"]["value"] == {"count": 2}
+        assert missing.get_run(final["workflow_session_id"], before["selected_chain_run_id"]) == historical
+        with pytest.raises(ContractValidationError) as denied:
+            run(missing, missing.get_session(final["workflow_session_id"]))
+        assert denied.value.reason_code == "package_missing_dependency"
+        assert missing._native_runtime is None
 
 
 def test_long_valid_object_identity_has_a_bounded_automatic_operation_key(service):

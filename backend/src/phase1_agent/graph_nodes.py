@@ -334,16 +334,13 @@ def create_default_registry() -> NodeRegistry:
 
 
 def create_package_registry(*, packages=(), enabled: dict[str, str] | None = None):
-    """Load the existing compatibility entry and explicitly enabled project packages."""
-    from .capability_packages import CapabilityPackageLoader, create_compatibility_package
+    """Load default independent packages or the exact explicit project selection."""
+    from .capability_packages import CapabilityPackageLoader
 
-    compatibility = create_compatibility_package(create_default_registry())
     from .builtin_packages import DEFAULT_PACKAGES, builtin_capability_packages
-    selected = dict(DEFAULT_PACKAGES) if enabled is None else {"workflow.compat": "1.0.0"}
-    if enabled is not None:
-        selected.update(enabled)
+    selected = dict(DEFAULT_PACKAGES) if enabled is None else copy.deepcopy(enabled)
     supplied = tuple(packages)
     identities = {(package.manifest.package_id, package.manifest.version) for package in supplied}
     installed = tuple(package for package in builtin_capability_packages()
                       if (package.manifest.package_id, package.manifest.version) not in identities)
-    return CapabilityPackageLoader((compatibility, *installed, *supplied)).load(selected)
+    return CapabilityPackageLoader((*installed, *supplied)).load(selected)

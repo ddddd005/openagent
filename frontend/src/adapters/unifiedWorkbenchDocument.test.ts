@@ -6,11 +6,12 @@ import { usePreparationStore } from "../stores/preparation";
 import { useWorkspaceStore } from "../stores/workspace";
 import { MAIN_WORKFLOW_ID } from "../fixtures/workflows";
 import { readWorkbench } from "./workbenchPersistence";
+import { legacyWorkbenchRaw } from "../testUtils/legacyWorkbenchStorage";
 beforeEach(() => setActivePinia(createPinia()));
 afterEach(() => { useWorkbenchPersistenceStore().$dispose(); useWorkflowGraphStore().$dispose(); vi.unstubAllGlobals(); });
 describe("single-document workbench storage", () => {
   it("stores all layout/config/ports in one document, restores unknown plugins and legacy projections", () => {
-    let raw: string | null = null;
+    let raw: string | null = legacyWorkbenchRaw();
     const storage = { getItem: () => raw, setItem: (_key:string,value:string) => { raw = value; } };
     const persistence = useWorkbenchPersistenceStore(); persistence.initialize(storage);
     const graph = useWorkflowGraphStore();
@@ -34,7 +35,7 @@ describe("single-document workbench storage", () => {
     expect(useWorkspaceStore().nodes).toEqual([]);
   });
   it("preserves damaged unified snapshots instead of resetting or overwriting them", () => {
-    let raw: string | null = null;
+    let raw: string | null = legacyWorkbenchRaw();
     const storage = { getItem: () => raw, setItem: (_key:string,value:string) => { raw = value; } };
     const persistence = useWorkbenchPersistenceStore(); persistence.initialize(storage); persistence.save();
     const damaged = JSON.parse(raw!); damaged.documents[MAIN_WORKFLOW_ID].document.nodes[0].node_binding_id = "bad";

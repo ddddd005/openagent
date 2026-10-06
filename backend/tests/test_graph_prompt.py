@@ -18,7 +18,7 @@ from phase1_agent.workbench_resources import WorkbenchResourceStore
 from test_graph_agent_runtime import Harness, final
 from test_graph_agent_service import graph, harness
 from test_graph_service import create, document, edge, node, run
-from test_workbench_resources import resource
+from resource_fixtures import resource
 
 
 LIMITS = {"max_messages": 4096, "max_total_chars": 4_000_000}
@@ -140,7 +140,9 @@ def test_dispatch_rebuild_rejects_changed_materials_with_unchanged_ready_evidenc
 
 
 def test_global_update_changes_next_run_without_changing_saved_workflow_or_past_results(tmp_path):
-    with closing(GraphWorkflowService(tmp_path / "global.sqlite")) as service:
+    with closing(GraphWorkflowService(
+        tmp_path / "global.sqlite", enabled_packages={"workflow.compat": "1.0.0"},
+    )) as service:
         first_resource = resource("first global")
         with closing(service._store()) as store:
             WorkbenchResourceStore(store).write("content", first_resource, expected_revision=0, idempotency_key=str(uuid4()))

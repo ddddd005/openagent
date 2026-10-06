@@ -73,7 +73,6 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
     def __init__(self, database_path: str | Path, *, registry=None, fault_injector=None, model_factory=None,
                  capability_packages=(), enabled_packages=None, trusted_package_entrypoints=(),
                  public_model_factory=None):
-        from .graph_nodes import create_default_registry
         self.database = Path(database_path).resolve()
         self.database.parent.mkdir(parents=True, exist_ok=True)
         self._lease = _GraphLease(self.database)
@@ -83,16 +82,14 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
         self._package_manifests = ()
         self._package_diagnostics = []
         if registry is None:
-            from .capability_packages import (CapabilityPackageLoader, create_compatibility_package,
-                                             discover_trusted_packages)
+            from .capability_packages import CapabilityPackageLoader, discover_trusted_packages
             from .contract_json import loads_strict, canonical_bytes
             from .builtin_packages import DEFAULT_PACKAGES, builtin_capability_packages
             try:
                 explicit_packages = [*capability_packages, *discover_trusted_packages(trusted_package_entrypoints)]
                 explicit_identities = {(package.manifest.package_id, package.manifest.version)
                                        for package in explicit_packages}
-                packages = [create_compatibility_package(create_default_registry()),
-                            *(package for package in builtin_capability_packages(runtime_fact_reader=self._read_runtime_fact_page)
+                packages = [*(package for package in builtin_capability_packages(runtime_fact_reader=self._read_runtime_fact_page)
                               if (package.manifest.package_id, package.manifest.version) not in explicit_identities),
                             *explicit_packages]
                 self._package_loader = CapabilityPackageLoader(packages)
@@ -100,17 +97,18 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                     saved = store._connection.execute(
                         "SELECT payload FROM graph_project_packages WHERE configuration_id='project'",
                     ).fetchone()
-                    selected = ({"workflow.compat": "1.0.0", **enabled_packages}
+                    selected = (deepcopy(enabled_packages)
                                 if enabled_packages is not None else
                                 loads_strict(saved["payload"]) if saved else deepcopy(DEFAULT_PACKAGES))
                     try:
                         loaded = self._package_loader.load(selected)
                     except Exception as exc:
-                        if enabled_packages is not None or getattr(exc, "reason_code", None) != "package_missing_dependency":
+                        if enabled_packages is not None or saved is None \
+                                or getattr(exc, "reason_code", None) != "package_missing_dependency":
                             raise
                         self._package_diagnostics = [{"reason_code": "package_missing_dependency",
-                                                      "message": str(exc), "enabled_packages": selected}]
-                        loaded = self._package_loader.load({"workflow.compat": "1.0.0"})
+                                                      "message": str(exc), "enabled_packages": deepcopy(selected)}]
+                        loaded = self._package_loader.load({})
                     self.registry, self._frontend_extensions = loaded.registry.detached(), loaded.frontend_extensions
                     self._package_manifests = loaded.package_manifests
                     from .type_contract_store import TypeContractStore
@@ -164,9 +162,15 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
         return SqliteStore(self.database, fault_injector=self._fault_injector)
 
     def _change(self, operation, key, request, callback):
+        def change(repo):
+            require(not self._package_diagnostics or operation == "graph.run.recover",
+                    "package_missing_dependency",
+                    "Restore the saved project packages before changing or executing workflows", 409)
+            return callback(repo)
+
         with self._lock, closing(self._store()) as store:
             require(not self._closed, "service_closed", "Graph service is closed", 409)
-            return GraphRecordStore(store).atomic(operation, key, request, callback)
+            return GraphRecordStore(store).atomic(operation, key, request, change)
 
     def node_types(self, *, protocol_version=1):
         catalog = self.registry.catalog()
@@ -415,7 +419,8 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
         return {**session, "data_revision": data["revision"], "head_revision": head["revision"],
             "head_commit_id": head["head_commit_id"], "status": status,
             "selected_chain_run_id": selected["chain_run_id"] if selected else None,
-            "can_submit": active is None, "available_actions": actions,
+            "can_submit": active is None and not self._package_diagnostics,
+            "available_actions": [] if self._package_diagnostics else actions,
             "nodes": nodes, "chains": chains, "outputs": outputs,
             "data": data, "private_states": self._private(repo, sid), "messages": [],
             "objects": self._objects(repo).current(sid),
@@ -1141,6 +1146,8 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                 with closing(self._store()) as store:
                     replay = store.read_receipt_with_digest("graph.run.control", idempotency_key)
                     if replay is None:
+                        require(not self._package_diagnostics, "package_missing_dependency",
+                                "Restore the saved project packages before retrying workflows", 409)
                         repo = GraphRecordStore(store)
                         session = repo.get("workflow_session", workflow_session_id=sid)
                         require(session["revision"] == _revision(expected_revision),

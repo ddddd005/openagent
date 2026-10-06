@@ -23,7 +23,8 @@ import ErrorToast from "./components/ErrorToast.vue";
 import ExposureDialog from "./components/ExposureDialog.vue";
 import WorkbenchSessions from "./components/WorkbenchSessions.vue";
 import WorkbenchHistory from "./components/WorkbenchHistory.vue";
-import ProviderPanel from "./components/ProviderPanel.vue";
+import ProviderSidebar from "./components/ProviderSidebar.vue";
+import ContentSidebar from "./components/ContentSidebar.vue";
 import ContentLibrary from "./components/ContentLibrary.vue";
 import NodeObservationDialog from "./components/NodeObservationDialog.vue";
 import { legacyUiUrl, graphChatInterfaceUrl, workbenchUserInterfaceUrl } from "./adapters/legacyUi";
@@ -53,6 +54,8 @@ const initialPreparationNodeId = ref<string | null>(null);
 const exposureStage = ref<PreparationStage | null>(null);
 const observationStage = ref<"A" | "B" | "Output" | null>(null);
 const workspaceView = ref<"canvas" | "history">("canvas");
+const legacyContentEditor = computed(() => workspace.sidebarSection === "content"
+  && !graph.isGeneric(workspace.activeWorkflowId));
 const dirty = computed(
   () => workspace.activeWorkflow.state === "draft",
 );
@@ -66,14 +69,26 @@ function nodeCount(workflowId: string) {
     + (preparation.isUnified(workflowId) ? 0 : preparation.getDraft(workflowId, "B").nodes.length)
     + (models.drafts.find(draft => draft.workflowId === workflowId)?.nodes.length ?? 0);
 }
-const userInterfaceUrl = computed(() => graph.isGeneric(workspace.activeWorkflowId) && graph.document ? graphChatInterfaceUrl(
-  legacyUiUrl, graph.document.workflow_definition_id, graph.active?.session_id ?? null,
-) : workbenchUserInterfaceUrl(
-  legacyUiUrl, runtime.sessionId, runtime.currentPromptSelection, runtime.currentModelSelection,
-  exposures.referenceFor(workspace.activeWorkflowId),
-));
-const chatInterfaceReady = computed(() => !graph.isGeneric(workspace.activeWorkflowId)
-  || Number(graph.active?.saved_revision) > 0 && !graph.active?.pending);
+const userInterfaceUrl = computed(() => {
+  if (graph.isGeneric(workspace.activeWorkflowId)) return graph.document ? graphChatInterfaceUrl(
+    legacyUiUrl, graph.document.workflow_definition_id, graph.active?.session_id ?? null,
+  ) : null;
+  const binding = runtime.runtimes[workspace.activeWorkflowId];
+  return binding ? workbenchUserInterfaceUrl(
+    legacyUiUrl, binding.sessionId, binding.promptSelection ?? null, binding.modelSelection ?? null,
+    exposures.referenceFor(workspace.activeWorkflowId),
+  ) : null;
+});
+const chatInterfaceReady = computed(() => userInterfaceUrl.value !== null
+  && (!graph.isGeneric(workspace.activeWorkflowId)
+    || Number(graph.active?.saved_revision) > 0 && !graph.active?.pending));
+const chatInterfaceTitle = computed(() => {
+  if (chatInterfaceReady.value) return "聊天前端";
+  if (!graph.isGeneric(workspace.activeWorkflowId)) return runtime.runtimes[workspace.activeWorkflowId]?.sessionId
+    ? "聊天入口地址或会话身份不可用" : "选择已有会话后打开聊天前端";
+  if (!userInterfaceUrl.value) return "聊天入口地址或工作流身份不可用";
+  return graph.active?.pending ? "核实原请求后打开聊天前端" : "保存工作流后打开聊天前端";
+});
 function openPreparation(stage: PreparationStage) {
   workspaceView.value = "canvas";
   initialPreparationNodeId.value = null;
@@ -93,7 +108,6 @@ function changeWorkspaceView(view: "canvas" | "history") {
 watch(
   () => workspace.activeWorkflowId,
   (workflowId) => {
-    graph.ensureEmpty(workflowId);
     if (graph.isGeneric(workflowId)) void graph.activate(workflowId);
     else void runtime.activateWorkflow(workflowId);
   },
@@ -213,12 +227,12 @@ watch(() => exposures.error, (failure) => {
         <GraphSessions v-if="graph.isGeneric(workspace.activeWorkflowId)" />
         <WorkbenchSessions v-else />
       </section>
-      <ProviderPanel v-if="workspace.sidebarSection === 'providers'" />
-      <ContentLibrary v-if="workspace.sidebarSection === 'content'" view="sidebar" />
+      <ProviderSidebar v-if="workspace.sidebarSection === 'providers'" />
+      <ContentSidebar v-if="workspace.sidebarSection === 'content'" />
     </aside>
 
     <main class="workbench-main" aria-label="工作流工作台">
-      <header v-if="workspace.sidebarSection !== 'content'" class="workbench-topbar">
+      <header v-if="!legacyContentEditor" class="workbench-topbar">
         <div class="workbench-current-workflow">
           <Workflow :size="15" aria-hidden="true" />
           <h2>{{ workspace.activeWorkflow.title }}</h2>
@@ -282,7 +296,7 @@ watch(() => exposures.error, (failure) => {
       </div>
 
       <div class="workbench-canvas-region">
-        <ContentLibrary v-if="workspace.sidebarSection === 'content'" view="editor" />
+        <ContentLibrary v-if="legacyContentEditor" view="editor" />
         <GraphHistory v-else-if="workspaceView === 'history' && graph.isGeneric(workspace.activeWorkflowId)" />
         <WorkbenchHistory v-else-if="workspaceView === 'history'" />
         <GraphWorkbench v-else-if="graph.isGeneric(workspace.activeWorkflowId)" />
@@ -309,11 +323,11 @@ watch(() => exposures.error, (failure) => {
     <nav class="workbench-interface-rail" aria-label="工作区切换">
       <a
         class="workbench-tool-button"
-        :href="chatInterfaceReady ? userInterfaceUrl : undefined"
+        :href="chatInterfaceReady ? userInterfaceUrl ?? undefined : undefined"
         :aria-disabled="!chatInterfaceReady"
         target="_blank"
         rel="noopener noreferrer"
-        :title="chatInterfaceReady ? '聊天前端' : '保存工作流后打开聊天前端'"
+        :title="chatInterfaceTitle"
         aria-label="打开聊天前端"
       >
         <AppWindow :size="18" />

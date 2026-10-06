@@ -5,6 +5,7 @@ import { createPinia } from "pinia";
 import { createWorkbenchFrontendHost, type WorkbenchFrontendPackageModule } from "./workflowFrontendPackage";
 import { workbenchFrontendHostKey } from "./workbenchFrontendHost";
 import { workflowFrontendExtensions } from "../plugins/workflowFrontendManifest";
+import { promptFrontendExtensions } from "../plugins/promptFrontendManifest";
 import { graphClone } from "../domain/workflowGraph";
 import GraphNodeConfiguration from "../components/GraphNodeConfiguration.vue";
 import GraphSessionData from "../components/GraphSessionData.vue";
@@ -39,6 +40,24 @@ function fakePackage() {
 }
 
 describe("local package composition lifecycle", () => {
+  it("loads prompt management and exact reference fields from the default trusted modules without compatibility", () => {
+    const declarations = ref(graphClone(promptFrontendExtensions));
+    const packages = ref([{ package_id: "workflow.prompts", version: "1.0.0" }]);
+    const host = createWorkbenchFrontendHost(() => declarations.value, () => packages.value);
+    expect(host.issues.value).toEqual([]);
+    expect(host.extensions.value.map(row => row.declaration)).toEqual(promptFrontendExtensions);
+    expect(host.extensions.value.find(row => row.declaration.binding.slot === "node-fields")!
+      .configurationFields).toEqual(["reference"]);
+    packages.value = [];
+    expect(host.extensions.value).toEqual([]);
+    packages.value = [{ package_id: "workflow.prompts", version: "2.0.0" }];
+    expect(host.extensions.value).toEqual([]);
+    packages.value = [{ package_id: "workflow.prompts", version: "1.0.0" }];
+    declarations.value[1]!.binding.target.component_version = "2";
+    expect(host.extensions.value.map(row => row.declaration.binding.slot)).toEqual(["panel"]);
+    expect(host.issues.value).not.toEqual([]);
+  });
+
   it("mounts only exact local workbench components and unloads them synchronously", () => {
     const declarations = ref(workflowFrontendExtensions);
     const packages = ref([{ package_id: "workflow.frontend", version: "1.0.0" }]);
