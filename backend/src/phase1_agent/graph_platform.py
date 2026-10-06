@@ -84,15 +84,12 @@ class GraphPlatform:
             require(not active, "package_change_during_execution",
                     "Settle active executions before changing project packages", 409)
             loaded = self._package_loader.load(enabled_packages)
-            from .contract_json import canonical_bytes
+            from .graph_package_selection import GraphPackageSelectionStore
             from .type_contract_store import TypeContractStore
             try:
                 store._connection.execute("BEGIN IMMEDIATE")
                 TypeContractStore(store).check_registry(loaded.registry.data_types)
-                store._connection.execute(
-                    "INSERT INTO graph_project_packages VALUES('project',?) "
-                    "ON CONFLICT(configuration_id) DO UPDATE SET payload=excluded.payload",
-                    (canonical_bytes(enabled_packages).decode("utf-8"),))
+                GraphPackageSelectionStore(store).write_current(enabled_packages)
                 store._connection.execute("COMMIT")
             except BaseException:
                 if store._connection.in_transaction:

@@ -160,10 +160,16 @@ describe("workbench package integration matrix", () => {
     expect(restoredExposures.referenceFor(workflowId)?.revision).toBe(1);
     await restored.activateWorkflow(workflowId);
     expect(restored.unknown).toEqual(original);
+    const beforeReconcile = server.fetcher.mock.calls.length;
+    const originalRaw = storage.getItem();
     await restored.replayUnknown();
-    expect(restored.unknown).toBeNull();
+    expect(restored.unknown).toEqual(original);
+    expect(server.fetcher).toHaveBeenCalledTimes(beforeReconcile);
+    expect(storage.getItem()).toBe(originalRaw);
     expect(server.requests.size).toBe(3);
+    await restored.refresh();
     expect(restored.nodeObservation("A")?.result).toMatchObject({ text: "round 3" });
+    expect(restored.unknown).toEqual(original);
     const graph = JSON.stringify(useModelConfigurationStore().drafts);
     await restored.restoreSession(OTHER);
     await restoredExposures.observePublished(workflowId, restored.session!);

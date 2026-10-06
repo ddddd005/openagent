@@ -27,7 +27,7 @@ function fixture(provider: CurrentProvider | null = newProvider()) {
     executable: true, is_output: false, input_storage: "references", capabilities: ["models:resolve", "resources:read"],
     config_schema: { type: "object", required: ["reference", "parameters"], additionalProperties: false,
       properties: { reference: { type: "object" }, parameters: { type: "object" } } } };
-  const resources = createProviderResources({ list: async () => [], save: async () => ({}),
+  const resources = createProviderResources({ list: async () => [], save: async () => ({}), readReceipt: vi.fn(),
     readPending: () => null, writePending: () => {} });
   resources.records.value = provider ? [provider] : [];
   const sdk: WorkflowFrontendSdk = {

@@ -31,6 +31,8 @@ export const useExposuresStore = defineStore("workbench-exposures", () => {
     })));
   }
   function restoreWorkflowRegistrations(workflowId: string, values: ExposureRegistration[]) {
+    mutationGeneration++;
+    busy.value = false;
     registrations.value = [...registrations.value.filter(row => row.workflowId !== workflowId),
       ...clonePreparation(values).map(row => ({ ...row, workflowId }))];
     clearObservations();
@@ -40,9 +42,10 @@ export const useExposuresStore = defineStore("workbench-exposures", () => {
     publications.value = publications.value.filter(row => row.workflowId !== workflowId);
   }
   let observationGeneration = 0;
+  let mutationGeneration = 0;
   let alive = true;
   const controller = new AbortController();
-  onScopeDispose(() => { alive = false; observationGeneration++; controller.abort(); });
+  onScopeDispose(() => { alive = false; observationGeneration++; mutationGeneration++; controller.abort(); });
   const rowsFor = (id: string) => registrations.value.filter((row) => row.workflowId === id);
   function referenceFor(id: string) {
     const publication = publications.value.find((row) => row.workflowId === id);
@@ -98,39 +101,58 @@ export const useExposuresStore = defineStore("workbench-exposures", () => {
     );
   }
   function restoreRegistrations(values: ExposureRegistration[]) {
+    mutationGeneration++;
+    busy.value = false;
     registrations.value = structuredClone(values);
     clearObservations();
   }
   function setPersistenceGuard(value: (() => boolean) | null) { guard = value; }
   async function dispatch(command: ExposureMutation) {
     if (!isExposureMutation(command)) throw new WorkbenchApiError("unavailable", "注册声明字段无效或超过容量");
+    const generation = mutationGeneration;
+    const fingerprint = JSON.stringify(command);
+    const current = () => alive && generation === mutationGeneration && JSON.stringify(pending.value) === fingerprint;
     pending.value = clonePreparation(command);
     clearObservations();
-    if (!guard || !guard()) {
-      pending.value = null;
+    try {
+      if (!guard || !guard()) throw new Error("persistence_failed");
+    } catch {
+      if (current()) pending.value = null;
       throw new WorkbenchApiError("unavailable", "原注册请求无法保存，未提交");
+    }
+    if (!current()) return;
+    function clearPending() {
+      pending.value = null;
+      try {
+        if (!guard!()) throw new Error("persistence_failed");
+      } catch {
+        if (alive && generation === mutationGeneration && pending.value === null)
+          pending.value = clonePreparation(command);
+        throw new WorkbenchApiError("unknown", "原注册请求的本机结算保存失败，保留请求等待核实");
+      }
+      return alive && generation === mutationGeneration && pending.value === null;
     }
     let record: ExposureConfiguration;
     try {
       const response = await workbenchRequest<unknown>("/api/exposure-configurations", {
         body: command, signal: controller.signal,
       });
+      if (!current()) return;
       if (!isExposureConfiguration(response)
         || exposureSignature(response) !== exposureSignature(command.record))
         throw new WorkbenchApiError("unknown", "注册回执不匹配，保留原请求等待核实");
       record = response;
     } catch (failure) {
-      if (failure instanceof WorkbenchApiError && failure.kind === "rejected") {
-        pending.value = null;
-        guard();
-      }
+      if (!current()) return;
+      if (failure instanceof WorkbenchApiError && failure.kind === "rejected" && failure.code === "idempotency_conflict")
+        throw new WorkbenchApiError("unknown", "原注册请求身份冲突，无法证明未发生，保留原请求等待核实", failure.status, failure.code);
+      if (failure instanceof WorkbenchApiError && failure.kind === "rejected" && !clearPending()) return;
       throw failure;
     }
     publications.value = [...publications.value.filter(row => row.workflowId !== record.workflow_id),
       { workflowId: record.workflow_id, config_id: record.config_id,
       revision: record.revision, signature: exposureSignature(record.registrations) }];
-    pending.value = null;
-    if (!guard()) throw new WorkbenchApiError("unavailable", "后端已保存注册声明，本机回执保存失败");
+    if (!clearPending()) return;
     return record;
   }
   function issue(failure: unknown) {
@@ -141,25 +163,22 @@ export const useExposuresStore = defineStore("workbench-exposures", () => {
     if (locked.value) return false;
     busy.value = true;
     error.value = null;
+    const generation = mutationGeneration;
     const previous = publications.value.find((row) => row.workflowId === id);
     try {
-      await dispatch({
+      const result = await dispatch({
         record: { schema_version: 1, kind: "workflow_exposure_configuration",
           config_id: previous?.config_id ?? crypto.randomUUID(), workflow_id: id,
           revision: (previous?.revision ?? 0) + 1, registrations: clonePreparation(rowsFor(id)) },
         expected_revision: previous?.revision ?? 0, idempotency_key: crypto.randomUUID(),
       });
-      return true;
-    } catch (failure) { issue(failure); return false; }
-    finally { busy.value = false; }
+      return result !== undefined;
+    } catch (failure) { if (alive && generation === mutationGeneration) issue(failure); return false; }
+    finally { if (alive && generation === mutationGeneration) busy.value = false; }
   }
   async function reconcile() {
     if (!pending.value || busy.value) return;
-    busy.value = true;
-    error.value = null;
-    try { await dispatch(clonePreparation(pending.value)); }
-    catch (failure) { issue(failure); }
-    finally { busy.value = false; }
+    issue(new WorkbenchApiError("unknown", "旧注册请求缺少可核实的原应用身份，保留原请求且不重新提交"));
   }
   async function observePublished(id: string, view: PublicSession) {
     const reference = referenceFor(id);
@@ -184,6 +203,8 @@ export const useExposuresStore = defineStore("workbench-exposures", () => {
   }
   function restoreConfiguration(value: unknown) {
     if (!isExposureSnapshot(value)) return false;
+    mutationGeneration++;
+    busy.value = false;
     publications.value = clonePreparation(value.publications);
     pending.value = clonePreparation(value.pending);
     clearObservations();

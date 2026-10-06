@@ -2,7 +2,11 @@
 
 承接 [固定基线](BASELINE-2026-10-06.md)、[1.0 规划](PLAN-1.0.md)及 [历史校验与原型退役](REPLACE-HISTORY-RETIREMENT.md)。本轮按用户同意的合并方式，以三个并发子代理分别审计后端、前端、存储与测试，主代理交叉核对后合并旧节点、旧入口、旧数据的去向。
 
-代码依据仍是 `00970f75fb52d741b694499a05f702600529fcdd` 之上的未提交工作区，而不是已发布的新版本。本页是下一步实施的支持范围与约束，**没有在本轮实现冻结、替换正式客户端或删除旧宿主**；首轮记录和固定基线不倒改。
+盘点时的代码依据是 `00970f75fb52d741b694499a05f702600529fcdd` 之上的未提交工作区，而不是已发布的新版本。本页是下一步实施的支持范围与约束，**盘点本轮没有实现冻结、替换正式客户端或删除旧宿主**；首轮记录和固定基线不倒改。下述实现状态、缺口事实及本轮验证均对应盘点快照，后续实现另记。
+
+执行续记：上述工作区已提交为 `237afb5`，尚未推送；其上的阶段 B 首片已迁出公共资源纯契约、current 资源 preflight/frame 及普通请求门禁，见 [公共资源与请求门禁解耦](REPLACE-RESOURCE-BOUNDARY.md)。本片有当前 Agent 新进程多轮/分叉/重开证据，但旧宿主类、混合库配置、完整纯档案/回执及正式旧入口退出仍待完成。以下原盘点结论保留，不将后续局部实现写成当时已验证。
+
+配置准备续记：后续已分开 `current-execution` 与历史 `project` 原文，并准备纯依赖解析/记录分类，见 [执行配置与分类准备](REPLACE-EXECUTION-SELECTION.md)。这未启用冻结/写守卫、恢复跳过或同库活动隔离，原全部 active 检查与全局缺包阻断保留；必须与档案/receipt-only 和客户端 pending 保护一起继续。下表的盘点时事实不倒改。
 
 状态：联合事项 1–3 的范围裁决及第 4 项核心覆盖盘点已完成，阶段 A 的盘点与范围裁决收口。REPLACE-01 处置矩阵完成；REPLACE-02 的实际独立路径闭环及阶段 B/C 仍待实施与验证。阶段 A 完成不等于正式旧入口已退役或 1.0 已完成。执行状态以 [BACKLOG](BACKLOG.md)为准。
 
@@ -115,6 +119,8 @@ registry 的 TEXT/PROMPT/JSON/MODEL_RESOURCE schema1 四个基底传输类型被
 
 ### 回执核实边界
 
+以下风险描述对应阶段 A 盘点时的实现；当前应用后续已推进限定保护，见第 9 节及 [回执边界记录](REPLACE-RECEIPT-BOUNDARY.md)。正式旧客户端尚未被该切片替换。
+
 新增查询仅核对既存回执的 operation、scope/target、key、原请求指纹与结果身份，不执行 mutation callback，不加载旧 host。以原请求中的 CAS 字段核对指纹，不重新套用当前 Head/revision；已验证的历史回执不因当前状态前进而失效，也不能用旧结果覆盖当前视图。表中的 CAS 冲突是核实或本机回执保存失败，无可信原回执时保留 unresolved。旧存储中的 content digest 不冒充完整 request digest；证据不足就保留 unknown。无幂等键的旧创建会话不能凭列表近似匹配销项。
 
 当前旧 runtime 和 graph 的 replay/reconcile 实际会重新 POST；[dispatchGraphCommand](../frontend/src/application/workflowCommands.ts)及旧 mutate 在部分 rejected 分支会清 pending，[workbenchApi](../frontend/src/adapters/workbenchApi.ts)将 404/410 分类为 rejected。这不是退役后的安全核实接口。先落实 receipt-only 与冻结 UI，再关闭旧路由。
@@ -127,9 +133,9 @@ registry 的 TEXT/PROMPT/JSON/MODEL_RESOURCE schema1 四个基底传输类型被
 
 现有 [import_legacy_current](../backend/src/phase1_agent/global_resources.py)只显式导入一个旧 content 当前 head，写到 `workflow.global-content`，不会生成 `workflow.prompt-resource`。因此本期不把它保留为独立提示词迁移入口；新 `resource.import` 写入退出，已导入资源与回执保留。这不删除通用 current resource 管理，也不开发 COND-03 通用转换。
 
-## 5. 必须先解决的架构依赖
+## 5. 盘点时的架构依赖
 
-| 缺口 | 当前事实 | 必要实施边界 |
+| 缺口 | 盘点时事实 | 必要实施边界 |
 | --- | --- | --- |
 | 混合库的执行包选择 | graph_project_packages 只有 `project` 单例；缺已存包全局阻止 graph mutation；任意 graph session 活动链阻止 configure | 保留历史精确选择/锁证据，另立当前执行配置边界及显式切换；冻结旧活动链不能阻塞同库新图，不清 active、不覆盖旧选择，也不增加通用多项目能力 |
 | 新运行仍必经旧 host | graph_service start 调 GraphAgentHost._preflight_capabilities，后者无条件导入旧 Agent runtime/WorkbenchResourceStore；current 资源 host_call 仍借旧 mixin | 拆公共 current 资源声明、依赖预检、身份继承及 frozen frame；保留运行前拒绝和资源授权，不只改为懒导入 |
@@ -188,3 +194,13 @@ registry 的 TEXT/PROMPT/JSON/MODEL_RESOURCE schema1 四个基底传输类型被
 - `git diff --check` 通过，既有换行格式提示保留；不以文档检查冒充架构实现验收。
 
 DEMO-05/06、COND、LATER 继续在 1.0 后按需安排；节点打组、历史展示正文编辑/删除继续暂停。
+
+## 9. 阶段 B 后续实施
+
+公共资源与普通请求门禁已解耦，当前/历史执行配置已分流，纯图分类尚未接线；这些结果分别归 [资源边界](REPLACE-RESOURCE-BOUNDARY.md)和 [执行选择](REPLACE-EXECUTION-SELECTION.md)，不修改第 8 节的阶段 A 审计操作及原验证事实。
+
+随后 [回执边界与原请求保护](REPLACE-RECEIPT-BOUNDARY.md)已提供当前图应用的纯查询，并把普通图、独立 Provider/Prompt、静态 GraphChat 的核实切为只读。原请求身份通过现有事务附加，管理与消费不互相冒充；缺原身份的旧请求保留 unresolved，原 replay 不补写。HTTP 路由不初始化新旧协调器，consumer 只取得原公开回执，不投影当前会话。
+
+仍须落实整份冻结写守卫、恢复跳过与同进程活动保护、完整纯档案、浏览器 schema1–6/旧静态键 passthrough，并退役正式旧 UI/store/host/runtime/路由。当前 fixed-workflow、model/exposure 等旧 stores 和静态 `app.js` 的核实风险未在本片修复；不得以新应用回执查询代替旧请求身份取证或宣布阶段 B、1.0 完成。
+
+后续 [旧客户端保全切片](REPLACE-LEGACY-PENDING.md)停止旧 runtime/资源核实与缺坐标副本恢复重 POST，补 pending/迟到/本机保存和静态原文/首次回执保护；静态控制仅本页面，旧保存 passthrough 及正式只读替换仍未完成。阶段目标再次明确为删除旧专用运行/写入路由、正式 UI/store 和旧 host/runtime/适配及专属测试，不以增加这些保护作为长期保留双架构的依据；第 8 节原盘点事实与前片验证不回写。

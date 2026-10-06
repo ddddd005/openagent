@@ -401,6 +401,13 @@ export const useWorkbenchRuntimeStore = defineStore("workbench-runtime", () => {
     if (persistenceGuard && !persistenceGuard())
       throw new WorkbenchApiError("unavailable", "原请求无法保存到本地，操作未提交");
   }
+  function persistSettlement() {
+    try {
+      if (persistenceGuard && !persistenceGuard()) throw new Error("save");
+    } catch {
+      throw new WorkbenchApiError("unknown", "原请求结果无法保存到本地，保留原请求等待核实");
+    }
+  }
   function validateHistoryReceipt(receipt: Record<string, unknown>, command: PendingMutation, sid: string | null) {
     const fail = () => { throw new WorkbenchApiError("unknown", "历史操作回执无效，保留原请求等待核实"); };
     if (command.action === "candidate-select" && (
@@ -429,17 +436,26 @@ export const useWorkbenchRuntimeStore = defineStore("workbench-runtime", () => {
   ): Promise<Record<string, unknown>> {
     assertScope(id, generation);
     const target = runtimeFor(id);
+    if (target.pending) throw new WorkbenchApiError("unknown", "原请求尚待核实，禁止重发或覆盖");
     if (!validPending(command, target.sessionId))
       throw new WorkbenchApiError("unavailable", "请求字段不兼容或超过本地接口 64KB 容量，操作未提交");
-    target.pending = command;
+    command = clonePreparation(command);
+    const sid = target.sessionId;
+    const identity = stable(command);
+    const stateFence = () => fence(id, generation) && runtimes.value[id] === target;
+    const ownsPending = () => stateFence() && target.sessionId === sid
+      && target.pending !== null && stable(target.pending) === identity;
+    target.pending = clonePreparation(command);
     try { persistBeforeDispatch(); } catch (failure) {
-      target.pending = null;
+      if (ownsPending()) target.pending = null;
       throw failure;
     }
+    if (!ownsPending()) throw new WorkbenchApiError("unknown", "原请求或恢复代际已变化，操作未提交");
     try {
       const receipt = await workbenchRequest<Record<string, unknown>>(command.path, {
         body: command.body, signal: controller.signal,
       });
+      if (!ownsPending()) throw new WorkbenchApiError("unknown", "迟到回执未应用，原请求仍待核实");
       const validUuid = sessionUuid;
       const record = command.body.record as Record<string, unknown> | undefined;
       const head = receipt?.head as Record<string, unknown> | undefined;
@@ -478,8 +494,14 @@ export const useWorkbenchRuntimeStore = defineStore("workbench-runtime", () => {
         }
         catch { throw new WorkbenchApiError("unknown", "变量写入回执无法确认，保留原请求等待核实"); }
       }
+      const previous = {
+        sessionId: target.sessionId, promptSelection: target.promptSelection,
+        modelSelection: target.modelSelection, requiresRefresh: target.requiresRefresh,
+      };
+      const previousStates = sessionRuntimes.value;
+      const settledStates = { ...previousStates };
       if (command.action === "create-session") {
-        delete sessionRuntimes.value[stateKey(id, null)];
+        delete settledStates[stateKey(id, null)];
         target.sessionId = receipt.workflow_session_id as string;
       }
       if (command.action === "start" && isExactPromptSelection(command.body.prompt_selection))
@@ -487,10 +509,21 @@ export const useWorkbenchRuntimeStore = defineStore("workbench-runtime", () => {
       if (command.action === "start")
         target.modelSelection = isExactModelSelection(command.body.model_selection)
           ? clonePreparation(command.body.model_selection) : null;
-      sessionRuntimes.value[stateKey(id, target.sessionId)] = target;
+      settledStates[stateKey(id, target.sessionId)] = target;
+      sessionRuntimes.value = settledStates;
+      const savedStates = sessionRuntimes.value;
+      const settledSid = target.sessionId;
       if (command.action !== "save-config") target.requiresRefresh = true;
       target.pending = null;
-      assertScope(id, generation);
+      try { persistSettlement(); } catch (failure) {
+        if (stateFence() && target.sessionId === settledSid && target.pending === null) {
+          Object.assign(target, previous, { pending: clonePreparation(command) });
+          if (sessionRuntimes.value === savedStates) sessionRuntimes.value = previousStates;
+        }
+        throw failure;
+      }
+      if (!stateFence() || target.sessionId !== settledSid || target.pending !== null)
+        throw new WorkbenchApiError("unknown", "保存期间原请求或恢复代际已变化，迟到结果未继续应用");
       if (command.action.startsWith("copy-workflow:"))
         copyHandler?.(id, command.action.slice(14), receipt.workflow_session_id as string);
       return receipt;
@@ -498,7 +531,18 @@ export const useWorkbenchRuntimeStore = defineStore("workbench-runtime", () => {
       const issue = failure instanceof WorkbenchApiError
         ? failure : new WorkbenchApiError("unknown", "提交结果待核实");
       issue.requestId = command.requestId;
-      if (issue.kind !== "unknown") target.pending = null;
+      if (issue.code === "idempotency_conflict") issue.kind = "unknown";
+      if (issue.kind !== "unknown" && ownsPending()) {
+        target.pending = null;
+        try { persistSettlement(); } catch (storageFailure) {
+          if (stateFence() && target.sessionId === sid && target.pending === null)
+            target.pending = clonePreparation(command);
+          const storageIssue = storageFailure as WorkbenchApiError;
+          storageIssue.requestId = command.requestId;
+          if (fence(id, generation)) notify(storageIssue.kind, storageIssue.reason, command.requestId);
+          throw storageIssue;
+        }
+      }
       if (fence(id, generation)) notify(issue.kind, issue.reason, command.requestId);
       throw issue;
     }
@@ -577,7 +621,7 @@ export const useWorkbenchRuntimeStore = defineStore("workbench-runtime", () => {
         const operation = command("/api/active-session", {
           workflow_session_id: sid, expected_selection_revision: active.revision,
         }, "select-session");
-        await mutateSessionSelection(operation);
+        await mutateSessionSelection(operation, id, generation);
       }
       assertScope(id, generation);
       await observeSession(sid);
@@ -588,26 +632,51 @@ export const useWorkbenchRuntimeStore = defineStore("workbench-runtime", () => {
       }
     } finally { selectionBusy.value = false; }
   }
-  async function mutateSessionSelection(operation: PendingMutation) {
+  async function mutateSessionSelection(operation: PendingMutation, id: string, generation: number) {
+    assertScope(id, generation);
+    if (selectionPending.value) throw new WorkbenchApiError("unknown", "原会话选择尚待核实，禁止重发或覆盖");
     if (!validPending(operation, null, true))
       throw new WorkbenchApiError("unavailable", "会话选择请求无法恢复，操作未提交");
-    selectionPending.value = operation;
+    operation = clonePreparation(operation);
+    const identity = stable(operation);
+    const ownsPending = () => fence(id, generation) && selectionPending.value !== null
+      && stable(selectionPending.value) === identity;
+    selectionPending.value = clonePreparation(operation);
     try { persistBeforeDispatch(); } catch (failure) {
-      selectionPending.value = null;
+      if (ownsPending()) selectionPending.value = null;
       throw failure;
     }
+    if (!ownsPending()) throw new WorkbenchApiError("unknown", "原会话选择或恢复代际已变化，操作未提交");
     try {
       const result = decodeSessionSelection(await workbenchRequest<unknown>("/api/active-session", {
         body: operation.body, signal: controller.signal,
       }));
+      if (!ownsPending()) throw new WorkbenchApiError("unknown", "迟到会话选择回执未应用，原请求仍待核实");
       if (result.active_workflow_session_id !== operation.body.workflow_session_id
         || result.revision !== Number(operation.body.expected_selection_revision) + 1)
         throw new WorkbenchApiError("unknown", "会话选择回执未对应原请求");
       selectionPending.value = null;
+      try { persistSettlement(); } catch (failure) {
+        if (fence(id, generation) && selectionPending.value === null)
+          selectionPending.value = clonePreparation(operation);
+        throw failure;
+      }
+      if (!fence(id, generation) || selectionPending.value !== null)
+        throw new WorkbenchApiError("unknown", "保存期间会话选择或恢复代际已变化，迟到结果未继续应用");
     } catch (failure) {
       const issue = failure instanceof WorkbenchApiError ? failure : new WorkbenchApiError("unknown", "会话选择结果待核实");
       issue.requestId = operation.requestId;
-      if (issue.kind !== "unknown" && issue.kind !== "unavailable") selectionPending.value = null;
+      if (issue.code === "idempotency_conflict") issue.kind = "unknown";
+      if (issue.kind !== "unknown" && issue.kind !== "unavailable" && ownsPending()) {
+        selectionPending.value = null;
+        try { persistSettlement(); } catch (storageFailure) {
+          if (fence(id, generation) && selectionPending.value === null)
+            selectionPending.value = clonePreparation(operation);
+          const storageIssue = storageFailure as WorkbenchApiError;
+          storageIssue.requestId = operation.requestId;
+          throw storageIssue;
+        }
+      }
       if (issue.kind === "unavailable") {
         issue.kind = "unknown";
         issue.reason = "会话选择回执无法校验，保留原请求等待核实";
@@ -945,7 +1014,15 @@ export const useWorkbenchRuntimeStore = defineStore("workbench-runtime", () => {
       }, `copy-workflow:${targetId}`));
     } finally { target.busy = null; }
   }
+  function hasWorkflowPending(id: string) {
+    return !!runtimes.value[id]?.pending || Object.entries(sessionRuntimes.value)
+      .some(([key, state]) => JSON.parse(key)[0] === id && !!state.pending);
+  }
   function bindWorkflowSession(sourceId: string, targetId: string, sid: string | null) {
+    if (hasWorkflowPending(targetId)) {
+      notify("unknown", "目标工作流仍有待核实请求，原会话归属未覆盖");
+      return false;
+    }
     const source = runtimeFor(sourceId);
     const state: WorkflowRuntime = {
       sessionId: sid, view: null, busy: null, pending: null, requiresRefresh: !!sid,
@@ -953,8 +1030,13 @@ export const useWorkbenchRuntimeStore = defineStore("workbench-runtime", () => {
     };
     runtimes.value[targetId] = state;
     sessionRuntimes.value[stateKey(targetId, sid)] = state;
+    return true;
   }
   function removeWorkflow(id: string) {
+    if (hasWorkflowPending(id)) {
+      notify("unknown", "工作流仍有待核实请求，原记录未删除");
+      return false;
+    }
     delete runtimes.value[id];
     for (const key of Object.keys(sessionRuntimes.value))
       if (JSON.parse(key)[0] === id) delete sessionRuntimes.value[key];
@@ -963,6 +1045,7 @@ export const useWorkbenchRuntimeStore = defineStore("workbench-runtime", () => {
       refreshGeneration++;
       stopPoll();
     }
+    return true;
   }
 
   async function submitSecondary(action: string, requests = 1, attempts = 4) {
@@ -1018,31 +1101,10 @@ export const useWorkbenchRuntimeStore = defineStore("workbench-runtime", () => {
   }
 
   async function replayUnknown() {
-    const id = workflowId.value;
-    const generation = scopeGeneration;
-    const target = runtimeFor(id);
+    const target = runtimeFor(workflowId.value);
     const pending = target.pending ?? selectionPending.value;
     if (!pending || target.busy) return;
-    if (!pending.replayable) {
-      notify("unknown", "会话创建接口没有幂等回执查询，不能安全重发；需人工核实服务记录", pending.requestId);
-      return;
-    }
-    target.busy = "reconcile";
-    try {
-      await ensureServiceMode(id, generation);
-      if (pending.action === "select-session") {
-        await mutateSessionSelection(pending);
-        assertScope(id, generation);
-        await observeSession(pending.body.workflow_session_id as string);
-      } else await mutate(id, generation, pending);
-      if (fence(id, generation)) await refresh();
-    } catch (failure) {
-      if (fence(id, generation) && !target.pending) {
-        const issue = failure instanceof WorkbenchApiError ? failure : new WorkbenchApiError("unknown", "核实失败");
-        notify(issue.kind, issue.reason, pending.requestId);
-        await refresh();
-      }
-    } finally { target.busy = null; }
+    notify("unknown", "旧请求缺少可证明的应用回执归属，无法核实（unresolved）；未重发，原请求已保留", pending.requestId);
   }
 
   async function writeSessionVariable(

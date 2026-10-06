@@ -317,6 +317,8 @@ class GraphRuntimeHost:
                         and session["active_chain_run_id"] == context.chain_run_id,
                         "host_service_owner_mismatch", "Service call owner is no longer running", 409)
             return frame.call(context, capability, operation, payload)
+        if capability == "resources:read" and operation == "current-global-resource":
+            return self._read_current_resource(context, payload)
         if capability == "artifacts:read" and operation == "resolve-input":
             require(type(payload) is dict and set(payload) == {"port"}
                     and type(payload["port"]) is str, "runtime_input_unbound",

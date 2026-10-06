@@ -78,7 +78,8 @@ def event_service(tmp_path):
         pytest.fail("Event attempted to construct a model")
 
     with closing(GraphWorkflowService(tmp_path / "events.sqlite", capability_packages=(harness.package(),),
-        enabled_packages={"test.events": "1"}, model_factory=no_model, public_model_factory=no_model)) as service:
+        enabled_packages={"workflow.compat": "1.0.0", "test.events": "1"},
+        model_factory=no_model, public_model_factory=no_model)) as service:
         yield service, harness
         harness.release.set()
 

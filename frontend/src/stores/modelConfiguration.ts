@@ -32,6 +32,8 @@ export const useModelConfigurationStore = defineStore("model-configuration", () 
     if (draft) drafts.value.push({ ...cloneModel(draft), workflowId: target, configId: crypto.randomUUID(), backendRevision: 0 });
   }
   function restoreWorkflowDraft(workflowId: string, draft: ModelDraft | null) {
+    mutationGeneration++;
+    busy.value = false;
     drafts.value = drafts.value.filter(row => row.workflowId !== workflowId);
     if (draft) drafts.value.push({ ...cloneModel(draft), workflowId });
     selectedNodeId.value = null;
@@ -49,11 +51,12 @@ export const useModelConfigurationStore = defineStore("model-configuration", () 
     if (change.position) node.position = cloneModel(change.position) as typeof node.position;
   }
   let loadVersion = 0;
+  let mutationGeneration = 0;
   let alive = true;
   const controller = new AbortController();
   const locked = computed(() => busy.value || !!pending.value);
   watch(() => JSON.stringify(drafts.value), () => { diagnostics.value = []; }, { flush: "sync" });
-  onScopeDispose(() => { alive = false; controller.abort(); });
+  onScopeDispose(() => { alive = false; mutationGeneration++; controller.abort(); });
   function issue(failure: unknown) {
     error.value = failure instanceof WorkbenchApiError ? failure
       : new WorkbenchApiError("unavailable", "模型配置不可用");
@@ -142,43 +145,66 @@ export const useModelConfigurationStore = defineStore("model-configuration", () 
   function setPersistenceGuard(value: (() => boolean) | null) { guard = value; }
   async function dispatch(command: ConfigurationMutation) {
     if (!isConfigurationMutation(command)) throw new WorkbenchApiError("unavailable", "配置字段无效或超过 64KB，未提交");
+    const generation = mutationGeneration;
+    const fingerprint = JSON.stringify(command);
+    const draft = command.path.endsWith("/model")
+      ? drafts.value.find(row => row.configId === (command.body.record as ModelConfiguration).config_id) : undefined;
+    const draftFingerprint = JSON.stringify(draft);
+    const formFingerprint = JSON.stringify(providerForm.value);
+    const current = () => alive && generation === mutationGeneration && JSON.stringify(pending.value) === fingerprint;
     pending.value = cloneModel(command);
-    if (!guard || !guard()) {
-      pending.value = null;
+    try {
+      if (!guard || !guard()) throw new Error("persistence_failed");
+    } catch {
+      if (current()) pending.value = null;
       throw new WorkbenchApiError("unavailable", "原配置请求无法保存，未提交");
+    }
+    if (!current()) return;
+    function clearPending() {
+      pending.value = null;
+      try {
+        if (!guard!()) throw new Error("persistence_failed");
+      } catch {
+        if (alive && generation === mutationGeneration && pending.value === null)
+          pending.value = cloneModel(command);
+        throw new WorkbenchApiError("unknown", "原配置请求的本机结算保存失败，保留请求等待核实");
+      }
+      return alive && generation === mutationGeneration && pending.value === null;
     }
     let result: unknown;
     try {
       result = await workbenchRequest<unknown>(command.path, { body: command.body, signal: controller.signal });
+      if (!current()) return;
       if (!(command.path.endsWith("/provider") ? isChatProvider(result) : isModelConfiguration(result))
         || modelSignature(result as ChatProvider | ModelConfiguration) !== modelSignature(command.body.record))
         throw new WorkbenchApiError("unknown", "配置回执未对应原请求，保留请求等待核实");
     } catch (failure) {
-      if (failure instanceof WorkbenchApiError && failure.kind === "rejected") {
-        pending.value = null;
-        guard();
-      }
+      if (!current()) return;
+      if (failure instanceof WorkbenchApiError && failure.kind === "rejected" && failure.code === "idempotency_conflict")
+        throw new WorkbenchApiError("unknown", "原配置请求身份冲突，无法证明未发生，保留原请求等待核实", failure.status, failure.code);
+      if (failure instanceof WorkbenchApiError && failure.kind === "rejected" && !clearPending()) return;
       throw failure;
     }
     if (command.path.endsWith("/provider")) {
       const provider = result as ChatProvider;
       providers.value = [...providers.value.filter((row) => row.provider_id !== provider.provider_id), provider];
       diagnostics.value = [];
-      if (providerForm.value?.provider_id === provider.provider_id) providerForm.value = null;
+      if (providerForm.value?.provider_id === provider.provider_id
+        && JSON.stringify(providerForm.value) === formFingerprint) providerForm.value = null;
     } else {
       const record = result as ModelConfiguration;
-      const draft = drafts.value.find((row) => row.configId === record.config_id);
-      if (draft) draft.backendRevision = record.revision;
+      const existing = drafts.value.find((row) => row.configId === record.config_id);
+      if (existing && JSON.stringify(existing) === draftFingerprint) existing.backendRevision = record.revision;
       savedConfigurations.value[record.config_id] = cloneModel(record);
     }
-    pending.value = null;
-    if (!guard()) throw new WorkbenchApiError("unavailable", "后端已保存，但本机回执保存失败");
+    if (!clearPending()) return;
     return result;
   }
   async function saveProvider() {
     if (locked.value || !providerForm.value) return false;
     busy.value = true;
     error.value = null;
+    const generation = mutationGeneration;
     try {
       const record = cloneModel(providerForm.value);
       const expected = record.revision;
@@ -186,15 +212,16 @@ export const useModelConfigurationStore = defineStore("model-configuration", () 
       const fieldError = providerFieldDiagnostics(record)[0];
       if (fieldError) throw new WorkbenchApiError("unavailable", `${fieldError.message} [${fieldError.code}]`, undefined, fieldError.code);
       if (!isChatProvider(record)) throw new WorkbenchApiError("unavailable", "供应商名称、Chat 地址或凭据引用无效");
-      await dispatch({
+      const result = await dispatch({
         path: "/api/model-configurations/provider",
         body: { record, expected_revision: expected, idempotency_key: crypto.randomUUID() },
       });
-      return true;
-    } catch (failure) { issue(failure); return false; }
-    finally { busy.value = false; }
+      return result !== undefined;
+    } catch (failure) { if (alive && generation === mutationGeneration) issue(failure); return false; }
+    finally { if (alive && generation === mutationGeneration) busy.value = false; }
   }
   async function diagnose(record: ModelConfiguration) {
+    const generation = mutationGeneration;
     try {
       const value = await workbenchRequest<{
         config_id: string; revision: number; execution_supported: boolean; diagnostics: { target: string; code: string }[];
@@ -207,27 +234,34 @@ export const useModelConfigurationStore = defineStore("model-configuration", () 
         || new Set(value.diagnostics.map((row) => `${row.target}:${row.code}`)).size !== value.diagnostics.length)
         throw new WorkbenchApiError("unavailable", "模型诊断读取契约无效");
       const draft = drafts.value.find((row) => row.configId === record.config_id);
-      if (alive && draft?.backendRevision === record.revision
+      if (alive && generation === mutationGeneration && draft?.backendRevision === record.revision
         && modelSignature({ ...modelPublication(draft), revision: record.revision }) === modelSignature(record))
         diagnostics.value = value.diagnostics;
-    } catch (failure) { if (alive) issue(failure); }
+    } catch (failure) { if (alive && generation === mutationGeneration) issue(failure); }
   }
   async function publishModels(workflowId: string): Promise<ModelConfiguration> {
     const draft = getDraft(workflowId);
     if (locked.value || !draft) throw new WorkbenchApiError("unavailable", "模型配置原请求尚待核实或目标不可发布");
     busy.value = true;
     error.value = null;
+    const generation = mutationGeneration;
     try {
       const record = modelPublication(draft);
       const fieldError = record.nodes.flatMap((node) => modelParameterDiagnostics(node.parameters))[0];
       if (fieldError) throw new WorkbenchApiError("unavailable", `${fieldError.message} [${fieldError.code}]`, undefined, fieldError.code);
-      await dispatch({
+      const result = await dispatch({
         path: "/api/model-configurations/model",
         body: { record, expected_revision: draft.backendRevision, idempotency_key: crypto.randomUUID() },
       });
+      if (result === undefined)
+        throw new WorkbenchApiError("unknown", "原配置响应已隔离，保留当前请求", undefined, "request_superseded");
       return record;
-    } catch (failure) { issue(failure); throw failure; }
-    finally { busy.value = false; }
+    } catch (failure) {
+      if (alive && generation === mutationGeneration
+        && !(failure instanceof WorkbenchApiError && failure.code === "request_superseded")) issue(failure);
+      throw failure;
+    }
+    finally { if (alive && generation === mutationGeneration) busy.value = false; }
   }
   async function saveModels(workflowId: string) {
     try {
@@ -238,19 +272,17 @@ export const useModelConfigurationStore = defineStore("model-configuration", () 
   }
   async function reconcile() {
     if (!pending.value || busy.value) return;
-    busy.value = true;
-    error.value = null;
-    try {
-      const result = await dispatch(cloneModel(pending.value));
-      if (isModelConfiguration(result)) await diagnose(result);
-    } catch (failure) { issue(failure); }
-    finally { busy.value = false; }
+    issue(new WorkbenchApiError("unknown", "旧配置请求缺少可核实的原应用身份，保留原请求且不重新提交"));
   }
   function exportConfiguration(): ModelConfigurationSnapshot {
     return cloneModel({ schemaVersion: 1, drafts: drafts.value, pending: pending.value });
   }
   function restoreConfiguration(value: unknown) {
     if (!isModelConfigurationSnapshot(value)) return false;
+    mutationGeneration++;
+    loadVersion++;
+    busy.value = false;
+    loading.value = false;
     drafts.value = cloneModel(value.drafts);
     pending.value = cloneModel(value.pending);
     selectedNodeId.value = null;

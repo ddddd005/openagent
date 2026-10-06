@@ -1,10 +1,11 @@
 """Same-process graph application entry point over the existing service authorities."""
 
 from copy import deepcopy
-from hashlib import sha256
 
-from .contract_json import canonical_bytes
 from .graph_application_contracts import COMMANDS, QUERIES, validate_parameters
+from .graph_application_identity import (
+    application_accepted_result, application_command_receipt, bind_application_command,
+)
 from .graph_records import require
 
 
@@ -56,6 +57,7 @@ class GraphApplication:
         arguments = deepcopy(validate_parameters(spec, parameters))
         target = self if spec.method in (
             "_management_actions", "_consumer_actions", "_registration_list", "_information_read",
+            "_receipt_read",
         ) else self._service
         callback = getattr(target, spec.method)
         positional = []
@@ -69,38 +71,27 @@ class GraphApplication:
 
     @staticmethod
     def _receipt_result(result):
-        if type(result) is not dict:
-            return {}
-        if type(result.get("receipt")) is dict:
-            return deepcopy(result["receipt"])
-        source = result.get("session", result)
-        fields = ("workflow_definition_id", "definition_revision", "workflow_session_id",
-                  "revision", "data_revision", "head_revision", "head_commit_id", "status",
-                  "active_chain_run_id", "selected_chain_run_id", "reference", "update_sequence", "deleted",
-                  "package_lock")
-        evidence = {field: deepcopy(source[field]) for field in fields if field in source}
-        if "workflow_definition_id" in source and "workflow_session_id" not in source and "revision" in source:
-            evidence["definition_revision"] = source["revision"]
-        return evidence
+        return application_accepted_result(result)
 
     def command(self, name, parameters):
         spec = self._operation(self._commands, name)
         # Keep the original request fixed even if a service callback mutates its copy.
         request = deepcopy(validate_parameters(spec, parameters))
-        digest = sha256(canonical_bytes({"operation": name, "parameters": request})).hexdigest()
-        result = self._invoke(spec, request)
-        receipt = {"schema_version": 1, "kind": "workflow.application-receipt",
-                   "operation": name, "operation_scope": "consumer" if spec.consumer else "management",
-                   "idempotency_key": request.get("idempotency_key"), "request_sha256": digest,
-                   "authority": "service_receipt" if "idempotency_key" in spec.required else "service_result",
-                   "target": {"session_id": request["session_id"]} if spec.session else {},
-                   "accepted": self._receipt_result(result)}
+        operation_scope = "consumer" if spec.consumer else "management"
+        with bind_application_command(name, operation_scope, request):
+            result = self._invoke(spec, request)
+        receipt = application_command_receipt(name, operation_scope, request, result,
+            authority="service_receipt" if "idempotency_key" in spec.required else "service_result")
         return {"schema_version": 1, "kind": "workflow.application-command",
                 "receipt": receipt, "result": result}
 
     def query(self, name, parameters=None):
         spec = self._operation(self._queries, name)
         return self._invoke(spec, {} if parameters is None else parameters)
+
+    def _receipt_read(self, operation, parameters):
+        from .graph_receipts import read_graph_application_receipt
+        return read_graph_application_receipt(self._service.database, operation, parameters, scope=self.scope)
 
     def _actions(self, session_id, *, consumer):
         view = self._service.get_consumer(session_id) if consumer else self._service.get_session(session_id)

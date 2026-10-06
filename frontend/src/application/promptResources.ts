@@ -1,6 +1,7 @@
 import { computed, hasInjectionContext, inject, ref, type InjectionKey } from "vue";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
-import { listCurrentPromptResources, saveCurrentPromptResource, type PromptSaveRequest } from "../adapters/promptResourcesApi";
+import { listCurrentPromptResources, readCurrentPromptReceipt, saveCurrentPromptResource,
+  type PromptSaveRequest } from "../adapters/promptResourcesApi";
 import { clonePromptResource, isCurrentPromptResource, type CurrentPromptResource } from "../domain/workflowPromptResources";
 import { graphObject, graphUuid } from "../domain/workflowGraph";
 
@@ -8,6 +9,7 @@ const pendingKey = "workflow.prompts.resource.pending.v1";
 export interface PromptResourcesPorts {
   list(): Promise<CurrentPromptResource[]>;
   save(request: PromptSaveRequest): Promise<unknown>;
+  readReceipt(request: PromptSaveRequest): Promise<unknown>;
   readPending(): string | null;
   writePending(value: string | null): void;
 }
@@ -22,6 +24,7 @@ export function createPromptResources(ports: PromptResourcesPorts) {
   const pending = ref<PromptSaveRequest | null>(null), error = ref("");
   const locked = computed(() => busy.value || !!pending.value);
   let loadGeneration = 0;
+  let commandGeneration = 0;
   try {
     const saved = ports.readPending();
     if (saved !== null) {
@@ -39,13 +42,24 @@ export function createPromptResources(ports: PromptResourcesPorts) {
     } finally { if (generation === loadGeneration) loading.value = false; }
   }
   async function submit(request: PromptSaveRequest, reconciling = false) {
+    const original = clonePromptResourceRequest(request);
+    const identity = JSON.stringify(original), generation = ++commandGeneration;
+    const current = () => {
+      if (generation !== commandGeneration || pending.value === null || JSON.stringify(pending.value) !== identity) return false;
+      try {
+        const durable = ports.readPending();
+        return durable === null || JSON.stringify(JSON.parse(durable)) === identity;
+      } catch { return false; }
+    };
     busy.value = true; error.value = "";
     try {
-      await ports.save(clonePromptResourceRequest(request));
+      await (reconciling ? ports.readReceipt : ports.save)(clonePromptResourceRequest(original));
+      if (!current()) return false;
       ports.writePending(null); pending.value = null;
       await refresh();
       return true;
     } catch (failure) {
+      if (!current()) return false;
       error.value = failure instanceof Error ? failure.message : "\u63d0\u793a\u8bcd\u8d44\u6e90\u4fdd\u5b58\u5931\u8d25";
       // Rejection during reconciliation cannot settle an earlier unknown mutation.
       if (!reconciling && failure instanceof WorkbenchApiError && failure.kind === "rejected"
@@ -54,7 +68,7 @@ export function createPromptResources(ports: PromptResourcesPorts) {
         catch { error.value = "\u539f\u8bf7\u6c42\u72b6\u6001\u65e0\u6cd5\u4fdd\u5b58\uff0c\u5148\u6838\u5b9e\u539f\u8bf7\u6c42"; }
       }
       return false;
-    } finally { busy.value = false; }
+    } finally { if (generation === commandGeneration) busy.value = false; }
   }
   async function save(resource: CurrentPromptResource, expectedSequence: number) {
     if (locked.value) return false;
@@ -89,7 +103,7 @@ export function usePromptResources() {
   const provided = hasInjectionContext() ? inject(promptResourceControllerKey, null) : null;
   if (provided) return provided;
   return installed ??= createPromptResources({
-    list: listCurrentPromptResources, save: saveCurrentPromptResource,
+    list: listCurrentPromptResources, save: saveCurrentPromptResource, readReceipt: readCurrentPromptReceipt,
     readPending: () => typeof localStorage === "undefined" ? null : localStorage.getItem(pendingKey),
     writePending: value => {
       if (typeof localStorage === "undefined") throw new Error("Prompt resource request storage unavailable");

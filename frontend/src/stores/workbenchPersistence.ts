@@ -19,6 +19,7 @@ import type { ExposureRegistration } from "../domain/exposure";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { encodeUnifiedWorkbench } from "../adapters/unifiedWorkbenchDocument";
 import { useWorkbenchNoticesStore } from "./workbenchNotices";
+import { WorkbenchApiError } from "../adapters/workbenchApi";
 
 export const useWorkbenchPersistenceStore = defineStore("workbench-persistence", () => {
   const preparation = usePreparationStore();
@@ -213,14 +214,16 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
     workspace.setCopyPending(target, true);
     change(target);
     if (!save()) {
-      removeDraft(target);
+      removeDraft(target, true);
       editing = null;
       return false;
     }
     void runtime.copyWorkflowSession(target, source).catch(failure => {
       notices.notify("unavailable", failure instanceof Error ? failure.message : "工作流复制失败", "编辑副本");
-      if (runtime.runtimes[source]?.pending?.action !== `copy-workflow:${target}`) {
-        removeDraft(target);
+      const retained = runtime.exportRuntimeSnapshot().sessions.some(row =>
+        row.pending?.action === `copy-workflow:${target}`);
+      if (failure instanceof WorkbenchApiError && failure.kind !== "unknown" && !retained) {
+        removeDraft(target, true);
         if (editing?.target === target) editing = null;
         save();
       }
@@ -253,31 +256,31 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
     const copying = pendingCopy.value;
     if (!copying?.sourceId) return;
     if (graph.isGeneric(copying.id)) { await graph.reconcile(copying.id); return; }
-    workspace.openWorkflow(copying.sourceId);
-    await runtime.activateWorkflow(copying.sourceId);
-    try {
-      const request = runtime.runtimes[copying.sourceId]?.pending;
-      if (request?.action === `copy-workflow:${copying.id}`) await runtime.replayUnknown();
-      else if (!request) {
-        await runtime.refresh();
-        await runtime.copyWorkflowSession(copying.id, copying.sourceId);
-      }
-    } catch (failure) {
-      notices.notify("unavailable", failure instanceof Error ? failure.message : "复制仍不可用", "编辑副本");
-    }
-    save();
+    notices.notify("unknown", "旧副本请求无法只读核实，保留副本及原请求，不重新提交", "编辑副本");
   }
   function discardDraft() {
     if (graph.isGeneric(workspace.activeWorkflowId)) { graph.discardDraft(); return; }
     const source = workspace.activeWorkflow.sourceId;
     if (workspace.activeWorkflow.state === "draft" && source) {
       const id = workspace.activeWorkflowId;
+      if (!canRemoveDraft(id)) return;
       workspace.openWorkflow(source);
       removeDraft(id);
       save();
     }
   }
-  function removeDraft(id: string) {
+  function canRemoveDraft(id: string) {
+    const workflow = workspace.workflows.find(row => row.id === id);
+    const runtimeSnapshot = runtime.exportRuntimeSnapshot();
+    if (workflow?.copyPending || runtimeSnapshot.sessions.some(row =>
+      (row.workflowId === id && row.pending) || row.pending?.action === `copy-workflow:${id}`)) {
+      notices.notify("unknown", "原请求尚待核实，不能删除对应副本", "编辑副本");
+      return false;
+    }
+    return true;
+  }
+  function removeDraft(id: string, confirmedUnsent = false) {
+    if (!confirmedUnsent && !canRemoveDraft(id)) return;
     if (!workspace.removeWorkflow(id)) return;
     preparation.removeWorkflow(id);
     models.removeWorkflow(id);

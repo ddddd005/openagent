@@ -38,6 +38,11 @@ function receipt(envelope: any) {
     idempotency_key: envelope.parameters.idempotency_key, request_sha256: "a".repeat(64), authority: "service_receipt",
     target: { session_id: session }, accepted } };
 }
+function receiptRead(envelope: any) {
+  const value = receipt(envelope);
+  return { schema_version: 1, kind: "workflow.application-receipt-read", outcome: "matched",
+    reason_code: "receipt_matched", receipt: value.receipt, result: { receipt: value.result.receipt } };
+}
 function eventRun() {
   return { schema_version: 1, kind: "workflow.event-run", workflow_definition_id: workflow, definition_revision: 1,
     workflow_session_id: session, session_revision: 2, source: { workflow_definition_id: ancestor, definition_revision: 3,
@@ -59,20 +64,22 @@ describe("public local event SDK", () => {
       event_schema_version: 1, payload: { edit: "new state" }, expected_revision: 1, idempotency_key: key } });
     expect(value.pending).toBeNull();
   });
-  it("reopens unknown event outboxes and replays the exact original payload and key", async () => {
+  it("reopens unknown event outboxes and reads the receipt for the exact original payload and key", async () => {
     const commands: any[] = [];
     const request = vi.fn(async (_path, init) => {
       const envelope = JSON.parse(init.body);
       if (envelope.operation === "consumer.event.bindings") return packet();
       commands.push(envelope);
       if (commands.length === 1) throw new Error("lost response after accepted effect");
-      return receipt(envelope);
+      return receiptRead(envelope);
     });
     const { value, saved } = client(request);
     await expect(value.submitEvent(binding, { edit: "original" })).rejects.toThrow("lost response");
     const recovered = new GraphChatClient({ workflowId: workflow, storage: saved, request, keyFactory: () => "must-not-use" });
     expect(recovered.pending.action).toBe("event"); await recovered.command();
     expect(commands[1]).toEqual(commands[0]); expect(recovered.pending).toBeNull();
+    expect(request.mock.calls.filter(([path]) => path === "/api/graph/consumer/commands")).toHaveLength(1);
+    expect(request.mock.calls.filter(([path]) => path === "/api/graph/consumer/receipts/read")).toHaveLength(1);
   });
   it.each(["running", "prepared", "pausing", "paused"] as const)("rejects %s events without an event command", async status => {
     const request = vi.fn(async () => packet()), { value } = client(request);

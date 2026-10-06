@@ -23,7 +23,7 @@ def validate_registration(value):
     })
     require(type(value["schemaVersion"]) is int and value["schemaVersion"] == 1)
     identifier(value["id"])
-    from .workbench_resources import workflow_identity
+    from .resource_contracts import workflow_identity
     workflow_identity(value["workflowId"])
     require(value["stage"] in AGENT_BINDINGS)
     require(value["nodeBindingId"] == AGENT_BINDINGS[value["stage"]])
@@ -53,7 +53,7 @@ def validate_exposure_configuration(value):
                 and value["kind"] == "workflow_exposure_configuration")
         identifier(value["config_id"])
         revision(value["revision"])
-        from .workbench_resources import workflow_identity
+        from .resource_contracts import workflow_identity
         workflow_identity(value["workflow_id"])
         require(type(value["registrations"]) is list and len(value["registrations"]) <= 128)
         registrations = [validate_registration(row) for row in value["registrations"]]

@@ -24,6 +24,14 @@
 
 旧节点、正式入口和数据的联合裁决见 [1.0 支持与处置矩阵](docs/REPLACE-SUPPORT-MATRIX.md)：当前独立包继续保留，兼容图及旧会话以冻结只读为退出目标，原数据、完整锁和未决请求不清理。冻结、纯档案/回执读取与同库执行边界尚待实现，不代表本轮已退役正式旧入口。
 
+既有切片及阶段 A 裁决已提交为 `237afb5`，尚未推送。阶段 B 首片已迁出公共资源纯契约、current 资源预检/冻结读取及普通请求门禁，当前 Agent 的新进程多轮/分叉/重开有离线隔离证据，见 [公共资源与请求门禁解耦](docs/REPLACE-RESOURCE-BOUNDARY.md)。新切片尚未提交；旧宿主类、正式入口及混合库边界仍未整体退出。
+
+后续已将当前执行配置分流到独立 `current-execution` 行，旧 `project` 原文保留，并准备纯依赖解析及记录分类，见 [执行配置与分类准备](docs/REPLACE-EXECUTION-SELECTION.md)。冻结写守卫、恢复跳过及活动链隔离仍未启用；原活动检查不放宽，也不代表旧图已经只读。
+
+当前普通图、独立 Provider/Prompt 及静态 GraphChat 的未知请求核实已改为只读回执查询，见 [回执边界与原请求保护](docs/REPLACE-RECEIPT-BOUNDARY.md)。新应用请求身份与原生回执同事务保存；缺原身份的既存请求保持待核实，不回填或重发。正式旧客户端和纯档案入口尚未完成隔离，本轮及前两片仍未提交。
+
+旧 runtime/资源 stores 的核实及旧副本恢复现已停止重 POST，静态旧聊天补原文、首次回执及本页面未决请求保护，见 [旧客户端原请求保全](docs/REPLACE-LEGACY-PENDING.md)。这是实际删除旧入口前的准备；目标仍是退出旧 UI/store/host/runtime/路由，仅保留必要历史只读数据和公共设施。冻结、纯档案与正式旧实现移除尚未完成，本片亦未提交。
+
 ## 从这里开始
 
 | 文档 | 内容 |
@@ -38,6 +46,10 @@
 | [聊天入口分派收口](docs/REPLACE-CHAT-ENTRY.md) | 匿名入口零业务初始化、精确图身份、旧会话隔离及定向/浏览器证据 |
 | [历史校验与原型退役](docs/REPLACE-HISTORY-RETIREMENT.md) | 冻结 Agent 证据的纯校验边界、孤立 mock 原型处置及旧数据保留 |
 | [1.0 支持与处置矩阵](docs/REPLACE-SUPPORT-MATRIX.md) | 全部 30 个兼容节点、正式入口与数据的联合去向、核心覆盖缺口及退出依赖 |
+| [公共资源与请求门禁解耦](docs/REPLACE-RESOURCE-BOUNDARY.md) | 阶段 B 的资源宿主/纯契约/轻量 gate、当前 Agent 新进程回归及剩余退役边界 |
+| [执行配置与分类准备](docs/REPLACE-EXECUTION-SELECTION.md) | 当前/历史配置分流、纯依赖解析与分类准备，及尚未启用的冻结/请求保护 |
+| [回执边界与原请求保护](docs/REPLACE-RECEIPT-BOUNDARY.md) | 无宿主初始化的只读核实、同事务应用身份、当前客户端 pending 保全及旧请求证据边界 |
+| [旧客户端原请求保全](docs/REPLACE-LEGACY-PENDING.md) | 旧核实不重 POST、副本与静态原文保护，及实际删除旧架构的剩余门槛 |
 | [后续待办](docs/BACKLOG.md) | 1.0 架构替代与验收、已知问题、1.0 后维护、可选能力及暂停事项 |
 | [快速启动](docs/QUICKSTART.md) | 干净环境安装、双终端启动、模型配置与首轮演示 |
 | [开发说明](docs/DEVELOPMENT.md) | 模块入口、运行数据流、数据权威和修改边界 |

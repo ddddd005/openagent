@@ -29,7 +29,7 @@ function fixture(generic = true) {
   const record = newPromptResource();
   record.value.members = [newPromptMember("Current prompt")];
   const resources = createPromptResources({
-    list: vi.fn(async () => [record]), save: vi.fn(async () => ({})),
+    list: vi.fn(async () => [record]), save: vi.fn(async () => ({})), readReceipt: vi.fn(),
     readPending: () => null, writePending: vi.fn(),
   });
   resources.records.value = [record];

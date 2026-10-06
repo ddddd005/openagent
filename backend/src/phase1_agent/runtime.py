@@ -28,7 +28,7 @@ from .contract_graph import validate_message_history, validate_pending_message_h
 from .contract_json import canonical_bytes, content_digest, loads_strict, validate_json_value
 from .contracts import ModelResponse
 from .contracts_v2 import validate_record
-from .prepared_context import check_prepared_request_capacity
+from .prepared_request import check_prepared_request_capacity
 from .prompt_errors import PromptProcessingError
 from .tools import RegisteredTool, ToolExecutionError, ToolOutcomeUnknown
 

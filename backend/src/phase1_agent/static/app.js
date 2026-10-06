@@ -21,6 +21,7 @@ const promptChoices = [
 ];
 const promptCatalog = new Map();
 const userSessionRecords = new Map();
+const userSessionRawRecords = new Map();
 const promptRecordFailures = new Map();
 const USER_SESSION_PREFIX = "workflow-user-ui:v1:";
 const UUID4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -40,6 +41,7 @@ let pendingVersion = null;
 let pendingRecovery = null;
 let pendingBranch = null;
 let pendingSessionSwitch = null;
+let pendingCreation = null;
 let activeSelection = null;
 const candidatePreviews = new Map();
 const pendingBudgets = new Map();
@@ -310,6 +312,7 @@ function userSessionRecord(id) {
     promptRecordFailures.set(id, { raw, message: error.message || "本机会话记录无法读取" });
     showError("本机会话记录无效，提交已锁定。请检查或重置该记录。");
   }
+  userSessionRawRecords.set(id, raw);
   userSessionRecords.set(id, record);
   return record;
 }
@@ -318,9 +321,13 @@ function saveUserSessionRecord(id, record) {
   if (promptRecordFailures.has(id)) throw new Error("本机会话记录待处理，不能覆盖");
   const saved = validateUserSessionRecord(record, id);
   try {
-    localStorage.setItem(USER_SESSION_PREFIX + id, JSON.stringify(saved));
+    const raw = JSON.stringify(saved);
+    if (localStorage.getItem(USER_SESSION_PREFIX + id) !== (userSessionRawRecords.get(id) ?? null))
+      throw new Error("本机会话记录已由其他页面更新");
+    localStorage.setItem(USER_SESSION_PREFIX + id, raw);
+    userSessionRawRecords.set(id, raw);
   } catch (error) {
-    promptRecordFailures.set(id, { raw: null, message: "本机会话记录无法保存" });
+    promptRecordFailures.set(id, { raw: userSessionRawRecords.get(id) ?? null, message: "本机会话记录无法保存" });
     throw new Error("本机会话记录无法保存，未发送新请求");
   }
   userSessionRecords.set(id, saved);
@@ -329,6 +336,37 @@ function saveUserSessionRecord(id, record) {
 
 function hasPendingSubmission(id = currentId) {
   return !!id && userSessionRecord(id).pending_submission !== null;
+}
+
+function rejectLegacyPending() {
+  if (!(hasPendingSubmission() || Array.from(userSessionRecords.values()).some(row => row.pending_submission)
+      || pendingControl || pendingCloseout || pendingStart || pendingVersion
+      || pendingRecovery || pendingBranch || pendingSessionSwitch || pendingCreation || pendingBudgets.size)) return false;
+  showError("旧请求结果仍待核实，已保留原请求，不能重新提交或发送其他写入。");
+  return true;
+}
+
+function ownsSubmission(id, record, body) {
+  return userSessionRecords.get(id) === record
+    && JSON.stringify(record.pending_submission) === JSON.stringify(body)
+    && localStorage.getItem(USER_SESSION_PREFIX + id) === userSessionRawRecords.get(id);
+}
+
+function requireLegacyReceipt(valid) {
+  if (!valid) throw new Error("旧操作回执无法确认，原请求仍待核实。");
+}
+
+function validRunReceipt(value, id, runId, statuses, extra = []) {
+  return exactFields(value, ["workflow_session_id", "chain_run_id", "run_id", "status", ...extra])
+    && value.workflow_session_id === id && value.run_id === runId
+    && UUID4.test(value.chain_run_id || "") && statuses.includes(value.status);
+}
+
+function validReplacementReceipt(value, id, chainId) {
+  return exactFields(value, ["workflow_session_id", "source_chain_run_id", "chain_run_id", "run_id", "input_id", "status"])
+    && value.workflow_session_id === id && value.source_chain_run_id === chainId
+    && ["chain_run_id", "run_id", "input_id"].every(field => UUID4.test(value[field] || ""))
+    && ["prepared", "running", "succeeded", "failed", "paused"].includes(value.status);
 }
 
 function applyPromptSelection(selected) {
@@ -445,6 +483,7 @@ async function request(path, options) {
   if (!response.ok) {
     const error = new Error(data.error?.message || "请求失败");
     error.status = response.status;
+    error.code = data.error?.reason_code ?? data.error?.code;
     throw error;
   }
   return data;
@@ -647,6 +686,7 @@ function canForkCandidate(view) {
 
 async function recoverExecution(action) {
   if (!currentId || !currentView || busy || controlBusy || versionBusy) return;
+  if (rejectLegacyPending()) return;
   const chainId = availableRecovery(currentView, action);
   if (!chainId) return;
   const id = currentId;
@@ -681,13 +721,19 @@ async function recoverExecution(action) {
         })
       }
     );
+    if (pendingRecovery !== command) return;
+    requireLegacyReceipt(action === "continue_workflow"
+      ? validReplacementReceipt(receipt, id, command.chainId)
+      : exactFields(receipt, ["workflow_session_id", "chain_run_id", "closeout_id", "status"])
+        && receipt.workflow_session_id === id && receipt.chain_run_id === command.chainId
+        && UUID4.test(receipt.closeout_id || "") && receipt.status === "closed");
     pendingRecovery = null;
     if (id === currentId) {
       awaitedChainId = action === "continue_workflow" ? receipt.chain_run_id || "" : "";
       await refreshSession();
     }
   } catch (error) {
-    if (error.status === 409) {
+    if (error.status === 409 && error.code !== "idempotency_conflict" && pendingRecovery === command) {
       pendingRecovery = null;
       if (id === currentId) {
         await refreshSession();
@@ -711,6 +757,7 @@ continueWorkflow.addEventListener("click", () => recoverExecution("continue_work
 async function forkFromCandidate(visibleMessageId, candidateId) {
   if (!currentId || !currentView || busy || controlBusy || versionBusy
       || !canForkCandidate(currentView) || !activeSelection) return;
+  if (rejectLegacyPending()) return;
   const id = currentId;
   const view = currentView;
   if (!pendingBranch || pendingBranch.sessionId !== id
@@ -741,6 +788,16 @@ async function forkFromCandidate(visibleMessageId, candidateId) {
         candidate_id: command.candidateId
       })
     });
+    if (pendingBranch !== command) return;
+    requireLegacyReceipt(exactFields(receipt, ["workflow_session_id", "source_workflow_session_id", "visible_message_id",
+      "fork_anchor_id", "role", "pending_input_id", "active_workflow_session_id", "status", "selection_revision"])
+      && UUID4.test(receipt.workflow_session_id || "") && receipt.workflow_session_id !== id
+      && receipt.source_workflow_session_id === id
+      && receipt.visible_message_id === command.visibleMessageId && UUID4.test(receipt.fork_anchor_id || "")
+      && ["user", "assistant"].includes(receipt.role) && ["pending", "created"].includes(receipt.status)
+      && (receipt.pending_input_id === null || UUID4.test(receipt.pending_input_id || ""))
+      && receipt.active_workflow_session_id === receipt.workflow_session_id
+      && receipt.selection_revision === command.expectedSelectionRevision + 1);
     if (id === currentId) {
       const childId = receipt.workflow_session_id;
       if (typeof childId !== "string" || !SESSION_ID.test(childId)) throw new Error("分支会话响应无效");
@@ -758,7 +815,7 @@ async function forkFromCandidate(visibleMessageId, candidateId) {
       pendingBranch = null;
     }
   } catch (error) {
-    if (error.status === 409) {
+    if (error.status === 409 && error.code !== "idempotency_conflict" && pendingBranch === command) {
       pendingBranch = null;
       if (id === currentId) {
         await loadSessions();
@@ -778,6 +835,7 @@ async function forkFromCandidate(visibleMessageId, candidateId) {
 async function changeReply(kind, targetId, floorId) {
   if (!currentId || !currentView || busy || controlBusy || versionBusy
       || hasActiveChain(currentView) || hasPendingSubmission()) return;
+  if (rejectLegacyPending()) return;
   const id = currentId;
   const view = currentView;
   if (kind === "reroll" && !view.can_reroll) return;
@@ -812,6 +870,13 @@ async function changeReply(kind, targetId, floorId) {
         expected_head_commit_id: command.expectedHeadCommitId
       })
     });
+    if (pendingVersion !== command) return;
+    requireLegacyReceipt(kind === "reroll" ? validReplacementReceipt(receipt, id, command.targetId)
+      : exactFields(receipt, ["workflow_session_id", "candidate_id", "head_commit_id", "ref_revision", "session_revision", "status"])
+        && receipt.workflow_session_id === id && receipt.candidate_id === command.targetId
+        && UUID4.test(receipt.head_commit_id || "") && receipt.status === "succeeded"
+        && receipt.ref_revision === command.expectedRefRevision + 1
+        && receipt.session_revision === command.expectedSessionRevision + 1);
     pendingVersion = null;
     candidatePreviews.delete(`${id}:${floorId}`);
     if (id === currentId) {
@@ -819,7 +884,7 @@ async function changeReply(kind, targetId, floorId) {
       await refreshSession();
     }
   } catch (error) {
-    if (error.status === 409) {
+    if (error.status === 409 && error.code !== "idempotency_conflict" && pendingVersion === command) {
       pendingVersion = null;
       if (id === currentId) {
         await refreshSession();
@@ -1033,9 +1098,6 @@ async function loadSessions() {
   updateCloseoutControl(null);
   updatePendingStart(null);
   updateRecoveryControls(null);
-  pendingVersion = null;
-  pendingRecovery = null;
-  pendingBranch = null;
   awaitedChainId = "";
   schedulePoll(false);
   if (currentId) await refreshSession();
@@ -1047,6 +1109,8 @@ async function switchActiveSession(targetId) {
     await loadSessions();
     return currentId === targetId;
   }
+  userSessionRecord(targetId);
+  if (rejectLegacyPending()) return false;
   if (!pendingSessionSwitch || pendingSessionSwitch.targetId !== targetId) {
     pendingSessionSwitch = {
       targetId,
@@ -1060,7 +1124,7 @@ async function switchActiveSession(targetId) {
   $("new-session").disabled = true;
   showError("");
   try {
-    await request("/api/active-session", {
+    const receipt = await request("/api/active-session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1069,11 +1133,15 @@ async function switchActiveSession(targetId) {
         idempotency_key: command.idempotencyKey
       })
     });
+    if (pendingSessionSwitch !== command) return false;
+    requireLegacyReceipt(exactFields(receipt, ["active_workflow_session_id", "revision"])
+      && receipt.active_workflow_session_id === command.targetId
+      && receipt.revision === command.expectedSelectionRevision + 1);
     pendingSessionSwitch = null;
     await loadSessions();
     return currentId === targetId;
   } catch (error) {
-    if (error.status === 409) {
+    if (error.status === 409 && error.code !== "idempotency_conflict" && pendingSessionSwitch === command) {
       pendingSessionSwitch = null;
       await loadSessions();
       showError("活动会话已变化，已刷新。请重试。");
@@ -1093,16 +1161,25 @@ async function switchActiveSession(targetId) {
 sessions.addEventListener("change", () => switchActiveSession(sessions.value));
 
 $("new-session").addEventListener("click", async () => {
+  if (busy || controlBusy || versionBusy || rejectLegacyPending()) return;
   const button = $("new-session");
   button.disabled = true;
   showError("");
+  const command = { path: "/api/sessions", body: {} };
+  pendingCreation = command;
   try {
     const created = await request("/api/sessions", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
     });
+    if (!created || !UUID4.test(created.workflow_session_id || ""))
+      throw new Error("新建会话回执无效，原请求仍待核实");
+    if (pendingCreation !== command) return;
+    pendingCreation = null;
     await loadSessions();
     await switchActiveSession(created.workflow_session_id);
   } catch (error) {
+    if (Number.isInteger(error.status) && error.status >= 400 && error.status < 500
+        && error.code !== "idempotency_conflict" && pendingCreation === command) pendingCreation = null;
     showError(error.message || "新建会话失败");
   } finally {
     button.disabled = false;
@@ -1111,6 +1188,7 @@ $("new-session").addEventListener("click", async () => {
 
 runControl.addEventListener("click", async () => {
   if (!currentId || !currentView || busy || controlBusy || versionBusy) return;
+  if (rejectLegacyPending()) return;
   const control = availableRunControl(currentView);
   if (!control) return;
   const id = currentId;
@@ -1141,13 +1219,16 @@ runControl.addEventListener("click", async () => {
         })
       }
     );
+    if (pendingControl !== command) return;
+    requireLegacyReceipt(validRunReceipt(receipt, id, command.runId,
+      command.action === "resume" ? ["running"] : ["pausing", "paused"]));
     pendingControl = null;
     if (id === currentId) {
       awaitedChainId = receipt.status === "paused" ? "" : receipt.chain_run_id || "";
       await refreshSession();
     }
   } catch (error) {
-    if (error.status === 409) {
+    if (error.status === 409 && error.code !== "idempotency_conflict" && pendingControl === command) {
       pendingControl = null;
       if (id === currentId) {
         await refreshSession();
@@ -1168,6 +1249,7 @@ additionalAttempts.addEventListener("input", () => updateBudgetControls(currentV
 
 extendBudget.addEventListener("click", async () => {
   if (!currentId || !currentView || busy || controlBusy || versionBusy || extendBudget.disabled) return;
+  if (rejectLegacyPending()) return;
   const control = availableBudgetControl(currentView);
   if (!control) return;
   const id = currentId;
@@ -1190,7 +1272,7 @@ extendBudget.addEventListener("click", async () => {
   showError("");
   let failure = "";
   try {
-    await request(
+    const receipt = await request(
       `/api/sessions/${encodeURIComponent(id)}/runs/${encodeURIComponent(command.runId)}/extend_budget`,
       {
         method: "POST",
@@ -1204,10 +1286,16 @@ extendBudget.addEventListener("click", async () => {
         })
       }
     );
+    if (pendingBudgets.get(target) !== command) return;
+    requireLegacyReceipt(validRunReceipt(receipt, id, command.runId, ["paused", "failed"], ["revision", "budget"])
+      && receipt.revision === command.expectedRunRevision + 1
+      && exactFields(receipt.budget, ["max_model_requests", "max_model_attempts"])
+      && receipt.budget.max_model_requests === control.budget.max_model_requests + command.additionalRequests
+      && receipt.budget.max_model_attempts === control.budget.max_model_attempts + command.additionalAttempts);
     pendingBudgets.delete(target);
     if (id === currentId) await refreshSession();
   } catch (error) {
-    if (error.status === 409) {
+    if (error.status === 409 && error.code !== "idempotency_conflict" && pendingBudgets.get(target) === command) {
       pendingBudgets.delete(target);
       if (id === currentId) {
         await refreshSession();
@@ -1227,6 +1315,7 @@ extendBudget.addEventListener("click", async () => {
 
 retryCloseout.addEventListener("click", async () => {
   if (!currentId || !currentView || busy || controlBusy || versionBusy) return;
+  if (rejectLegacyPending()) return;
   const control = availableCloseout(currentView);
   if (!control) return;
   const id = currentId;
@@ -1244,7 +1333,7 @@ retryCloseout.addEventListener("click", async () => {
   showError("");
   let failure = "";
   try {
-    await request(
+    const receipt = await request(
       `/api/sessions/${encodeURIComponent(id)}/runs/${encodeURIComponent(command.runId)}/`
       + (command.action === "retry_archive" ? "retry-archive" : "retry-publish"),
       {
@@ -1256,10 +1345,15 @@ retryCloseout.addEventListener("click", async () => {
         })
       }
     );
+    if (pendingCloseout !== command) return;
+    requireLegacyReceipt(validRunReceipt(receipt, id, command.runId,
+      command.action === "retry_archive" ? ["succeeded", "accepted"] : ["succeeded"],
+      receipt?.status === "accepted" ? ["completion"] : [])
+      && (receipt.status !== "accepted" || receipt.completion === "unconfirmed"));
     pendingCloseout = null;
     if (id === currentId) await refreshSession();
   } catch (error) {
-    if (error.status === 409) {
+    if (error.status === 409 && error.code !== "idempotency_conflict" && pendingCloseout === command) {
       pendingCloseout = null;
       if (id === currentId) {
         await refreshSession();
@@ -1277,6 +1371,7 @@ retryCloseout.addEventListener("click", async () => {
 
 startPending.addEventListener("click", async () => {
   if (!currentId || !currentView || busy || controlBusy || versionBusy) return;
+  if (rejectLegacyPending()) return;
   const inputId = availablePendingStart(currentView);
   if (!inputId) return;
   const id = currentId;
@@ -1303,13 +1398,17 @@ startPending.addEventListener("click", async () => {
         })
       }
     );
+    if (pendingStart !== command) return;
+    requireLegacyReceipt(exactFields(receipt, ["workflow_session_id", "chain_run_id", "visible_message_id", "input_id", "status"])
+      && receipt.workflow_session_id === id && receipt.input_id === command.inputId && receipt.status === "prepared"
+      && UUID4.test(receipt.chain_run_id || "") && UUID4.test(receipt.visible_message_id || ""));
     pendingStart = null;
     if (id === currentId) {
       awaitedChainId = receipt.chain_run_id || "";
       await refreshSession();
     }
   } catch (error) {
-    if (error.status === 409) {
+    if (error.status === 409 && error.code !== "idempotency_conflict" && pendingStart === command) {
       pendingStart = null;
       if (id === currentId) {
         await refreshSession();
@@ -1357,13 +1456,17 @@ for (const choice of promptChoices) {
 
 $("reset-prompt-state").addEventListener("click", () => {
   if (!currentId || busy || controlBusy || versionBusy || !promptRecordFailures.has(currentId)) return;
+  if (rejectLegacyPending()) return;
   const id = currentId;
   const failure = promptRecordFailures.get(id);
   try {
+    if (localStorage.getItem(USER_SESSION_PREFIX + id) !== failure.raw)
+      throw new Error("本机会话记录已由其他页面更新，不能重置。");
     if (failure.raw) localStorage.setItem(`${USER_SESSION_PREFIX}quarantine:${id}:${Date.now()}`, failure.raw);
     localStorage.removeItem(USER_SESSION_PREFIX + id);
     promptRecordFailures.delete(id);
     userSessionRecords.delete(id);
+    userSessionRawRecords.delete(id);
     promptDraftSessionId = "";
     saveUserSessionRecord(id, emptyUserSessionRecord(id));
     showError("原记录已隔离，本机会话配置已重置。");
@@ -1376,24 +1479,21 @@ $("reset-prompt-state").addEventListener("click", () => {
 $("composer").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!currentId || !currentView || busy || controlBusy || versionBusy || promptRecordFailures.has(currentId)) return;
+  if (rejectLegacyPending()) return;
   const id = currentId;
   let record = userSessionRecord(id);
   if (!record.pending_submission && (!currentView.can_submit || !input.value.trim())) return;
   let body;
   try {
-    if (record.pending_submission) {
-      body = copyJson(record.pending_submission);
-    } else {
-      const selected = promptSelection();
-      body = {
-        text: input.value, idempotency_key: crypto.randomUUID(),
-        ...(selected ? { prompt_selection: selected } : {}),
-        ...(record.model_selection ? { model_selection: record.model_selection } : {})
-      };
-      record = saveUserSessionRecord(id, {
-        ...record, prompt_selection: selected, pending_submission: body
-      });
-    }
+    const selected = promptSelection();
+    body = {
+      text: input.value, idempotency_key: crypto.randomUUID(),
+      ...(selected ? { prompt_selection: selected } : {}),
+      ...(record.model_selection ? { model_selection: record.model_selection } : {})
+    };
+    record = saveUserSessionRecord(id, {
+      ...record, prompt_selection: selected, pending_submission: body
+    });
   } catch (error) {
     showError(error.message);
     updatePromptControls(currentView);
@@ -1411,6 +1511,10 @@ $("composer").addEventListener("submit", async (event) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
+    if (!ownsSubmission(id, record, body)) {
+      if (id === currentId) showError("本机原请求已变化，晚到回执不覆盖当前记录。");
+      return;
+    }
     if (receipt?.workflow_session_id !== id || receipt.status !== "prepared"
         || ["input_id", "visible_message_id", "chain_run_id"].some(
           (field) => typeof receipt[field] !== "string" || !UUID4.test(receipt[field])
@@ -1418,7 +1522,7 @@ $("composer").addEventListener("submit", async (event) => {
       throw new Error("提交回执无效，原请求仍待核实");
     }
     saveUserSessionRecord(id, { ...userSessionRecord(id), pending_submission: null });
-    if (input.value === body.text) input.value = "";
+    if (id === currentId && input.value === body.text) input.value = "";
     if (id === currentId) {
       awaitedChainId = receipt.chain_run_id || "";
       $("progress").textContent = "工作流进行中…";
@@ -1426,9 +1530,11 @@ $("composer").addEventListener("submit", async (event) => {
       await refreshSession();
     }
   } catch (error) {
-    if (Number.isInteger(error.status) && error.status >= 400 && error.status < 500) {
+    if (Number.isInteger(error.status) && error.status >= 400 && error.status < 500
+        && error.code !== "idempotency_conflict") {
       try {
-        saveUserSessionRecord(id, { ...userSessionRecord(id), pending_submission: null });
+        if (ownsSubmission(id, record, body))
+          saveUserSessionRecord(id, { ...userSessionRecord(id), pending_submission: null });
       } catch (storageError) {
         showError(storageError.message);
       }

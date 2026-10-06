@@ -1,4 +1,4 @@
-import { stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
+import { graphReceiptReadResponse, stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useWorkflowGraphStore } from "./workflowGraph";
@@ -35,7 +35,7 @@ function canonical(value: unknown): unknown {
 beforeEach(() => setActivePinia(createPinia()));
 afterEach(() => { useWorkbenchPersistenceStore().$dispose(); useWorkflowGraphStore().$dispose(); useWorkspaceStore().$dispose(); vi.unstubAllGlobals(); });
 describe("original migration request recovery", () => {
-  it("retains the original document and replays the exact migration identity after a lost receipt", async () => {
+  it("retains the original document and reads the exact migration identity after a lost receipt", async () => {
     const { graph, workspace, document } = setup(); const original = graphClone(document);
     stubGraphApplicationFetch( vi.fn().mockRejectedValue(new Error("lost response")));
     expect(await graph.migrateLegacy(MAIN_WORKFLOW_ID, document, null, null)).toBe(false);
@@ -47,9 +47,10 @@ describe("original migration request recovery", () => {
     expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(true);
     const calls: unknown[] = [];
     stubGraphApplicationFetch( vi.fn(async (path, init) => {
-      if (path === "/api/graph/migrations") {
-        const body = JSON.parse(init.body); calls.push(body);
-        return new Response(JSON.stringify(canonical(receipt(body.document))));
+      if (path === "/api/graph/receipts/read") {
+        const envelope = JSON.parse(init.body), body = envelope.parameters; calls.push(body);
+        return graphReceiptReadResponse(envelope.operation, body,
+          canonical(receipt(body.document)) as Record<string, unknown>);
       }
       return new Response(JSON.stringify(path.endsWith("/sessions") ? [graph.session] : graph.session));
     }));
@@ -70,6 +71,58 @@ describe("original migration request recovery", () => {
     const target = workspace.workflows.find(row => row.sourceId === MAIN_WORKFLOW_ID)!;
     expect(graph.entries[target.id].pending?.action).toBe("migrate"); expect(graph.entries[target.id].session_id).toBeNull();
     expect(workspace.activeWorkflowId).toBe(MAIN_WORKFLOW_ID);
+  });
+  it("reads only the retained migration coordinate when no ordinary pending remains", async () => {
+    const { graph, document, workspace } = setup();
+    stubGraphApplicationFetch(vi.fn(async () => new Response(JSON.stringify({ error: { reason_code: "unsupported" } }), { status: 410 })));
+    await graph.migrateLegacy(MAIN_WORKFLOW_ID, document, null, null);
+    const target = workspace.workflows.find(row => row.sourceId === MAIN_WORKFLOW_ID)!;
+    const original = graphClone(graph.entries[target.id].migration_request!);
+    expect(graph.entries[target.id].pending).toBeNull();
+    const fetcher = vi.fn(async (path, init) => {
+      expect(path).toBe("/api/graph/receipts/read");
+      expect(JSON.parse(init.body)).toEqual({ operation: "legacy.migrate", parameters: original.body });
+      return new Response(JSON.stringify({ schema_version: 1, kind: "workflow.application-receipt-read",
+        outcome: "unresolved", reason_code: "application_identity_missing" }));
+    });
+    stubGraphApplicationFetch(fetcher);
+    await graph.reconcile(target.id);
+    expect(fetcher).toHaveBeenCalledOnce(); expect(graph.entries[target.id].migration_request).toEqual(original);
+    expect(target.copyPending).toBe(true); expect(graph.entries[target.id].pending).toBeNull();
+  });
+
+  it("retains a migration-only request if matched confirmation cannot be persisted", async () => {
+    const { graph, document, workspace } = setup();
+    stubGraphApplicationFetch(vi.fn().mockRejectedValue(new Error("lost")));
+    await graph.migrateLegacy(MAIN_WORKFLOW_ID, document, null, null);
+    const target = workspace.workflows.find(row => row.sourceId === MAIN_WORKFLOW_ID)!;
+    const original = graphClone(graph.entries[target.id].migration_request!);
+    graph.entries[target.id].pending = null; graph.setPersistenceGuard(() => false);
+    stubGraphApplicationFetch(vi.fn(async (_path, init) => {
+      const request = JSON.parse(init.body);
+      return graphReceiptReadResponse(request.operation, request.parameters, receipt(request.parameters.document));
+    }));
+    await graph.reconcile(target.id);
+    expect(graph.entries[target.id].pending).toEqual(original);
+  });
+
+  it("does not apply a late migration-only receipt over a replaced original coordinate", async () => {
+    const { graph, document, workspace } = setup();
+    stubGraphApplicationFetch(vi.fn().mockRejectedValue(new Error("lost")));
+    await graph.migrateLegacy(MAIN_WORKFLOW_ID, document, null, null);
+    const target = workspace.workflows.find(row => row.sourceId === MAIN_WORKFLOW_ID)!;
+    const original = graphClone(graph.entries[target.id].migration_request!);
+    graph.entries[target.id].pending = null;
+    let finish!: (response: Response) => void;
+    stubGraphApplicationFetch(vi.fn(() => new Promise<Response>(resolve => { finish = resolve; })));
+    const reading = graph.reconcile(target.id);
+    const newer = graphClone(original); (newer.body.document as GraphDocument).name = "newer coordinate with same key";
+    graph.entries[target.id].migration_request = newer;
+    finish(graphReceiptReadResponse("legacy.migrate", original.body, receipt(original.body.document as GraphDocument)));
+    await reading;
+    expect(graph.entries[target.id].migration_request).toEqual(newer);
+    expect(graph.entries[target.id].session_id).toBeNull(); expect(graph.entries[target.id].pending).toBeNull();
+    expect(target.copyPending).toBe(true);
   });
   it("targets the current retained native run with budget CAS and preserves unknown retry requests", async () => {
     const { graph, workspace, document } = setup();
@@ -150,7 +203,10 @@ describe("original migration request recovery", () => {
     expect(recoveredWorkspace.workflows).toHaveLength(count);
     expect(prep.getDraft(MAIN_WORKFLOW_ID, "A").nodes.find(node => node.id === prompt.id)?.config).toEqual(original);
     stubGraphApplicationFetch( vi.fn(async (path, init) => {
-      if (path === "/api/graph/migrations") return new Response(JSON.stringify(receipt(JSON.parse(init.body).document)));
+      if (path === "/api/graph/receipts/read") {
+        const envelope = JSON.parse(init.body);
+        return graphReceiptReadResponse(envelope.operation, envelope.parameters, receipt(envelope.parameters.document));
+      }
       return new Response(JSON.stringify(path.endsWith("/sessions") ? [recoveredGraph.session] : recoveredGraph.session));
     }));
     await recoveredGraph.reconcile(target.id); recoveredWorkspace.openWorkflow(MAIN_WORKFLOW_ID);

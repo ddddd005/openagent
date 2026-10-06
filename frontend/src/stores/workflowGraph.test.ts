@@ -1,4 +1,4 @@
-import { stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
+import { graphReceiptReadResponse, stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useWorkflowGraphStore } from "./workflowGraph";
@@ -60,7 +60,7 @@ describe("generic workbench execution and document transactions", () => {
     expect(calls[2].body.inputs).toEqual({}); expect(graph.session?.status).toBe("succeeded");
     expect(useWorkspaceStore().activeWorkflow.state).toBe("draft");
   });
-  it("keeps a lost copy command across reload and replays its same UUID and body", async () => {
+  it("keeps a lost copy command across reload and reads its same UUID and body", async () => {
     const { graph, id, text } = fixture(); const workspace = useWorkspaceStore();
     const doc = graph.document!; const view = session(doc);
     graph.entries[id].session_id = view.workflow_session_id; graph.views[view.workflow_session_id] = view;
@@ -73,10 +73,48 @@ describe("generic workbench execution and document transactions", () => {
     expect(target.copyPending).toBe(true); expect(workspace.activeWorkflowId).toBe(id);
     const snapshot = graph.storeSnapshot();
     expect(graph.restoreSnapshot(snapshot)).toBe(true);
-    const fetcher = vi.fn(async (_path, init) => new Response(JSON.stringify(session((JSON.parse(init.body)).document))));
+    const frozen = session(original!.body.document as GraphDocument);
+    const fetcher = vi.fn(async (path, init) => {
+      if (path === "/api/graph/receipts/read") {
+        const request = JSON.parse(init.body);
+        return graphReceiptReadResponse(request.operation, request.parameters, frozen);
+      }
+      return new Response(JSON.stringify(path.endsWith("/sessions") ? [frozen] : frozen));
+    });
     stubGraphApplicationFetch( fetcher); await graph.reconcile(target.id);
-    expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual(original?.body);
+    expect(fetcher.mock.calls[0][0]).toBe("/api/graph/receipts/read");
+    expect(JSON.parse(fetcher.mock.calls[0][1].body).parameters).toEqual({
+      ...original?.body, session_id: view.workflow_session_id,
+    });
     expect(workspace.activeWorkflowId).toBe(target.id); expect(graph.entries[target.id].pending).toBeNull();
+  });
+  it("keeps an explicitly retried rejected copy distinct from receipt reconciliation", async () => {
+    const { graph, id, text } = fixture(), workspace = useWorkspaceStore();
+    const view = session(graph.document!);
+    graph.entries[id].session_id = view.workflow_session_id; graph.views[view.workflow_session_id] = view;
+    workspace.activeWorkflow.state = "saved";
+    let rejectedKey: string;
+    stubGraphApplicationFetch(vi.fn(async (_path, init) => {
+      rejectedKey = JSON.parse(init.body).idempotency_key;
+      return new Response(JSON.stringify({ error: { reason_code: "stale_revision" } }), { status: 409 });
+    }));
+    graph.patchNode(text, { config: { text: "new copy" } });
+    await vi.waitFor(() => expect(graph.busy).toBeNull());
+    const target = workspace.workflows.find(row => row.sourceId === id)!;
+    expect(graph.entries[target.id].pending).toBeNull(); expect(target.copyPending).toBe(true);
+    const current = { ...view, revision: 4, data_revision: 2, head_revision: 3, data: { revision: 2, values: {} } };
+    const paths: string[] = [], commands: Record<string, unknown>[] = [];
+    stubGraphApplicationFetch(vi.fn(async (path, init) => {
+      paths.push(path);
+      if (path === `/api/graph/sessions/${view.workflow_session_id}`) return new Response(JSON.stringify(current));
+      const body = JSON.parse(init.body); commands.push(body);
+      return new Response(JSON.stringify(session(body.document)));
+    }));
+    await graph.reconcile(target.id);
+    expect(paths).toEqual([`/api/graph/sessions/${view.workflow_session_id}`, `/api/graph/sessions/${view.workflow_session_id}/copy`]);
+    expect(commands[0]).toMatchObject({ expected_session_revision: 4, expected_data_revision: 2, expected_head_revision: 3 });
+    expect(commands[0].idempotency_key).not.toBe(rejectedKey!);
+    expect(target.copyPending).toBe(false); expect(graph.entries[target.id].pending).toBeNull();
   });
   it("rebinds a copied session after later edits before starting another run", async () => {
     const { graph, id, text } = fixture(); const view = session(graph.document!);

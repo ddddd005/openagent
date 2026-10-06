@@ -17,7 +17,7 @@ from .graph_contracts import (
 from .graph_execution import NodeExecutionContext
 from .preparation_program import validate_typed_value, validate_variable_name
 from .prompt_regex import RegexLimits, regex_replace_many, regex_rule_from_dict
-from .workbench_resources import CORE_SESSION_NOTE, validate_data_definition, validate_data_value
+from .resource_contracts import CORE_SESSION_NOTE, validate_data_definition, validate_data_value
 
 
 _UUID = {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"}

@@ -231,6 +231,20 @@ class HostRegistration:
 
 
 @dataclass(frozen=True)
+class ResolvedPackageSelection:
+    """Dependency metadata only; declared exports have not been registered."""
+
+    package_lock: tuple[dict, ...]
+    package_manifests: tuple[dict, ...]
+    registration_order: tuple[PackageDependency, ...]
+
+    def to_dict(self) -> dict:
+        return {"package_lock": copy.deepcopy(list(self.package_lock)),
+                "package_manifests": copy.deepcopy(list(self.package_manifests)),
+                "registration_order": [item.to_dict() for item in self.registration_order]}
+
+
+@dataclass(frozen=True)
 class LoadedCapabilities:
     registry: NodeRegistry
     package_lock: tuple[dict, ...]
@@ -317,7 +331,8 @@ class CapabilityPackageLoader:
                 result[(kind, reference["executor_id"], reference["exact_version"])] = canonical_bytes(item)
         return result
 
-    def load(self, enabled: dict[str, str] | None = None) -> LoadedCapabilities:
+    def resolve(self, enabled: dict[str, str] | None = None) -> ResolvedPackageSelection:
+        """Resolve exact declarations without staging or invoking a package."""
         if enabled is None:
             enabled = {}
             for package_id, version in sorted(self._packages):
@@ -353,10 +368,21 @@ class CapabilityPackageLoader:
 
         for package_id, version in sorted(enabled.items()):
             visit(package_id, version)
+        lock = tuple({"package_id": identity, "version": version} for identity, version in sorted(selected.items()))
+        return ResolvedPackageSelection(
+            copy.deepcopy(lock),
+            tuple(package.manifest.to_dict() for package in order),
+            tuple(PackageDependency(package.manifest.package_id, package.manifest.version)
+                  for package in order),
+        )
+
+    def load(self, enabled: dict[str, str] | None = None) -> LoadedCapabilities:
+        resolved = self.resolve(enabled)
         staged = self._base_registry.detached()
         frontend_extensions: dict[str, dict] = {}
         manifests: list[dict] = []
-        for package in order:
+        for identity in resolved.registration_order:
+            package = self._packages[(identity.package_id, identity.version)]
             registration = HostRegistration(staged, package.manifest, frontend_extensions)
             try:
                 package.register(registration)
@@ -369,7 +395,7 @@ class CapabilityPackageLoader:
             manifest = package.manifest.to_dict()
             manifest["exports"] = exports
             manifests.append(manifest)
-        lock = tuple({"package_id": identity, "version": version} for identity, version in sorted(selected.items()))
+        lock = resolved.package_lock
         type_contracts = {
             (item["scope"], item["type_id"], item["schema_version"]): canonical_bytes(item)
             for item in staged.data_types.catalog()

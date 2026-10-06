@@ -49,7 +49,7 @@ class GraphPublic:
         require(port_id in ports, "output_not_public", "The declared output port is unavailable", 403,
                 node_id=node_id, port_id=port_id)
         if set(descriptor["capabilities"]) & {"shared:read", "shared:write"} and "definition" in node["config"]:
-            from .workbench_resources import validate_data_definition
+            from .resource_contracts import validate_data_definition
             declaration = validate_data_definition(node["config"]["definition"])
             require(declaration["public"], "output_not_public", "Registered session data is private", 403,
                     node_id=node_id, port_id=port_id)

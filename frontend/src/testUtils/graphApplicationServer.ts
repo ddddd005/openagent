@@ -1,5 +1,31 @@
 import { vi } from "vitest";
 
+function applicationCommand(operation: string, parameters: Record<string, unknown>, result: Record<string, unknown>) {
+  const evidence = (result.session ?? result) as Record<string, unknown>;
+  const fields = ["workflow_definition_id", "definition_revision", "workflow_session_id", "revision",
+    "data_revision", "head_revision", "head_commit_id", "status", "active_chain_run_id",
+    "selected_chain_run_id", "reference", "update_sequence", "deleted", "package_lock"];
+  const accepted = Object.fromEntries(fields.filter(field => field in evidence).map(field => [field, evidence[field]]));
+  if (evidence.workflow_definition_id !== undefined && evidence.workflow_session_id === undefined
+    && evidence.revision !== undefined) accepted.definition_revision = evidence.revision;
+  return {
+    schema_version: 1, kind: "workflow.application-command", result,
+    receipt: { schema_version: 1, kind: "workflow.application-receipt", operation, operation_scope: "management",
+      idempotency_key: parameters.idempotency_key, request_sha256: "a".repeat(64), authority: "service_receipt",
+      target: parameters.session_id ? { session_id: parameters.session_id } : {}, accepted },
+  };
+}
+
+// Only explicit frozen evidence fixtures may satisfy a receipt read; no handler mutation is invoked.
+export function graphReceiptReadResponse(operation: string, parameters: Record<string, unknown>,
+  result: object): Response {
+  const value = applicationCommand(operation, parameters, result as Record<string, unknown>);
+  return new Response(JSON.stringify({
+    schema_version: 1, kind: "workflow.application-receipt-read", outcome: "matched",
+    reason_code: "receipt_matched", receipt: value.receipt, result: value.result,
+  }));
+}
+
 // Existing service fixtures describe the original authorities. This fake application
 // server translates named requests to those fixtures and adds the real receipt shape.
 export function stubGraphApplicationFetch(handler: (...arguments_: any[]) => any) {
@@ -30,18 +56,6 @@ export function stubGraphApplicationFetch(handler: (...arguments_: any[]) => any
     if (query || !response.ok) return response;
     let result: Record<string, unknown>;
     try { result = await response.clone().json(); } catch { return response; }
-    const evidence = (result.session ?? result) as Record<string, unknown>;
-    const fields = ["workflow_definition_id", "definition_revision", "workflow_session_id", "revision",
-      "data_revision", "head_revision", "head_commit_id", "status", "active_chain_run_id",
-      "selected_chain_run_id", "reference", "update_sequence", "deleted", "package_lock"];
-    const accepted = Object.fromEntries(fields.filter(field => field in evidence).map(field => [field, evidence[field]]));
-    if (evidence.workflow_definition_id !== undefined && evidence.workflow_session_id === undefined
-      && evidence.revision !== undefined) accepted.definition_revision = evidence.revision;
-    return new Response(JSON.stringify({
-      schema_version: 1, kind: "workflow.application-command", result,
-      receipt: { schema_version: 1, kind: "workflow.application-receipt", operation, operation_scope: "management",
-        idempotency_key: parameters.idempotency_key, request_sha256: "a".repeat(64), authority: "service_receipt",
-        target: sid ? { session_id: sid } : {}, accepted },
-    }), { status: response.status });
+    return new Response(JSON.stringify(applicationCommand(operation, parameters, result)), { status: response.status });
   });
 }

@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import ProviderSidebar from "./ProviderSidebar.vue";
 import ModelSourceFields from "./ModelSourceFields.vue";
 import { createProviderResources, modelResourceControllerKey } from "../application/workflowResources";
-import { listCurrentProviders, saveCurrentProvider, type ProviderSaveRequest } from "../adapters/workflowResourcesApi";
+import { listCurrentProviders, readCurrentProviderReceipt, saveCurrentProvider,
+  type ProviderSaveRequest } from "../adapters/workflowResourcesApi";
+import { graphReceiptReadResponse } from "../testUtils/graphApplicationServer";
 import { chatProviderType, newProvider, providerIdentity, type CurrentProvider } from "../domain/workflowModelResources";
 import { graphClone, newGraph, type GraphNode } from "../domain/workflowGraph";
 import { EMPTY_WORKFLOW_ID } from "../fixtures/workflows";
@@ -31,7 +33,7 @@ function controlledResources(initial: CurrentProvider[] = []) {
       expect(request).toEqual({ operation: "resource.list", parameters: { type_id: chatProviderType } });
       return new Response(JSON.stringify(state.records));
     }
-    expect(path).toBe("/api/graph/commands");
+    expect(["/api/graph/commands", "/api/graph/receipts/read"]).toContain(path);
     expect(request.operation).toBe("resource.save");
     const parameters = request.parameters as ProviderSaveRequest;
     if (["stale_revision", "invalid_origin", "idempotency_conflict"].includes(state.outcome)) {
@@ -40,6 +42,14 @@ function controlledResources(initial: CurrentProvider[] = []) {
       });
     }
     const previous = accepted.get(parameters.idempotency_key);
+    if (path === "/api/graph/receipts/read") {
+      if (!previous) return new Response(JSON.stringify({ schema_version: 1,
+        kind: "workflow.application-receipt-read", outcome: "unresolved", reason_code: "application_identity_missing" }));
+      expect(parameters).toEqual(previous);
+      return graphReceiptReadResponse("resource.save", parameters as unknown as Record<string, unknown>, {
+        reference: providerIdentity(previous.record), update_sequence: previous.record.update_sequence, deleted: false,
+      });
+    }
     if (previous) expect(parameters).toEqual(previous);
     else {
       accepted.set(parameters.idempotency_key, graphClone(parameters));
@@ -60,8 +70,9 @@ function controlledResources(initial: CurrentProvider[] = []) {
     state, requests,
     pending: () => persisted,
     commands: () => requests.filter(request => request.path === "/api/graph/commands"),
+    receipts: () => requests.filter(request => request.path === "/api/graph/receipts/read"),
     create: () => createProviderResources({
-      list: listCurrentProviders, save: saveCurrentProvider,
+      list: listCurrentProviders, save: saveCurrentProvider, readReceipt: readCurrentProviderReceipt,
       readPending: () => persisted, writePending: value => { persisted = value; },
     }),
   };
@@ -148,7 +159,7 @@ describe("provider sidebar SSR and current-resource controller integration", () 
     expect(backend.commands()).toHaveLength(1);
     backend.state.outcome = "accept";
     expect(await reopened.reconcile()).toBe(true);
-    expect(backend.commands()[1]!.body).toBe(submitted);
+    expect(backend.commands()).toHaveLength(1); expect(backend.receipts()[0]!.body).toBe(submitted);
     expect(backend.pending()).toBeNull();
     expect(reopened.locked.value).toBe(false);
     expectSharedProvider(await renderResources(reopened, reopened.records.value[0]!), reopened.records.value[0]!);
@@ -183,13 +194,13 @@ describe("provider sidebar SSR and current-resource controller integration", () 
       const reopened = backend.create();
       backend.state.outcome = code;
       expect(await reopened.reconcile()).toBe(false);
-      expect(backend.commands()[1]!.body).toBe(submitted);
+      expect(backend.commands()).toHaveLength(1); expect(backend.receipts()[0]!.body).toBe(submitted);
       expect(backend.pending()).toBe(persisted);
       expect(reopened.pending.value).toEqual(JSON.parse(persisted!));
       expect(reopened.locked.value).toBe(true);
       expect(reopened.error.value).toContain(code);
       expect(await reopened.save(newProvider(), 0)).toBe(false);
-      expect(backend.commands()).toHaveLength(2);
+      expect(backend.commands()).toHaveLength(1);
       const html = await renderResources(reopened, provider);
       expect(html).toContain("\u8d44\u6e90\u63d0\u4ea4\u7ed3\u679c\u5f85\u6838\u5b9e");
       expect(html).toMatch(/aria-label="\u65b0\u589e\u4f9b\u5e94\u5546\u8d44\u6e90"[^>]*disabled/);

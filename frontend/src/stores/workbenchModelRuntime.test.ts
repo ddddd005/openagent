@@ -94,7 +94,7 @@ describe("exact model selection in workbench requests", () => {
     expect(validRuntimeSnapshot(snapshot)).toBe(true);
     expect(JSON.stringify(snapshot)).not.toMatch(/credential|base_url|provider_id/);
   });
-  it("restores an unknown input with the same model revision, body and key even after editing the draft", async () => {
+  it("restores an unknown input with the same model revision, body and key without resending", async () => {
     const models = configured();
     const runtime = useWorkbenchRuntimeStore();
     const fetcher = transport(true);
@@ -112,11 +112,15 @@ describe("exact model selection in workbench requests", () => {
     vi.stubGlobal("fetch", recovered);
     await restored.activateWorkflow(MAIN_WORKFLOW_ID);
     const request = structuredClone(restored.exportRuntimeSnapshot().sessions[0].pending);
+    const save = vi.fn(() => true);
+    restored.setMutationPersistenceGuard(save);
+    recovered.mockClear();
     await restored.replayUnknown();
-    const input = recovered.mock.calls.find(([path]) => path.endsWith("/inputs"))!;
-    expect(JSON.parse(input[1]!.body as string)).toEqual(request!.body);
-    expect(recovered.mock.calls.some(([path]) => path === "/api/model-configurations/model")).toBe(false);
-    expect(restored.unknown).toBeNull();
+    expect(recovered).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(restored.unknown).toEqual(request);
+    expect(restored.error).toMatchObject({ kind: "unknown", requestId: request!.requestId });
+    expect(restored.error?.reason).toContain("unresolved");
   });
   it("keeps uncertain model publication locked and cannot create a session or input", async () => {
     const models = configured();

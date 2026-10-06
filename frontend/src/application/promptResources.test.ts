@@ -6,13 +6,14 @@ import { clonePromptResource, newPromptMember, newPromptResource, promptIdentity
 import { newProvider } from "../domain/workflowModelResources";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import type { PromptSaveRequest } from "../adapters/promptResourcesApi";
+import { graphReceiptReadResponse } from "../testUtils/graphApplicationServer";
 
 afterEach(() => vi.unstubAllGlobals());
 const cloneRequest = (value: PromptSaveRequest): PromptSaveRequest => JSON.parse(JSON.stringify(value));
 function fixture(overrides: Partial<PromptResourcesPorts> = {}) {
   let raw: string | null = null;
   const resources = createPromptResources({
-    list: async () => [], save: async () => ({}), readPending: () => raw,
+    list: async () => [], save: async () => ({}), readReceipt: vi.fn(), readPending: () => raw,
     writePending: value => { raw = value; }, ...overrides,
   });
   return { resources, raw: () => raw };
@@ -24,7 +25,7 @@ describe("current independent prompt resource coordination", () => {
     const record = newPromptResource(); record.scope = "project"; record.update_sequence = 4;
     const resources = createPromptResources({ list: async () => [record], readPending: () => raw,
       writePending: value => { order.push(value === null ? "clear" : "persist"); raw = value; },
-      save: async request => { order.push("dispatch"); requests.push(request); return {}; } });
+      readReceipt: vi.fn(), save: async request => { order.push("dispatch"); requests.push(request); return {}; } });
     expect(await resources.save(record, 4)).toBe(true);
     expect(order).toEqual(["persist", "dispatch", "clear"]);
     expect(requests[0]).toMatchObject({ expected_sequence: 4, record: { scope: "project", update_sequence: 5,
@@ -37,9 +38,10 @@ describe("current independent prompt resource coordination", () => {
     expect(await resources.save(record, 4)).toBe(true);
     expect(requests[1]!.record.value.members).toEqual(record.value.members);
   });
-  it("reopens an unknown request and replays identical key and body despite caller or transport mutation", async () => {
-    let raw: string | null = null, unknown = true;
+  it("reopens an unknown request and reads identical key and body despite caller or transport mutation", async () => {
+    let raw: string | null = null;
     const requests: PromptSaveRequest[] = [];
+    const reads: PromptSaveRequest[] = [];
     const record = newPromptResource(); record.scope = "project"; record.value.members = [newPromptMember("original")];
     record.value.members[0]!.metadata = { nested: { name: "original" } };
     const ports: PromptResourcesPorts = { list: async () => [], readPending: () => raw,
@@ -47,8 +49,10 @@ describe("current independent prompt resource coordination", () => {
       save: async request => {
         requests.push(cloneRequest(request));
         request.record.value.members[0]!.text = "mutated transport copy";
-        if (unknown) throw new WorkbenchApiError("unknown", "unknown");
-        return {};
+        throw new WorkbenchApiError("unknown", "unknown");
+      },
+      readReceipt: async request => {
+        reads.push(cloneRequest(request)); request.record.value.members[0]!.text = "mutated read copy"; return {};
       } };
     const resources = createPromptResources(ports);
     expect(await resources.save(record, 0)).toBe(false);
@@ -59,10 +63,10 @@ describe("current independent prompt resource coordination", () => {
     expect(resources.pending.value?.record.value.members[0]!.metadata).toEqual({ nested: { name: "original" } });
     expect(await resources.save(newPromptResource(), 0)).toBe(false);
     expect(raw).toBe(body);
-    const reopened = createPromptResources(ports); unknown = false;
+    const reopened = createPromptResources(ports);
     expect(await reopened.reconcile()).toBe(true);
-    expect(requests).toHaveLength(2); expect(requests[1]).toEqual(requests[0]);
-    expect(requests[1]!.record.scope).toBe("project");
+    expect(requests).toHaveLength(1); expect(reads).toEqual(requests);
+    expect(reads[0]!.record.scope).toBe("project");
     expect(raw).toBeNull(); expect(reopened.locked.value).toBe(false);
   });
   it("clears a first definitive CAS rejection so a refreshed revision can be manually edited", async () => {
@@ -73,7 +77,7 @@ describe("current independent prompt resource coordination", () => {
     });
     const record = newPromptResource(); record.update_sequence = 7; record.value.members = [newPromptMember("form")];
     const current = clonePromptResource(record); current.update_sequence = 8;
-    const resources = createPromptResources({ save, list: async () => [current], readPending: () => raw,
+    const resources = createPromptResources({ save, readReceipt: vi.fn(), list: async () => [current], readPending: () => raw,
       writePending: value => { raw = value; } });
     expect(await resources.save(record, 7)).toBe(false);
     expect(save.mock.calls[0]![0]).toMatchObject({ expected_sequence: 7, record: { update_sequence: 8 } });
@@ -84,15 +88,19 @@ describe("current independent prompt resource coordination", () => {
     expect(await resources.save(edited, 8)).toBe(true);
     expect(save.mock.calls[1]![0]).toMatchObject({ expected_sequence: 8, record: { update_sequence: 9 } });
   });
-  it.each(["stale_revision", "invalid_origin", "idempotency_conflict"])(
+  it.each(["stale_revision", "invalid_origin", "idempotency_conflict", "not_found", "gone"])(
     "does not clear an unknown original after later %s rejection", async code => {
-      let raw: string | null = null, calls = 0;
+      let raw: string | null = null;
       const requests: PromptSaveRequest[] = [];
+      const reads: PromptSaveRequest[] = [];
       const ports: PromptResourcesPorts = { list: async () => [], readPending: () => raw,
         writePending: value => { raw = value; },
         save: async request => {
           requests.push(cloneRequest(request));
-          if (++calls === 1) throw new WorkbenchApiError("unknown", "unknown");
+          throw new WorkbenchApiError("unknown", "unknown");
+        },
+        readReceipt: async request => {
+          reads.push(cloneRequest(request));
           throw new WorkbenchApiError("rejected", "rejected", 409, code);
         } };
       const resources = createPromptResources(ports);
@@ -103,8 +111,8 @@ describe("current independent prompt resource coordination", () => {
       expect(await reopened.reconcile()).toBe(false);
       expect(raw).toBe(body); expect(reopened.locked.value).toBe(true);
       expect(await reopened.save(newPromptResource(), 0)).toBe(false);
-      expect(requests).toHaveLength(3);
-      expect(requests[1]).toEqual(requests[0]); expect(requests[2]).toEqual(requests[0]);
+      expect(requests).toHaveLength(1);
+      expect(reads).toEqual([requests[0], requests[0]]);
     });
   it.each(["unknown", "unavailable", "idempotency_conflict"])("preserves an unresolved first failure: %s", async kind => {
     const failure = kind === "idempotency_conflict"
@@ -126,18 +134,19 @@ describe("current independent prompt resource coordination", () => {
   it.each([false, true])("retains a request when clearing local storage fails (server rejected: %s)", async rejected => {
     let raw: string | null = null, allowClear = false;
     const requests: PromptSaveRequest[] = [];
+    const reads: PromptSaveRequest[] = [];
     const resources = createPromptResources({ list: async () => [], readPending: () => raw,
       writePending: value => { if (value === null && !allowClear) throw new Error("disk"); raw = value; },
       save: async request => {
         requests.push(cloneRequest(request));
         if (rejected && requests.length === 1) throw new WorkbenchApiError("rejected", "changed", 409, "stale_revision");
         return {};
-      } });
+      }, readReceipt: async request => { reads.push(cloneRequest(request)); return {}; } });
     expect(await resources.save(newPromptResource(), 0)).toBe(false);
     expect(raw).not.toBeNull(); expect(resources.pending.value).not.toBeNull(); expect(resources.locked.value).toBe(true);
     allowClear = true;
     expect(await resources.reconcile()).toBe(true);
-    expect(requests[1]).toEqual(requests[0]); expect(raw).toBeNull();
+    expect(requests).toHaveLength(1); expect(reads).toEqual(requests); expect(raw).toBeNull();
   });
   it("fails closed on corrupt pending storage without overwriting or dispatching it", async () => {
     const request = { record: newPromptResource(), expected_sequence: 0, idempotency_key: crypto.randomUUID() };
@@ -146,7 +155,8 @@ describe("current independent prompt resource coordination", () => {
       JSON.stringify({ ...request, idempotency_key: request.idempotency_key.toUpperCase() })];
     for (const raw of corrupt) {
       const save = vi.fn(), writePending = vi.fn();
-      const resources = createPromptResources({ list: async () => [], save, readPending: () => raw, writePending });
+      const resources = createPromptResources({ list: async () => [], save, readReceipt: vi.fn(),
+        readPending: () => raw, writePending });
       expect(resources.locked.value).toBe(true);
       expect(await resources.save(newPromptResource(), 0)).toBe(false);
       expect(await resources.reconcile()).toBe(false);
@@ -201,6 +211,29 @@ describe("current independent prompt resource coordination", () => {
     await renderToString(createSSRApp(component).provide(promptResourceControllerKey, resources));
     expect(seen).toBe(resources);
   });
+  it.each(["success", "failure", "durable replacement"])("preserves a newer prompt pending across a late receipt %s", async outcome => {
+    let raw: string | null = null, finish!: (value: unknown) => void, fail!: (failure: unknown) => void;
+    const save = vi.fn(async () => { throw new WorkbenchApiError("unknown", "lost"); });
+    const ports: PromptResourcesPorts = { save, list: async () => [], readPending: () => raw,
+      writePending: vi.fn(value => { raw = value; }),
+      readReceipt: () => new Promise((resolve, reject) => { finish = resolve; fail = reject; }) };
+    const resources = createPromptResources(ports);
+    await resources.save(newPromptResource(), 0);
+    const original = JSON.parse(raw!) as PromptSaveRequest;
+    const reading = resources.reconcile();
+    const newer = JSON.parse(raw!) as PromptSaveRequest;
+    newer.record.value.members = [newPromptMember("newer body with original key")];
+    if (outcome === "durable replacement") raw = JSON.stringify(newer);
+    else resources.pending.value = newer;
+    resources.error.value = "newer diagnostic";
+    const durable = raw, writes = vi.mocked(ports.writePending).mock.calls.length;
+    if (outcome === "failure") fail(new WorkbenchApiError("rejected", "old read denial", 410));
+    else finish({});
+    expect(await reading).toBe(false); expect(raw).toBe(durable);
+    expect(resources.pending.value).toEqual(outcome === "durable replacement" ? original : newer);
+    expect(resources.error.value).toBe("newer diagnostic"); expect(ports.writePending).toHaveBeenCalledTimes(writes);
+    expect(save).toHaveBeenCalledOnce();
+  });
   it("uses its independent local-storage key and reopens the original default-adapter request", async () => {
     vi.resetModules();
     const storage = new Map<string, string>([
@@ -213,15 +246,14 @@ describe("current independent prompt resource coordination", () => {
     vi.stubGlobal("localStorage", { getItem, setItem, removeItem });
     const requests: PromptSaveRequest[] = [];
     let unknown = true;
-    vi.stubGlobal("fetch", vi.fn(async (_path: string, options: RequestInit) => {
+    vi.stubGlobal("fetch", vi.fn(async (path: string, options: RequestInit) => {
       const request = JSON.parse(String(options.body));
       if (request.operation === "resource.list") return new Response("[]");
       const parameters: PromptSaveRequest = request.parameters; requests.push(parameters);
       if (unknown) throw new Error("network");
       const result = { reference: promptIdentity(parameters.record), update_sequence: parameters.record.update_sequence, deleted: false };
-      return new Response(JSON.stringify({ schema_version: 1, kind: "workflow.application-command", result,
-        receipt: { schema_version: 1, kind: "workflow.application-receipt", operation: "resource.save", operation_scope: "management",
-          idempotency_key: parameters.idempotency_key, authority: "service_receipt", request_sha256: "a".repeat(64), target: {}, accepted: result } }));
+      expect(path).toBe("/api/graph/receipts/read");
+      return graphReceiptReadResponse(request.operation, request.parameters, result);
     }));
     const first = (await import("./promptResources")).usePromptResources();
     expect(await first.save(newPromptResource(), 0)).toBe(false);

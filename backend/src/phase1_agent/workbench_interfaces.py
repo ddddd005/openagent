@@ -7,10 +7,15 @@ from contextlib import closing
 
 from .contract_json import canonical_bytes
 from .program_variable_store import ProgramVariableStore
-from .workbench_resources import (
-    WorkbenchResourceStore, require, resource_error, resource_id, resource_revision,
+from .resource_contracts import (
+    require, resource_error, resource_id, resource_revision,
     session_data_entry, validate_data_definition, validate_data_value,
 )
+
+
+def _resources(store):
+    from .workbench_resources import WorkbenchResourceStore
+    return WorkbenchResourceStore(store)
 
 
 class WorkbenchInterfaces:
@@ -19,14 +24,14 @@ class WorkbenchInterfaces:
     def list_global_content(self):
         with self._lock, closing(self._store()) as store:
             self._check_open()
-            return WorkbenchResourceStore(store).list("content")
+            return _resources(store).list("content")
 
     def resolve_global_content(self, resource_ids):
         with self._lock, closing(self._store()) as store:
             self._check_open()
             store._connection.execute("BEGIN")
             try:
-                result = WorkbenchResourceStore(store).resolve_content(resource_ids)
+                result = _resources(store).resolve_content(resource_ids)
                 store._connection.execute("COMMIT")
                 return result
             except BaseException:
@@ -36,7 +41,7 @@ class WorkbenchInterfaces:
     def save_global_content(self, record, *, expected_revision, idempotency_key):
         with self._lock, closing(self._store()) as store:
             self._check_open()
-            return WorkbenchResourceStore(store).write(
+            return _resources(store).write(
                 "content", record, expected_revision=expected_revision,
                 idempotency_key=idempotency_key,
             )
@@ -44,7 +49,7 @@ class WorkbenchInterfaces:
     def delete_global_content(self, identity, *, expected_revision):
         with self._lock, closing(self._store()) as store:
             self._check_open()
-            WorkbenchResourceStore(store).delete(identity, expected_revision=expected_revision)
+            _resources(store).delete(identity, expected_revision=expected_revision)
             return {"resource_id": identity, "deleted": True}
 
     def register_session_data(self, definition):
@@ -52,7 +57,7 @@ class WorkbenchInterfaces:
         definition = validate_data_definition(definition)
         with self._lock, closing(self._store()) as store:
             self._check_open()
-            resources = WorkbenchResourceStore(store)
+            resources = _resources(store)
             old = resources.get("data-definition", definition["definition_id"], definition["revision"])
             if old is not None:
                 require(canonical_bytes(old) == canonical_bytes(definition))
@@ -66,11 +71,11 @@ class WorkbenchInterfaces:
     def list_session_data_definitions(self):
         with self._lock, closing(self._store()) as store:
             self._check_open()
-            return WorkbenchResourceStore(store).list("data-definition")
+            return _resources(store).list("data-definition")
 
     @staticmethod
     def _registered_data(store, definition_id, revision):
-        definition = WorkbenchResourceStore(store).get("data-definition", definition_id, revision)
+        definition = _resources(store).get("data-definition", definition_id, revision)
         if definition is None:
             raise resource_error("session_data_unregistered", "Session data is not registered", 404)
         return definition
@@ -93,7 +98,7 @@ class WorkbenchInterfaces:
             for node in config["preparation"]["nodes"] if node["kind"] == "global-source"
         })
         records = {record["resource_id"]: record for record in
-                   WorkbenchResourceStore(store).resolve_content(identities)}
+                   _resources(store).resolve_content(identities)}
         for config in configs.values():
             if config["schema_version"] != 3:
                 continue
@@ -215,7 +220,7 @@ class WorkbenchInterfaces:
                                      exposure_configuration["revision"])
                 if record is None:
                     raise resource_error("output_not_public", "Output declaration is unavailable", 403)
-                if record["workflow_id"] != WorkbenchResourceStore(store).session_owner(sid):
+                if record["workflow_id"] != _resources(store).session_owner(sid):
                     raise resource_error("ownership_mismatch", "Declaration belongs to another workflow", 409)
                 rows = read_registered_exposures(record, catalog.get(record["config_id"]), view)
                 declarations = [row for row in record["registrations"] if row["nodeBindingId"] == node_id]

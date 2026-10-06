@@ -189,7 +189,7 @@ describe("global providers and typed model dependencies", () => {
     await models.saveModels(MAIN_WORKFLOW_ID);
     expect(models.error?.reason).toBe("模型诊断读取契约无效");
   });
-  it("persists an uncertain provider mutation and replays precisely the original body after reinitialization", async () => {
+  it("persists an uncertain provider mutation and preserves it without redispatch after reinitialization", async () => {
     const storage = memory();
     const persistence = useWorkbenchPersistenceStore();
     persistence.initialize(storage);
@@ -211,9 +211,10 @@ describe("global providers and typed model dependencies", () => {
     expect(restored.pending).toEqual(original);
     expect(fetcher).not.toHaveBeenCalled();
     await restored.reconcile();
-    expect(JSON.parse(fetcher.mock.calls[0][1].body as string)).toEqual(original.body);
-    expect(restored.pending).toBeNull();
-    expect(restored.providers[0].name).toBe("new name");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(restored.pending).toEqual(original);
+    expect(restored.providers).toEqual([]);
+    expect(restored.error?.kind).toBe("unknown");
   });
   it("blocks dispatch on failed local persistence and keeps the existing saved record", async () => {
     const storage = memory();
@@ -230,7 +231,7 @@ describe("global providers and typed model dependencies", () => {
     expect(storage.getItem()).toBe(original);
     expect(models.pending).toBeNull();
   });
-  it("keeps mismatched receipts unknown and clears a definite stale revision rejection", async () => {
+  it("keeps mismatched receipts unknown and does not ask a later rejection to settle them", async () => {
     useWorkbenchPersistenceStore().initialize(memory());
     const models = useModelConfigurationStore();
     models.editProvider(provider());
@@ -241,10 +242,13 @@ describe("global providers and typed model dependencies", () => {
     expect(await models.saveProvider()).toBe(false);
     expect(models.error?.kind).toBe("unknown");
     expect(models.pending).not.toBeNull();
-    vi.stubGlobal("fetch", vi.fn(async () => response({ error: { reason_code: "stale_revision" } }, 409)));
+    const original = models.exportConfiguration().pending;
+    const fetcher = vi.fn(async () => response({ error: { reason_code: "stale_revision" } }, 409));
+    vi.stubGlobal("fetch", fetcher);
     await models.reconcile();
-    expect(models.pending).toBeNull();
-    expect(models.error?.code).toBe("stale_revision");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(models.pending).toEqual(original);
+    expect(models.error?.kind).toBe("unknown");
   });
   it("refuses a missing model dependency without submitting an input", async () => {
     const models = useModelConfigurationStore();
@@ -316,5 +320,202 @@ describe("global providers and typed model dependencies", () => {
     expect(useModelConfigurationStore().getDraft(workflowId)?.nodes[0].provider_ref).toEqual({ provider_id: PROVIDER, revision: 1 });
     expect(restored.save()).toBe(true); expect(readWorkbench(storage).value?.schemaVersion).toBe(6);
     expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+describe("native configuration response custody", () => {
+  it.each(["provider", "model"])("retains the original %s request on first idempotency conflict", async kind => {
+    const models = useModelConfigurationStore();
+    const guard = vi.fn(() => true);
+    models.setPersistenceGuard(guard);
+    if (kind === "provider") models.editProvider(provider());
+    else models.addNode(MAIN_WORKFLOW_ID, { x: 0, y: 0 });
+    let original: unknown;
+    const fetcher = vi.fn(async () => {
+      original = models.exportConfiguration().pending;
+      return response({ error: { reason_code: "idempotency_conflict" } }, 409);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    expect(await (kind === "provider" ? models.saveProvider() : models.saveModels(MAIN_WORKFLOW_ID))).toBe(false);
+    expect(models.pending).toEqual(original);
+    expect(models.error?.kind).toBe("unknown");
+    expect(models.error?.code).toBe("idempotency_conflict");
+    await models.reconcile();
+    expect(models.pending).toEqual(original);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(guard).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears only its own unsent provider request when initial persistence throws", async () => {
+    const models = useModelConfigurationStore();
+    models.editProvider(provider());
+    models.setPersistenceGuard(() => { throw new Error("quota"); });
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    expect(await models.saveProvider()).toBe(false);
+    expect(models.pending).toBeNull();
+    expect(models.error?.kind).toBe("unavailable");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("does not clear a request restored by a throwing initial persistence guard", async () => {
+    const models = useModelConfigurationStore();
+    models.editProvider(provider());
+    let restored = models.exportConfiguration();
+    models.setPersistenceGuard(() => {
+      restored = models.exportConfiguration();
+      models.restoreConfiguration(restored);
+      throw new Error("quota");
+    });
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    expect(await models.saveProvider()).toBe(false);
+    expect(models.exportConfiguration()).toEqual(restored);
+    expect(models.pending).not.toBeNull();
+    expect(models.error).toBeNull();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("clears a first definite rejection only after its local settlement is saved", async () => {
+    const models = useModelConfigurationStore();
+    const guard = vi.fn(() => true);
+    models.setPersistenceGuard(guard);
+    models.editProvider(provider());
+    vi.stubGlobal("fetch", vi.fn(async () => response({ error: { reason_code: "stale_revision" } }, 409)));
+    expect(await models.saveProvider()).toBe(false);
+    expect(models.pending).toBeNull();
+    expect(models.error?.code).toBe("stale_revision");
+    expect(guard).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([201, 409])("restores pending when local settlement fails after HTTP %i", async status => {
+    const models = useModelConfigurationStore();
+    const guard = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
+    models.setPersistenceGuard(guard);
+    models.editProvider(provider());
+    let original: unknown;
+    const fetcher = vi.fn(async (_path: string, options: RequestInit) => {
+      original = models.exportConfiguration().pending;
+      return status === 201 ? response(JSON.parse(options.body as string).record, status)
+        : response({ error: { reason_code: "stale_revision" } }, status);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    expect(await models.saveProvider()).toBe(false);
+    expect(models.pending).toEqual(original);
+    expect(models.error?.kind).toBe("unknown");
+    await models.reconcile();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(guard).toHaveBeenCalledTimes(2);
+    expect(models.pending).toEqual(original);
+  });
+
+  it("restores pending when the settlement guard throws", async () => {
+    const models = useModelConfigurationStore();
+    models.setPersistenceGuard(vi.fn().mockReturnValueOnce(true).mockImplementation(() => { throw new Error("quota"); }));
+    models.editProvider(provider());
+    let original: unknown;
+    vi.stubGlobal("fetch", vi.fn(async (_path: string, options: RequestInit) => {
+      original = models.exportConfiguration().pending;
+      return response(JSON.parse(options.body as string).record);
+    }));
+    expect(await models.saveProvider()).toBe(false);
+    expect(models.pending).toEqual(original);
+    expect(models.error?.kind).toBe("unknown");
+  });
+
+  it.each([201, 409, 404, 410])("isolates HTTP %i after restoring the identical native provider request", async status => {
+    const models = useModelConfigurationStore();
+    const guard = vi.fn(() => true);
+    models.setPersistenceGuard(guard);
+    models.editProvider(provider());
+    let deliver!: (value: Response) => void;
+    const fetcher = vi.fn(() => new Promise<Response>(resolve => { deliver = resolve; }));
+    vi.stubGlobal("fetch", fetcher);
+    const saving = models.saveProvider();
+    const snapshot = models.exportConfiguration();
+    expect(models.restoreConfiguration(snapshot)).toBe(true);
+    models.addNode(MAIN_WORKFLOW_ID, { x: 4, y: 8 });
+    const restored = models.exportConfiguration();
+    deliver(status === 201 ? response(snapshot.pending!.body.record, status)
+      : response({ error: { reason_code: "stale_revision" } }, status));
+    expect(await saving).toBe(false);
+    expect(models.exportConfiguration()).toEqual(restored);
+    expect(models.providers).toEqual([]);
+    expect(models.error).toBeNull();
+    expect(guard).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([201, 409])("checks the whole pending body, not just the key, for HTTP %i", async status => {
+    const models = useModelConfigurationStore();
+    models.setPersistenceGuard(() => true);
+    models.editProvider(provider());
+    let deliver!: (value: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(resolve => { deliver = resolve; })));
+    const saving = models.saveProvider();
+    const original = models.exportConfiguration().pending!;
+    const replacement = structuredClone(original);
+    if (!("provider_id" in replacement.body.record)) throw new Error("Provider request expected");
+    replacement.body.record.name = "new pending body";
+    models.pending = replacement;
+    deliver(status === 201 ? response(original.body.record, status)
+      : response({ error: { reason_code: "stale_revision" } }, status));
+    expect(await saving).toBe(false);
+    expect(models.pending).toEqual(replacement);
+    expect(models.providers).toEqual([]);
+    expect(models.error).toBeNull();
+  });
+
+  it("does not update restored model drafts or request diagnostics from their late receipt", async () => {
+    const models = useModelConfigurationStore();
+    models.setPersistenceGuard(() => true);
+    models.addNode(MAIN_WORKFLOW_ID, { x: 0, y: 0 });
+    let deliver!: (value: Response) => void;
+    const fetcher = vi.fn(() => new Promise<Response>(resolve => { deliver = resolve; }));
+    vi.stubGlobal("fetch", fetcher);
+    const saving = models.saveModels(MAIN_WORKFLOW_ID);
+    const snapshot = models.exportConfiguration();
+    expect(models.restoreConfiguration(snapshot)).toBe(true);
+    models.getDraft(MAIN_WORKFLOW_ID)!.nodes[0].parameters.temperature = 0.7;
+    const restored = models.exportConfiguration();
+    deliver(response(snapshot.pending!.body.record));
+    expect(await saving).toBe(false);
+    expect(models.exportConfiguration()).toEqual(restored);
+    expect(models.isDraftSaved(MAIN_WORKFLOW_ID)).toBe(false);
+    expect(models.error).toBeNull();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not diagnose a model receipt when persistence restores the original request during settlement", async () => {
+    const models = useModelConfigurationStore();
+    models.addNode(MAIN_WORKFLOW_ID, { x: 0, y: 0 });
+    let original = models.exportConfiguration();
+    let writes = 0;
+    models.setPersistenceGuard(() => {
+      if (++writes === 1) original = models.exportConfiguration();
+      else models.restoreConfiguration(original);
+      return true;
+    });
+    const fetcher = vi.fn(async (_path: string, options: RequestInit) =>
+      response(JSON.parse(options.body as string).record));
+    vi.stubGlobal("fetch", fetcher);
+    expect(await models.saveModels(MAIN_WORKFLOW_ID)).toBe(false);
+    expect(models.exportConfiguration()).toEqual(original);
+    expect(models.error).toBeNull();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps provider edits made while their first request is in flight", async () => {
+    const models = useModelConfigurationStore();
+    models.setPersistenceGuard(() => true);
+    models.editProvider(provider());
+    let deliver!: (value: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(resolve => { deliver = resolve; })));
+    const saving = models.saveProvider();
+    const command = models.exportConfiguration().pending!;
+    models.providerForm!.name = "later edit";
+    deliver(response(command.body.record));
+    expect(await saving).toBe(true);
+    expect(models.providerForm?.name).toBe("later edit");
+    expect(models.pending).toBeNull();
   });
 });

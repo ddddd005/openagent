@@ -82,7 +82,7 @@ describe("current session variable editing", () => {
     expect(body).toMatchObject({ name: "倒计时", value: 9, expected_variable_revision: 0 });
     expect(body.idempotency_key).toMatch(/^[0-9a-f-]{36}$/);
   });
-  it("preserves an unknown write and replays its original key and configuration", async () => {
+  it("preserves an unknown variable write without resending its original key and configuration", async () => {
     let writes = 0;
     const fetcher = vi.fn(async (path: string, options?: RequestInit) => {
       if (path.endsWith("/variables/read")) return json(projection());
@@ -100,11 +100,14 @@ describe("current session variable editing", () => {
     const snapshot = runtime.exportRuntimeSnapshot();
     expect(validRuntimeSnapshot(snapshot)).toBe(true);
     preparation.setRootText(MAIN_WORKFLOW_ID, "A", "changed after unknown write");
+    const beforeReconcile = fetcher.mock.calls.length;
     await runtime.replayUnknown();
     const calls = fetcher.mock.calls.filter(([path]) => path.endsWith("/variables/write"));
-    expect(calls).toHaveLength(2);
-    expect(calls[0][1]).toEqual(calls[1][1]);
-    expect(runtime.unknown).toBeNull();
+    expect(calls).toHaveLength(1);
+    expect(fetcher).toHaveBeenCalledTimes(beforeReconcile);
+    expect(runtime.exportRuntimeSnapshot()).toEqual(snapshot);
+    expect(runtime.unknown?.body).toEqual(JSON.parse(calls[0]![1]!.body as string));
+    expect(runtime.error?.kind).toBe("unknown");
   });
   it.each([
     { value: 10, revision: 1 },

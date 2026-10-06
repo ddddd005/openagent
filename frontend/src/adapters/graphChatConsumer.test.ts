@@ -35,10 +35,10 @@ function receipt(command: any, revision = 2) {
     accepted: { ...result.receipt },
   }, result };
 }
-function receiptWithInputs(command: any, inputs: any) {
-  const value = receipt(command);
-  value.result.consumer.inputs = inputs;
-  return value;
+function receiptRead(command: any, revision = 2) {
+  const value = receipt(command, revision);
+  return { schema_version: 1, kind: "workflow.application-receipt-read", outcome: "matched",
+    reason_code: "receipt_matched", receipt: value.receipt, result: { receipt: value.result.receipt } };
 }
 function storage() {
   const values = new Map<string, string>();
@@ -367,19 +367,20 @@ describe("optional graph chat consumer", () => {
 
   it("keeps original inputs and idempotency key across an unknown result and reload", async () => {
     const request = vi.fn().mockRejectedValueOnce(new Error("unknown"))
-      .mockImplementationOnce(async (_path, options) => receipt(JSON.parse(options.body)));
+      .mockImplementationOnce(async (_path, options) => receiptRead(JSON.parse(options.body)));
     const { value, saved } = client(request);
     await expect(value.command("start", { inputs: { text: "original", other: "" } })).rejects.toThrow("unknown");
     const recovered = new GraphChatClient({ workflowId: workflow, sessionId: session, storage: saved, request, keyFactory: () => "different" });
     await recovered.command("start", { inputs: { text: "edited" } });
-    expect(request.mock.calls[1]).toEqual(request.mock.calls[0]);
+    expect(request.mock.calls[1][1]).toEqual(request.mock.calls[0][1]);
+    expect(request.mock.calls[1][0]).toBe("/api/graph/consumer/receipts/read");
     expect(recovered.pending).toBeNull();
   });
 
-  it.each(["retry_acceptance", "retry_failed_node"])("replays an unknown %s with the original action and session after reload", async action => {
+  it.each(["retry_acceptance", "retry_failed_node"])("reads an unknown %s receipt with the original action and session after reload", async action => {
     const request = vi.fn().mockRejectedValueOnce(new Error("lost acceptance receipt"))
       .mockImplementationOnce(async (_path, options) => {
-        return receipt(JSON.parse(options.body), 3);
+        return receiptRead(JSON.parse(options.body), 3);
       });
     const { value, saved } = client(request);
     value.accept({ ...consumer(2), status: action === "retry_acceptance" ? "archive_failed" : "failed", can_submit: false,
@@ -391,25 +392,27 @@ describe("optional graph chat consumer", () => {
     const recovered = new GraphChatClient({ workflowId: workflow, sessionId: session, storage: saved,
       request, keyFactory: () => "different" });
     await recovered.command("start", { inputs: { text: "replacement" } });
-    expect(request.mock.calls[1]).toEqual(request.mock.calls[0]);
+    expect(request.mock.calls[1][1]).toEqual(request.mock.calls[0][1]);
+    expect(request.mock.calls[1][0]).toBe("/api/graph/consumer/receipts/read");
     expect(recovered.pending).toBeNull();
   });
 
-  it("keeps a structured PROMPT input and its metadata unchanged across an unknown request replay", async () => {
+  it("keeps a structured PROMPT input and its metadata unchanged during receipt-only reconciliation", async () => {
     const declaration = { name: "prompt", data_type: "PROMPT", required: true, node_ids: [node] };
     const payload = { schema_version: 1, kind: "workflow.prompt", stage: "materials", assembly: null, items: [{
       item_instance_id: node, text: "original {{macro}}", role: "assistant", placement: "middle", depth: 3,
       order: 2, enabled: true, purpose: "prompt", source: { kind: "configuration", revision: 2 }, protected: false, metadata: { name: "source" },
     }] };
     const request = vi.fn().mockRejectedValueOnce(new Error("unknown"))
-      .mockImplementationOnce(async (_path, options) => receiptWithInputs(JSON.parse(options.body), [declaration]));
+      .mockImplementationOnce(async (_path, options) => receiptRead(JSON.parse(options.body)));
     const { value, saved } = client(request);
     value.accept({ ...consumer(), inputs: [declaration] });
     await expect(value.command("start", { inputs: { prompt: parseExternalInput("PROMPT", JSON.stringify(payload)) } })).rejects.toThrow("unknown");
     const recovered = new GraphChatClient({ workflowId: workflow, sessionId: session, storage: saved, request, keyFactory: () => "different" });
     expect(recovered.pending.body.inputs.prompt).toEqual(payload);
     await recovered.command("start", { inputs: { prompt: "edited" } });
-    expect(request.mock.calls[1]).toEqual(request.mock.calls[0]);
+    expect(request.mock.calls[1][1]).toEqual(request.mock.calls[0][1]);
+    expect(request.mock.calls[1][0]).toBe("/api/graph/consumer/receipts/read");
     expect(JSON.parse(request.mock.calls[1][1].body).parameters.inputs.prompt).toEqual(payload);
   });
 
@@ -510,17 +513,18 @@ describe("optional graph chat consumer", () => {
     view.outputs = [{ ...output, data_schema_version: 1 }] as any;
     expect(() => validateConsumer(view, workflow, session)).toThrow("封套");
   });
-  it("retains a v2 PROMPT external input during exact unknown-request replay", async () => {
+  it("retains a v2 PROMPT external input during receipt-only reconciliation", async () => {
     const payload = { schema_version: 2, kind: "workflow.prompt", stage: "materials", assembly: null, items: [] };
     const declaration = { name: "prompt", data_type: "PROMPT", required: true, node_ids: [node] };
     const request = vi.fn().mockRejectedValueOnce(new Error("unknown"))
-      .mockImplementationOnce(async (_path, options) => receiptWithInputs(JSON.parse(options.body), [declaration]));
+      .mockImplementationOnce(async (_path, options) => receiptRead(JSON.parse(options.body)));
     const { value, saved } = client(request); value.accept({ ...consumer(), inputs: [declaration] });
     await expect(value.command("start", { inputs: { prompt: parseExternalInput("PROMPT", JSON.stringify(payload)) } })).rejects.toThrow("unknown");
     const reopened = new GraphChatClient({ workflowId: workflow, sessionId: session, storage: saved, request,
       keyFactory: () => "must-not-replace-original-key" });
     await reopened.command("start", { inputs: { prompt: "edited" } });
-    expect(request.mock.calls[1]).toEqual(request.mock.calls[0]);
+    expect(request.mock.calls[1][1]).toEqual(request.mock.calls[0][1]);
+    expect(request.mock.calls[1][0]).toBe("/api/graph/consumer/receipts/read");
     expect(JSON.parse(request.mock.calls[1][1].body).parameters.inputs.prompt).toEqual(payload);
   });
 
@@ -598,14 +602,14 @@ describe("optional graph chat consumer", () => {
       workflow_session_id: session, body: { expected_revision: 7, idempotency_key: key, inputs: { prompt: "frozen" } } };
     saved.setItem(`workflow-chat:v1:${workflow}`, JSON.stringify({ schema_version: 1, kind: "workflow.chat-client",
       workflow_definition_id: workflow, workflow_session_id: session, pending }));
-    const request = vi.fn(async (_path, options) => receipt(JSON.parse(options.body), 8));
+    const request = vi.fn(async (_path, options) => receiptRead(JSON.parse(options.body), 8));
     const reopened = new GraphChatClient({ workflowId: workflow, sessionId: node, storage: saved, request, keyFactory: vi.fn() });
     const original = JSON.stringify(reopened.pending);
     await reopened.command("close", { expected_revision: 99 });
     expect(JSON.parse(original)).toEqual(pending);
     expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({ operation: "consumer.run.start",
       parameters: { ...pending.body, session_id: session } });
-    expect(request.mock.calls[0][0]).toBe("/api/graph/consumer/commands");
+    expect(request.mock.calls[0][0]).toBe("/api/graph/consumer/receipts/read");
     expect(reopened.sessionId).toBe(session);
   });
 
@@ -642,19 +646,17 @@ describe("optional graph chat consumer", () => {
 
   it("reconciles the stable original receipt separately from a later fresh consumer observation", async () => {
     const request = vi.fn().mockRejectedValueOnce(new Error("unknown"))
-      .mockImplementationOnce(async (_path, options) => {
-        const value = receipt(JSON.parse(options.body), 2);
-        value.result.consumer = { ...consumer(8), status: "succeeded", can_submit: true, available_actions: [] };
-        return value;
-      });
+      .mockImplementationOnce(async (_path, options) => receiptRead(JSON.parse(options.body), 2));
     const { value } = client(request);
     await expect(value.command("start")).rejects.toThrow("unknown");
+    value.accept({ ...consumer(8), status: "succeeded", can_submit: true, available_actions: [] });
     const accepted = await value.command("close");
     expect(accepted.receipt.session_revision).toBe(2);
     expect(value.consumer.session_revision).toBe(8);
     expect(value.consumer.status).toBe("succeeded");
     expect(value.pending).toBeNull();
-    expect(request.mock.calls[1]).toEqual(request.mock.calls[0]);
+    expect(request.mock.calls[1][1]).toEqual(request.mock.calls[0][1]);
+    expect(request.mock.calls[1][0]).toBe("/api/graph/consumer/receipts/read");
   });
 
   it("does not dispatch when persistence fails before sending the named command", async () => {

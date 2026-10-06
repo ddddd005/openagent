@@ -1,6 +1,7 @@
 import { computed, hasInjectionContext, inject, ref, type InjectionKey } from "vue";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
-import { listCurrentProviders, saveCurrentProvider, type ProviderSaveRequest } from "../adapters/workflowResourcesApi";
+import { listCurrentProviders, readCurrentProviderReceipt, saveCurrentProvider,
+  type ProviderSaveRequest } from "../adapters/workflowResourcesApi";
 import { cloneProvider, isCurrentProvider, type CurrentProvider } from "../domain/workflowModelResources";
 import { graphUuid } from "../domain/workflowGraph";
 
@@ -8,6 +9,7 @@ const pendingKey = "workflow.models.resource.pending.v1";
 export interface ProviderResourcesPorts {
   list(): Promise<CurrentProvider[]>;
   save(request: ProviderSaveRequest): Promise<unknown>;
+  readReceipt(request: ProviderSaveRequest): Promise<unknown>;
   readPending(): string | null;
   writePending(value: string | null): void;
 }
@@ -22,6 +24,7 @@ export function createProviderResources(ports: ProviderResourcesPorts) {
   const pending = ref<ProviderSaveRequest | null>(null), error = ref("");
   const locked = computed(() => busy.value || !!pending.value);
   let loadGeneration = 0;
+  let commandGeneration = 0;
   try {
     const saved = ports.readPending();
     if (saved) {
@@ -37,13 +40,24 @@ export function createProviderResources(ports: ProviderResourcesPorts) {
     finally { if (generation === loadGeneration) loading.value = false; }
   }
   async function submit(request: ProviderSaveRequest, reconciling = false) {
+    const original = JSON.parse(JSON.stringify(request)) as ProviderSaveRequest;
+    const identity = JSON.stringify(original), generation = ++commandGeneration;
+    const current = () => {
+      if (generation !== commandGeneration || pending.value === null || JSON.stringify(pending.value) !== identity) return false;
+      try {
+        const durable = ports.readPending();
+        return durable === null || JSON.stringify(JSON.parse(durable)) === identity;
+      } catch { return false; }
+    };
     busy.value = true; error.value = "";
     try {
-      await ports.save(JSON.parse(JSON.stringify(request)));
+      await (reconciling ? ports.readReceipt : ports.save)(JSON.parse(identity));
+      if (!current()) return false;
       ports.writePending(null); pending.value = null;
       await refresh();
       return true;
     } catch (failure) {
+      if (!current()) return false;
       error.value = failure instanceof Error ? failure.message : "资源保存失败";
       // A later transport/policy rejection cannot settle an earlier unknown mutation.
       if (!reconciling && failure instanceof WorkbenchApiError && failure.kind === "rejected"
@@ -51,7 +65,7 @@ export function createProviderResources(ports: ProviderResourcesPorts) {
         try { ports.writePending(null); pending.value = null; } catch { error.value = "原请求状态无法保存，先核实原请求"; }
       }
       return false;
-    } finally { busy.value = false; }
+    } finally { if (generation === commandGeneration) busy.value = false; }
   }
   async function save(provider: CurrentProvider, expectedSequence: number) {
     if (locked.value) return false;
@@ -76,7 +90,7 @@ export function useProviderResources() {
   const provided = hasInjectionContext() ? inject(modelResourceControllerKey, null) : null;
   if (provided) return provided;
   return installed ??= createProviderResources({
-    list: listCurrentProviders, save: saveCurrentProvider,
+    list: listCurrentProviders, save: saveCurrentProvider, readReceipt: readCurrentProviderReceipt,
     readPending: () => typeof localStorage === "undefined" ? null : localStorage.getItem(pendingKey),
     writePending: value => {
       if (typeof localStorage === "undefined") throw new Error("Resource request storage unavailable");

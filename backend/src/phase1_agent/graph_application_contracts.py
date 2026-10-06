@@ -84,6 +84,7 @@ COMMANDS = (
 )
 
 QUERIES = (
+    operation("receipt.read", "_receipt_read", ("operation", "parameters"), consumer=True),
     operation("catalog.node-types", "node_types", optional=("protocol_version",)),
     operation("platform", "platform_capabilities"),
     operation("definition.read", "get_definition", ("identity",), ("revision",)),

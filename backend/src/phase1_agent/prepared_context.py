@@ -11,6 +11,7 @@ from .contract_errors import ContractValidationError
 from .contract_graph import validate_message_history, validate_turn_final
 from .contract_json import canonical_bytes, dumps_pretty
 from .contracts_v2 import validate_record
+from .prepared_request import PREPARATION_CAPABILITY, check_prepared_request_capacity
 from .prompt_preparation import (
     prepare_prompt_context, validate_context_preparation, validate_prompt_context_config,
 )
@@ -23,7 +24,6 @@ from .variable_preparation import (
 
 PREPARED_CONTEXT_COMPONENT = "7be319b8-30bd-4674-b7bf-d1cf54a1a10e"
 PREPARED_CONTEXT_VERSION = "1.0.0"
-PREPARATION_CAPABILITY = "prompt_preparation_v1"
 PREPARED_PROJECTION_VERSION = 2
 PREPARED_CONTEXT_CAPABILITIES = frozenset({
     "sources", "paired_history", "frozen_projection", PREPARATION_CAPABILITY,
@@ -92,6 +92,11 @@ def _input_source(node_input: dict[str, Any]) -> dict[str, Any]:
 def validate_frozen_preparation(snapshot: dict[str, Any]) -> dict[str, Any] | None:
     """Validate saved preparation without rerunning a rule or reading live values."""
     snapshot = validate_record("input_snapshot", snapshot)
+    return _validate_validated_frozen_preparation(snapshot)
+
+
+def _validate_validated_frozen_preparation(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    """Validate preparation on a detached snapshot already checked by its caller."""
     payload = snapshot["config"]["payload"]
     descriptor = payload.get("resolved", {}).get("context", {})
     prepared = PREPARATION_CAPABILITY in descriptor.get("capabilities", [])
@@ -221,13 +226,13 @@ def validate_prompt_registry_owner(
                  "Variable registry does not belong to the exact workflow definition")
 
 
-def check_prepared_request_capacity(
+def _check_validated_prepared_request_capacity(
     snapshot: dict[str, Any], *, messages: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Bound a complete request, including accepted deltas and frozen tools."""
+    """Bound a complete request after the public gate validates its snapshot."""
     from .prompt_assembly import message_content_chars
 
-    evidence = validate_frozen_preparation(snapshot)
+    evidence = _validate_validated_frozen_preparation(snapshot)
     if evidence is None:
         return
     request_messages = snapshot["s0"] if messages is None else messages

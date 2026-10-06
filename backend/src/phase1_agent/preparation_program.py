@@ -13,7 +13,7 @@ from .contract_json import canonical_bytes, content_digest, validate_json_value
 from .prompt_errors import PromptProcessingError
 from .prompt_regex import RegexLimits, regex_replace_many, regex_rule_from_dict
 from .prompt_values import validate_context_view, validate_prompt_collection
-from .workbench_resources import (
+from .resource_contracts import (
     session_data_entry, validate_data_definition, validate_data_value, validate_session_data,
     validate_global_content,
 )

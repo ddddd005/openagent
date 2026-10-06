@@ -1,4 +1,4 @@
-import { stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
+import { graphReceiptReadResponse, stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useWorkflowGraphStore } from "./workflowGraph";
@@ -42,18 +42,24 @@ describe("workflow candidate boundaries", () => {
     expect(graph.session?.data.data).toEqual({ note: { value: "candidate" } });
   });
 
-  it("restores and replays the original unknown candidate request after reload", async () => {
+  it("restores and reads the original unknown candidate request after reload", async () => {
     const { graph, id, view, directory, candidate, chain } = fixture();
     stubGraphApplicationFetch( vi.fn().mockRejectedValue(new Error("lost")));
     expect(await graph.changeCandidate(candidate)).toBe(false);
     const original = graphClone(graph.entries[id].pending!);
     expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(true);
     const selected = { ...view, selected_chain_run_id: chain, revision: 4, head_revision: 3 };
-    const fetcher = vi.fn(async (path, _options) => new Response(JSON.stringify(path.includes("/revisions/")
-      ? graph.document : path.endsWith("/candidates") ? directory : selected)));
+    const fetcher = vi.fn(async (path, options) => {
+      if (path === "/api/graph/receipts/read") {
+        const request = JSON.parse(options.body);
+        return graphReceiptReadResponse(request.operation, request.parameters, selected);
+      }
+      return new Response(JSON.stringify(path.includes("/revisions/")
+        ? graph.document : path.endsWith("/candidates") ? directory : selected));
+    });
     stubGraphApplicationFetch( fetcher); await graph.reconcile(id);
-    expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual(original.body);
-    expect(fetcher.mock.calls[0][0]).toBe(original.path);
+    expect(JSON.parse(fetcher.mock.calls[0][1].body).parameters).toEqual({ ...original.body, session_id: view.workflow_session_id });
+    expect(fetcher.mock.calls[0][0]).toBe("/api/graph/receipts/read");
     expect(graph.entries[id].pending).toBeNull();
   });
 
@@ -88,9 +94,16 @@ describe("workflow candidate boundaries", () => {
     const laterChain = crypto.randomUUID();
     const later = { ...view, revision: 8, head_revision: 6, selected_chain_run_id: laterChain };
     graph.views[view.workflow_session_id] = later;
-    let count = 0;
-    stubGraphApplicationFetch( vi.fn(async path => new Response(JSON.stringify(path.includes("/revisions/")
-      ? graph.document : count++ === 0 ? { ...view, revision: 4, selected_chain_run_id: chain } : later))));
+    stubGraphApplicationFetch( vi.fn(async (path, options) => {
+      if (path === "/api/graph/receipts/read") {
+        const request = JSON.parse(options.body);
+        return graphReceiptReadResponse(request.operation, request.parameters, {
+          ...view, revision: 4, selected_chain_run_id: chain,
+        });
+      }
+      return new Response(JSON.stringify(path.includes("/revisions/") ? graph.document
+        : path.endsWith("/sessions") ? [later] : later));
+    }));
     await graph.reconcile();
     expect(graph.session?.revision).toBe(8);
     expect(graph.session?.selected_chain_run_id).toBe(laterChain);

@@ -414,8 +414,35 @@ def create_server(service: Any, port: int = 8765, mode: str = "offline", *, grap
                 self._validate_peer(require_origin=method == "POST")
                 path = self._path()
                 if path.startswith("/api/graph/"):
-                    from .graph_http import dispatch_graph
                     data = self._read_json(MAX_GRAPH_BODY_BYTES) if method == "POST" else None
+                    receipt_paths = {
+                        "/api/graph/receipts/read": "management",
+                        "/api/graph/consumer/receipts/read": "consumer",
+                    }
+                    receipt_scope = receipt_paths.get(path)
+                    receipt_request = data
+                    if method == "POST" and path in ("/api/graph/queries", "/api/graph/consumer/queries") \
+                            and type(data) is dict and data.get("operation") == "receipt.read":
+                        from .graph_records import require
+                        require(set(data) == {"operation", "parameters"},
+                                "invalid_request", "Application request fields differ")
+                        receipt_scope = "consumer" if "/consumer/" in path else "management"
+                        receipt_request = data["parameters"]
+                    if receipt_scope is not None:
+                        from .graph_records import require
+                        from .graph_receipts import read_graph_application_receipt
+                        require(method == "POST", "not_found", "Receipt route not found", 404)
+                        require(type(receipt_request) is dict
+                                and set(receipt_request) == {"operation", "parameters"},
+                                "invalid_request", "Receipt request fields differ")
+                        database = graph_services[0].database if graph_services[0] is not None else service.database
+                        result = read_graph_application_receipt(
+                            database, receipt_request["operation"], receipt_request["parameters"],
+                            scope=receipt_scope,
+                        )
+                        self._json(200, result)
+                        return
+                    from .graph_http import dispatch_graph
                     status, result = dispatch_graph(get_graph_service(), method, path, data)
                     self._json(status, result)
                     return

@@ -115,7 +115,7 @@ def validate_model_configuration(value: Any) -> dict[str, Any]:
     })
     require(type(value["schema_version"]) is int and value["schema_version"] == 1
             and value["kind"] == "workflow_model_configuration")
-    from .workbench_resources import workflow_identity
+    from .resource_contracts import workflow_identity
     workflow_identity(value["workflow_id"])
     identifier(value["config_id"])
     revision(value["revision"])

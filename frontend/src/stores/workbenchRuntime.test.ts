@@ -287,7 +287,7 @@ describe("workbench session history and durable request identities", () => {
     expect(runtime.sessionId).toBe(SECOND_SID);
     expect(fetcher.mock.calls.some(([path]) => path.endsWith("/inputs"))).toBe(false);
   });
-  it("retains unknown session selection across refresh and replays its exact CAS identity", async () => {
+  it("retains unknown session selection without network or persistence during reconciliation", async () => {
     let first = true;
     const fetcher = vi.fn(async (path: string, options?: RequestInit) => {
       if (path === "/api/health") return json({ mode: "offline" });
@@ -304,16 +304,20 @@ describe("workbench session history and durable request identities", () => {
     await runtime.restoreSession(SID);
     await runtime.selectSession(SECOND_SID);
     expect(runtime.selectionPending?.action).toBe("select-session");
-    const request = runtime.selectionPending!.requestId;
+    const request = runtime.exportRuntimeSnapshot().selectionPending!;
     await runtime.refresh();
-    expect(runtime.selectionPending?.requestId).toBe(request);
+    expect(runtime.selectionPending).toEqual(request);
     expect(runtime.locked).toBe(true);
+    const save = vi.fn(() => true);
+    runtime.setMutationPersistenceGuard(save);
+    fetcher.mockClear();
     await runtime.replayUnknown();
-    const submissions = fetcher.mock.calls.filter(([path, options]) => path === "/api/active-session" && options?.method === "POST");
-    expect(submissions).toHaveLength(2);
-    expect(submissions[0][1]?.body).toBe(submissions[1][1]?.body);
-    expect(runtime.sessionId).toBe(SECOND_SID);
-    expect(runtime.selectionPending).toBeNull();
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(runtime.sessionId).toBe(SID);
+    expect(runtime.selectionPending).toEqual(request);
+    expect(runtime.error).toMatchObject({ kind: "unknown", requestId: request.requestId });
+    expect(runtime.error?.reason).toContain("unresolved");
   });
 });
 afterEach(() => {
@@ -435,7 +439,7 @@ describe("fixed workbench runtime", () => {
     expect(JSON.stringify(fetcher.mock.calls)).not.toContain("archived result");
     expect(runtime.unknown).toBeNull();
   });
-  it("locks unknown submissions across refresh and replays only the exact original identity/body", async () => {
+  it("locks unknown submissions across refresh and preserves their exact identity without resending", async () => {
     let first = true;
     const fetcher = transport(() => {
       if (first) { first = false; throw new Error("network lost"); }
@@ -446,18 +450,22 @@ describe("fixed workbench runtime", () => {
     await runtime.activateWorkflow(MAIN_WORKFLOW_ID);
     runtime.setInputText("root");
     await runtime.submitPrimary();
-    const pending = runtime.unknown!;
+    const pending = runtime.exportRuntimeSnapshot().sessions.find(row => row.sessionId === SID)!.pending!;
     expect(pending.action).toBe("start");
     await runtime.refresh();
     expect(runtime.unknown?.requestId).toBe(pending.requestId);
     await runtime.submitPrimary();
     expect(fetcher.mock.calls.filter(([path]) => path.endsWith("/inputs"))).toHaveLength(1);
     runtime.setInputText("changed while unknown");
+    const save = vi.fn(() => true);
+    runtime.setMutationPersistenceGuard(save);
+    fetcher.mockClear();
     await runtime.replayUnknown();
-    const submissions = fetcher.mock.calls.filter(([path]) => path.endsWith("/inputs"));
-    expect(submissions).toHaveLength(2);
-    expect(submissions[0][1]?.body).toBe(submissions[1][1]?.body);
-    expect(runtime.unknown).toBeNull();
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(runtime.unknown).toEqual(pending);
+    expect(runtime.error).toMatchObject({ kind: "unknown", requestId: pending.requestId });
+    expect(runtime.error?.reason).toContain("unresolved");
   });
   it("preserves unreplayable unknown session creation including malformed 2xx receipt", async () => {
     const fetcher = transport();
@@ -608,4 +616,224 @@ describe("fixed workbench runtime", () => {
     expect(runtime.refreshRequired).toBe(false);
     expect(runtime.control.action).toBe("resume");
   });
+  it.each(["accepted", "rejected", "lost"] as const)(
+    "does not apply a late %s mutation after restoring the same pending identity",
+    async outcome => {
+      let release!: (value: Response) => void;
+      let reject!: (failure: Error) => void;
+      const fetcher = vi.fn(async (path: string) => {
+        if (path === "/api/health") return json({ mode: "offline" });
+        return await new Promise<Response>((resolve, failure) => { release = resolve; reject = failure; });
+      });
+      vi.stubGlobal("fetch", fetcher);
+      const runtime = useWorkbenchRuntimeStore();
+      await runtime.activateWorkflow(MAIN_WORKFLOW_ID);
+      runtime.runtimes[MAIN_WORKFLOW_ID].sessionId = SID;
+      runtime.runtimes[MAIN_WORKFLOW_ID].view = view("paused", ["resume"]);
+      const submitting = runtime.submitPrimary();
+      await vi.waitFor(() => expect(release).toBeDefined());
+      const restored = runtime.exportRuntimeSnapshot();
+      expect(runtime.restoreRuntimeSnapshot(restored)).toBe(true);
+      const original = runtime.exportRuntimeSnapshot();
+      if (outcome === "lost") reject(new Error("lost receipt"));
+      else release(outcome === "rejected" ? json({ error: { code: "stale_revision" } }, 409)
+        : json({ workflow_session_id: SID, run_id: RUN, chain_run_id: CHAIN, status: "running" }, 202));
+      await submitting;
+      expect(runtime.exportRuntimeSnapshot()).toEqual(original);
+      expect(runtime.session).toBeNull();
+      expect(runtime.error).toBeNull();
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    },
+  );
+  it.each(["body", "requestId", "path", "action", "replayable", "sessionId"] as const)(
+    "does not settle an in-flight command after its %s coordinate changes",
+    async coordinate => {
+      let release!: (value: Response) => void;
+      const fetcher = vi.fn(async (path: string, _options?: RequestInit) => path === "/api/health" ? json({ mode: "offline" })
+        : await new Promise<Response>(resolve => { release = resolve; }));
+      vi.stubGlobal("fetch", fetcher);
+      const runtime = useWorkbenchRuntimeStore();
+      await runtime.activateWorkflow(MAIN_WORKFLOW_ID);
+      const state = runtime.runtimes[MAIN_WORKFLOW_ID];
+      state.sessionId = SID;
+      state.view = view("paused", ["resume"]);
+      const submitting = runtime.submitPrimary();
+      await vi.waitFor(() => expect(release).toBeDefined());
+      const command = state.pending!;
+      if (coordinate === "body") command.body.expected_run_revision = 9;
+      else if (coordinate === "requestId") command.requestId = SECOND_SID;
+      else if (coordinate === "path") command.path += "-changed";
+      else if (coordinate === "action") command.action = "interrupt";
+      else if (coordinate === "replayable") command.replayable = false;
+      else state.sessionId = SECOND_SID;
+      const original = JSON.stringify(runtime.exportRuntimeSnapshot());
+      const sent = fetcher.mock.calls[1][1] as RequestInit;
+      expect(JSON.parse(sent.body as string).expected_run_revision).toBe(1);
+      release(json({ workflow_session_id: SID, run_id: RUN, chain_run_id: CHAIN, status: "running" }, 202));
+      await submitting;
+      expect(JSON.stringify(runtime.exportRuntimeSnapshot())).toBe(original);
+      expect(runtime.error?.reason).toContain("迟到");
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    },
+  );
+  it.each(["accepted", "rejected"] as const)(
+    "preserves the original session selection on a late %s response after restore",
+    async outcome => {
+      let release!: (value: Response) => void;
+      const fetcher = vi.fn(async (_path: string, options?: RequestInit) => options?.method === "GET"
+        ? json({ active_workflow_session_id: SID, revision: 1 })
+        : await new Promise<Response>(resolve => { release = resolve; }));
+      vi.stubGlobal("fetch", fetcher);
+      const runtime = useWorkbenchRuntimeStore();
+      await runtime.activateWorkflow(MAIN_WORKFLOW_ID);
+      const submitting = runtime.selectSession(SECOND_SID);
+      await vi.waitFor(() => expect(release).toBeDefined());
+      const snapshot = runtime.exportRuntimeSnapshot();
+      expect(runtime.restoreRuntimeSnapshot(snapshot)).toBe(true);
+      const original = runtime.exportRuntimeSnapshot();
+      release(outcome === "accepted" ? json({ active_workflow_session_id: SECOND_SID, revision: 2 })
+        : json({ error: { code: "stale_revision" } }, 409));
+      await submitting;
+      expect(runtime.exportRuntimeSnapshot()).toEqual(original);
+      expect(runtime.sessionId).toBeNull();
+      expect(runtime.error).toBeNull();
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    },
+  );
+  it.each(["accepted", "rejected"] as const)(
+    "retains the first control request when saving its %s result fails or throws",
+    async outcome => {
+      for (const throwing of [false, true]) {
+        setActivePinia(createPinia());
+        const fetcher = vi.fn(async (path: string) => path === "/api/health" ? json({ mode: "offline" })
+          : outcome === "rejected" ? json({ error: { code: "stale_revision" } }, 409)
+            : json({ workflow_session_id: SID, run_id: RUN, chain_run_id: CHAIN, status: "running" }, 202));
+        vi.stubGlobal("fetch", fetcher);
+        const runtime = useWorkbenchRuntimeStore();
+        await runtime.activateWorkflow(MAIN_WORKFLOW_ID);
+        runtime.runtimes[MAIN_WORKFLOW_ID].sessionId = SID;
+        runtime.runtimes[MAIN_WORKFLOW_ID].view = view("paused", ["resume"]);
+        let original = "";
+        const save = vi.fn(() => {
+          if (!original) { original = JSON.stringify(runtime.exportRuntimeSnapshot()); return true; }
+          if (throwing) throw new Error("quota");
+          return false;
+        });
+        runtime.setMutationPersistenceGuard(save);
+        await runtime.submitPrimary();
+        expect(JSON.stringify(runtime.exportRuntimeSnapshot())).toBe(original);
+        expect(runtime.unknown?.action).toBe("resume");
+        expect(runtime.error).toMatchObject({ kind: "unknown", requestId: runtime.unknown!.requestId });
+        expect(runtime.error?.reason).toContain("无法保存");
+        expect(save).toHaveBeenCalledTimes(2);
+        expect(fetcher).toHaveBeenCalledTimes(2);
+      }
+    },
+  );
+  it("restores an unbound create request when persisting the accepted session fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (path: string) => path === "/api/health" ? json({ mode: "offline" }) : json(view(), 201)));
+    const runtime = useWorkbenchRuntimeStore();
+    await runtime.activateWorkflow(MAIN_WORKFLOW_ID);
+    let original = "";
+    runtime.setMutationPersistenceGuard(() => {
+      if (!original) { original = JSON.stringify(runtime.exportRuntimeSnapshot()); return true; }
+      return false;
+    });
+    await runtime.createSession();
+    expect(JSON.stringify(runtime.exportRuntimeSnapshot())).toBe(original);
+    expect(runtime.sessionId).toBeNull();
+    expect(runtime.unknown?.action).toBe("create-session");
+    expect(validRuntimeSnapshot(runtime.exportRuntimeSnapshot())).toBe(true);
+    expect(runtime.error?.kind).toBe("unknown");
+  });
+  it.each(["accepted", "rejected"] as const)(
+    "retains the first selection request when saving its %s result fails",
+    async outcome => {
+      const fetcher = vi.fn(async (_path: string, options?: RequestInit) => options?.method === "GET"
+        ? json({ active_workflow_session_id: SID, revision: 1 })
+        : outcome === "accepted" ? json({ active_workflow_session_id: SECOND_SID, revision: 2 })
+          : json({ error: { code: "stale_revision" } }, 409));
+      vi.stubGlobal("fetch", fetcher);
+      const runtime = useWorkbenchRuntimeStore();
+      await runtime.activateWorkflow(MAIN_WORKFLOW_ID);
+      let original = "";
+      runtime.setMutationPersistenceGuard(() => {
+        if (!original) { original = JSON.stringify(runtime.exportRuntimeSnapshot()); return true; }
+        return false;
+      });
+      await runtime.selectSession(SECOND_SID);
+      expect(JSON.stringify(runtime.exportRuntimeSnapshot())).toBe(original);
+      expect(runtime.selectionPending?.action).toBe("select-session");
+      expect(runtime.error?.kind).toBe("unknown");
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    },
+  );
+  it("does not delete or rebind a workflow containing a restored pending request", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const runtime = useWorkbenchRuntimeStore();
+    await runtime.activateWorkflow(MAIN_WORKFLOW_ID);
+    runtime.runtimes[MAIN_WORKFLOW_ID].sessionId = SID;
+    runtime.runtimes[MAIN_WORKFLOW_ID].pending = {
+      path: `/api/sessions/${SID}/runs/${RUN}/resume`,
+      body: { expected_session_revision: 1, expected_run_revision: 1, idempotency_key: RUN },
+      requestId: RUN, action: "resume", replayable: true,
+    };
+    expect(runtime.restoreRuntimeSnapshot(runtime.exportRuntimeSnapshot())).toBe(true);
+    const original = runtime.exportRuntimeSnapshot();
+    expect(runtime.removeWorkflow(MAIN_WORKFLOW_ID)).toBe(false);
+    expect(runtime.bindWorkflowSession(EMPTY_WORKFLOW_ID, MAIN_WORKFLOW_ID, SECOND_SID)).toBe(false);
+    expect(runtime.exportRuntimeSnapshot()).toEqual(original);
+    expect(runtime.error?.kind).toBe("unknown");
+  });
+  it("protects unselected pending sessions without blocking definitely unsent cleanup", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(historyView(SECOND_SID))));
+    const runtime = useWorkbenchRuntimeStore();
+    await runtime.activateWorkflow(MAIN_WORKFLOW_ID);
+    runtime.runtimes[MAIN_WORKFLOW_ID].sessionId = SID;
+    runtime.runtimes[MAIN_WORKFLOW_ID].pending = {
+      path: `/api/sessions/${SID}/inputs`, body: { text: "original", idempotency_key: RUN },
+      requestId: RUN, action: "start", replayable: true,
+    };
+    await runtime.restoreSession(SECOND_SID);
+    const original = runtime.exportRuntimeSnapshot();
+    expect(runtime.unknown).toBeNull();
+    expect(runtime.removeWorkflow(MAIN_WORKFLOW_ID)).toBe(false);
+    expect(runtime.bindWorkflowSession(EMPTY_WORKFLOW_ID, MAIN_WORKFLOW_ID, null)).toBe(false);
+    expect(runtime.exportRuntimeSnapshot()).toEqual(original);
+    expect(runtime.bindWorkflowSession(MAIN_WORKFLOW_ID, EMPTY_WORKFLOW_ID, null)).toBe(true);
+    expect(runtime.removeWorkflow(EMPTY_WORKFLOW_ID)).toBe(true);
+  });
+  it.each(["mutation", "selection"] as const)(
+    "keeps the first %s pending on idempotency conflict without clearing or resending",
+    async kind => {
+      const fetcher = vi.fn(async (path: string, options?: RequestInit) => {
+        if (path === "/api/health") return json({ mode: "offline" });
+        if (options?.method === "GET") return json({ active_workflow_session_id: SID, revision: 1 });
+        return json({ error: { reason_code: "idempotency_conflict" } }, 409);
+      });
+      vi.stubGlobal("fetch", fetcher);
+      const runtime = useWorkbenchRuntimeStore();
+      await runtime.activateWorkflow(MAIN_WORKFLOW_ID);
+      if (kind === "mutation") {
+        runtime.runtimes[MAIN_WORKFLOW_ID].sessionId = SID;
+        runtime.runtimes[MAIN_WORKFLOW_ID].view = view("paused", ["resume"]);
+      }
+      let original = "";
+      const save = vi.fn(() => { original = JSON.stringify(runtime.exportRuntimeSnapshot()); return true; });
+      runtime.setMutationPersistenceGuard(save);
+      if (kind === "mutation") await runtime.submitPrimary();
+      else await runtime.selectSession(SECOND_SID);
+      expect(JSON.stringify(runtime.exportRuntimeSnapshot())).toBe(original);
+      expect(runtime.unknown).not.toBeNull();
+      expect(runtime.error).toMatchObject({ kind: "unknown", requestId: runtime.unknown!.requestId });
+      expect(runtime.error?.reason).toContain("idempotency_conflict");
+      expect(save).toHaveBeenCalledTimes(1);
+      fetcher.mockClear();
+      save.mockClear();
+      await runtime.replayUnknown();
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+      expect(JSON.stringify(runtime.exportRuntimeSnapshot())).toBe(original);
+    },
+  );
 });

@@ -17,7 +17,7 @@
   const actions = new Set(["pause", "resume", "close", "extend_budget", "retry_archive", "retry_acceptance", "retry_failed_node"]);
   const consumerQueries = new Set(["consumer.definition", "consumer.sessions", "consumer.read", "consumer.actions",
     "output.list", "output.read", "output.history", "output.artifact.read", "registration.list", "information.read",
-    "frontend.extensions.read", "consumer.event.bindings", "consumer.event.read"]);
+    "frontend.extensions.read", "consumer.event.bindings", "consumer.event.read", "receipt.read"]);
   const bounded = value => typeof value === "string" && value.length > 0 && value.length <= 128 && value.trim() === value;
   const cursor = value => value === null || typeof value === "string" && value.length > 0 && value.length <= 4096;
   const same = (left, right) => {
@@ -225,10 +225,7 @@
       && typeof history.inherited === "boolean", "公开运行历史无效");
     return value;
   }
-  function validateReceipt(value, command, workflow) {
-    require(exact(value, ["schema_version", "kind", "receipt", "consumer"])
-      && value.schema_version === 1 && value.kind === "workflow.consumer.receipt", "提交回执无效，原请求待核实");
-    const receipt = value.receipt;
+  function validateOperationReceipt(receipt, command, workflow) {
     const operation = command.action === "create" ? "create" : command.action === "start" ? "start" : command.action === "event" ? "event" : "control";
     require(exact(receipt, ["workflow_definition_id", "definition_revision", "workflow_session_id", "session_revision",
       "chain_run_id", "status", "idempotency_key", "operation"])
@@ -238,6 +235,12 @@
     if (command.action === "create") require(receipt.definition_revision === command.body.definition_revision, "新会话定义版本不匹配");
     if (["start", "event"].includes(command.action)) require(uuid(receipt.chain_run_id), "启动回执缺少运行身份");
     if (command.action === "event") require(receipt.definition_revision === command.body.definition_revision, "事件回执定义版本不匹配");
+    return receipt;
+  }
+  function validateReceipt(value, command, workflow) {
+    require(exact(value, ["schema_version", "kind", "receipt", "consumer"])
+      && value.schema_version === 1 && value.kind === "workflow.consumer.receipt", "提交回执无效，原请求待核实");
+    const receipt = validateOperationReceipt(value.receipt, command, workflow);
     validateConsumer(value.consumer, workflow, receipt.workflow_session_id);
     require(value.consumer.session_revision >= receipt.session_revision, "回执观察早于提交依据");
     return value;
@@ -274,11 +277,8 @@
       : command.action === "start" ? "consumer.run.start" : command.action === "event" ? "consumer.event.submit" : "consumer.run.control",
     parameters: { ...clone(command.body), ...(command.workflow_session_id ? { session_id: command.workflow_session_id } : {}) } };
   }
-  function validateApplicationReceipt(value, command, workflow) {
+  function validateApplicationReceiptIdentity(receipt, command, workflow) {
     const envelope = commandEnvelope(command, workflow);
-    require(exact(value, ["schema_version", "kind", "receipt", "result"])
-      && value.schema_version === 1 && value.kind === "workflow.application-command", "应用提交回执无效，原请求待核实");
-    const receipt = value.receipt;
     require(exact(receipt, ["schema_version", "kind", "operation", "operation_scope", "idempotency_key",
       "request_sha256", "authority", "target", "accepted"]) && receipt.schema_version === 1
       && receipt.kind === "workflow.application-receipt" && receipt.operation === envelope.operation
@@ -287,9 +287,31 @@
       && receipt.authority === "service_receipt"
       && same(receipt.target, command.workflow_session_id ? { session_id: command.workflow_session_id } : {}),
     "应用提交回执与原请求不匹配");
+    return receipt;
+  }
+  function validateApplicationReceipt(value, command, workflow) {
+    require(exact(value, ["schema_version", "kind", "receipt", "result"])
+      && value.schema_version === 1 && value.kind === "workflow.application-command", "应用提交回执无效，原请求待核实");
+    const receipt = validateApplicationReceiptIdentity(value.receipt, command, workflow);
     const result = validateReceipt(value.result, command, workflow);
     require(same(receipt.accepted, result.receipt), "应用接纳依据与操作回执不匹配");
     return result;
+  }
+  function validateApplicationReceiptRead(value, command, workflow) {
+    require(object(value) && value.schema_version === 1 && value.kind === "workflow.application-receipt-read",
+      "原请求核实回执无效，保留原请求");
+    if (value.outcome === "unresolved") {
+      require(exact(value, ["schema_version", "kind", "outcome", "reason_code"]) && bounded(value.reason_code),
+        "原请求核实诊断无效，保留原请求");
+      throw new Error(`原请求尚无法核实 [${value.reason_code}]，保留原请求`);
+    }
+    require(exact(value, ["schema_version", "kind", "outcome", "reason_code", "receipt", "result"])
+      && value.outcome === "matched" && value.reason_code === "receipt_matched"
+      && exact(value.result, ["receipt"]), "原请求核实回执无效，保留原请求");
+    const receipt = validateApplicationReceiptIdentity(value.receipt, command, workflow);
+    validateOperationReceipt(value.result.receipt, command, workflow);
+    require(same(receipt.accepted, value.result.receipt), "应用接纳依据与原操作回执不匹配，保留原请求");
+    return value.result;
   }
   function validateEventBinding(binding) {
     require(exact(binding, ["event_id", "schema_version", "display_name", "audience", "target_node_ids", "payload_schema"])
@@ -725,6 +747,7 @@
     }
     async command(action, fields = {}) {
       require(!this.busy, "请求正在提交");
+      const reconciling = this.pending !== null;
       if (!this.pending) {
         const create = action === "create";
         require(create || this.consumer && (action === "event" ? !!this.eventBindings?.can_submit
@@ -760,6 +783,20 @@
       const current = () => generation === this.generation && session === this.sessionId && same(this.pending, command);
       try {
         const envelope = commandEnvelope(command, this.workflowId);
+        if (reconciling) {
+          const value = validateApplicationReceiptRead(await this.request("/api/graph/consumer/receipts/read", {
+            method: "POST", body: JSON.stringify(envelope) }), command, this.workflowId);
+          require(current(), "核实依据已变化，迟到回执未覆盖当前会话；原请求待核实");
+          this.sessionId = value.receipt.workflow_session_id;
+          this.pending = null;
+          try { this.persist(); } catch (error) { this.sessionId = session; this.pending = command; throw error; }
+          this.generation++;
+          if (session !== this.sessionId) {
+            this.consumer = null;
+            this.invalidateInformation();
+          }
+          return value;
+        }
         require(!this.application || this.application.commands.some(item => item.name === envelope.operation), "消费操作未登记，原请求保留");
         const value = validateApplicationReceipt(await this.request("/api/graph/consumer/commands", {
           method: "POST", body: JSON.stringify(envelope) }), command, this.workflowId);
@@ -770,7 +807,7 @@
         try { this.persist(); } catch (error) { this.pending = command; throw error; }
         return value;
       } catch (error) {
-        if (error.definite && current()) {
+        if (!reconciling && error.definite && current()) {
           this.pending = null;
           try { this.persist(); } catch (storageError) { this.pending = command; throw storageError; }
         }
@@ -779,7 +816,7 @@
     }
   }
   root.GraphChat = { uuid, exact, clone, supportedContent, validateContent, displayText, displayEntryText, httpFailure, parseExternalInput,
-    validateConsumer, validateReceipt, validateCommand, commandEnvelope, validateApplicationReceipt, validateApplication,
+    validateConsumer, validateReceipt, validateCommand, commandEnvelope, validateApplicationReceipt, validateApplicationReceiptRead, validateApplication,
     validateHistory, validateRegistrations, validateInformationPage, validatePublicArtifact,
     validateEventBinding, validateEventBindings, validateEventRun, strictJson, GraphChatClient };
 })(globalThis);

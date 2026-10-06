@@ -12,7 +12,8 @@ from typing import Any
 
 from .contract_errors import ContractValidationError
 from .contract_json import canonical_bytes, content_digest, loads_strict, validate_json_value
-from .workbench_resources import resource_error, resource_id, resource_revision, validate_global_content
+from .graph_application_identity import persist_application_command_identity
+from .resource_contracts import resource_error, resource_id, resource_revision, validate_global_content
 
 
 GLOBAL_CONTENT_TYPE = "workflow.global-content"
@@ -276,6 +277,10 @@ class GlobalResourceStore:
                 self._connection.execute(
                     "INSERT INTO global_resource_receipts VALUES(?,?,?)",
                     (key, digest, canonical_bytes(result).decode("utf-8")),
+                )
+                persist_application_command_identity(
+                    self._connection, table="global_resource_receipts", operation=request["operation"],
+                    key=key, request_digest=digest,
                 )
             self._connection.execute("COMMIT")
             return deepcopy(result)

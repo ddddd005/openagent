@@ -26,7 +26,7 @@ function fixture(generic = true) {
   const provider = newProvider();
   provider.value.name = "Current provider";
   const resources = createProviderResources({
-    list: vi.fn(async () => [provider]), save: vi.fn(async () => ({})),
+    list: vi.fn(async () => [provider]), save: vi.fn(async () => ({})), readReceipt: vi.fn(),
     readPending: () => null, writePending: vi.fn(),
   });
   resources.records.value = [provider];

@@ -1,4 +1,4 @@
-import { stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
+import { graphReceiptReadResponse, stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useWorkflowGraphStore } from "./workflowGraph";
@@ -50,7 +50,7 @@ afterEach(() => {
   vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals();
 });
 describe("reviewed graph receipt and operation races", () => {
-  it("accepts a canonical lost-save replay with its original body and rejects changed content", async () => {
+  it("accepts a canonical lost-save receipt read with its original body and rejects changed content", async () => {
     const { graph, id } = setup();
     graph.entries[id].session_id = null;
     graph.entries[id].document.nodes.push({ node_binding_id: crypto.randomUUID(), component_id: "external.test",
@@ -63,11 +63,11 @@ describe("reviewed graph receipt and operation races", () => {
     const calls: unknown[] = [];
     let invalid = true;
     stubGraphApplicationFetch( vi.fn(async (path, init) => {
-      if (path === "/api/graph/definitions") {
-        const body = JSON.parse(init.body); calls.push(body);
+      if (path === "/api/graph/receipts/read") {
+        const envelope = JSON.parse(init.body), body = envelope.parameters; calls.push(body);
         const receipt = graphClone(body.document);
         if (invalid) receipt.nodes[0].config.z = "foreign content";
-        return response(canonical(receipt));
+        return graphReceiptReadResponse(envelope.operation, body, canonical(receipt) as Record<string, unknown>);
       }
       return response([]);
     }));

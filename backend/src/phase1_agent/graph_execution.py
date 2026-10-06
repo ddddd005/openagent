@@ -18,7 +18,7 @@ from .preparation_program import (
     merge_program_definitions, validate_program_state, validate_typed_value,
     validate_variable_name, variable_text,
 )
-from .workbench_resources import (
+from .resource_contracts import (
     session_data_entry, validate_data_definition, validate_data_value,
 )
 

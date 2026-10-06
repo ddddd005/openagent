@@ -6,6 +6,7 @@ from copy import deepcopy
 from typing import Any, Callable
 
 from .contract_json import canonical_bytes, content_digest, loads_strict
+from .graph_application_identity import persist_application_command_identity
 from .graph_records import (is_graph_record, require, validate_graph_bundle,
                             validate_graph_record)
 from .storage import SqliteStore, _record_id
@@ -65,6 +66,8 @@ class GraphRecordStore:
                 "INSERT INTO idempotency (operation,key,digest,result_refs,result_payload,request_digest) VALUES(?,?,?,?,?,?)",
                 (operation, key, digest, "[]", payload, digest),
             )
+            persist_application_command_identity(connection, table="idempotency", operation=operation,
+                                                 key=key, request_digest=digest)
             self.store._inject("before_commit")
             connection.execute("COMMIT")
             return deepcopy(result)

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { graphApplicationQuery, sendGraphCommand } from "../adapters/workflowApplicationApi";
+import { graphApplicationQuery, readGraphReceipt, sendGraphCommand } from "../adapters/workflowApplicationApi";
+import { WorkbenchApiError } from "../adapters/workbenchApi";
 import {
   graphClone, newGraph, type GraphEntry, type GraphSession,
 } from "../domain/workflowGraph";
@@ -55,6 +56,7 @@ function ports(overrides: Partial<GraphCommandPorts> = {}): GraphCommandPorts {
   return {
     persist: () => true,
     request: sendGraphCommand,
+    readReceipt: readGraphReceipt,
     readDefinition: async () => { throw new Error("No definition lookup expected"); },
     current: () => true,
     accept: vi.fn(),
@@ -66,16 +68,18 @@ const response = (value: unknown) => new Response(JSON.stringify(value));
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("workflow client transport boundary", () => {
-  it("replays the frozen outbox through one named endpoint after an unknown submission", async () => {
+  it("reads the frozen outbox after an unknown submission without dispatching another command", async () => {
     const { entry, session, command } = fixture();
     const original = graphClone(command), sent: unknown[] = [], persisted: unknown[] = [];
     let attempts = 0;
     vi.stubGlobal("fetch", vi.fn(async (path: string, init: RequestInit) => {
-      expect(path).toBe("/api/graph/commands");
+      expect(path).toBe(attempts === 0 ? "/api/graph/commands" : "/api/graph/receipts/read");
       expect(init.method).toBe("POST");
       sent.push(JSON.parse(String(init.body)));
       if (++attempts === 1) throw new Error("Response lost after submission");
-      return response(envelope(session, original.body.idempotency_key));
+      const value = envelope(session, original.body.idempotency_key);
+      return response({ schema_version: 1, kind: "workflow.application-receipt-read", outcome: "matched",
+        reason_code: "receipt_matched", receipt: value.receipt, result: value.result });
     }));
     const boundary = ports({ persist: () => {
       persisted.push(graphClone(entry.pending)); return true;
@@ -86,7 +90,7 @@ describe("workflow client transport boundary", () => {
     command.body.inputs = { event: { payload: ["later caller mutation"] } };
     command.body.idempotency_key = crypto.randomUUID();
     entry.external_inputs = { event: { payload: ["later editor draft"] } };
-    await dispatchGraphCommand(entry, entry.pending!, boundary);
+    await dispatchGraphCommand(entry, entry.pending!, boundary, true);
     const expected = {
       operation: "run.start",
       parameters: { ...original.body, session_id: session.workflow_session_id },
@@ -188,5 +192,75 @@ describe("workflow client transport boundary", () => {
       .rejects.toMatchObject({ kind: "unavailable" });
     expect(sent).toEqual([{ operation: "information.read", parameters: original }]);
     expect(parameters).toEqual(original);
+  });
+
+  it.each([404, 409, 410, 500])("keeps the original pending after a receipt reader fails with HTTP %s", async status => {
+    const { entry, command } = fixture(); entry.pending = graphClone(command);
+    const before = graphClone(entry);
+    const boundary = ports({
+      request: vi.fn(), persist: vi.fn(),
+      readReceipt: vi.fn(async () => { throw new WorkbenchApiError("rejected", "read failed", status, "stale_revision"); }),
+    });
+    await expect(dispatchGraphCommand(entry, command, boundary, true)).rejects.toMatchObject({ status });
+    expect(entry).toEqual(before); expect(boundary.request).not.toHaveBeenCalled();
+    expect(boundary.persist).not.toHaveBeenCalled(); expect(boundary.accept).not.toHaveBeenCalled();
+  });
+
+  it.each(["false", "throw"])("retains the original receipt-read request on local confirmation failure: %s", async failure => {
+    const { entry, command, session } = fixture(); entry.pending = graphClone(command);
+    const boundary = ports({
+      request: vi.fn(), readReceipt: vi.fn(async () => session),
+      persist: () => { if (failure === "throw") throw new Error("disk"); return false; },
+    });
+    await expect(dispatchGraphCommand(entry, command, boundary, true)).rejects.toMatchObject({ kind: "unknown" });
+    expect(entry.pending).toEqual(command); expect(boundary.accept).toHaveBeenCalledOnce();
+    expect(boundary.request).not.toHaveBeenCalled();
+  });
+
+  it.each(["body", "key", "cleared", "rejected"])(
+    "does not let a late receipt read overwrite a newer pending state: %s", async change => {
+      const { entry, command, session } = fixture(); entry.pending = graphClone(command);
+      let finish!: (value: unknown) => void, reject!: (failure: unknown) => void;
+      const boundary = ports({ request: vi.fn(), persist: vi.fn(),
+        readReceipt: () => new Promise((resolve, fail) => { finish = resolve; reject = fail; }) });
+      const reading = dispatchGraphCommand(entry, command, boundary, true);
+      const replacement = graphClone(command);
+      if (change === "key" || change === "rejected") replacement.body.idempotency_key = crypto.randomUUID();
+      else replacement.body.inputs = { original: "newer request with same key" };
+      entry.pending = change === "cleared" ? null : replacement;
+      entry.diagnostics = [{ reason_code: "newer", message: "retain newer state" }];
+      const newer = graphClone(entry);
+      if (change === "rejected") reject(new WorkbenchApiError("rejected", "old read rejection", 409));
+      else finish(session);
+      await expect(reading).rejects.toBeInstanceOf(WorkbenchApiError);
+      expect(entry).toEqual(newer); expect(boundary.accept).not.toHaveBeenCalled();
+      expect(boundary.persist).not.toHaveBeenCalled(); expect(boundary.request).not.toHaveBeenCalled();
+    });
+
+  it("does not restore the older outbox over a newer one when confirmation persistence fails", async () => {
+    const { entry, command, session } = fixture(); entry.pending = graphClone(command);
+    const newer = graphClone(command); newer.body.idempotency_key = crypto.randomUUID();
+    const boundary = ports({ request: vi.fn(), readReceipt: async () => session,
+      persist: () => { entry.pending = graphClone(newer); return false; } });
+    await expect(dispatchGraphCommand(entry, command, boundary, true)).rejects.toMatchObject({ kind: "unknown" });
+    expect(entry.pending).toEqual(newer); expect(boundary.request).not.toHaveBeenCalled();
+  });
+
+  it("does not manufacture a receipt-read request when neither pending nor a retained migration coordinate exists", async () => {
+    const { entry, command } = fixture(), boundary = ports({ request: vi.fn(), readReceipt: vi.fn(), persist: vi.fn() });
+    await expect(dispatchGraphCommand(entry, command, boundary, true)).rejects.toMatchObject({ kind: "unknown" });
+    expect(entry.pending).toBeNull(); expect(boundary.readReceipt).not.toHaveBeenCalled();
+    expect(boundary.request).not.toHaveBeenCalled(); expect(boundary.persist).not.toHaveBeenCalled();
+  });
+
+  it("clears an initial definitive rejection but keeps an initial identity conflict unresolved", async () => {
+    for (const code of ["stale_revision", "idempotency_conflict"]) {
+      const { entry, command } = fixture();
+      const boundary = ports({ request: async () => { throw new WorkbenchApiError("rejected", code, 409, code); },
+        readReceipt: vi.fn() });
+      await expect(dispatchGraphCommand(entry, command, boundary)).rejects.toMatchObject({ code });
+      expect(entry.pending).toEqual(code === "stale_revision" ? null : command);
+      expect(boundary.readReceipt).not.toHaveBeenCalled();
+    }
   });
 });

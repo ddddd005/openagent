@@ -32,7 +32,9 @@ def no_compat_registry():
 def saved_selection(path):
     with closing(SqliteStore(path)) as store:
         row = store._connection.execute(
-            "SELECT payload FROM graph_project_packages WHERE configuration_id='project'",
+            "SELECT payload FROM graph_project_packages "
+            "WHERE configuration_id IN ('current-execution','project') "
+            "ORDER BY CASE configuration_id WHEN 'current-execution' THEN 0 ELSE 1 END LIMIT 1",
         ).fetchone()
         return row["payload"] if row else None
 

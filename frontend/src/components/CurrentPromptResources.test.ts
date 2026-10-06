@@ -31,7 +31,8 @@ function fixture(initial = [newPromptResource()]) {
     state.records.push(graphClone(request.record));
     return {};
   });
-  const resources = createPromptResources({ list, save, readPending: () => null, writePending });
+  const readReceipt = vi.fn(async (_request: Parameters<typeof save>[0]) => ({}));
+  const resources = createPromptResources({ list, save, readReceipt, readPending: () => null, writePending });
   resources.records.value = graphClone(initial);
   const record = initial[0] ?? newPromptResource();
   const node = reactive<GraphNode>({
@@ -57,7 +58,7 @@ function fixture(initial = [newPromptResource()]) {
     config_schema: { type: "object", required: ["reference"], additionalProperties: false,
       properties: { reference: { type: "object" } } },
   };
-  return { state, list, save, writePending, resources, node, document, definition, sdk, configureNode, locked, lifecycle };
+  return { state, list, save, readReceipt, writePending, resources, node, document, definition, sdk, configureNode, locked, lifecycle };
 }
 
 // This small renderer runs actual mounted hooks and form handlers without a browser or live backend.
@@ -252,7 +253,7 @@ describe("current prompt panel form interactions", () => {
     expect(f.save).toHaveBeenCalledTimes(1);
     f.state.failSave = false;
     await trigger(button(root, "核实原提示词请求"), "Click");
-    expect(f.save.mock.calls[1]![0]).toEqual(submitted);
+    expect(f.save).toHaveBeenCalledTimes(1); expect(f.readReceipt.mock.calls[0]![0]).toEqual(submitted);
     expect(f.resources.pending.value).toBeNull();
     expect(f.locked.value).toBe(true);
     expect(label(root, "新增提示词资源").props.disabled).toBe(false);

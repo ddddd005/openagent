@@ -38,6 +38,30 @@ export function graphCommandOperation(path: string, body: Record<string, unknown
 export async function sendGraphCommand(path: string, body: Record<string, unknown>): Promise<unknown> {
   const request = graphCommandOperation(path, body);
   const value = await workbenchRequest<unknown>("/api/graph/commands", { body: request });
+  return validateGraphCommandResult(value, request);
+}
+
+export async function readGraphReceipt(path: string, body: Record<string, unknown>): Promise<unknown> {
+  const request = graphCommandOperation(path, body);
+  const value = await workbenchRequest<unknown>("/api/graph/receipts/read", { body: request, readOnly: true });
+  if (!graphObject(value) || value.schema_version !== 1 || value.kind !== "workflow.application-receipt-read")
+    throw new WorkbenchApiError("unknown", "原工作流回执读取契约无效，保留原请求");
+  if (value.outcome === "unresolved") {
+    if (Object.keys(value).length !== 4 || typeof value.reason_code !== "string"
+      || !/^[A-Za-z0-9_]{1,128}$/.test(value.reason_code))
+      throw new WorkbenchApiError("unknown", "原工作流回执读取契约无效，保留原请求");
+    throw new WorkbenchApiError("unknown", `原工作流请求仍待核实 [${value.reason_code}]`, undefined, value.reason_code);
+  }
+  if (value.outcome !== "matched" || value.reason_code !== "receipt_matched" || Object.keys(value).length !== 6
+    || !Object.prototype.hasOwnProperty.call(value, "result") || !graphObject(value.receipt)
+    || Object.keys(value.receipt).length !== 9)
+    throw new WorkbenchApiError("unknown", "原工作流回执读取契约无效，保留原请求");
+  return validateGraphCommandResult({
+    schema_version: 1, kind: "workflow.application-command", receipt: value.receipt, result: value.result,
+  }, request);
+}
+
+function validateGraphCommandResult(value: unknown, request: ReturnType<typeof graphCommandOperation>): unknown {
   const receipt = graphObject(value) && graphObject(value.receipt) ? value.receipt : null;
   const target = request.parameters.session_id ? { session_id: request.parameters.session_id } : {};
   if (!graphObject(value) || value.schema_version !== 1 || value.kind !== "workflow.application-command"

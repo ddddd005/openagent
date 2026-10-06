@@ -1,7 +1,7 @@
 import { computed, onScopeDispose, ref } from "vue";
 import { defineStore } from "pinia";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
-import { sendGraphCommand } from "../adapters/workflowApplicationApi";
+import { readGraphReceipt, sendGraphCommand } from "../adapters/workflowApplicationApi";
 import { createGraphCommand as command, dispatchGraphCommand } from "../application/workflowCommands";
 import { createWorkflowManagement, workflowManagementQueries } from "../application/workflowManagement";
 import { createWorkflowEditing } from "../application/workflowEditing";
@@ -201,20 +201,26 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     if (alive) views.value[view.workflow_session_id] = accepted;
     return accepted;
   }
-  async function dispatch(id: string, command: GraphCommand): Promise<unknown> {
-    mutationGeneration++;
+  async function dispatch(id: string, command: GraphCommand, reconcile = false): Promise<unknown> {
+    const generation = ++mutationGeneration;
     const entry = entries.value[id];
     const eventSessionId = entry.session_id, eventDefinitionId = entry.document.workflow_definition_id,
       eventDefinitionRevision = entry.document.revision;
+    const migrationOnly = reconcile && entry.pending === null;
+    let acceptedReceipt = false;
     return dispatchGraphCommand(entry, command, {
       persist: () => persistence?.() ?? false,
       request: sendGraphCommand,
+      readReceipt: readGraphReceipt,
       readDefinition: workflowManagementQueries.definition,
       observedSession: sessionId => views.value[sessionId],
-      current: () => alive && entries.value[id] === entry && (command.action !== "event"
+      current: () => alive && entries.value[id] === entry && mutationGeneration === generation
+        && (!migrationOnly || acceptedReceipt || JSON.stringify(entry.migration_request) === JSON.stringify(command))
+        && (command.action !== "event"
         || entry.session_id === eventSessionId && entry.document.workflow_definition_id === eventDefinitionId
           && entry.document.revision === eventDefinitionRevision),
       accept(receipt, request) {
+        acceptedReceipt = true;
         if (receipt.kind === "migration") {
           entry.document = graphClone(receipt.document);
           entry.saved_document = graphClone(receipt.document);
@@ -253,7 +259,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
           }
         }
       },
-    });
+    }, reconcile);
   }
   async function migrateLegacy(sourceId: string, sourceDocument: GraphDocument,
     sourceSessionId: string | null, sourceRevision: number | null) {
@@ -658,7 +664,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     const workflow = workspace.workflows.find(row => row.id === id);
     if (!entry.pending && workflow?.copyPending && entry.migration_request) {
       busy.value = "migrate";
-      try { await dispatch(id, graphClone(entry.migration_request)); await refresh(id); }
+      try { await dispatch(id, graphClone(entry.migration_request), true); await refresh(id); }
       catch (failure) { report(failure, "核实原迁移请求"); }
       finally { busy.value = null; }
       return;
@@ -679,7 +685,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     }
     if (!entry.pending) return;
     busy.value = "reconcile";
-    try { await dispatch(id, graphClone(entry.pending)); await refresh(id); schedulePoll(id, viewGeneration); }
+    try { await dispatch(id, graphClone(entry.pending), true); await refresh(id); schedulePoll(id, viewGeneration); }
     catch (failure) { report(failure, "核实原工作流请求"); }
     finally { busy.value = null; }
   }

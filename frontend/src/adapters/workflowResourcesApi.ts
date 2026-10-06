@@ -1,4 +1,4 @@
-import { graphApplicationQuery, sendGraphCommand } from "./workflowApplicationApi";
+import { graphApplicationQuery, readGraphReceipt, sendGraphCommand } from "./workflowApplicationApi";
 import { WorkbenchApiError } from "./workbenchApi";
 import { graphObject, graphUuid } from "../domain/workflowGraph";
 import { chatProviderType, isCurrentProvider, isProviderIdentity, providerIdentity, sameProviderIdentity,
@@ -19,15 +19,24 @@ export async function readCurrentProvider(identity: ProviderIdentity): Promise<C
     throw new WorkbenchApiError("unavailable", "供应商当前资源身份不匹配");
   return value;
 }
-export async function saveCurrentProvider(request: ProviderSaveRequest) {
+function validateProviderSaveRequest(request: ProviderSaveRequest) {
   if (!isCurrentProvider(request.record) || !graphUuid(request.idempotency_key)
     || !Number.isSafeInteger(request.expected_sequence) || request.expected_sequence < 0
     || request.record.update_sequence !== request.expected_sequence + 1)
     throw new WorkbenchApiError("rejected", "供应商字段或当前序号无效");
-  const value = await sendGraphCommand("/api/graph/resources/save", { ...request });
+}
+function validateProviderSaveReceipt(value: unknown, request: ProviderSaveRequest) {
   if (!graphObject(value) || !isProviderIdentity(value.reference)
     || !sameProviderIdentity(value.reference, providerIdentity(request.record))
     || value.update_sequence !== request.record.update_sequence || value.deleted !== false)
     throw new WorkbenchApiError("unknown", "供应商回执与原请求不匹配，保留原请求");
   return value;
+}
+export async function saveCurrentProvider(request: ProviderSaveRequest) {
+  validateProviderSaveRequest(request);
+  return validateProviderSaveReceipt(await sendGraphCommand("/api/graph/resources/save", { ...request }), request);
+}
+export async function readCurrentProviderReceipt(request: ProviderSaveRequest) {
+  validateProviderSaveRequest(request);
+  return validateProviderSaveReceipt(await readGraphReceipt("/api/graph/resources/save", { ...request }), request);
 }

@@ -1,4 +1,4 @@
-import { computed, ref, watch } from "vue";
+import { computed, onScopeDispose, ref, watch } from "vue";
 import { defineStore } from "pinia";
 import { workbenchRequest, WorkbenchApiError } from "../adapters/workbenchApi";
 import { clonePreparation } from "../domain/preparation";
@@ -24,27 +24,40 @@ export const useGlobalContentStore = defineStore("global-content", () => {
   let initialized = false;
   let expectedRaw: string | null = null;
   let blocked = false;
+  let alive = true;
+  let mutationGeneration = 0;
+  let loadGeneration = 0;
+  const controller = new AbortController();
+  onScopeDispose(() => { alive = false; mutationGeneration++; loadGeneration++; controller.abort(); });
   const selected = computed(() => selectedId.value ? drafts.value[selectedId.value] ?? null : null);
   const dirty = computed(() => !!selected.value && JSON.stringify(selected.value)
     !== JSON.stringify(records.value.find(r => r.resource_id === selectedId.value)));
   function persist() {
-    if (!initialized || blocked) return false;
+    if (!alive || !initialized || blocked) return false;
+    const generation = mutationGeneration;
+    const fingerprint = stable(pending.value);
+    const current = () => alive && generation === mutationGeneration && stable(pending.value) === fingerprint;
     try {
       const storage = window.localStorage;
       if (storage.getItem(KEY) !== expectedRaw) throw new Error("其他页面更新了内容草稿");
+      if (!current()) return false;
       const raw = JSON.stringify({ schemaVersion: 1, drafts: drafts.value, selectedId: selectedId.value, pending: pending.value });
       if (raw.length > 2_000_000) throw new Error("内容草稿超出容量");
       storage.setItem(KEY, raw);
+      if (!current()) return false;
       expectedRaw = raw;
       return true;
     } catch (failure) {
-      blocked = true;
-      error.value = failure instanceof Error ? failure.message : "内容草稿保存失败";
+      if (current()) {
+        blocked = true;
+        error.value = failure instanceof Error ? failure.message : "内容草稿保存失败";
+      }
       return false;
     }
   }
   async function initialize() {
     if (!initialized) {
+      mutationGeneration++;
       try {
         expectedRaw = window.localStorage.getItem(KEY);
         if (expectedRaw !== null) {
@@ -70,10 +83,13 @@ export const useGlobalContentStore = defineStore("global-content", () => {
     await load();
   }
   async function load() {
+    const generation = ++loadGeneration;
     busy.value = true;
     try {
-      const rows = await workbenchRequest<unknown>("/api/global-content");
-      const data = await workbenchRequest<unknown>("/api/session-data/definitions");
+      const rows = await workbenchRequest<unknown>("/api/global-content", { signal: controller.signal });
+      if (!alive || generation !== loadGeneration) return;
+      const data = await workbenchRequest<unknown>("/api/session-data/definitions", { signal: controller.signal });
+      if (!alive || generation !== loadGeneration) return;
       if (!Array.isArray(rows) || !rows.every(isGlobalContent) || !Array.isArray(data) || !data.every(isDataDefinition))
         throw new WorkbenchApiError("unavailable", "内容或会话定义的读取契约无效");
       for (const saved of rows) {
@@ -87,8 +103,8 @@ export const useGlobalContentStore = defineStore("global-content", () => {
       version.value++;
       if (!blocked) error.value = null;
       if (!selectedId.value && rows[0]) select(rows[0].resource_id);
-    } catch (failure) { error.value = failure instanceof Error ? failure.message : "内容读取失败"; }
-    finally { busy.value = false; }
+    } catch (failure) { if (alive && generation === loadGeneration) error.value = failure instanceof Error ? failure.message : "内容读取失败"; }
+    finally { if (alive && generation === loadGeneration) busy.value = false; }
   }
   function select(id: string) {
     const record = records.value.find(r => r.resource_id === id);
@@ -117,40 +133,75 @@ export const useGlobalContentStore = defineStore("global-content", () => {
     }
   }
   async function save(replay = false) {
-    if (busy.value || blocked || (!replay && pending.value)) return;
-    const record = selected.value;
-    if (!replay && !record) return;
-    if (!replay) {
-      const head = records.value.find(r => r.resource_id === record!.resource_id);
-      if (head && head.revision !== record!.revision) {
-        error.value = "全局内容已在外部更新，当前草稿基线过期；请核对后重新编辑";
-        return;
-      }
-      const expected = head ? record!.revision : 0;
-      pending.value = { record: { ...clonePreparation(record!), revision: expected + 1 },
-        expected_revision: expected, idempotency_key: crypto.randomUUID() };
+    if (replay) {
+      if (pending.value && !busy.value) error.value = "旧内容请求缺少可核实的原应用身份，保留原请求且不重新提交";
+      return;
     }
-    if (!pending.value || !isGlobalContent(pending.value.record)
-      || new TextEncoder().encode(JSON.stringify(pending.value)).byteLength > 64 * 1024) {
-      pending.value = null;
+    if (!alive || busy.value || blocked || pending.value) return;
+    const record = selected.value;
+    if (!record) return;
+    const head = records.value.find(r => r.resource_id === record.resource_id);
+    if (head && head.revision !== record.revision) {
+      error.value = "全局内容已在外部更新，当前草稿基线过期；请核对后重新编辑";
+      return;
+    }
+    const expected = head ? record.revision : 0;
+    const command: ContentMutation = { record: { ...clonePreparation(record), revision: expected + 1 },
+      expected_revision: expected, idempotency_key: crypto.randomUUID() };
+    const generation = mutationGeneration;
+    const fingerprint = stable(command);
+    const draftFingerprint = stable(drafts.value[command.record.resource_id]);
+    const current = () => alive && generation === mutationGeneration && stable(pending.value) === fingerprint;
+    const settled = () => alive && generation === mutationGeneration && pending.value === null;
+    if (!isGlobalContent(command.record)
+      || new TextEncoder().encode(JSON.stringify(command)).byteLength > 64 * 1024) {
       error.value = "全局内容字段无效或超过容量，尚未提交";
       return;
     }
-    if (!persist()) return;
+    pending.value = clonePreparation(command);
+    if (!current()) return;
+    const persisted = persist();
+    if (!current()) return;
+    if (!persisted) {
+      pending.value = null;
+      return;
+    }
+    function clearPending() {
+      if (!current()) return false;
+      pending.value = null;
+      if (!settled()) return false;
+      const cleared = persist();
+      if (!settled()) return false;
+      if (!cleared) {
+        pending.value = clonePreparation(command);
+        throw new WorkbenchApiError("unknown", "原内容请求的本机结算保存失败，保留请求等待核实");
+      }
+      return true;
+    }
     busy.value = true;
     error.value = null;
     try {
-      const saved = await workbenchRequest<unknown>("/api/global-content", { body: pending.value });
-      if (!isGlobalContent(saved) || stable(saved) !== stable(pending.value.record))
+      const saved = await workbenchRequest<unknown>("/api/global-content", { body: command, signal: controller.signal });
+      if (!current()) return;
+      if (!isGlobalContent(saved) || stable(saved) !== stable(command.record))
         throw new WorkbenchApiError("unknown", "内容提交结果待核实");
       records.value = [...records.value.filter(r => r.resource_id !== saved.resource_id), saved];
-      drafts.value[saved.resource_id] = clonePreparation(saved);
-      pending.value = null;
+      if (!current()) return;
+      if (stable(drafts.value[saved.resource_id]) === draftFingerprint)
+        drafts.value[saved.resource_id] = clonePreparation(saved);
+      if (!current() || !clearPending()) return;
       version.value++;
     } catch (failure) {
-      if (failure instanceof WorkbenchApiError && failure.kind === "rejected") pending.value = null;
+      if (!current()) return;
+      if (failure instanceof WorkbenchApiError && failure.kind === "rejected" && failure.code === "idempotency_conflict")
+        failure = new WorkbenchApiError("unknown", "原内容请求身份冲突，无法证明未发生，保留原请求等待核实", failure.status, failure.code);
+      else if (failure instanceof WorkbenchApiError && failure.kind === "rejected") {
+        try { if (!clearPending()) return; }
+        catch (persistenceFailure) { failure = persistenceFailure; }
+      }
+      if (!current() && !settled()) return;
       error.value = failure instanceof Error ? failure.message : "内容提交结果待核实";
-    } finally { busy.value = false; persist(); }
+    } finally { if (current() || settled()) busy.value = false; }
   }
   async function remove() {
     const record = records.value.find(r => r.resource_id === selectedId.value);

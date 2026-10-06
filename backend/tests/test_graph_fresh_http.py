@@ -107,7 +107,10 @@ def test_fresh_http_current_graph_runs_and_reopens_without_compat(tmp_path, monk
         assert query(port, "run.read", session_id=session["workflow_session_id"], chain_id=chain_id) == history
         with closing(host.graph_service._store()) as store:
             selected = json.loads(store._connection.execute(
-                "SELECT payload FROM graph_project_packages WHERE configuration_id='project'",
+                "SELECT payload FROM graph_project_packages WHERE configuration_id='current-execution'",
             ).fetchone()["payload"])
+            assert store._connection.execute(
+                "SELECT payload FROM graph_project_packages WHERE configuration_id='project'",
+            ).fetchone() is None
         assert selected == DEFAULT_PACKAGES
         assert host._legacy is None and host.graph_service._native_runtime is None

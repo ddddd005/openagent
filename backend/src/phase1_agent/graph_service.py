@@ -26,6 +26,7 @@ from .graph_candidates import GraphCandidateHost
 from .workbench_interfaces import WorkbenchInterfaces
 from .graph_platform import GraphPlatform
 from .graph_runtime_host import GraphRuntimeHost
+from .graph_resource_host import GraphResourceHost
 from .graph_information import GraphInformation
 from .graph_events import GraphEvents
 from .graph_failed_retry import GraphFailedRetry
@@ -69,7 +70,7 @@ class _GraphLease:
         self.file.close()
 
 
-class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost, GraphPlatform, GraphPublic, GraphCandidateHost, GraphAgentHost, WorkbenchInterfaces):
+class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost, GraphResourceHost, GraphPlatform, GraphPublic, GraphCandidateHost, GraphAgentHost, WorkbenchInterfaces):
     def __init__(self, database_path: str | Path, *, registry=None, fault_injector=None, model_factory=None,
                  capability_packages=(), enabled_packages=None, trusted_package_entrypoints=(),
                  public_model_factory=None):
@@ -83,7 +84,7 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
         self._package_diagnostics = []
         if registry is None:
             from .capability_packages import CapabilityPackageLoader, discover_trusted_packages
-            from .contract_json import loads_strict, canonical_bytes
+            from .graph_package_selection import GraphPackageSelectionStore
             from .builtin_packages import DEFAULT_PACKAGES, builtin_capability_packages
             try:
                 explicit_packages = [*capability_packages, *discover_trusted_packages(trusted_package_entrypoints)]
@@ -94,16 +95,15 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                             *explicit_packages]
                 self._package_loader = CapabilityPackageLoader(packages)
                 with closing(self._store()) as store:
-                    saved = store._connection.execute(
-                        "SELECT payload FROM graph_project_packages WHERE configuration_id='project'",
-                    ).fetchone()
+                    selections = GraphPackageSelectionStore(store)
+                    saved = (selections.read_effective(DEFAULT_PACKAGES)
+                             if enabled_packages is None else None)
                     selected = (deepcopy(enabled_packages)
-                                if enabled_packages is not None else
-                                loads_strict(saved["payload"]) if saved else deepcopy(DEFAULT_PACKAGES))
+                                if enabled_packages is not None else saved.enabled_packages)
                     try:
                         loaded = self._package_loader.load(selected)
                     except Exception as exc:
-                        if enabled_packages is not None or saved is None \
+                        if enabled_packages is not None or saved.configuration_id is None \
                                 or getattr(exc, "reason_code", None) != "package_missing_dependency":
                             raise
                         self._package_diagnostics = [{"reason_code": "package_missing_dependency",
@@ -112,12 +112,16 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                     self.registry, self._frontend_extensions = loaded.registry.detached(), loaded.frontend_extensions
                     self._package_manifests = loaded.package_manifests
                     from .type_contract_store import TypeContractStore
-                    TypeContractStore(store).check_registry(self.registry.data_types)
-                    if saved is None or enabled_packages is not None:
-                        store._connection.execute(
-                            "INSERT INTO graph_project_packages VALUES('project',?) "
-                            "ON CONFLICT(configuration_id) DO UPDATE SET payload=excluded.payload",
-                            (canonical_bytes(selected).decode("utf-8"),))
+                    try:
+                        store._connection.execute("BEGIN IMMEDIATE")
+                        TypeContractStore(store).check_registry(self.registry.data_types)
+                        if enabled_packages is not None or saved.configuration_id is None:
+                            selections.write_current(selected)
+                        store._connection.execute("COMMIT")
+                    except BaseException:
+                        if store._connection.in_transaction:
+                            store._connection.execute("ROLLBACK")
+                        raise
             except BaseException:
                 self._lease.close()
                 raise
@@ -486,7 +490,7 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
 
     def _mapped_data(self, repo, source, document, mappings, *, state=None):
         """Preserve shared current state; schema changes require an explicit reset."""
-        from .workbench_resources import validate_data_definition, session_data_entry
+        from .resource_contracts import validate_data_definition, session_data_entry
         state = ProgramVariableStore(repo.store).current(source["workflow_session_id"]) if state is None else deepcopy(state)
         resets = {item["target_node_id"] for item in mappings if item["action"] == "reset"}
         declarations = {}
@@ -578,7 +582,7 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                 for name, value in variables.items():
                     state["values"][name] = {"type": state["values"][name]["type"], "source": "assignment", "value": value}
             if shared is not None:
-                from .workbench_resources import session_data_entry, validate_data_value
+                from .resource_contracts import session_data_entry, validate_data_value
                 require(type(shared) is dict and set(shared) <= set(state.get("data", {})), "session_data_unregistered", "Shared data is not registered")
                 for name, value in shared.items():
                     entry = state["data"][name]

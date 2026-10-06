@@ -12,6 +12,7 @@ export type GraphReceipt =
 export interface GraphCommandPorts {
   persist(): boolean;
   request(path: string, body: Record<string, unknown>): Promise<unknown>;
+  readReceipt(path: string, body: Record<string, unknown>): Promise<unknown>;
   readDefinition(id: string, revision: number): Promise<GraphDocument>;
   observedSession?(sessionId: string): GraphSession | undefined;
   current(): boolean;
@@ -75,34 +76,52 @@ async function readReceipt(value: unknown, request: GraphCommand,
   return { kind: "session", session: value, observation: latest, historicalDocument };
 }
 
-export async function dispatchGraphCommand(entry: GraphEntry, command: GraphCommand, ports: GraphCommandPorts) {
+export async function dispatchGraphCommand(entry: GraphEntry, command: GraphCommand, ports: GraphCommandPorts,
+  reconcile = false) {
   const request = graphClone(command);
   const basis = { definitionId: entry.document.workflow_definition_id,
     savedRevision: entry.saved_revision, sessionId: entry.session_id };
-  entry.pending = graphClone(request);
-  if (!ports.persist()) {
-    entry.pending = null;
-    throw new WorkbenchApiError("unavailable", "原工作流请求无法保存，未提交");
+  const pendingRequired = !reconcile || entry.pending !== null;
+  const samePending = () => entry.pending !== null && JSON.stringify(entry.pending) === JSON.stringify(request);
+  const current = () => ports.current() && (pendingRequired ? samePending() : entry.pending === null);
+  const persist = () => { try { return ports.persist(); } catch { return false; } };
+  if (reconcile) {
+    if (entry.pending === null && (request.action !== "migrate"
+      || JSON.stringify(entry.migration_request) !== JSON.stringify(request)))
+      unknown("未保留原工作流请求");
+    if (entry.pending !== null && !samePending()) unknown("待核实请求已变化");
+    if (!current()) unknown("工作流已关闭或恢复");
+  } else {
+    if (entry.pending !== null) unknown("原请求尚待核实，不能提交新操作");
+    entry.pending = graphClone(request);
+    if (!persist()) {
+      if (samePending()) entry.pending = null;
+      throw new WorkbenchApiError("unavailable", "原工作流请求无法保存，未提交");
+    }
   }
   let value: unknown;
-  try { value = await ports.request(request.path, graphClone(request.body)); }
+  try {
+    value = await (reconcile ? ports.readReceipt : ports.request)(request.path, graphClone(request.body));
+  }
   catch (failure) {
-    if (ports.current() && failure instanceof WorkbenchApiError && failure.kind === "rejected") {
+    if (!reconcile && current() && failure instanceof WorkbenchApiError && failure.kind === "rejected"
+      && failure.code !== "idempotency_conflict") {
       entry.diagnostics = failure.diagnostics?.length ? graphClone(failure.diagnostics)
         : [{ reason_code: failure.code ?? "graph_request_rejected", message: failure.reason }];
       entry.pending = null;
-      if (!ports.persist()) entry.pending = graphClone(request);
+      if (!persist() && ports.current() && entry.pending === null) entry.pending = graphClone(request);
     }
     throw failure;
   }
   const receipt = await readReceipt(value, request, basis, ports);
-  if (!ports.current()) unknown("工作流已关闭或恢复，迟到回执未覆盖当前文档");
+  if (!current()) unknown("工作流已关闭或恢复，迟到回执未覆盖当前文档");
   ports.accept(receipt, request);
+  if (!current()) unknown("待核实请求已变化");
   entry.pending = null;
   entry.diagnostics = [];
   if (["copy", "rebind"].includes(request.action)) entry.state_mappings = [];
-  if (!ports.persist()) {
-    entry.pending = graphClone(request);
+  if (!persist()) {
+    if (ports.current() && entry.pending === null) entry.pending = graphClone(request);
     unknown("后端已处理请求，本机回执保存失败");
   }
   return value;

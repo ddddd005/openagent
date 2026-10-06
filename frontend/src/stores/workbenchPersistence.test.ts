@@ -159,7 +159,7 @@ describe("workbench configuration recovery", () => {
     expect(persistence.error).toContain("无法安全恢复");
     expect(storage.getItem()).toBe(original);
   });
-  it("recovers the first edit and the exact lost-copy request before opening its independent session", async () => {
+  it("preserves the first edit and exact lost-copy request without resubmitting or discarding it", async () => {
     const storage = memory();
     const childId = "00000000-0000-4000-8000-000000000903";
     let lost = true;
@@ -203,13 +203,39 @@ describe("workbench configuration recovery", () => {
     recovered.initialize(storage);
     const restoredRuntime = useWorkbenchRuntimeStore();
     await restoredRuntime.activateWorkflow(MAIN_WORKFLOW_ID);
+    const original = storage.getItem();
+    const requests = fetcher.mock.calls.length;
     await recovered.reconcileCopy();
-    expect(copies).toHaveLength(2);
-    expect(copies[0]).toBe(copies[1]);
-    expect(useWorkspaceStore().activeWorkflowId).toBe(copying.id);
-    expect(useWorkspaceStore().activeWorkflow.copyPending).toBe(false);
+    expect(copies).toHaveLength(1);
+    expect(fetcher).toHaveBeenCalledTimes(requests);
+    expect(storage.getItem()).toBe(original);
+    expect(useWorkspaceStore().activeWorkflowId).toBe(MAIN_WORKFLOW_ID);
+    expect(useWorkspaceStore().workflows.find(row => row.id === copying.id)?.copyPending).toBe(true);
     expect(usePreparationStore().getDraft(copying.id, "A").nodes.find(n => n.id === prompt.id)?.config)
       .toMatchObject({ text: "first edit survives" });
-    expect(restoredRuntime.runtimes[copying.id]?.sessionId).toBe(childId);
+    expect(restoredRuntime.unknown?.body).toEqual(JSON.parse(copies[0]!));
+    useWorkspaceStore().activeWorkflowId = copying.id;
+    recovered.discardDraft();
+    expect(useWorkspaceStore().workflows.find(row => row.id === copying.id)?.copyPending).toBe(true);
+    expect(restoredRuntime.exportRuntimeSnapshot().sessions.some(row =>
+      row.pending?.action === `copy-workflow:${copying.id}`)).toBe(true);
+  });
+  it("does not reconstruct a recovered copy operation when its original request is missing", async () => {
+    const storage = memory();
+    const persistence = useWorkbenchPersistenceStore();
+    persistence.initialize(storage);
+    const workspace = useWorkspaceStore();
+    const target = "00000000-0000-4000-8000-000000000903";
+    workspace.cloneWorkflow(MAIN_WORKFLOW_ID, target);
+    usePreparationStore().cloneWorkflow(MAIN_WORKFLOW_ID, target);
+    workspace.setCopyPending(target, true);
+    expect(persistence.save()).toBe(true);
+    const original = storage.getItem();
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    await persistence.reconcileCopy();
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(storage.getItem()).toBe(original);
+    expect(workspace.workflows.find(row => row.id === target)?.copyPending).toBe(true);
   });
 });
