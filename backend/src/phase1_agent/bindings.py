@@ -17,9 +17,10 @@ from uuid import UUID, uuid4
 from jsonschema import Draft202012Validator, SchemaError, ValidationError
 
 from .contract_errors import ContractValidationError
-from .contract_graph import validate_message_history, validate_turn_final
+from .contract_graph import validate_message_history
 from .contract_json import dumps_pretty, validate_json_value
 from .contracts_v2 import validate_record
+from .legacy_context_contracts import project_basic_turn
 from .tools import RegisteredTool
 
 
@@ -333,31 +334,7 @@ class BasicContext:
         snapshot: dict,
     ) -> list[dict[str, Any]]:
         """Project one archived turn's own input and accepted message delta."""
-        node_input = validate_record("node_input", node_input)
-        snapshot = validate_record("input_snapshot", snapshot)
-        turn = validate_record("turn", turn)
-        _require(turn["snapshot_id"] == snapshot["snapshot_id"]
-                 and turn["input_id"] == snapshot["input_id"] == node_input["input_id"],
-                 "Turn, frozen snapshot and input identities differ")
-        validate_turn_final(turn, snapshot)
-        source = node_input["source"]
-        if source["kind"] == "visible_message":
-            expected_source = {"kind": "human", "visible_message_id": source["visible_message_id"]}
-        elif source["kind"] == "upstream_output":
-            expected_source = {"kind": "upstream_node", "output_id": source["output_id"]}
-        else:
-            raise ContractValidationError("External input requires an explicit v2 source projection")
-        expected_text = dumps_pretty(node_input["payload"])
-        input_message = next((
-            message for message in reversed(snapshot["s0"])
-            if message["role"] == "user"
-            and message["source"] == expected_source
-            and message["blocks"] == [{"kind": "text", "text": expected_text}]
-        ), None)
-        _require(input_message is not None, "Frozen S0 has no matching input message")
-        projected = [input_message, *turn["messages"]]
-        validate_message_history(projected)
-        return projected
+        return project_basic_turn(turn, node_input, snapshot)
 
 
 def build_snapshot(

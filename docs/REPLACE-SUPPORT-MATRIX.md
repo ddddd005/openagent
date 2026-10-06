@@ -204,3 +204,5 @@ DEMO-05/06、COND、LATER 继续在 1.0 后按需安排；节点打组、历史�
 仍须落实整份冻结写守卫、恢复跳过与同进程活动保护、完整纯档案、浏览器 schema1–6/旧静态键 passthrough，并退役正式旧 UI/store/host/runtime/路由。当前 fixed-workflow、model/exposure 等旧 stores 和静态 `app.js` 的核实风险未在本片修复；不得以新应用回执查询代替旧请求身份取证或宣布阶段 B、1.0 完成。
 
 后续 [旧客户端保全切片](REPLACE-LEGACY-PENDING.md)停止旧 runtime/资源核实与缺坐标副本恢复重 POST，补 pending/迟到/本机保存和静态原文/首次回执保护；静态控制仅本页面，旧保存 passthrough 及正式只读替换仍未完成。阶段目标再次明确为删除旧专用运行/写入路由、正式 UI/store 和旧 host/runtime/适配及专属测试，不以增加这些保护作为长期保留双架构的依据；第 8 节原盘点事实与前片验证不回写。
+
+上述四片已提交并建立仓库外退役前归档；后续 [上下文纯读取](REPLACE-ARCHIVE-READ.md)把 basic/prepared 的闭合 Turn 投影和完整 frozen 校验迁出旧执行类，GraphAgentHost 的档案读取不再导入旧工作流/Context。共享验证算法按裁决保留；调用者仍须授权，当前 archive 入口仍构造 RW store，旧宿主继承及迁移导入尚在。本片不等于完整纯档案、冻结/恢复或正式旧实现已移除。

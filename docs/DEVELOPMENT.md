@@ -24,6 +24,7 @@
 | 前端业务节点 | `frontend_package.py`、`frontend_business.py` |
 | 定义、会话、对象与运行存储 | `storage.py`、`graph_store.py`、`graph_records.py`、`session_objects.py`、`runtime_fact_store.py` |
 | 冻结旧 Agent 证据的纯校验 | `graph_agent_contracts.py`；旧执行器保留同名导出，不参与历史读取 |
+| 旧闭合 Turn 与上下文纯投影 | `legacy_archive.py`、`legacy_context_contracts.py`；只接收 reader，调用者负责作用域，不构造旧 Context/执行器 |
 | 信息源与事实读取 | `graph_information.py`、`runtime_information.py` |
 | 独立聊天客户端 | `static/graph-chat.js`、`static/graph-chat-core.js` |
 

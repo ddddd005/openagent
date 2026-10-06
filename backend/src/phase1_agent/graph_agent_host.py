@@ -6,12 +6,12 @@ import json
 from uuid import uuid4
 
 from .contract_json import canonical_bytes, dumps_pretty
-from .contract_graph import validate_turn_final
 from .contracts_v2 import validate_record
 from .graph_records import require, graph_error, uuid_value
 from .graph_resource_host import GraphResourceHost
 from .graph_store import GraphRecordStore
 from .graph_prompt import archive_materials, assemble_materials
+from .legacy_archive import read_closed_legacy_archive
 from .program_variable_store import ProgramVariableStore
 
 
@@ -99,29 +99,7 @@ class GraphAgentHost:
 
     @staticmethod
     def _legacy_archive(store, turn_id):
-        turn = validate_record("turn", store.get_record("turn", {"turn_id": turn_id}))
-        snapshot = validate_record("input_snapshot", store.get_record("input_snapshot", {"snapshot_id": turn["snapshot_id"]}))
-        node_input = validate_record("node_input", store.get_record("node_input", {"input_id": turn["input_id"]}))
-        run = store.get_record("run_record", {"run_id": turn["run_id"]})
-        if run is None:
-            run = store.get_record("node_run", {"run_id": turn["run_id"]})
-        require(run is not None and run["status"] == "succeeded" and run["result_turn_id"] == turn_id
-                and run["snapshot_id"] == snapshot["snapshot_id"]
-                and run["workflow_session_id"] == snapshot["workflow_session_id"]
-                and run["node_binding_id"] == snapshot["node_binding_id"],
-                "graph_legacy_history_invalid", "Legacy archive has no closed owner", 409)
-        descriptor = snapshot["config"]["payload"]["resolved"]["context"]
-        from .workflow import CONTEXT_COMPONENT, VERSION
-        from .prepared_context import PREPARED_CONTEXT_COMPONENT, PREPARED_CONTEXT_VERSION, PreparedPromptContext
-        from .bindings import BasicContext
-        key = descriptor["component_id"], descriptor["component_version"]
-        require(key in ((CONTEXT_COMPONENT, VERSION), (PREPARED_CONTEXT_COMPONENT, PREPARED_CONTEXT_VERSION)),
-                "graph_legacy_context_unsupported", "Legacy context implementation needs an explicit adapter", 409)
-        context = BasicContext() if key == (CONTEXT_COMPONENT, VERSION) else PreparedPromptContext()
-        projected = context.project_turn(turn, node_input, snapshot)
-        validate_turn_final(turn, snapshot)
-        require(projected[1:] == turn["messages"], "graph_legacy_history_invalid", "Legacy projection changed the closed delta")
-        return {"turn": turn, "root": projected[:1], "snapshot": snapshot}
+        return read_closed_legacy_archive(store, turn_id)
 
     def _resolve_archive(self, repo, sid, turn_id):
         package = self._allowed_archives(repo, sid).get(turn_id)

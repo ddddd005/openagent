@@ -32,6 +32,8 @@
 
 旧 runtime/资源 stores 的核实及旧副本恢复现已停止重 POST，静态旧聊天补原文、首次回执及本页面未决请求保护，见 [旧客户端原请求保全](docs/REPLACE-LEGACY-PENDING.md)。这是实际删除旧入口前的准备；目标仍是退出旧 UI/store/host/runtime/路由，仅保留必要历史只读数据和公共设施。冻结、纯档案与正式旧实现移除尚未完成，本片亦未提交。
 
+上述四个阶段 B 切片现已提交为 `a94d560`，并设置退役前标签 `legacy-retirement-2026-10-07`；完整源码 ZIP 和 Git bundle 保存在仓库外，不包含用户数据库或凭据，尚未推送。后续旧闭合 Turn 投影和冻结准备校验已迁出执行类，见 [退役归档与纯读取记录](docs/REPLACE-ARCHIVE-READ.md)。此前未提交说明保留为当时记录；正式旧架构仍待实际退役，阶段 B/1.0 未完成。
+
 ## 从这里开始
 
 | 文档 | 内容 |
@@ -50,6 +52,7 @@
 | [执行配置与分类准备](docs/REPLACE-EXECUTION-SELECTION.md) | 当前/历史配置分流、纯依赖解析与分类准备，及尚未启用的冻结/请求保护 |
 | [回执边界与原请求保护](docs/REPLACE-RECEIPT-BOUNDARY.md) | 无宿主初始化的只读核实、同事务应用身份、当前客户端 pending 保全及旧请求证据边界 |
 | [旧客户端原请求保全](docs/REPLACE-LEGACY-PENDING.md) | 旧核实不重 POST、副本与静态原文保护，及实际删除旧架构的剩余门槛 |
+| [退役归档与纯读取](docs/REPLACE-ARCHIVE-READ.md) | 退役前 Git 标签、仓库外备份、旧上下文纯投影及剩余删除边界 |
 | [后续待办](docs/BACKLOG.md) | 1.0 架构替代与验收、已知问题、1.0 后维护、可选能力及暂停事项 |
 | [快速启动](docs/QUICKSTART.md) | 干净环境安装、双终端启动、模型配置与首轮演示 |
 | [开发说明](docs/DEVELOPMENT.md) | 模块入口、运行数据流、数据权威和修改边界 |

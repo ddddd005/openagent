@@ -49,7 +49,10 @@ def pair(tmp_path):
         legacy.wait_for_idle(sid)
         assert legacy.get_session(sid)["error"] is None
         edit_value(legacy, sid, 50, str(uuid4()))
-        with closing(GraphWorkflowService(path, model_factory=lambda _: pytest.fail("context migration must not call a model"))) as service:
+        with closing(GraphWorkflowService(
+            path, enabled_packages={"workflow.compat": "1.0.0"},
+            model_factory=lambda _: pytest.fail("context migration must not call a model"),
+        )) as service:
             yield path, legacy, service, sid
 
 
@@ -144,7 +147,9 @@ def test_busy_legacy_runtime_is_rejected_before_a_graph_definition_or_session_is
             assert release.wait(10)
             return super().generate(messages, tools)
 
-    with closing(WorkflowService(path, model_factory=BlockingOffline)) as legacy, closing(GraphWorkflowService(path)) as service:
+    with closing(WorkflowService(path, model_factory=BlockingOffline)) as legacy, closing(
+        GraphWorkflowService(path, enabled_packages={"workflow.compat": "1.0.0"}),
+    ) as service:
         sid = legacy.create_session()["workflow_session_id"]
         legacy.submit(sid, "Busy input", str(uuid4()))
         assert entered.wait(10)
@@ -178,7 +183,7 @@ def test_custom_legacy_kernel_requires_explicit_migration_without_replacing_its_
             assert legacy.get_session(sid)["error"] is None
         with closing(SqliteStore(path)) as store:
             original = store.read_bundle()
-        with closing(GraphWorkflowService(path)) as service:
+        with closing(GraphWorkflowService(path, enabled_packages={"workflow.compat": "1.0.0"})) as service:
             doc = context_graph(service)
             with pytest.raises(ContractValidationError) as unsupported:
                 migrate(service, legacy, sid, doc)
