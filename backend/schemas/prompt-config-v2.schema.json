@@ -1,0 +1,813 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:phase1-agent:prompt-config:v2",
+  "title": "Prompt configuration records (schema version 2)",
+  "$comment": "Use a named $defs schema. Entity and instance IDs are canonical UUID4. Python additionally requires integer values, rejects cyclic/non-JSON values and checks same-scope instance/input-name/override-target uniqueness. Exact-reference existence, effective override validity and catalog CAS are checked separately. Disabled references are still validated.",
+  "$defs": {
+    "item": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "kind",
+        "item_id",
+        "revision",
+        "name",
+        "text",
+        "role",
+        "enabled",
+        "placement",
+        "depth",
+        "order",
+        "interpolation",
+        "source"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "kind": {
+          "const": "item"
+        },
+        "item_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "system",
+            "user",
+            "assistant"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "placement": {
+          "enum": [
+            "before",
+            "middle",
+            "after"
+          ]
+        },
+        "depth": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "order": {
+          "type": "integer"
+        },
+        "interpolation": {
+          "enum": [
+            "variables",
+            "literal"
+          ]
+        },
+        "source": {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "configuration"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "placement": {
+                "const": "middle"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "depth": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "depth": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "group": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "kind",
+        "group_id",
+        "revision",
+        "name",
+        "members"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "kind": {
+          "const": "group"
+        },
+        "group_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "item_instance_id",
+              "item_id",
+              "revision",
+              "overrides"
+            ],
+            "properties": {
+              "item_instance_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "minLength": 36,
+                "maxLength": 36
+              },
+              "item_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "minLength": 36,
+                "maxLength": 36
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "overrides": {
+                "type": "object",
+                "required": [],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "system",
+                      "user",
+                      "assistant"
+                    ]
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "placement": {
+                    "enum": [
+                      "before",
+                      "middle",
+                      "after"
+                    ]
+                  },
+                  "depth": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "order": {
+                    "type": "integer"
+                  },
+                  "interpolation": {
+                    "enum": [
+                      "variables",
+                      "literal"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "config": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "kind",
+        "config_id",
+        "revision",
+        "name",
+        "inputs"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "kind": {
+          "const": "config"
+        },
+        "config_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "name",
+                  "kind",
+                  "item_instance_id",
+                  "item_id",
+                  "revision",
+                  "overrides"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "const": "item"
+                  },
+                  "item_instance_id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "minLength": 36,
+                    "maxLength": 36
+                  },
+                  "item_id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "minLength": 36,
+                    "maxLength": 36
+                  },
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "overrides": {
+                    "type": "object",
+                    "required": [],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "text": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "enum": [
+                          "system",
+                          "user",
+                          "assistant"
+                        ]
+                      },
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "placement": {
+                        "enum": [
+                          "before",
+                          "middle",
+                          "after"
+                        ]
+                      },
+                      "depth": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "order": {
+                        "type": "integer"
+                      },
+                      "interpolation": {
+                        "enum": [
+                          "variables",
+                          "literal"
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": [
+                  "name",
+                  "kind",
+                  "group_instance_id",
+                  "group_id",
+                  "revision",
+                  "enabled",
+                  "member_overrides"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "const": "group"
+                  },
+                  "group_instance_id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "minLength": 36,
+                    "maxLength": 36
+                  },
+                  "group_id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "minLength": 36,
+                    "maxLength": 36
+                  },
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "member_overrides": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "item_instance_id",
+                        "overrides"
+                      ],
+                      "properties": {
+                        "item_instance_id": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "minLength": 36,
+                          "maxLength": 36
+                        },
+                        "overrides": {
+                          "type": "object",
+                          "required": [],
+                          "properties": {
+                            "name": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "text": {
+                              "type": "string"
+                            },
+                            "role": {
+                              "enum": [
+                                "system",
+                                "user",
+                                "assistant"
+                              ]
+                            },
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "placement": {
+                              "enum": [
+                                "before",
+                                "middle",
+                                "after"
+                              ]
+                            },
+                            "depth": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "order": {
+                              "type": "integer"
+                            },
+                            "interpolation": {
+                              "enum": [
+                                "variables",
+                                "literal"
+                              ]
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "config_v2": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "kind",
+        "config_id",
+        "revision",
+        "name",
+        "inputs",
+        "preparation"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 2
+        },
+        "kind": {
+          "const": "config"
+        },
+        "config_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "name",
+                  "kind",
+                  "item_instance_id",
+                  "item_id",
+                  "revision",
+                  "overrides"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "const": "item"
+                  },
+                  "item_instance_id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "minLength": 36,
+                    "maxLength": 36
+                  },
+                  "item_id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "minLength": 36,
+                    "maxLength": 36
+                  },
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "overrides": {
+                    "type": "object",
+                    "required": [],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "text": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "enum": [
+                          "system",
+                          "user",
+                          "assistant"
+                        ]
+                      },
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "placement": {
+                        "enum": [
+                          "before",
+                          "middle",
+                          "after"
+                        ]
+                      },
+                      "depth": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "order": {
+                        "type": "integer"
+                      },
+                      "interpolation": {
+                        "enum": [
+                          "variables",
+                          "literal"
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": [
+                  "name",
+                  "kind",
+                  "group_instance_id",
+                  "group_id",
+                  "revision",
+                  "enabled",
+                  "member_overrides"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "const": "group"
+                  },
+                  "group_instance_id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "minLength": 36,
+                    "maxLength": 36
+                  },
+                  "group_id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "minLength": 36,
+                    "maxLength": 36
+                  },
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "member_overrides": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "item_instance_id",
+                        "overrides"
+                      ],
+                      "properties": {
+                        "item_instance_id": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "minLength": 36,
+                          "maxLength": 36
+                        },
+                        "overrides": {
+                          "type": "object",
+                          "required": [],
+                          "properties": {
+                            "name": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "text": {
+                              "type": "string"
+                            },
+                            "role": {
+                              "enum": [
+                                "system",
+                                "user",
+                                "assistant"
+                              ]
+                            },
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "placement": {
+                              "enum": [
+                                "before",
+                                "middle",
+                                "after"
+                              ]
+                            },
+                            "depth": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "order": {
+                              "type": "integer"
+                            },
+                            "interpolation": {
+                              "enum": [
+                                "variables",
+                                "literal"
+                              ]
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "preparation": {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "kind",
+            "nodes",
+            "outputs"
+          ],
+          "properties": {
+            "schema_version": {
+              "type": "integer",
+              "const": 1
+            },
+            "kind": {
+              "const": "prompt_preparation_program"
+            },
+            "nodes": {
+              "type": "array",
+              "maxItems": 128,
+              "items": {
+                "type": "object",
+                "required": [
+                  "node_id",
+                  "kind",
+                  "inputs",
+                  "config"
+                ],
+                "properties": {
+                  "node_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "kind": {
+                    "enum": [
+                      "text",
+                      "prompt-source",
+                      "context-source",
+                      "prompt-collector",
+                      "text-to-prompt",
+                      "prompt-to-text",
+                      "regex",
+                      "variable-register",
+                      "variable-assign",
+                      "variable-replace"
+                    ]
+                  },
+                  "inputs": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "config": {
+                    "type": "object"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "prompt",
+                "context"
+              ],
+              "properties": {
+                "prompt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "context": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

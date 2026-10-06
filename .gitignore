@@ -1,0 +1,43 @@
+# Dependencies and build products
+node_modules/
+.venv/
+venv/
+dist/
+build/
+coverage/
+*.egg-info/
+.build*/
+
+# Runtime state, test evidence and local databases
+.local/
+tmp/
+.pytest_cache/
+.pytest*/
+.tmp*/
+__pycache__/
+*.py[cod]
+*.sqlite*
+*.db
+*.db-*
+*.log
+.coverage*
+htmlcov/
+services.json
+
+# Credentials belong in the environment, never in the release.
+.env
+.env.*
+!.env.example
+*key*.json
+*secret*.json
+*credential*.json
+*.pem
+*.p12
+*.pfx
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+tmp.gbk

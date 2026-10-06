@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phase1-agent"
+version = "0.1.0"
+description = "Isolated first-stage agent with native DeepSeek tool history"
+requires-python = ">=3.10"
+dependencies = [
+  "jsonschema==4.25.1",
+  "openai==2.51.0",
+  "httpx==0.28.1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.1,<9"]
+smolagents-compat = ["smolagents==1.27.0.dev0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+phase1_agent = ["static/*.html", "static/*.css", "static/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,3 @@
+# Run from backend; use the bundled, fixed upstream compatibility source.
+-e ../vendor/smolagents
+-e .[test,smolagents-compat]

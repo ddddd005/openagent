@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>聊天前端</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/chat-entry.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>聊天前端</h1>
+      <span id="mode" class="mode">正在连接</span>
+    </header>
+    <div class="session-bar">
+      <label for="sessions">会话</label>
+      <select id="sessions" aria-label="选择会话"><option value="">暂无会话</option></select>
+      <button id="new-session" type="button">新建会话</button>
+    </div>
+    <section class="workflow" aria-label="工作流状态">
+      <div class="stage"><span>A 草稿</span><span id="stage-a" class="state">待开始</span><span id="budget-a" class="budget-counts" hidden></span></div>
+      <div class="stage"><span>B 修订</span><span id="stage-b" class="state">待开始</span><span id="budget-b" class="budget-counts" hidden></span></div>
+      <div class="stage"><span>输出</span><span id="stage-output" class="state">待开始</span></div>
+    </section>
+    <div class="run-toolbar">
+      <span id="run-status" role="status"></span>
+      <button id="run-control" type="button" hidden disabled></button>
+      <button id="reroll-interrupted" type="button" hidden disabled title="保留旧执行与结果，从原输入启动完整工作流">回合重来</button>
+      <button id="close-execution" type="button" hidden disabled title="结束无法恢复的执行，保留已保存的事实">明确结束执行</button>
+      <button id="continue-workflow" type="button" hidden disabled title="保留已完成工作，并在新执行中继续">继续工作流</button>
+      <button id="retry-closeout" type="button" hidden disabled></button>
+      <button id="start-pending" type="button" hidden disabled title="从分叉保留的输入首次启动工作流">启动分支输入</button>
+    </div>
+    <div id="budget-controls" class="budget-controls" hidden>
+      <label for="additional-model-requests">逻辑请求 +</label>
+      <input id="additional-model-requests" type="number" min="0" max="64" step="1" value="1" inputmode="numeric">
+      <label for="additional-model-attempts">传输尝试 +</label>
+      <input id="additional-model-attempts" type="number" min="0" max="256" step="1" value="4" inputmode="numeric">
+      <button id="extend-budget" class="icon-button" type="button" title="增加当前运行额度，随后可继续运行" aria-label="增加当前运行额度" disabled>+</button>
+    </div>
+    <div id="error" class="error" role="alert" hidden></div>
+    <section id="public-exposures" class="public-exposures" aria-label="公开状态与结果" hidden>
+      <h2>公开状态与结果</h2>
+      <p id="public-exposure-status" class="muted" role="status"></p>
+      <div id="public-exposure-list"></div>
+    </section>
+    <section id="public-node-outputs" class="public-exposures" aria-label="节点公开输出" hidden>
+      <h2>节点公开输出</h2>
+      <p id="public-node-status" class="muted" role="status"></p>
+      <div id="public-node-list"></div>
+    </section>
+    <section class="conversation" aria-label="消息">
+      <h2>消息</h2>
+      <ol id="messages" aria-live="polite"></ol>
+      <p id="empty" class="muted">暂无消息</p>
+    </section>
+    <form id="composer">
+      <fieldset class="prompt-selection">
+        <legend>固定提示词</legend>
+        <div class="prompt-choice">
+          <label for="prompt-config-a">A 配置</label>
+          <select id="prompt-config-a"><option value="">默认</option></select>
+          <label for="prompt-revision-a">修订</label>
+          <input id="prompt-revision-a" type="number" min="1" step="1" inputmode="numeric" disabled>
+        </div>
+        <div class="prompt-choice">
+          <label for="prompt-config-b">B 配置</label>
+          <select id="prompt-config-b"><option value="">默认</option></select>
+          <label for="prompt-revision-b">修订</label>
+          <input id="prompt-revision-b" type="number" min="1" step="1" inputmode="numeric" disabled>
+        </div>
+        <div class="prompt-save-state">
+          <span id="prompt-state" role="status"></span>
+          <button id="reset-prompt-state" type="button" hidden title="隔离损坏的本机记录并重置此会话配置">重置本机记录</button>
+        </div>
+      </fieldset>
+      <label for="input">输入</label>
+      <textarea id="input" rows="3" maxlength="12000" placeholder="输入内容" required></textarea>
+      <div class="submit-row">
+        <span id="progress" role="status"></span>
+        <button id="submit" type="submit" disabled>提交</button>
+      </div>
+    </form>
+  </main>
+</body>
+</html>

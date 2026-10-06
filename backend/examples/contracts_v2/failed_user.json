@@ -1,0 +1,284 @@
+{
+  "node_definition": [
+    {
+      "schema_version": 1,
+      "component_id": "00000000-0000-4000-8000-000000000001",
+      "component_version": "1.0.0",
+      "kind": "agent",
+      "capabilities": [
+        "json_final"
+      ],
+      "ports": [
+        {
+          "port_id": "request",
+          "direction": "input",
+          "schema_ref": {
+            "schema_id": "writing_text",
+            "version": 1
+          },
+          "required": true
+        },
+        {
+          "port_id": "reply",
+          "direction": "output",
+          "schema_ref": {
+            "schema_id": "writing_text",
+            "version": 1
+          }
+        }
+      ]
+    }
+  ],
+  "node_binding": [
+    {
+      "schema_version": 1,
+      "node_binding_id": "00000000-0000-4000-8000-000000000003",
+      "workflow_definition_id": "00000000-0000-4000-8000-000000000002",
+      "workflow_definition_revision": 1,
+      "component_id": "00000000-0000-4000-8000-000000000001",
+      "component_version": "1.0.0",
+      "config": {
+        "owner_component_id": "00000000-0000-4000-8000-000000000001",
+        "schema_version": 1,
+        "payload": {
+          "prompt_items": []
+        }
+      }
+    }
+  ],
+  "workflow_definition_revision": [
+    {
+      "schema_version": 1,
+      "workflow_definition_id": "00000000-0000-4000-8000-000000000002",
+      "revision": 1,
+      "bindings": [
+        "00000000-0000-4000-8000-000000000003"
+      ],
+      "edges": []
+    }
+  ],
+  "workflow_session": [
+    {
+      "schema_version": 1,
+      "workflow_session_id": "00000000-0000-4000-8000-000000000004",
+      "workflow_definition_id": "00000000-0000-4000-8000-000000000002",
+      "definition_revision": 1,
+      "revision": 1,
+      "source": {
+        "kind": "new"
+      }
+    }
+  ],
+  "node_session": [
+    {
+      "schema_version": 1,
+      "workflow_session_id": "00000000-0000-4000-8000-000000000004",
+      "node_binding_id": "00000000-0000-4000-8000-000000000003",
+      "data_version": 1,
+      "private_data": {
+        "owner_component_id": "00000000-0000-4000-8000-000000000001",
+        "schema_version": 1,
+        "payload": {
+          "prompt_items": []
+        }
+      }
+    }
+  ],
+  "node_input": [
+    {
+      "schema_version": 1,
+      "input_id": "00000000-0000-4000-8000-000000000005",
+      "port_id": "request",
+      "payload_schema_ref": {
+        "schema_id": "writing_text",
+        "version": 1
+      },
+      "source": {
+        "kind": "visible_message",
+        "visible_message_id": "00000000-0000-4000-8000-00000000000e"
+      },
+      "payload": {
+        "text": "Write a reply."
+      }
+    }
+  ],
+  "input_snapshot": [
+    {
+      "schema_version": 1,
+      "snapshot_id": "00000000-0000-4000-8000-000000000006",
+      "workflow_session_id": "00000000-0000-4000-8000-000000000004",
+      "node_binding_id": "00000000-0000-4000-8000-000000000003",
+      "input_id": "00000000-0000-4000-8000-000000000005",
+      "parent_turn_id": null,
+      "component_id": "00000000-0000-4000-8000-000000000001",
+      "component_version": "1.0.0",
+      "config": {
+        "owner_component_id": "00000000-0000-4000-8000-000000000001",
+        "schema_version": 1,
+        "payload": {
+          "prompt_items": []
+        }
+      },
+      "s0": [
+        {
+          "schema_version": 1,
+          "message_id": "00000000-0000-4000-8000-00000000000b",
+          "role": "user",
+          "source": {
+            "kind": "human",
+            "visible_message_id": "00000000-0000-4000-8000-00000000000e"
+          },
+          "blocks": [
+            {
+              "kind": "text",
+              "text": "Write a reply."
+            }
+          ]
+        }
+      ],
+      "tool_definitions": [
+        {
+          "name": "read_note",
+          "version": "1",
+          "parameters_schema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+          }
+        },
+        {
+          "name": "final_answer",
+          "version": "1",
+          "parameters_schema": {
+            "type": "object",
+            "properties": {
+              "answer": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "answer"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ],
+      "model_parameters": {
+        "model": "offline_fixture",
+        "temperature": 0
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "projection_version": 1
+    }
+  ],
+  "run_record": [
+    {
+      "schema_version": 1,
+      "profile": "agent",
+      "run_id": "00000000-0000-4000-8000-000000000007",
+      "workflow_session_id": "00000000-0000-4000-8000-000000000004",
+      "node_binding_id": "00000000-0000-4000-8000-000000000003",
+      "chain_run_id": "00000000-0000-4000-8000-000000000008",
+      "input_id": "00000000-0000-4000-8000-000000000005",
+      "snapshot_id": "00000000-0000-4000-8000-000000000006",
+      "source_run_id": null,
+      "initial_budget": {
+        "max_model_requests": 4,
+        "max_automatic_retries": 3
+      },
+      "status": "failed",
+      "revision": 4,
+      "result_turn_id": null,
+      "superseded_by_run_id": null
+    }
+  ],
+  "turn": [],
+  "candidate_group": [],
+  "candidate_selection": [],
+  "chain_run": [
+    {
+      "schema_version": 1,
+      "chain_run_id": "00000000-0000-4000-8000-000000000008",
+      "workflow_session_id": "00000000-0000-4000-8000-000000000004",
+      "input_id": "00000000-0000-4000-8000-000000000005",
+      "status": "failed",
+      "node_run_ids": [
+        "00000000-0000-4000-8000-000000000007"
+      ],
+      "output_id": null
+    }
+  ],
+  "workflow_output": [],
+  "output_delivery": [],
+  "workflow_checkpoint": [
+    {
+      "schema_version": 1,
+      "checkpoint_id": "00000000-0000-4000-8000-00000000000c",
+      "workflow_session_id": "00000000-0000-4000-8000-000000000004",
+      "workflow_definition_id": "00000000-0000-4000-8000-000000000002",
+      "definition_revision": 1,
+      "revision": 1,
+      "kind": "initial",
+      "nodes": [
+        {
+          "node_binding_id": "00000000-0000-4000-8000-000000000003",
+          "data_version": 1,
+          "private_data": {
+            "owner_component_id": "00000000-0000-4000-8000-000000000001",
+            "schema_version": 1,
+            "payload": {
+              "prompt_items": []
+            }
+          },
+          "selected_turn_id": null
+        }
+      ],
+      "selection_refs": []
+    }
+  ],
+  "visible_message": [
+    {
+      "schema_version": 1,
+      "visible_message_id": "00000000-0000-4000-8000-00000000000e",
+      "origin_workflow_session_id": "00000000-0000-4000-8000-000000000004",
+      "role": "user",
+      "payload_schema_ref": {
+        "schema_id": "writing_text",
+        "version": 1
+      },
+      "payload": {
+        "text": "Write a reply."
+      },
+      "source": {
+        "kind": "workflow_input",
+        "input_id": "00000000-0000-4000-8000-000000000005"
+      }
+    }
+  ],
+  "visible_message_ref": [
+    {
+      "schema_version": 1,
+      "workflow_session_id": "00000000-0000-4000-8000-000000000004",
+      "visible_message_id": "00000000-0000-4000-8000-00000000000e",
+      "sequence": 1,
+      "role": "user",
+      "boundary": {
+        "before_checkpoint_id": "00000000-0000-4000-8000-00000000000c",
+        "input_id": "00000000-0000-4000-8000-000000000005",
+        "input_status": "failed",
+        "chain_run_id": "00000000-0000-4000-8000-000000000008"
+      }
+    }
+  ]
+}

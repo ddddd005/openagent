@@ -1,0 +1,15 @@
+.local/
+
+# Runtime databases and test leftovers are local evidence, not source fixtures.
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
+*.sqlite.lock
+
+# Local credentials must never be included in a progress snapshot.
+*key*.json
+*secret*.json
+*credential*.json
+.env
+.env.*
