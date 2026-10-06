@@ -11,6 +11,7 @@ from .graph_records import require, graph_error, uuid_value
 from .graph_resource_host import GraphResourceHost
 from .graph_store import GraphRecordStore
 from .graph_prompt import archive_materials, assemble_materials
+from .graph_archives import read_graph_archive, resolve_graph_archive
 from .legacy_archive import read_closed_legacy_archive
 from .program_variable_store import ProgramVariableStore
 
@@ -91,28 +92,12 @@ class GraphAgentHost:
         from .workbench_resources import WorkbenchResourceStore
         return WorkbenchResourceStore(repo.store).resolve_content(identities)
 
-    def _allowed_archives(self, repo, sid):
-        history = set(self._history(repo, sid))
-        return {run["agent"]["accepted"]["turn"]["turn_id"]: run["agent"]["accepted"]
-                for run in repo.rows("node_run") if run.get("agent") and run["agent"]["accepted"]
-                and run["status"] == "succeeded" and run["chain_run_id"] in history}
-
     @staticmethod
     def _legacy_archive(store, turn_id):
         return read_closed_legacy_archive(store, turn_id)
 
     def _resolve_archive(self, repo, sid, turn_id):
-        package = self._allowed_archives(repo, sid).get(turn_id)
-        if package is not None:
-            evidence = package["snapshot"]["config"]["payload"]["graph_preparation"]
-            return {"turn": package["turn"], "root": [evidence["current_root"]], "snapshot": package["snapshot"]}
-        refs = self._legacy_refs(repo, sid)
-        reference = next((ref for ref in refs if turn_id in ref["turn_ids"]), None)
-        require(reference is not None, "graph_history_scope_mismatch", "Archive is outside this session's frozen history", 403)
-        archive = self._legacy_archive(repo.store, turn_id)
-        require(archive["snapshot"]["node_binding_id"] == reference["source_node_id"],
-                "graph_history_scope_mismatch", "Legacy archive has another node", 403)
-        return archive
+        return resolve_graph_archive(repo, sid, turn_id, legacy_reader=repo.store)
 
     def _context_archives(self, repo, sid, node_id, *, heads=None):
         document = self._document(repo, *(repo.get("workflow_session", workflow_session_id=sid)[key]
@@ -343,5 +328,5 @@ class GraphAgentHost:
         return self._change("graph.legacy.migrate", idempotency_key, request, change)
 
     def get_agent_archive(self, sid, turn_id):
-        with self._lock, closing(self._store()) as store:
-            return self._resolve_archive(GraphRecordStore(store), sid, turn_id)
+        with self._lock:
+            return read_graph_archive(self.database, sid, turn_id)

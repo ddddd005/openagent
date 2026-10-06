@@ -17,8 +17,6 @@ from urllib.parse import parse_qsl, urlsplit
 from .contract_errors import ContractValidationError
 from .contract_json import loads_strict
 from .prompt_selection import validate_prompt_selection
-from .workflow_operations import operation_http_status
-from .workflow_context_view import validate_context_request
 from .model_configuration import validate_configuration
 from .model_selection import validate_model_selection
 from .prompt_errors import PromptProcessingError
@@ -442,6 +440,15 @@ def create_server(service: Any, port: int = 8765, mode: str = "offline", *, grap
                         )
                         self._json(200, result)
                         return
+                    from .graph_archive_http import dispatch_archive_read
+                    archive = dispatch_archive_read(
+                        lambda: graph_services[0].database if graph_services[0] is not None else service.database,
+                        method, path, data,
+                    )
+                    if archive is not None:
+                        status, result = archive
+                        self._json(status, result)
+                        return
                     from .graph_http import dispatch_graph
                     status, result = dispatch_graph(get_graph_service(), method, path, data)
                     self._json(status, result)
@@ -593,6 +600,7 @@ def create_server(service: Any, port: int = 8765, mode: str = "offline", *, grap
                         return
                     match = _NODE_CONTEXT_PATH.fullmatch(path)
                     if match:
+                        from .workflow_context_view import validate_context_request
                         preview = match.group(3) == "preview"
                         data = validate_context_request(self._read_json(), preview=preview)
                         operation = service.preview_node_context if preview else service.read_node_context
@@ -629,6 +637,7 @@ def create_server(service: Any, port: int = 8765, mode: str = "offline", *, grap
                     if path == "/api/operations":
                         data = self._read_json()
                         result = service.dispatch_operation(data)
+                        from .workflow_operations import operation_http_status
                         self._json(operation_http_status(result["kind"]), result)
                         return
                     if path == "/api/sessions":

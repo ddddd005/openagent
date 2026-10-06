@@ -107,4 +107,6 @@
 
 [旧客户端保全](REPLACE-LEGACY-PENDING.md)已将旧 runtime/资源 reconcile 与旧副本恢复改为纯本地 unresolved，不 POST、不从缺原身份的请求猜应用回执。首次结果处理有完整 pending/恢复代际和本机结算保存围栏；静态旧聊天保护已持久化输入和本页面控制 pending，但没有跨重载控制 journal。旧保存重编码、完整只读档案与冻结授权仍待完成。这些临时保护不改变退役目标：阶段 B 须实际关闭并删除旧专用执行/客户端/路由，只留裁决保留的公共设施和纯历史读取。
 
+[Agent 归档只读接线](REPLACE-GRAPH-ARCHIVE-READ.md)让现有管理 `archive.read` 路由及直接服务查询使用 `graph_archives.read_graph_archive`，不调用 `_store`；HTTP 在服务 getter 前分派，旧 context/operation 模块仅相应旧路由按需导入。只读快照复用 `resolve_graph_archive` 的冻结作用域与纯闭合校验，consumer 不取得私有档案。完整旧会话门面、可信历史来源分类、冻结守卫/恢复隔离及正式旧客户端/宿主删除仍未完成；相关种类的损坏行仍可能阻断扫描，不承诺混合库损坏隔离。
+
 安装、测试和调试分别见 [快速启动](QUICKSTART.md)、[测试说明](TESTING.md)、[调试说明](DEBUGGING.md)。来源边界见 [第三方说明](../THIRD_PARTY_NOTICES.md)。

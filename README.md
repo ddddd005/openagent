@@ -34,6 +34,8 @@
 
 上述四个阶段 B 切片现已提交为 `a94d560`，并设置退役前标签 `legacy-retirement-2026-10-07`；完整源码 ZIP 和 Git bundle 保存在仓库外，不包含用户数据库或凭据，尚未推送。后续旧闭合 Turn 投影和冻结准备校验已迁出执行类，见 [退役归档与纯读取记录](docs/REPLACE-ARCHIVE-READ.md)。此前未提交说明保留为当时记录；正式旧架构仍待实际退役，阶段 B/1.0 未完成。
 
+纯投影片已提交为 `8bdbe86`。后续现有 Agent `archive.read` 已接只读 SQLite，HTTP 在构造新旧协调器前返回原冻结归档，见 [Agent 归档只读接线](docs/REPLACE-GRAPH-ARCHIVE-READ.md)。这只解除现有私有归档入口的初始化依赖；完整旧会话只读门面、冻结/恢复、浏览器 passthrough 及旧实现实际删除仍待完成，固定基线及退役归档不变。
+
 ## 从这里开始
 
 | 文档 | 内容 |
@@ -53,6 +55,7 @@
 | [回执边界与原请求保护](docs/REPLACE-RECEIPT-BOUNDARY.md) | 无宿主初始化的只读核实、同事务应用身份、当前客户端 pending 保全及旧请求证据边界 |
 | [旧客户端原请求保全](docs/REPLACE-LEGACY-PENDING.md) | 旧核实不重 POST、副本与静态原文保护，及实际删除旧架构的剩余门槛 |
 | [退役归档与纯读取](docs/REPLACE-ARCHIVE-READ.md) | 退役前 Git 标签、仓库外备份、旧上下文纯投影及剩余删除边界 |
+| [Agent 归档只读接线](docs/REPLACE-GRAPH-ARCHIVE-READ.md) | 现有 archive.read 无协调器读取、冻结引用/owner 拒绝及尚未完成的正式旧入口退役 |
 | [后续待办](docs/BACKLOG.md) | 1.0 架构替代与验收、已知问题、1.0 后维护、可选能力及暂停事项 |
 | [快速启动](docs/QUICKSTART.md) | 干净环境安装、双终端启动、模型配置与首轮演示 |
 | [开发说明](docs/DEVELOPMENT.md) | 模块入口、运行数据流、数据权威和修改边界 |

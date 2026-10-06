@@ -206,3 +206,5 @@ DEMO-05/06、COND、LATER 继续在 1.0 后按需安排；节点打组、历史�
 后续 [旧客户端保全切片](REPLACE-LEGACY-PENDING.md)停止旧 runtime/资源核实与缺坐标副本恢复重 POST，补 pending/迟到/本机保存和静态原文/首次回执保护；静态控制仅本页面，旧保存 passthrough 及正式只读替换仍未完成。阶段目标再次明确为删除旧专用运行/写入路由、正式 UI/store 和旧 host/runtime/适配及专属测试，不以增加这些保护作为长期保留双架构的依据；第 8 节原盘点事实与前片验证不回写。
 
 上述四片已提交并建立仓库外退役前归档；后续 [上下文纯读取](REPLACE-ARCHIVE-READ.md)把 basic/prepared 的闭合 Turn 投影和完整 frozen 校验迁出旧执行类，GraphAgentHost 的档案读取不再导入旧工作流/Context。共享验证算法按裁决保留；调用者仍须授权，当前 archive 入口仍构造 RW store，旧宿主继承及迁移导入尚在。本片不等于完整纯档案、冻结/恢复或正式旧实现已移除。
+
+归档入口续记：[限定 Agent 只读接线](REPLACE-GRAPH-ARCHIVE-READ.md)已将现有 `archive.read` HTTP/直接服务入口退出 RW store，HTTP 不创建新旧协调器，读取原冻结 refs、accepted 包及旧闭合记录。补 owner、引用形状和相邻 parent 检查，不以当前包声明证明历史来源，也不扩展 consumer 权限。前段 RW 说明是纯投影片时的状态；完整旧会话只读门面、可信分类授权、冻结/恢复、浏览器 passthrough 和旧专用代码实际删除仍待完成，不改阶段 A 原证据或关闭阶段 B/1.0。
