@@ -9,6 +9,7 @@ import socket
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
+from pathlib import Path
 from threading import RLock
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
@@ -33,6 +34,45 @@ _STATIC_FILES = {
 }
 _USER_UI_QUERY_FIELDS = frozenset({"graph_workflow", "graph_session"})
 _UUID4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+_WORKBENCH_CONTENT_TYPES = {
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+}
+
+
+def _workbench_files(directory: str | Path | None) -> dict[str, tuple[bytes, str]]:
+    if directory is None:
+        return {}
+    root = Path(directory).resolve(strict=True)
+    if not root.is_dir() or not (root / "index.html").is_file():
+        raise ValueError("Workbench build needs an index.html file")
+    files = {}
+    for path in [root / "index.html", *sorted((root / "assets").rglob("*"))]:
+        if not path.is_file():
+            continue
+        if path.is_symlink() or not path.resolve().is_relative_to(root):
+            raise ValueError("Workbench build cannot contain linked files")
+        relative = path.relative_to(root).as_posix()
+        if relative == "index.html":
+            content_type = "text/html; charset=utf-8"
+        elif path.suffix in _WORKBENCH_CONTENT_TYPES:
+            content_type = _WORKBENCH_CONTENT_TYPES[path.suffix]
+        else:
+            continue
+        if any(not re.fullmatch(r"[A-Za-z0-9_.-]+", part) or part in (".", "..")
+               for part in relative.split("/")):
+            raise ValueError("Workbench build contains an invalid asset name")
+        files["/workbench/" if relative == "index.html" else "/workbench/" + relative] = (
+            path.read_bytes(), content_type,
+        )
+    return files
 
 
 def _valid_user_ui_query(query: str) -> bool:
@@ -60,8 +100,10 @@ class _RequestError(Exception):
         self.message = message
 
 
-def create_server(service: Any, port: int = 8765, *, graph_service=None) -> ThreadingHTTPServer:
+def create_server(service: Any, port: int = 8765, *, graph_service=None,
+                  workbench_dist: str | Path | None = None) -> ThreadingHTTPServer:
     """Bind only to IPv4 loopback; pages and receipt reads do not initialize a runtime."""
+    workbench_files = _workbench_files(workbench_dist)
     graph_services = [graph_service]
     graph_owned = [False]
     graph_lock = RLock()
@@ -96,7 +138,7 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None) -> Thre
             body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
             self._send(status, body, "application/json; charset=utf-8")
 
-        def _send(self, status: int, body: bytes, content_type: str) -> None:
+        def _send(self, status: int, body: bytes, content_type: str, *, workbench: bool = False) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
@@ -108,7 +150,9 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None) -> Thre
             self.send_header(
                 "Content-Security-Policy",
                 "default-src 'none'; script-src 'self'; style-src 'self'; "
-                "connect-src 'self'; frame-ancestors 'none'; base-uri 'none",
+                "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+                + ("; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self'"
+                   if workbench else ""),
             )
             self.end_headers()
             self.wfile.write(body)
@@ -282,6 +326,10 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None) -> Thre
                     self._json(status, result)
                     return
                 if method == "GET":
+                    if path in workbench_files:
+                        body, content_type = workbench_files[path]
+                        self._send(200, body, content_type, workbench=True)
+                        return
                     if path in _STATIC_FILES:
                         name, content_type = _STATIC_FILES[path]
                         body = resources.files("phase1_agent").joinpath("static", name).read_bytes()
@@ -322,13 +370,21 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="本机工作流页面")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--database", required=True)
+    parser.add_argument("--workbench-dist", type=Path,
+                        help="Serve a production build at /workbench/ on the same loopback origin")
     args = parser.parse_args(argv)
     from .workflow_host import WorkflowHost
 
     service = WorkflowHost(database_path=args.database)
     try:
-        with create_server(service, port=args.port) as server:
+        try:
+            server = create_server(service, port=args.port, workbench_dist=args.workbench_dist)
+        except (ValueError, FileNotFoundError, NotADirectoryError) as exc:
+            parser.error(f"Invalid workbench build: {exc}")
+        with server:
             print(f"http://127.0.0.1:{server.server_address[1]}/", flush=True)
+            if args.workbench_dist is not None:
+                print(f"http://127.0.0.1:{server.server_address[1]}/workbench/", flush=True)
             server.serve_forever()
     finally:
         service.close()

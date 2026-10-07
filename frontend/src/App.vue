@@ -201,9 +201,11 @@ watch(
       <div v-if="persistence.error" class="workbench-save-error" role="status">{{ persistence.error }}</div>
       <div v-if="persistence.pendingCopy" class="workbench-save-error model-pending-banner" role="status">
         <span>工作流编辑副本等待会话复制确认</span>
-        <button type="button" :disabled="!!graph.busy" @click="persistence.reconcileCopy()">核实复制</button>
+        <button v-if="graph.entries[persistence.pendingCopy.id]?.pending" type="button" :disabled="!!graph.busy" @click="persistence.reconcileCopy()">核实复制</button>
+        <button v-else-if="graph.canRetryRejectedCopy(persistence.pendingCopy.id)" type="button" :disabled="!!graph.busy" @click="graph.retryRejectedCopy(persistence.pendingCopy.id)">重试已拒绝复制</button>
+        <span v-else>缺少原请求坐标，副本仍保留</span>
         <button v-if="graph.entries[persistence.pendingCopy.id] && !graph.entries[persistence.pendingCopy.id].pending" type="button" :disabled="!!graph.busy" @click="graph.discardRejectedCopy(persistence.pendingCopy.id)">放弃复制</button>
-        <template v-for="diagnostic in graph.entries[persistence.pendingCopy.id]?.diagnostics ?? []" :key="diagnostic.node_id"><button v-if="diagnostic.node_id && diagnostic.reason_code.includes('state') && !graph.entries[persistence.pendingCopy.id].pending" type="button" :disabled="!!graph.busy" @click="graph.resetPrivateState(persistence.pendingCopy.id, diagnostic.node_id); graph.reconcile(persistence.pendingCopy.id)">重建该节点私有状态并重试</button></template>
+        <template v-for="diagnostic in graph.entries[persistence.pendingCopy.id]?.diagnostics ?? []" :key="diagnostic.node_id"><button v-if="diagnostic.node_id && diagnostic.reason_code.includes('state') && graph.canRetryRejectedCopy(persistence.pendingCopy.id)" type="button" :disabled="!!graph.busy" @click="graph.resetPrivateState(persistence.pendingCopy.id, diagnostic.node_id); graph.retryRejectedCopy(persistence.pendingCopy.id)">重建该节点私有状态并重试</button></template>
       </div>
       <div v-for="(entry, workflowId) in graph.entries" :key="workflowId" v-show="entry.pending" class="workbench-save-error model-pending-banner" role="status"><span>{{ workspace.workflows.find(w => w.id === workflowId)?.title }} · 原请求待核实</span><button type="button" :disabled="!!graph.busy" @click="graph.reconcile(String(workflowId))">核实原请求</button></div>
       <div class="workbench-canvas-region">
@@ -230,7 +232,8 @@ watch(
 </template>
 
 <style scoped>
-.model-pending-banner { display: flex; align-items: center; gap: 15px; }
-.model-pending-banner button { font-size: 11px; text-decoration: underline; }
+.model-pending-banner { display: flex; flex-wrap:wrap; align-items: center; gap: 8px 15px; }
+.model-pending-banner span { min-width:0; overflow-wrap:anywhere; }
+.model-pending-banner button { flex-shrink:0; font-size: 11px; text-decoration: underline; }
 .workflow-unsaved { display:flex;align-items:center;gap:6px;color:#e4c85f;font-size:11px;white-space:nowrap; }
 </style>

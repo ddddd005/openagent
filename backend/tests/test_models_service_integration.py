@@ -210,7 +210,8 @@ def test_pause_preserves_frozen_provider_next_run_and_fork_use_current(tmp_path,
         assert not service._service_runs
 
 
-def test_provider_disabled_before_dispatch_has_not_dispatched_fact_and_releases_frame(tmp_path, monkeypatch):
+@pytest.mark.parametrize("policy_change", ["disabled", "credential_changed", "credential_missing"])
+def test_policy_changed_before_dispatch_has_not_dispatched_fact_and_releases_frame(tmp_path, monkeypatch, policy_change):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "private-api-secret")
     fixture = ModelDatabaseFixture()
     entered, released = Event(), Event()
@@ -222,7 +223,12 @@ def test_provider_disabled_before_dispatch_has_not_dispatched_fact_and_releases_
                                 idempotency_key=str(uuid4()))
         try:
             assert entered.wait(10)
-            fixture.write(service, 2, enabled=False)
+            if policy_change == "disabled":
+                fixture.write(service, 2, enabled=False)
+            elif policy_change == "credential_changed":
+                monkeypatch.setenv("DEEPSEEK_API_KEY", "rotated-private-secret")
+            else:
+                monkeypatch.delenv("DEEPSEEK_API_KEY")
         finally:
             released.set()
         service.wait(started["active_chain_run_id"])
@@ -232,6 +238,8 @@ def test_provider_disabled_before_dispatch_has_not_dispatched_fact_and_releases_
         assert history["runtime_facts"][-1]["details"]["classification"] == "not_dispatched"
         assert not fixture.calls
         assert not service._service_runs
+        assert "private-api-secret" not in json.dumps(history)
+        assert "rotated-private-secret" not in json.dumps(history)
 
 
 def test_unknown_transport_failure_persists_once_and_disposes_model(tmp_path, monkeypatch):

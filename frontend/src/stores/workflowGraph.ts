@@ -81,6 +81,16 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
           || !/^\/api\/graph\/(definitions|sessions(?:\/|$))/.test(entry.pending.path)
           || !graphObject(entry.pending.body) || !graphUuid(entry.pending.body.idempotency_key))) return false;
       if (entry.saved_document && (entry.saved_document as GraphDocument).workflow_definition_id !== entry.document.workflow_definition_id) return false;
+      if (entry.rejected_copy !== undefined) {
+        const rejected = entry.rejected_copy;
+        const sourceId = workspace.workflows.find(row => row.id === id)?.sourceId;
+        const source = sourceId ? restoredEntries[sourceId] : null;
+        if (!graphObject(rejected) || rejected.action !== "copy" || !graphObject(rejected.body)
+          || !graphUuid(rejected.body.idempotency_key) || !graphObject(source)
+          || rejected.path !== `/api/graph/sessions/${source.session_id}/copy`
+          || !isGraphDocument(rejected.body.document)
+          || rejected.body.document.workflow_definition_id !== entry.document.workflow_definition_id) return false;
+      }
       if (entry.pending !== null) {
         const request = entry.pending as unknown as GraphCommand;
         const body = request.body; const root = entry.document.workflow_definition_id;
@@ -622,24 +632,44 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   async function reconcile(id = workspace.activeWorkflowId) {
     const entry = entries.value[id]; if (!entry || busy.value) return;
     const workflow = workspace.workflows.find(row => row.id === id);
-    if (!entry.pending && workflow?.copyPending && workflow.sourceId) {
-      const source = entries.value[workflow.sourceId]; if (!source?.session_id) return;
-      busy.value = "copy";
-      try {
-        const view = await management.queries.session(source.session_id, source.document.workflow_definition_id);
-        await dispatch(id, command(`/api/graph/sessions/${view.workflow_session_id}/copy`, {
-          document: graphClone(entry.document), expected_session_revision: view.revision,
-          expected_data_revision: view.data_revision, expected_definition_revision: view.definition_revision,
-          expected_head_revision: view.head_revision, mappings: entry.state_mappings ?? [],
-        }, "copy"));
-      } catch (failure) { report(failure, "重试会话复制"); }
-      finally { busy.value = null; }
+    if (!entry.pending && workflow?.copyPending) {
+      notices.notify("unknown", entry.rejected_copy ? "复制已明确拒绝；核实不会重新提交，请使用重试已拒绝复制"
+        : "副本缺少原请求坐标，无法安全核实或重发；副本仍保留", "核实会话复制");
       return;
     }
     if (!entry.pending) return;
     busy.value = "reconcile";
     try { await dispatch(id, graphClone(entry.pending), true); await refresh(id); schedulePoll(id, viewGeneration); }
     catch (failure) { report(failure, "核实原工作流请求"); }
+    finally { busy.value = null; }
+  }
+  function canRetryRejectedCopy(id: string) {
+    const entry = entries.value[id], workflow = workspace.workflows.find(row => row.id === id);
+    const source = workflow?.sourceId ? entries.value[workflow.sourceId] : null;
+    const rejected = entry?.rejected_copy;
+    return !!entry && !entry.pending && !!workflow?.copyPending && !!source?.session_id
+      && rejected?.action === "copy" && rejected.path === `/api/graph/sessions/${source.session_id}/copy`
+      && isGraphDocument(rejected.body.document)
+      && graphSignature(rejected.body.document) === graphSignature(entry.document);
+  }
+  async function retryRejectedCopy(id: string) {
+    if (busy.value || applicationBusy.value || !canRetryRejectedCopy(id)) return;
+    const entry = entries.value[id], rejected = graphClone(entry.rejected_copy!);
+    const sourceId = workspace.workflows.find(row => row.id === id)!.sourceId!;
+    const source = entries.value[sourceId], sessionId = source.session_id!;
+    busy.value = "copy";
+    try {
+      const view = await management.queries.session(sessionId, source.document.workflow_definition_id);
+      if (!alive || entries.value[id] !== entry || entries.value[sourceId] !== source
+        || source.session_id !== sessionId || !canRetryRejectedCopy(id)
+        || JSON.stringify(entry.rejected_copy) !== JSON.stringify(rejected))
+        throw new WorkbenchApiError("unknown", "已拒绝复制的依据已变化，未提交新请求");
+      await dispatch(id, command(`/api/graph/sessions/${sessionId}/copy`, {
+        document: graphClone(entry.document), expected_session_revision: view.revision,
+        expected_data_revision: view.data_revision, expected_definition_revision: view.definition_revision,
+        expected_head_revision: view.head_revision, mappings: entry.state_mappings ?? [],
+      }, "copy"));
+    } catch (failure) { report(failure, "重试已拒绝会话复制"); }
     finally { busy.value = null; }
   }
   function discardDraft() {
@@ -737,6 +767,6 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     isGeneric, createWorkflow, createSerialAgentExample, typeFor, loadCatalog, setPersistenceGuard, storeSnapshot, restoreSnapshot,
     saveWorkflow, addNode, patchNode, patchNodeConfiguration, moveNodes, connect, removeSelection, reorderEdge, undo, duplicateSelection,
     replaceNode, setExecutionRoot, setControlDependencies, setObjectBindings, attachFrontendDisplay, patchFrontendSource,
-    activate, refresh, createSession, selectSession, submitPrimary, reconcile, discardDraft, discardRejectedCopy, writeData, closeRun, setInputs, resetPrivateState, submitAgentAction, loadCandidates, changeCandidate,
+    activate, refresh, createSession, selectSession, submitPrimary, reconcile, canRetryRejectedCopy, retryRejectedCopy, discardDraft, discardRejectedCopy, writeData, closeRun, setInputs, resetPrivateState, submitAgentAction, loadCandidates, changeCandidate,
     management, editing };
 });

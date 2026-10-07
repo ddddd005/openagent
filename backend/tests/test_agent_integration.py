@@ -1,5 +1,6 @@
 """Agent -> delta -> explicit context save using a local Chat mock only."""
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from copy import deepcopy
 from dataclasses import replace
@@ -10,6 +11,7 @@ from uuid import uuid4
 import pytest
 
 from phase1_agent.content_contracts import text_content
+from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.agent_package import create_agent_package
 from phase1_agent.context_contract import EFFECTIVE_CONTEXT_TYPE
 from phase1_agent.contracts import ModelResponse, ModelToolCall
@@ -145,6 +147,63 @@ def test_agent_two_rounds_preserve_tool_order_use_exact_view_and_explicitly_save
         agent_record = next(record for record in history["node_runs"]
                             if record["node_binding_id"] == receipts["owner"]["node_binding_id"])
         assert agent_record["input_values"] == {}
+
+
+def test_service_close_accepts_inflight_response_once_and_restart_cannot_redispatch(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-close-private-secret")
+    fixture = AgentTransportFixture(gate=True)
+    database = tmp_path / "close-inflight.sqlite"
+    service = GraphWorkflowService(database, public_model_factory=fixture.factory)
+    pause_requested = Event()
+    original_control = service._control_hosted_invocation
+
+    def observe_control(chain_id, action, command_id):
+        original_control(chain_id, action, command_id)
+        if action == "pause":
+            pause_requested.set()
+
+    monkeypatch.setattr(service, "_control_hosted_invocation", observe_control)
+    try:
+        ModelDatabaseFixture.write(service, 1)
+        initial = create(service, graph(service))
+        sid = initial["workflow_session_id"]
+        started = service.start(sid, expected_revision=initial["revision"],
+                                idempotency_key=str(uuid4()), inputs={"text": "original close request"})
+        chain_id = started["active_chain_run_id"]
+        assert fixture.entered.wait(5)
+        with ThreadPoolExecutor(max_workers=1) as shutdown:
+            closed = shutdown.submit(service.close)
+            try:
+                assert pause_requested.wait(5)
+                assert not closed.done()
+            finally:
+                fixture.proceed.set()
+            closed.result(timeout=10)
+        assert len(fixture.calls) == fixture.closes == 1
+        assert not service._runtime_hosts and not service._service_runs
+    finally:
+        fixture.proceed.set()
+        if not service._closed:
+            service.close()
+    with closing(GraphWorkflowService(database, public_model_factory=fixture.factory)) as reopened:
+        current = reopened.get_session(sid)
+        assert current["status"] == "recovery_unavailable"
+        assert current["head_commit_id"] == initial["head_commit_id"]
+        history = reopened.get_run(sid, chain_id)
+        model_facts = [fact for fact in history["runtime_facts"]
+                       if fact.get("kind") == "workflow.model-fact"]
+        assert [fact["stage"] for fact in model_facts] == ["request", "attempt", "outcome"]
+        assert model_facts[-1]["details"]["classification"] == "response_received"
+        assert "offline-close-private-secret" not in json.dumps(history)
+        with pytest.raises(ContractValidationError) as caught:
+            reopened.control(sid, action="resume", expected_revision=current["revision"],
+                             idempotency_key=str(uuid4()))
+        assert caught.value.reason_code == "recovery_unavailable"
+        assert len(fixture.calls) == 1
+        reopened.control(sid, action="close", expected_revision=current["revision"],
+                         idempotency_key=str(uuid4()))
+        assert reopened.get_session(sid)["status"] == "closed"
+        assert len(fixture.calls) == fixture.closes == 1
 
 
 def test_agent_pause_while_mock_model_inflight_retains_response_and_resumes_without_redispatch(tmp_path, monkeypatch):

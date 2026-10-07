@@ -141,6 +141,19 @@ def test_confirmed_failure_restarts_b_with_new_identity_keeps_a_and_one_complete
         old_b = next(item for item in prior["node_runs"] if item["node_binding_id"] == b)
         old_a = next(item for item in prior["node_runs"] if item["node_binding_id"] == a)
         assert old_b["status"] == "failed" and not old_b["output_refs"]
+        expected_code = "model_not_dispatched" if mode == "not_dispatched" else "model_provider_error"
+        assert old_b["diagnostic"]["code"] == expected_code
+        assert prior["chain"]["diagnostic"]["code"] == expected_code
+        failure = next(fact for fact in reversed(prior["runtime_facts"])
+                       if "executor_ref" in fact
+                       and fact["payload"]["kind"] == "execution_failed")
+        assert failure["payload"]["payload"]["code"] == expected_code
+        assert failure["payload"]["payload"]["category"] == "model"
+        model_outcome = next(fact for fact in reversed(prior["runtime_facts"])
+                             if fact.get("kind") == "workflow.model-fact" and fact["stage"] == "outcome")
+        if mode != "not_dispatched":
+            assert model_outcome["details"]["classification"] == "provider_error"
+            assert model_outcome["details"]["status_code"] == int(mode)
         request = {"session_id": failed["workflow_session_id"], "action": "retry_failed_node",
                    "expected_revision": failed["revision"], "idempotency_key": str(uuid4())}
         app = GraphApplication(service)
@@ -176,6 +189,8 @@ def test_unknown_and_unsupported_failure_have_no_retry_and_release_original_fram
         initial, _, _ = setup(service)
         failed = run(service, initial, "original input")
         assert failed["available_actions"] == ["close"]
+        if mode == "unknown":
+            assert failed["chains"][-1]["diagnostic"]["code"] == "model_dispatch_unknown"
         assert not service._failed_retry_candidates and not service._service_runs
         with pytest.raises(ContractValidationError):
             service.control(failed["workflow_session_id"], action="retry_failed_node",
@@ -209,6 +224,35 @@ def test_basis_change_and_process_loss_refuse_original_failure_retry(tmp_path, m
             reopened.control(failed["workflow_session_id"], action="retry_failed_node",
                              expected_revision=view["session_revision"], idempotency_key=str(uuid4()))
         assert len(transport.calls) == 2
+
+
+@pytest.mark.parametrize("credential_change", ["rotated", "missing"])
+def test_changed_credential_blocks_confirmed_failed_retry_without_resending(tmp_path, monkeypatch, credential_change):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-failed-retry")
+    transport = FailedBTransport("503")
+    with closing(GraphWorkflowService(tmp_path / "changed-key.sqlite",
+                                      public_model_factory=transport.factory)) as service:
+        initial, _, _ = setup(service)
+        failed = run(service, initial, "original input")
+        before = service.get_run(failed["workflow_session_id"], failed["active_chain_run_id"])
+        if credential_change == "rotated":
+            monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-rotated-credential")
+        else:
+            monkeypatch.delenv("DEEPSEEK_API_KEY")
+        with pytest.raises(ContractValidationError) as caught:
+            service.control(failed["workflow_session_id"], action="retry_failed_node",
+                            expected_revision=failed["revision"], idempotency_key=str(uuid4()))
+        assert caught.value.reason_code == (
+            "model_credential_changed" if credential_change == "rotated" else "model_credential_unavailable")
+        after = service.get_session(failed["workflow_session_id"])
+        assert after["status"] == "failed"
+        assert service.get_run(failed["workflow_session_id"], failed["active_chain_run_id"]) == before
+        assert len(transport.calls) == 2
+        service.control(after["workflow_session_id"], action="close",
+                        expected_revision=after["revision"], idempotency_key=str(uuid4()))
+        assert service.get_session(after["workflow_session_id"])["status"] == "closed"
+        assert len(transport.calls) == 2 and transport.closes == 1
+        assert not service._failed_retry_candidates and not service._service_runs and not service._runtime_hosts
 
 
 def test_attempt_history_cannot_rewrite_success_or_restart_without_recorded_permission(tmp_path, monkeypatch):

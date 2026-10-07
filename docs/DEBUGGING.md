@@ -10,7 +10,7 @@
 
 | 入口 | 用途 |
 | --- | --- |
-| 后端终端 stdout/stderr | 服务启动、HTTP 访问及进程错误；快速启动不额外配置日志文件 |
+| 后端 stdout/stderr 与启动身份 | 前台服务输出在终端；本机常驻日志为 `.local/resident/run/stdout.log`、`stderr.log`，进程身份为同目录 `state.json`；分享前脱敏，不导出凭据/环境 |
 | 前端终端 | Vite 启动、代理和构建问题 |
 | 浏览器 Console / Network | 请求地址、状态、代理与界面异常；导出前脱敏 |
 | 工作台运行/节点诊断 | 编译、配置、状态及当前操作许可 |

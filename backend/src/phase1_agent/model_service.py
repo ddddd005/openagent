@@ -20,7 +20,7 @@ from jsonschema import Draft202012Validator
 from openai import APIStatusError
 
 from .adapter import DeepSeekAdapter, ProviderResponseError
-from .contract_errors import ContractValidationError
+from .contract_errors import ContractValidationError, ModelRequestError
 from .contract_json import content_digest, validate_json_value
 from .contracts import ModelResponse, ModelToolCall
 from .frozen_model import FrozenConfiguredAdapter, FrozenModelParameters
@@ -101,10 +101,19 @@ class ModelCapabilityAdapter:
         return deepcopy(self._binding["parameters"])
 
     def generate(self, messages, tools):
-        value = self._context.host_call("models:call", "kernel-model", {
-            "binding_id": self._binding["binding_id"], "messages": deepcopy(list(messages)),
-            "tools": deepcopy(list(tools)), "request_key": self._prefix + ":" + str(self._index),
-        })
+        try:
+            value = self._context.host_call("models:call", "kernel-model", {
+                "binding_id": self._binding["binding_id"], "messages": deepcopy(list(messages)),
+                "tools": deepcopy(list(tools)), "request_key": self._prefix + ":" + str(self._index),
+            })
+        except ContractValidationError as error:
+            code = getattr(error, "reason_code", None)
+            if code in {
+                "model_provider_error", "model_dispatch_unknown",
+                "model_not_dispatched", "model_response_invalid",
+            }:
+                raise ModelRequestError(code) from None
+            raise
         value = validate_public_model_result(value)
         self._index += 1
         return ModelResponse(

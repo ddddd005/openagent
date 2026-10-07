@@ -81,9 +81,12 @@ export async function dispatchGraphCommand(entry: GraphEntry, command: GraphComm
     if (!current()) unknown("工作流已关闭或恢复");
   } else {
     if (entry.pending !== null) unknown("原请求尚待核实，不能提交新操作");
+    const rejectedCopy = entry.rejected_copy;
     entry.pending = graphClone(request);
+    delete entry.rejected_copy;
     if (!persist()) {
       if (samePending()) entry.pending = null;
+      if (rejectedCopy) entry.rejected_copy = rejectedCopy;
       throw new WorkbenchApiError("unavailable", "原工作流请求无法保存，未提交");
     }
   }
@@ -96,6 +99,7 @@ export async function dispatchGraphCommand(entry: GraphEntry, command: GraphComm
       && failure.code !== "idempotency_conflict") {
       entry.diagnostics = failure.diagnostics?.length ? graphClone(failure.diagnostics)
         : [{ reason_code: failure.code ?? "graph_request_rejected", message: failure.reason }];
+      if (request.action === "copy") entry.rejected_copy = graphClone(request);
       entry.pending = null;
       if (!persist() && ports.current() && entry.pending === null) entry.pending = graphClone(request);
     }
@@ -106,6 +110,7 @@ export async function dispatchGraphCommand(entry: GraphEntry, command: GraphComm
   ports.accept(receipt, request);
   if (!current()) unknown("待核实请求已变化");
   entry.pending = null;
+  delete entry.rejected_copy;
   entry.diagnostics = [];
   if (["copy", "rebind"].includes(request.action)) entry.state_mappings = [];
   if (!persist()) {

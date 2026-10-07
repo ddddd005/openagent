@@ -3,12 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkspaceStore } from "./workspace";
+import { useWorkbenchNoticesStore } from "./workbenchNotices";
 import { graphClone, type GraphDocument, type GraphNodeType, type GraphSession } from "../domain/workflowGraph";
 const source: GraphNodeType = { component_id: "workflow.text", component_version: "1", display_name: "文本", category: "内容",
   config_schema: { type: "object", properties: { text: { type: "string" } } }, default_config: { text: "hello" },
   inputs: [], outputs: [{ port_id: "output", data_type: "TEXT", required: true, multiple: false }], is_output: false, executable: true };
 const sink: GraphNodeType = { ...source, component_id: "workflow.output", display_name: "输出", is_output: true,
   default_config: { mode: "text" }, inputs: [{ port_id: "input", data_type: "TEXT", required: true, multiple: false }] };
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(release => { resolve = release; });
+  return { promise, resolve };
+}
 function fixture() {
   const graph = useWorkflowGraphStore(); graph.setPersistenceGuard(() => true); graph.catalog = [source,sink];
   const id = graph.createWorkflow();
@@ -44,6 +50,22 @@ describe("generic workbench execution and document transactions", () => {
     expect(graph.document?.nodes[1].position).toEqual({ x:444,y:555 });
     const edges = graphClone(graph.document?.edges);
     graph.patchNode(output, { config: { mode: "prompt" } }); expect(graph.document?.edges).toEqual(edges);
+  });
+  it("keeps repeated wiring a no-op and duplicates the selected nodes and their edge as one undoable edit", () => {
+    const { graph, text, output } = fixture();
+    const original = graphClone(graph.document!), undoCount = graph.history[useWorkspaceStore().activeWorkflowId].past.length;
+    expect(graph.connect({ source_node_id: text, source_port_id: "output",
+      target_node_id: output, target_port_id: "input" })).toBeNull();
+    expect(graph.history[useWorkspaceStore().activeWorkflowId].past).toHaveLength(undoCount);
+    graph.selectedNodeIds = [text, output]; graph.duplicateSelection();
+    const copies = graph.document!.nodes.slice(2);
+    expect(graph.document!.edges[1]).toMatchObject({ source_node_id: copies[0].node_binding_id,
+      target_node_id: copies[1].node_binding_id, order: 0 });
+    expect(new Set(graph.document!.edges.map(edge => edge.edge_id)).size).toBe(2);
+    graph.undo(); expect(graph.document).toEqual(original);
+    graph.undo(true); expect(graph.document!.nodes).toHaveLength(4);
+    graph.selectedNodeIds = [copies[0].node_binding_id]; graph.removeSelection();
+    expect(graph.document!.edges).toEqual(original.edges);
   });
   it("saves exact definitions and starts with empty external inputs and no legacy endpoints", async () => {
     const { graph } = fixture();
@@ -102,6 +124,9 @@ describe("generic workbench execution and document transactions", () => {
     await vi.waitFor(() => expect(graph.busy).toBeNull());
     const target = workspace.workflows.find(row => row.sourceId === id)!;
     expect(graph.entries[target.id].pending).toBeNull(); expect(target.copyPending).toBe(true);
+    expect(graph.entries[target.id].rejected_copy?.body.idempotency_key).toBe(rejectedKey!);
+    expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(true);
+    expect(graph.canRetryRejectedCopy(target.id)).toBe(true);
     const current = { ...view, revision: 4, data_revision: 2, head_revision: 3, data: { revision: 2, values: {} } };
     const paths: string[] = [], commands: Record<string, unknown>[] = [];
     stubGraphApplicationFetch(vi.fn(async (path, init) => {
@@ -111,9 +136,75 @@ describe("generic workbench execution and document transactions", () => {
       return new Response(JSON.stringify(session(body.document)));
     }));
     await graph.reconcile(target.id);
+    expect(paths).toEqual([]);
+    await graph.retryRejectedCopy(target.id);
     expect(paths).toEqual([`/api/graph/sessions/${view.workflow_session_id}`, `/api/graph/sessions/${view.workflow_session_id}/copy`]);
     expect(commands[0]).toMatchObject({ expected_session_revision: 4, expected_data_revision: 2, expected_head_revision: 3 });
     expect(commands[0].idempotency_key).not.toBe(rejectedKey!);
+    expect(target.copyPending).toBe(false); expect(graph.entries[target.id].pending).toBeNull();
+    expect(graph.entries[target.id].rejected_copy).toBeUndefined();
+  });
+  it("preserves a restored copy without original coordinates or rejection evidence without making a new request", async () => {
+    const { graph, id, text } = fixture(), workspace = useWorkspaceStore();
+    const view = session(graph.document!);
+    graph.entries[id].session_id = view.workflow_session_id; graph.views[view.workflow_session_id] = view;
+    workspace.activeWorkflow.state = "saved";
+    stubGraphApplicationFetch(vi.fn().mockRejectedValue(new Error("unknown copy outcome")));
+    graph.patchNode(text, { title: "retained incomplete copy" });
+    await vi.waitFor(() => expect(graph.busy).toBeNull());
+    const target = workspace.workflows.find(row => row.sourceId === id)!;
+    const snapshot = graph.storeSnapshot();
+    snapshot.entries[target.id].pending = null;
+    snapshot.entries[target.id].diagnostics = [{ reason_code: "stale_revision", message: "old diagnostic is not request evidence" }];
+    expect(graph.restoreSnapshot(snapshot)).toBe(true);
+    const before = graphClone(graph.entries[target.id]), fetcher = vi.fn();
+    stubGraphApplicationFetch(fetcher);
+    await graph.reconcile(target.id); await graph.retryRejectedCopy(target.id);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(graph.entries[target.id]).toEqual(before); expect(target.copyPending).toBe(true);
+    expect(graph.canRetryRejectedCopy(target.id)).toBe(false);
+    expect(useWorkbenchNoticesStore().error).toMatchObject({ kind: "unknown" });
+  });
+  it.each([404, 410])("retains an unknown copy after an HTTP %s receipt read and blocks explicit retries", async status => {
+    const { graph, id, text } = fixture(), workspace = useWorkspaceStore(), view = session(graph.document!);
+    graph.entries[id].session_id = view.workflow_session_id; graph.views[view.workflow_session_id] = view;
+    workspace.activeWorkflow.state = "saved";
+    stubGraphApplicationFetch(vi.fn().mockRejectedValue(new Error("unknown copy outcome")));
+    graph.patchNode(text, { title: "unknown copy" });
+    await vi.waitFor(() => expect(graph.busy).toBeNull());
+    const target = workspace.workflows.find(row => row.sourceId === id)!;
+    const original = graphClone(graph.entries[target.id].pending!), paths: string[] = [];
+    stubGraphApplicationFetch(vi.fn(async path => {
+      paths.push(path);
+      return new Response(JSON.stringify({ error: { reason_code: "not_found" } }), { status });
+    }));
+    await graph.reconcile(target.id); await graph.retryRejectedCopy(target.id);
+    expect(paths).toEqual(["/api/graph/receipts/read"]);
+    expect(graph.entries[target.id].pending).toEqual(original);
+    expect(graph.entries[target.id].rejected_copy).toBeUndefined(); expect(target.copyPending).toBe(true);
+  });
+  it("blocks duplicate explicit copy retries throughout the fresh source read and the submission", async () => {
+    const { graph, id, text } = fixture(), workspace = useWorkspaceStore(), view = session(graph.document!);
+    graph.entries[id].session_id = view.workflow_session_id; graph.views[view.workflow_session_id] = view;
+    workspace.activeWorkflow.state = "saved";
+    stubGraphApplicationFetch(vi.fn(async () =>
+      new Response(JSON.stringify({ error: { reason_code: "stale_revision" } }), { status: 409 })));
+    graph.patchNode(text, { title: "rejected copy" });
+    await vi.waitFor(() => expect(graph.busy).toBeNull());
+    const target = workspace.workflows.find(row => row.sourceId === id)!, query = deferred<Response>();
+    const paths: string[] = [];
+    stubGraphApplicationFetch(vi.fn(async (path, init) => {
+      paths.push(path);
+      if (path.endsWith("/copy")) return new Response(JSON.stringify(session(JSON.parse(init.body).document)));
+      return query.promise;
+    }));
+    const retrying = graph.retryRejectedCopy(target.id);
+    await graph.retryRejectedCopy(target.id); await graph.reconcile(target.id);
+    expect(paths).toEqual([`/api/graph/sessions/${view.workflow_session_id}`]);
+    expect(graph.locked).toBe(true);
+    query.resolve(new Response(JSON.stringify(view))); await retrying;
+    expect(paths).toEqual([`/api/graph/sessions/${view.workflow_session_id}`,
+      `/api/graph/sessions/${view.workflow_session_id}/copy`]);
     expect(target.copyPending).toBe(false); expect(graph.entries[target.id].pending).toBeNull();
   });
   it("rebinds a copied session after later edits before starting another run", async () => {

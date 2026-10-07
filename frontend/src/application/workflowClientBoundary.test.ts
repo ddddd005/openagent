@@ -263,4 +263,32 @@ describe("workflow client transport boundary", () => {
       expect(boundary.readReceipt).not.toHaveBeenCalled();
     }
   });
+  it("retains exact evidence only for a definitive copy rejection and removes it before an unknown retry", async () => {
+    const { entry, command } = fixture();
+    command.action = "copy";
+    command.path = command.path.replace("/runs", "/copy");
+    command.body.document = graphClone(entry.document);
+    const original = graphClone(command);
+    await expect(dispatchGraphCommand(entry, command, ports({
+      request: async () => { throw new WorkbenchApiError("rejected", "stale copy", 409, "stale_revision"); },
+    }))).rejects.toMatchObject({ code: "stale_revision" });
+    expect(entry.pending).toBeNull(); expect(entry.rejected_copy).toEqual(original);
+    command.body.idempotency_key = crypto.randomUUID();
+    await expect(dispatchGraphCommand(entry, command, ports({
+      request: async () => { throw new WorkbenchApiError("unknown", "retry response lost"); },
+    }))).rejects.toMatchObject({ kind: "unknown" });
+    expect(entry.pending).toEqual(command); expect(entry.rejected_copy).toBeUndefined();
+  });
+
+  it("does not lose definitive copy rejection evidence when a new outbox cannot be saved before submission", async () => {
+    const { entry, command } = fixture();
+    command.action = "copy"; command.path = command.path.replace("/runs", "/copy");
+    command.body.document = graphClone(entry.document);
+    const rejected = graphClone(command); entry.rejected_copy = rejected;
+    command.body.idempotency_key = crypto.randomUUID();
+    const boundary = ports({ persist: () => false, request: vi.fn() });
+    await expect(dispatchGraphCommand(entry, command, boundary)).rejects.toMatchObject({ kind: "unavailable" });
+    expect(entry.pending).toBeNull(); expect(entry.rejected_copy).toEqual(rejected);
+    expect(boundary.request).not.toHaveBeenCalled();
+  });
 });

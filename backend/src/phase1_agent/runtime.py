@@ -23,7 +23,7 @@ from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError
 from referencing.exceptions import Unresolvable
 
 from .adapter import DeepSeekAdapter, ProviderResponseError
-from .contract_errors import ContractValidationError
+from .contract_errors import ContractValidationError, ModelRequestError
 from .contract_graph import validate_message_history, validate_pending_message_history
 from .contract_json import canonical_bytes, content_digest, loads_strict, validate_json_value
 from .contracts import ModelResponse
@@ -330,7 +330,8 @@ class SnapshotKernel:
 
         def fail(code: str, cause: BaseException | None = None) -> None:
             category = ("interrupted" if code == "execution_interrupted" else
-                        "protocol" if code in {"protocol_error", "invalid_final"} else "model")
+                        "protocol" if code in {"protocol_error", "invalid_final", "model_response_invalid"}
+                        else "model")
             recoverable = code in {
                 "protocol_error", "invalid_final",
                 "model_request_budget_exhausted", "model_attempt_budget_exhausted",
@@ -711,6 +712,10 @@ class SnapshotKernel:
                     finish_attempt("protocol_error")
                     boundary("before_accept")
                     fail("protocol_error", exc)
+                except ModelRequestError as exc:
+                    # Accepted service facts own retry permission, not this loop.
+                    finish_attempt("protocol_error" if exc.code == "model_response_invalid" else "model_error")
+                    fail(exc.code, exc)
                 except Exception as exc:
                     if not isinstance(exc, (APIError, httpx.HTTPError, TimeoutError, ConnectionError)):
                         finish_attempt("adapter_contract_error")

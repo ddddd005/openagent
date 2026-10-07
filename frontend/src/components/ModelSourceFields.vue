@@ -75,7 +75,7 @@ function apply() {
 </template>
 <style scoped>
 .model-source-fields { display:grid; gap:10px; min-width:0; font-size:12px; }
-label { display:grid; gap:5px; } .resource-row { display:flex; gap:5px; min-width:0; }
+label { display:grid; gap:5px; min-width:0; } .resource-row { display:flex; gap:5px; min-width:0; }
 input,select { width:100%; min-width:0; box-sizing:border-box; padding:6px; background:#222226; color:#dedee4; border:1px solid #505059; border-radius:3px; }
 button { display:flex; align-items:center; justify-content:center; gap:6px; padding:6px; border:1px solid #64776d; border-radius:3px; }
 p { margin:0; color:#b9bec6; overflow-wrap:anywhere; } .warning { color:#e4a0a0; } :disabled { opacity:.55; }

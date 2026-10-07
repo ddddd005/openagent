@@ -36,4 +36,19 @@ describe("ordinary graph view layout declarations", () => {
       flex: "0 0 280px", width: "280px", "min-width": "0", overflow: "hidden",
     });
   });
+  it("lets current provider rows and configuration labels shrink inside desktop panels", () => {
+    expect(declarations("CurrentProviderPanel.vue", "ul")).toMatchObject({ "min-width": "0" });
+    expect(declarations("CurrentProviderPanel.vue", "li strong")).toMatchObject({
+      "min-width": "0", "overflow-wrap": "anywhere",
+    });
+    expect(declarations("CurrentProviderPanel.vue", "form")).toMatchObject({ "min-width": "0" });
+    expect(declarations("CurrentProviderPanel.vue", "label")).toMatchObject({ "min-width": "0" });
+    expect(declarations("ModelSourceFields.vue", "label")).toMatchObject({ "min-width": "0" });
+  });
+  it("wraps pending banners while keeping their explicit commands readable", () => {
+    expect(declarations("../App.vue", ".model-pending-banner")).toMatchObject({ "flex-wrap": "wrap" });
+    expect(declarations("../App.vue", ".model-pending-banner span")).toMatchObject({
+      "min-width": "0", "overflow-wrap": "anywhere",
+    });
+  });
 });

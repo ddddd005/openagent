@@ -196,6 +196,7 @@ export interface GraphEntry {
   saved_revision: number;
   session_id: string | null;
   pending: GraphCommand | null;
+  rejected_copy?: GraphCommand;
   saved_document?: GraphDocument;
   diagnostics?: GraphDiagnostic[];
   external_inputs?: Record<string, unknown>;

@@ -14,7 +14,7 @@ from phase1_agent.context_prompt import assemble_context_prompt
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.graph_execution import NodeExecutionContext
 from phase1_agent.capability_registry import create_package_registry
-from phase1_agent.runtime import KernelContractError
+from phase1_agent.runtime import RunFailed
 from phase1_agent.runtime_hosting import InvocationOwner, RuntimeHost
 from phase1_agent.tools import final_answer_tool, register_callable
 
@@ -289,12 +289,24 @@ def test_agent_ends_on_final_answer_after_old_request_and_attempt_limits_without
     assert fixture.host.active_handle_count == 0 and fixture.handle.checkpoint is None
 
 
-def test_unknown_public_dispatch_error_does_not_trigger_kernel_retry_or_replay():
-    error = ContractValidationError("Dispatch outcome is unknown")
-    error.reason_code = "model_dispatch_unknown"
+@pytest.mark.parametrize("code", [
+    "model_provider_error", "model_dispatch_unknown",
+    "model_not_dispatched", "model_response_invalid",
+])
+def test_controlled_public_model_failure_keeps_diagnostic_and_never_kernel_retries(code):
+    error = ContractValidationError("Private provider details must not be published")
+    error.reason_code = code
     fixture = Fixture(steps=[error])
-    with pytest.raises(KernelContractError) as caught:
+    with pytest.raises(RunFailed) as caught:
         fixture.host.drive(fixture.owner)
-    assert caught.value.code == "adapter_contract_error"
+    assert caught.value.code == code
+    assert str(caught.value) == code
     assert len(fixture.model_calls) == 1 and fixture.host.active_handle_count == 0
-    assert any(fact["payload"]["kind"] == "execution_failed" for fact in fixture.facts)
+    failure = fixture.facts[-1]["payload"]
+    assert failure["kind"] == "execution_failed"
+    assert failure["payload"]["code"] == code
+    assert failure["payload"]["category"] == ("protocol" if code == "model_response_invalid" else "model")
+    attempt = fixture.facts[-2]["payload"]
+    assert attempt["kind"] == "model_attempt_finished"
+    assert attempt["payload"]["outcome"] == (
+        "protocol_error" if code == "model_response_invalid" else "model_error")
