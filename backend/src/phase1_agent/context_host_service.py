@@ -118,3 +118,46 @@ class SummaryContextHostService(ContextHostService):
 
 def create_summary_context_host_service(environment):
     return SummaryContextHostService(environment)
+
+
+NATIVE_CONTEXT_SERVICE_REF = ServiceReference("workflow.context", "3.0.0")
+NATIVE_CONTEXT_SERVICE_DEFINITION = ServiceDefinition(NATIVE_CONTEXT_SERVICE_REF, (
+    ServiceOperation("context:read", "read-context", object_schema({"object_key": {"type": "string"}}),
+                     object_schema({"object": {"type": "object"}, "view": {"type": ["object", "null"]}})),
+    ServiceOperation("context:validate", "validate-context", _VALIDATE_SCHEMA,
+                     object_schema({"validated": {"const": True}})),
+))
+
+
+def native_service_requirement(capability, *operations):
+    return {**NATIVE_CONTEXT_SERVICE_REF.to_dict(), "capability": capability, "operations": list(operations)}
+
+
+class NativeContextHostService(ContextHostService):
+    def __call__(self, context, capability, operation, payload):
+        if capability == "context:read":
+            return super().__call__(context, capability, operation, payload)
+        require(capability == "context:validate" and operation == "validate-context",
+                "host_service_operation_denied", "Native context operation is not declared")
+        from .context_v4 import validate_native_context_artifacts
+
+        view = payload["view"]
+        origin = self.environment.resolve_input(context, "view")
+        require(payload["view_ref"]["output_id"] == origin["output_id"] and origin["value"] == view,
+                "context_input_mismatch", "Native context must equal its exact accepted input", 409)
+        require(view["owner"]["workflow_session_id"] == context.workflow_session_id,
+                "context_owner_mismatch", "Native context belongs to another session", 403)
+        require("delta" not in payload, "context_update_invalid", "Native context accepts ordered updates, not old deltas")
+        if "context" in payload:
+            update_origin = self.environment.resolve_input(context, "context")
+            require(payload["context_ref"]["output_id"] == update_origin["output_id"]
+                    and payload["context"] == update_origin["value"]
+                    and payload["context"]["owner"] == update_origin["producer"],
+                    "context_delta_owner_mismatch", "Update must equal its exact accepted Agent producer", 409)
+        validate_native_context_artifacts(
+            payload, lambda reference: self.environment.resolve_artifact(context, reference)["value"])
+        return {"validated": True}
+
+
+def create_native_context_host_service(environment):
+    return NativeContextHostService(environment)

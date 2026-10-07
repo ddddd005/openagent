@@ -11,13 +11,15 @@ import { promptFrontendExtensions } from "../plugins/promptFrontendManifest";
 const props = defineProps<{ node: GraphNode; document: GraphDocument; disabled?: boolean }>();
 const sdk = useWorkflowFrontendSdk(), resources = usePromptResources();
 const records = resources.records, loading = resources.loading, resourceError = resources.error;
+const supportedRecords = computed(() => records.value.filter(record =>
+  record.data_schema_version === (props.node.component_version === "2" ? 2 : 1)));
 const selected = ref(""), status = ref(""), basis = ref<WorkflowNodeConfigurationRequest | null>(null);
 const identityKey = (identity: PromptIdentity) => JSON.stringify([
   identity.envelope_version, identity.scope, identity.type_id, identity.resource_id,
 ]);
 const reference = computed(() => graphObject(props.node.config) && Object.keys(props.node.config).length === 1
   && isPromptIdentity(props.node.config.reference) ? props.node.config.reference : null);
-const chosen = computed(() => records.value.find(record => isCurrentPromptResource(record)
+const chosen = computed(() => supportedRecords.value.find(record => isCurrentPromptResource(record)
   && identityKey(promptIdentity(record)) === selected.value));
 const disabled = computed(() => !!props.disabled || sdk.locked.value || !basis.value || !reference.value);
 const diagnosis = computed(() => {
@@ -25,6 +27,7 @@ const diagnosis = computed(() => {
   const record = records.value.find(row => isCurrentPromptResource(row)
     && samePromptIdentity(promptIdentity(row), reference.value!));
   if (!record) return "所选提示词资源缺失或尚未读取";
+  if (record.data_schema_version !== (props.node.component_version === "2" ? 2 : 1)) return "提示词资源版本与节点不匹配";
   if (!record.value.enabled) return "所选提示词资源已停用";
   return `当前资源 · ${record.scope} · s${record.update_sequence}`;
 });
@@ -36,7 +39,8 @@ watch(() => [sdk.workflowId.value, sdk.lifecycle.value, props.node.node_binding_
     workflowId: sdk.workflowId.value, nodeId: props.node.node_binding_id,
     componentId: props.node.component_id, componentVersion: props.node.component_version,
     expectedConfig: graphClone(props.node.config), patch: {},
-    extensionId: promptFrontendExtensions[1]!.extension_id, lifecycle: sdk.lifecycle.value,
+    extensionId: promptFrontendExtensions[props.node.component_version === "2" ? 2 : 1]!.extension_id,
+    lifecycle: sdk.lifecycle.value,
   };
 }, { immediate: true, deep: true });
 function apply() {
@@ -58,7 +62,7 @@ onMounted(() => { void resources.refresh(); });
         <select v-model="selected" :disabled="disabled" aria-label="提示词当前资源">
           <option value="">选择提示词资源</option>
           <option v-if="selected && !chosen" :value="selected">缺失引用 · {{ reference?.scope }} · {{ reference?.resource_id }}</option>
-          <option v-for="record in records" :key="identityKey(promptIdentity(record))"
+          <option v-for="record in supportedRecords" :key="identityKey(promptIdentity(record))"
             :value="identityKey(promptIdentity(record))">
             {{ promptResourceLabel(record) }} · {{ record.scope }} · s{{ record.update_sequence }}{{ record.value.enabled ? '' : '（已停用）' }}
           </option>

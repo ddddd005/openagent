@@ -2,6 +2,7 @@ import { graphClone, graphObject, graphUuid } from "./workflowGraph";
 
 export const chatProviderType = "workflow.chat-provider";
 export const modelFieldsExtensionId = "workflow.models.node-fields";
+export const capacityModelFieldsExtensionId = "workflow.models.node-fields-v2";
 export interface ProviderIdentity {
   envelope_version: 1; scope: string; type_id: typeof chatProviderType; resource_id: string;
 }
@@ -14,6 +15,11 @@ export interface ModelParameters {
   model: string; thinking: "disabled"; stream: false; max_tokens?: number; temperature?: number;
 }
 export interface ModelSourceConfiguration { reference: ProviderIdentity; parameters: ModelParameters }
+export interface ModelCapacity {
+  context_window_tokens: number; output_reserve_tokens: number;
+  summary_max_tokens: number; max_cold_input_tokens: number;
+}
+export interface CapacityModelSourceConfiguration extends ModelSourceConfiguration { capacity: ModelCapacity }
 const keysAre = (value: Record<string, unknown>, keys: string[]) =>
   Object.keys(value).length === keys.length && keys.every(key => key in value);
 export function isProviderIdentity(value: unknown): value is ProviderIdentity {
@@ -58,6 +64,22 @@ export function isModelParameters(value: unknown): value is ModelParameters {
 export function isModelSourceConfiguration(value: unknown): value is ModelSourceConfiguration {
   return graphObject(value) && keysAre(value, ["reference", "parameters"])
     && isProviderIdentity(value.reference) && isModelParameters(value.parameters);
+}
+export function isModelCapacity(value: unknown, allowUnconfigured = false): value is ModelCapacity {
+  return graphObject(value) && keysAre(value, ["context_window_tokens", "output_reserve_tokens",
+    "summary_max_tokens", "max_cold_input_tokens"])
+    && Object.values(value).every(item => Number.isSafeInteger(item) && Number(item) >= 0)
+    && Number(value.summary_max_tokens) > 0 && Number(value.summary_max_tokens) <= Number(value.output_reserve_tokens)
+    && (allowUnconfigured || Number(value.context_window_tokens) > 0 && Number(value.max_cold_input_tokens) > 0)
+    && (value.context_window_tokens === 0 && allowUnconfigured
+      || Number(value.output_reserve_tokens) < Number(value.context_window_tokens));
+}
+export function isCapacityModelSourceConfiguration(value: unknown): value is CapacityModelSourceConfiguration {
+  return graphObject(value) && keysAre(value, ["reference", "parameters", "capacity"])
+    && isProviderIdentity(value.reference) && isModelParameters(value.parameters)
+    && Number.isSafeInteger(value.parameters.max_tokens)
+    && isModelCapacity(value.capacity, true)
+    && value.capacity.output_reserve_tokens >= Number(value.parameters.max_tokens);
 }
 export function newProvider(): CurrentProvider {
   return { envelope_version: 1, scope: "workspace", type_id: chatProviderType, resource_id: crypto.randomUUID(),

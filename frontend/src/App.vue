@@ -15,6 +15,7 @@ import {
   Square,
   Plus,
   GitBranch,
+  Minimize2,
 } from "lucide-vue-next";
 import ErrorToast from "./components/ErrorToast.vue";
 import ProviderSidebar from "./components/ProviderSidebar.vue";
@@ -107,6 +108,7 @@ watch(
           <span class="workbench-workflow-count">{{ workspace.workflows.length }}</span>
           <button class="workbench-tool-button" type="button" title="新建工作流" aria-label="新建工作流" @click="graph.createWorkflow()"><Plus :size="15" /></button>
           <button class="workbench-tool-button" type="button" title="创建串行 Agent 示例（模型资源与模型名待选择，配置后运行）" aria-label="创建串行 Agent 示例" :disabled="graph.catalogLoading || !graph.catalog.length" @click="graph.createSerialAgentExample()"><GitBranch :size="15" /></button>
+          <button class="workbench-tool-button" type="button" title="创建上下文精简串行示例" aria-label="创建上下文精简串行示例" :disabled="graph.catalogLoading || !graph.catalog.length" @click="graph.createCompactingSerialAgentExample()"><Minimize2 :size="15" /></button>
         </header>
 
         <ul class="workbench-workflow-list" aria-label="工作流列表">

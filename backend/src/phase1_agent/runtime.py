@@ -1,7 +1,8 @@
-"""Non-streaming execution of a frozen v2 agent input snapshot.
+"""Non-streaming execution of a frozen agent input snapshot.
 
 The caller owns run state and persistence. This module returns a detached,
-closed message delta; it does not archive or resume a run.
+closed message delta and ordered effective-context operations. Native
+compaction never rewrites the accepted execution history.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import hmac
 import secrets
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -28,6 +29,13 @@ from .contract_graph import validate_message_history, validate_pending_message_h
 from .contract_json import canonical_bytes, content_digest, loads_strict, validate_json_value
 from .contracts import ModelResponse
 from .contracts_v2 import validate_record
+from .context_compaction import (
+    TokenCounter, at_safety_watermark, checkpoint_message, compaction_instruction, compaction_parameters,
+    eligible_compaction_ids, measure_context_capacity, policy_config,
+    replace_compacted_messages, response_evidence, should_compact,
+    validate_compaction_operation, validate_compaction_settings, validate_summary_result,
+)
+from .context_compaction_policy import effective_summary_prompt
 from .prepared_request import check_prepared_request_capacity
 from .prompt_errors import PromptProcessingError
 from .tools import RegisteredTool, ToolExecutionError, ToolOutcomeUnknown
@@ -39,6 +47,8 @@ class KernelResult:
     final: dict[str, Any]
     model_requests: int
     attempts: int
+    effective_messages: list[dict[str, Any]] = field(default_factory=list)
+    context_operations: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -63,6 +73,8 @@ class KernelCheckpoint:
     text_feedback: int
     seen_provider_ids: frozenset[str]
     integrity_tag: str
+    effective_messages: tuple[dict[str, Any], ...] = ()
+    context_operations: tuple[dict[str, Any], ...] = ()
 
 
 class KernelPaused(Exception):
@@ -94,6 +106,8 @@ def _checkpoint_tag(checkpoint: KernelCheckpoint) -> str:
         "final_corrections": checkpoint.final_corrections,
         "text_feedback": checkpoint.text_feedback,
         "seen_provider_ids": sorted(checkpoint.seen_provider_ids),
+        "effective_messages": list(checkpoint.effective_messages),
+        "context_operations": list(checkpoint.context_operations),
     }
     return hmac.new(_CHECKPOINT_KEY, canonical_bytes(payload), hashlib.sha256).hexdigest()
 
@@ -213,6 +227,14 @@ class CanonicalModelAdapter:
             close()
 
     def generate(self, messages: Sequence[dict[str, Any]], tools: Sequence[dict[str, Any]]) -> ModelResponse:
+        return self.legacy_adapter.generate(self._project(messages), copy.deepcopy(list(tools)))
+
+    def generate_compaction(self, messages, tools) -> ModelResponse:
+        generate = getattr(self.legacy_adapter, "generate_compaction", self.legacy_adapter.generate)
+        return generate(self._project(messages), copy.deepcopy(list(tools)))
+
+    @staticmethod
+    def _project(messages):
         legacy: list[dict[str, Any]] = []
         for raw in messages:
             message = validate_record("agent_message", raw)
@@ -240,7 +262,7 @@ class CanonicalModelAdapter:
                     "kind": "text", "role": message["role"],
                     "content": "\n".join(b["text"] for b in blocks),
                 })
-        return self.legacy_adapter.generate(legacy, copy.deepcopy(list(tools)))
+        return legacy
 
 
 def _retryable(exc: Exception) -> bool:
@@ -276,6 +298,7 @@ class SnapshotKernel:
         on_boundary: Callable[[str], bool] | None = None,
         on_tool_event: Callable[[str, str, str | None, str | None], None] | None = None,
         on_fact: Callable[[dict[str, Any]], None] | None = None,
+        token_counter: TokenCounter | None = None,
     ) -> KernelResult:
         """Run until final_answer or an explicit control/error boundary.
 
@@ -283,6 +306,9 @@ class SnapshotKernel:
         counters still record actual work and remain part of pause checkpoints.
         """
         messages: list[dict[str, Any]] = []
+        effective_messages: list[dict[str, Any]] = []
+        context_operations: list[dict[str, Any]] = []
+        compaction_settings = None
         pending_tools: list[PendingTool] = []
         model_requests = 0
         attempts = 0
@@ -377,6 +403,8 @@ class SnapshotKernel:
                 text_feedback=text_feedback,
                 seen_provider_ids=frozenset(seen_provider_ids),
                 integrity_tag="",
+                effective_messages=tuple(copy.deepcopy(effective_messages)),
+                context_operations=tuple(copy.deepcopy(context_operations)),
             )
             return replace(state, integrity_tag=_checkpoint_tag(state))
 
@@ -464,6 +492,8 @@ class SnapshotKernel:
         def accept(message: dict[str, Any]) -> None:
             fact("message_accepted", {"message": message})
             messages.append(message)
+            effective_messages.append(copy.deepcopy(message))
+            context_operations.append({"kind": "append", "message": copy.deepcopy(message)})
             if on_progress is not None:
                 try:
                     on_progress({
@@ -491,12 +521,22 @@ class SnapshotKernel:
                 raise ValueError("Invalid tool event callback")
             if on_fact is not None and not callable(on_fact):
                 raise ValueError("Invalid execution fact callback")
+            if token_counter is not None and not callable(token_counter):
+                raise ValueError("Invalid token counter")
             if isinstance(adapter, DeepSeekAdapter) and adapter.max_retries != 0:
                 raise ValueError("DeepSeekAdapter must use max_retries=0")
             frozen = validate_record("input_snapshot", snapshot)
             snapshot_id = frozen["snapshot_id"]
             snapshot_digest = content_digest(frozen)
             validate_message_history(frozen["s0"])
+            compaction_settings = validate_compaction_settings(
+                frozen["config"]["payload"].get("context_compaction"), frozen["s0"],
+            )
+            declared_output = frozen["model_parameters"].get("max_tokens")
+            if (compaction_settings is not None and type(declared_output) is int
+                    and declared_output > compaction_settings["output_reserve_tokens"]):
+                raise ValueError("Native capacity reserve is smaller than the frozen model output limit")
+            effective_messages = copy.deepcopy(frozen["s0"])
             definitions = frozen["tool_definitions"]
             registered = {tool.name: tool for tool in tools}
             if (len(registered) != len(tools) or len(definitions) != len(tools)
@@ -558,6 +598,16 @@ class SnapshotKernel:
                 final_corrections = checkpoint.final_corrections
                 text_feedback = checkpoint.text_feedback
                 seen_provider_ids = set(checkpoint.seen_provider_ids)
+                effective_messages = (copy.deepcopy(list(checkpoint.effective_messages))
+                                      if checkpoint.effective_messages else
+                                      copy.deepcopy(frozen["s0"] + messages))
+                context_operations = copy.deepcopy(list(checkpoint.context_operations))
+                if pending_tools:
+                    validate_pending_message_history(
+                        effective_messages, [item.call_id for item in pending_tools],
+                    )
+                else:
+                    validate_message_history(effective_messages)
             seen_execution_ids = {
                 block["tool_execution_id"] for message in frozen["s0"] + messages
                 for block in message["blocks"]
@@ -566,6 +616,155 @@ class SnapshotKernel:
         except (ContractValidationError, ValueError, KeyError, TypeError, AttributeError,
                 IndexError, RecursionError) as exc:
             contract_fail("configuration_error", exc)
+
+        def maintain_context(*, safety_only: bool = False, allow_pause: bool = True) -> None:
+            nonlocal effective_messages
+            if compaction_settings is None:
+                return
+            try:
+                before_capacity = measure_context_capacity(
+                    effective_messages, wire_tools, compaction_settings, token_counter,
+                )
+                config = policy_config(compaction_settings)
+            except (ContractValidationError, ValueError, KeyError, TypeError, AttributeError,
+                    IndexError, RecursionError) as exc:
+                contract_fail("context_capacity_invalid", exc)
+            if config is None or not config["enabled"]:
+                if at_safety_watermark(before_capacity):
+                    fail("context_capacity_exceeded")
+                return
+            if safety_only and not at_safety_watermark(before_capacity):
+                return
+            # A lower trigger is not a compaction target. Reentering the same
+            # accepted work view must first continue business, not summarize it
+            # again merely because pause did not append another message.
+            if (not at_safety_watermark(before_capacity) and context_operations
+                    and context_operations[-1]["kind"] == "compact"
+                    and context_operations[-1]["after_message_ids"] == [
+                        message["message_id"] for message in effective_messages
+                    ]):
+                return
+            if not should_compact(before_capacity, config):
+                return
+            if pending_tools:
+                contract_fail("context_compaction_pending_tools")
+            covered = eligible_compaction_ids(
+                frozen["s0"], effective_messages, compaction_settings, messages,
+            )
+            if not covered:
+                fail("context_compaction_no_eligible_text")
+            compaction_id = _id()
+            instruction = compaction_instruction(
+                compaction_id, _id(), effective_summary_prompt(compaction_settings["policy"]),
+                covered, effective_messages,
+            )
+            request_messages = copy.deepcopy(effective_messages) + [instruction]
+            try:
+                check_prepared_request_capacity(frozen, messages=request_messages)
+            except PromptProcessingError as exc:
+                contract_fail(exc.code, exc)
+            except ContractValidationError as exc:
+                contract_fail("message_contract_error", exc)
+            try:
+                auxiliary_settings = {**compaction_settings, "output_reserve_tokens":
+                                      compaction_settings.get("summary_max_tokens",
+                                                               compaction_settings["output_reserve_tokens"])}
+                auxiliary_capacity = measure_context_capacity(
+                    request_messages, wire_tools, auxiliary_settings, token_counter)
+            except (ContractValidationError, ValueError, TypeError) as exc:
+                contract_fail("context_capacity_invalid", exc)
+            if auxiliary_capacity["total_tokens"] >= auxiliary_capacity["context_window_tokens"]:
+                fail("context_compaction_request_capacity_exceeded")
+            if auxiliary_capacity["input_tokens"] > compaction_settings.get(
+                "max_cold_input_tokens", auxiliary_capacity["input_tokens"],
+            ):
+                fail("context_compaction_cold_input_budget_exceeded")
+            request = {
+                "messages": request_messages, "tools": copy.deepcopy(wire_tools),
+                "model_parameters": compaction_parameters(frozen["model_parameters"], compaction_settings),
+            }
+            fact("context_compaction_started", {
+                "compaction_id": compaction_id,
+                "before_message_ids": [message["message_id"] for message in effective_messages],
+                "covered_message_ids": covered, "request": request,
+                "capacity": before_capacity,
+            })
+            try:
+                generate = getattr(adapter, "generate_compaction", adapter.generate)
+                response = generate(copy.deepcopy(request_messages), copy.deepcopy(wire_tools))
+            except asyncio.CancelledError as exc:
+                fact("context_compaction_finished", {
+                    "compaction_id": compaction_id, "outcome": "execution_interrupted", "result": None,
+                })
+                fail("execution_interrupted", exc)
+            except ModelRequestError as exc:
+                fact("context_compaction_finished", {
+                    "compaction_id": compaction_id, "outcome": "model_error", "result": None,
+                })
+                fail(exc.code, exc)
+            except ProviderResponseError as exc:
+                fact("context_compaction_finished", {
+                    "compaction_id": compaction_id, "outcome": "protocol_error", "result": None,
+                })
+                fail("context_compaction_summary_invalid", exc)
+            except (APIError, httpx.HTTPError, TimeoutError, ConnectionError) as exc:
+                fact("context_compaction_finished", {
+                    "compaction_id": compaction_id, "outcome": "model_error", "result": None,
+                })
+                fail("context_compaction_model_error", exc)
+            except Exception as exc:
+                fact("context_compaction_finished", {
+                    "compaction_id": compaction_id, "outcome": "adapter_contract_error", "result": None,
+                })
+                contract_fail("adapter_contract_error", exc)
+            except BaseException:
+                fact("context_compaction_finished", {
+                    "compaction_id": compaction_id, "outcome": "host_interrupted", "result": None,
+                })
+                raise
+            if not isinstance(response, ModelResponse):
+                fact("context_compaction_finished", {
+                    "compaction_id": compaction_id, "outcome": "protocol_error", "result": None,
+                })
+                fail("context_compaction_summary_invalid")
+            evidence = None
+            try:
+                candidate_evidence = response_evidence(response)
+                evidence = validate_summary_result(candidate_evidence)
+                validate_summary_result(evidence, successful=True)
+            except (ContractValidationError, ValueError, TypeError, AttributeError, RecursionError) as exc:
+                fact("context_compaction_finished", {
+                    "compaction_id": compaction_id, "outcome": "protocol_error", "result": evidence,
+                })
+                fail("context_compaction_summary_invalid", exc)
+            fact("context_compaction_finished", {
+                "compaction_id": compaction_id, "outcome": "responded", "result": evidence,
+            })
+            candidate = checkpoint_message(compaction_id, _id(), evidence["text"])
+            after = replace_compacted_messages(effective_messages, covered, candidate)
+            try:
+                after_capacity = measure_context_capacity(
+                    after, wire_tools, compaction_settings, token_counter,
+                )
+            except (ContractValidationError, ValueError, TypeError) as exc:
+                contract_fail("context_capacity_invalid", exc)
+            if (after_capacity["input_tokens"] >= before_capacity["input_tokens"]
+                    or at_safety_watermark(after_capacity)):
+                fail("context_compaction_insufficient")
+            operation = validate_compaction_operation({
+                "kind": "compact", "compaction_id": compaction_id,
+                "before_message_ids": [message["message_id"] for message in effective_messages],
+                "covered_message_ids": covered, "checkpoint": candidate,
+                "after_message_ids": [message["message_id"] for message in after],
+                "request": request, "result": evidence,
+                "capacity": {"before": before_capacity, "after": after_capacity},
+            })
+            # Record the accepted replacement before making it visible locally.
+            fact("context_compaction_applied", operation)
+            effective_messages = after
+            context_operations.append(operation)
+            if allow_pause:
+                boundary("after_compaction")
 
         while True:
             while pending_tools:
@@ -597,9 +796,11 @@ class SnapshotKernel:
                     accept(result_message)
                     pending_tools.pop(0)
                     if status == "success":
+                        maintain_context(safety_only=True, allow_pause=False)
                         return KernelResult(copy.deepcopy(messages), {
                             "message_id": messages[-2]["message_id"], "value": copy.deepcopy(answer),
-                        }, model_requests, attempts)
+                        }, model_requests, attempts, copy.deepcopy(effective_messages),
+                            copy.deepcopy(context_operations))
                     if final_corrections:
                         fail("invalid_final")
                     final_corrections += 1
@@ -663,7 +864,8 @@ class SnapshotKernel:
                 fail("model_request_budget_exhausted")
             if max_model_attempts is not None and attempts >= max_model_attempts:
                 fail("model_attempt_budget_exhausted")
-            request_messages = copy.deepcopy(frozen["s0"] + messages)
+            maintain_context()
+            request_messages = copy.deepcopy(effective_messages)
             try:
                 check_prepared_request_capacity(frozen, messages=request_messages)
             except PromptProcessingError as exc:

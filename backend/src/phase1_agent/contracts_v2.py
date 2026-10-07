@@ -617,6 +617,16 @@ _PROMPT_MESSAGE = _record_v3(
     ),
     blocks={**_array(_TEXT), "minItems": 1},
 )
+_CONTEXT_MAINTENANCE_MESSAGE = _object(
+    ("schema_version", "message_id", "role", "source", "blocks"),
+    schema_version={"type": "integer", "const": 4},
+    message_id=_UUID, role={"const": "user"},
+    source=_union(
+        _variant("context_checkpoint", compaction_id=_UUID),
+        _variant("context_compaction_instruction", compaction_id=_UUID),
+    ),
+    blocks={**_array(_TEXT), "minItems": 1, "maxItems": 1},
+)
 _AGENT_MESSAGE = _union(
     *(
         _record(
@@ -637,6 +647,7 @@ _AGENT_MESSAGE = _union(
     ),
     _RUNTIME_EXECUTION_MESSAGE,
     _PROMPT_MESSAGE,
+    _CONTEXT_MAINTENANCE_MESSAGE,
 )
 _GENERATED_MESSAGE = {
     "allOf": [

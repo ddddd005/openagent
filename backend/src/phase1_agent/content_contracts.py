@@ -205,6 +205,8 @@ def create_content_package():
                 content_transformer=lambda value, op, scope, family=identity:
                     _transform(value, op, scope, family=family),
             ))
+        from .prompt_lifecycle import lifecycle_prompt_definition
+        host.register_data_type(lifecycle_prompt_definition())
         from .global_resources import global_resource_ref_definition
         host.register_shared_data_type(global_resource_ref_definition())
 

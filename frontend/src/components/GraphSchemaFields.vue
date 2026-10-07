@@ -43,7 +43,8 @@ function presentation(value: unknown): value is RolePlacement {
       </fieldset>
       <label v-else>
         <span>{{ field.definition.title ?? field.key }}</span>
-        <select v-if="enums(field.definition).length" :value="JSON.stringify(value[field.key])" :disabled="disabled" @change="patch(field.key, JSON.parse(($event.target as HTMLSelectElement).value))">
+        <output v-if="field.definition.readOnly === true || field.definition.type === 'null'">{{ value[field.key] === null ? '未启用' : String(value[field.key] ?? '') }}</output>
+        <select v-else-if="enums(field.definition).length" :value="JSON.stringify(value[field.key])" :disabled="disabled" @change="patch(field.key, JSON.parse(($event.target as HTMLSelectElement).value))">
           <option v-for="option in enums(field.definition)" :key="JSON.stringify(option)" :value="JSON.stringify(option)">{{ graphEnumLabel(field.key, field.definition, option) }}</option>
         </select>
         <input v-else-if="field.definition.type === 'boolean'" type="checkbox" :checked="!!value[field.key]" :disabled="disabled" @change="patch(field.key, ($event.target as HTMLInputElement).checked)" />

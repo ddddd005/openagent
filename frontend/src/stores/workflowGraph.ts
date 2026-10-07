@@ -15,7 +15,7 @@ import { useWorkspaceStore } from "./workspace";
 import { useWorkbenchNoticesStore } from "./workbenchNotices";
 import type { FrontendExtension } from "../domain/frontendExtensions";
 import type { WorkflowNodeConfigurationRequest, WorkflowNodeConfigurationResult } from "../plugins/workflowFrontendSdk";
-import { createSerialAgentDemo, type SerialAgentModelConfig } from "../domain/serialAgentDemo";
+import { createCompactingSerialAgentDemo, createSerialAgentDemo, type SerialAgentModelConfig } from "../domain/serialAgentDemo";
 
 export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   const workspace = useWorkspaceStore();
@@ -144,15 +144,16 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     persistence?.();
     return id;
   }
-  function createSerialAgentExample(modelConfig?: SerialAgentModelConfig) {
+  function createSerialAgentExample(modelConfig?: SerialAgentModelConfig, compacting = false) {
     if (catalogLoading.value || catalogError.value) return null;
     try {
-      const doc = createSerialAgentDemo(catalog.value, executionPackageLock.value, modelConfig);
+      const builder = compacting ? createCompactingSerialAgentDemo : createSerialAgentDemo;
+      const doc = builder(catalog.value, executionPackageLock.value, modelConfig);
       const id = doc.workflow_definition_id;
       entries.value[id] = { document: doc, saved_revision: 0, session_id: null, pending: null };
       history.value[id] = { past: [], future: [] };
       workspace.registerGraphWorkflow({ id, title: doc.name,
-        description: "A → B 串行；先选择模型资源与模型名，再保存并打开聊天",
+        description: compacting ? "A → B 串行，独立上下文与精简策略" : "A → B 串行",
         nodeCount: doc.nodes.length, state: "draft" });
       workspace.openWorkflow(id);
       selectedNodeIds.value = [];
@@ -163,6 +164,9 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       report(failure, "创建串行 Agent 示例");
       return null;
     }
+  }
+  function createCompactingSerialAgentExample(modelConfig?: SerialAgentModelConfig) {
+    return createSerialAgentExample(modelConfig, true);
   }
   function typeFor(node: GraphNode) {
     return catalog.value.find(type => type.component_id === node.component_id
@@ -764,7 +768,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   }
   return { entries, catalog, frontendExtensions, packageLock, executionPackageLock, dataTypes, catalogLoading, catalogError, sessions, views, candidates, history, busy, active, document,
     session, pending, locked, primaryAction, statusLabel, selectedNodeIds, selectedEdgeId, canUndo, canRedo, setEventBindings, submitEvent,
-    isGeneric, createWorkflow, createSerialAgentExample, typeFor, loadCatalog, setPersistenceGuard, storeSnapshot, restoreSnapshot,
+    isGeneric, createWorkflow, createSerialAgentExample, createCompactingSerialAgentExample, typeFor, loadCatalog, setPersistenceGuard, storeSnapshot, restoreSnapshot,
     saveWorkflow, addNode, patchNode, patchNodeConfiguration, moveNodes, connect, removeSelection, reorderEdge, undo, duplicateSelection,
     replaceNode, setExecutionRoot, setControlDependencies, setObjectBindings, attachFrontendDisplay, patchFrontendSource,
     activate, refresh, createSession, selectSession, submitPrimary, reconcile, canRetryRejectedCopy, retryRejectedCopy, discardDraft, discardRejectedCopy, writeData, closeRun, setInputs, resetPrivateState, submitAgentAction, loadCandidates, changeCandidate,

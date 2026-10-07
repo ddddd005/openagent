@@ -11,11 +11,14 @@ export interface PromptPresentation {
   order: number;
   enabled: boolean;
 }
+export type PromptLifecycle = "per_request" | "context_once";
+export type PromptCompaction = "never" | "allowed";
 export interface PromptMember {
   id: string; text: string; presentation: PromptPresentation; metadata: Record<string, unknown>;
+  lifecycle?: PromptLifecycle; compaction?: PromptCompaction;
 }
 export interface CurrentPromptResource extends PromptIdentity {
-  data_schema_version: 1; update_sequence: number;
+  data_schema_version: 1 | 2; update_sequence: number;
   value: { enabled: boolean; members: PromptMember[] };
 }
 const keysAre = (value: Record<string, unknown>, keys: string[]) =>
@@ -51,20 +54,25 @@ function isPresentation(value: unknown): value is PromptPresentation {
     && (value.placement === "middle"
       ? Number.isSafeInteger(value.depth) && Number(value.depth) >= 0 : value.depth === null);
 }
-function isMember(value: unknown): value is PromptMember {
-  return graphObject(value) && keysAre(value, ["id", "text", "presentation", "metadata"])
+function isMember(value: unknown, version: 1 | 2): value is PromptMember {
+  return graphObject(value) && keysAre(value, version === 1
+    ? ["id", "text", "presentation", "metadata"]
+    : ["id", "text", "presentation", "metadata", "lifecycle", "compaction"])
     && canonicalUuid(value.id) && typeof value.text === "string" && isPresentation(value.presentation)
-    && graphObject(value.metadata);
+    && graphObject(value.metadata) && (version === 1 || (
+      ["per_request", "context_once"].includes(String(value.lifecycle))
+      && ["never", "allowed"].includes(String(value.compaction))
+      && (value.compaction === "never" || value.lifecycle === "context_once" && value.presentation.role !== "system")));
 }
 export function isCurrentPromptResource(value: unknown): value is CurrentPromptResource {
   if (!promptJson(value) || !graphObject(value)
     || !keysAre(value, ["envelope_version", "scope", "type_id", "resource_id",
       "data_schema_version", "update_sequence", "value"]) || !validIdentity(value)
-    || value.data_schema_version !== 1 || !Number.isSafeInteger(value.update_sequence)
+    || value.data_schema_version !== 1 && value.data_schema_version !== 2 || !Number.isSafeInteger(value.update_sequence)
     || Number(value.update_sequence) <= 0 || !graphObject(value.value)
     || !keysAre(value.value, ["enabled", "members"]) || typeof value.value.enabled !== "boolean"
     || !Array.isArray(value.value.members) || value.value.members.length > 1024
-    || !value.value.members.every(isMember)) return false;
+    || !value.value.members.every(member => isMember(member, value.data_schema_version as 1 | 2))) return false;
   return new Set(value.value.members.map(member => member.id)).size === value.value.members.length;
 }
 export function promptIdentity(value: CurrentPromptResource): PromptIdentity {
@@ -74,13 +82,14 @@ export function samePromptIdentity(left: PromptIdentity, right: PromptIdentity) 
   return left.envelope_version === right.envelope_version && left.scope === right.scope
     && left.type_id === right.type_id && left.resource_id === right.resource_id;
 }
-export function newPromptResource(): CurrentPromptResource {
+export function newPromptResource(version: 1 | 2 = 1): CurrentPromptResource {
   return { envelope_version: 1, scope: "workspace", type_id: promptResourceType, resource_id: crypto.randomUUID(),
-    data_schema_version: 1, update_sequence: 1, value: { enabled: true, members: [] } };
+    data_schema_version: version, update_sequence: 1, value: { enabled: true, members: [] } };
 }
-export function newPromptMember(text = ""): PromptMember {
+export function newPromptMember(text = "", version: 1 | 2 = 1): PromptMember {
   return { id: crypto.randomUUID(), text,
-    presentation: { role: "system", placement: "before", depth: null, order: 0, enabled: true }, metadata: {} };
+    presentation: { role: "system", placement: "before", depth: null, order: 0, enabled: true }, metadata: {},
+    ...(version === 2 ? { lifecycle: "per_request", compaction: "never" } as const : {}) };
 }
 export function clonePromptResource(value: CurrentPromptResource) { return graphClone(value); }
 export function promptResourceLabel(value: CurrentPromptResource): string {

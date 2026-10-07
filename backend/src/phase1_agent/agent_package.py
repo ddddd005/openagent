@@ -14,6 +14,7 @@ from .graph_contracts import NodeDefinition, NodePort, require
 from .host_sdk import DataTypeDefinition, InformationSourceDefinition, InformationSourceReference
 from .runtime_executor_contracts import ExecutorDefinition, PauseSupport
 from .agent_failed_retry import validate_agent_failed_retry
+from .context_compaction_policy import compaction_policy_exports, register_compaction_policy
 
 
 AGENT_PACKAGE_ID = "workflow.agents"
@@ -46,8 +47,11 @@ def _delta(config, inputs, context):
 
 def create_agent_package(*, tools=None, kernel=None, information_reader=None):
     """Registration never constructs a kernel, model adapter or live provider."""
+    policy_exports = compaction_policy_exports()
+
     def register(host):
         from .model_host_service import model_service_requirement
+        register_compaction_policy(host)
         host.register_data_type(DataTypeDefinition(
             "AGENT_RECEIPTS", 1, {"type": "object"}, scope="content", validator=validate_agent_receipts,
             references=receipts_references, max_bytes=1_000_000))
@@ -56,12 +60,14 @@ def create_agent_package(*, tools=None, kernel=None, information_reader=None):
             fact_schema=object_schema({
                 "kind": {"enum": ["model_request", "model_attempt_started", "model_attempt_finished",
                                  "tool_dispatch", "tool_settled", "message_accepted", "execution_failed",
+                                 "context_compaction_started", "context_compaction_finished",
+                                 "context_compaction_applied",
                                  "agent_result"]},
                 "payload": {"type": "object"},
                 "created_at": {"type": "string"},
             })), lambda config, inputs, context: PublicAgentExecutor(
                 config, inputs, context, tools=tools, kernel=kernel,
-                direct_context=inputs["prompt"].get("schema_version") in (4, 5)))
+                direct_context=inputs["prompt"].get("schema_version") in (4, 5, 6)))
         host.register_pause_support(PauseSupport(AGENT_EXECUTOR_REF),
                                     lambda handle, checkpoint: handle.retains(checkpoint))
         host.register_node(NodeDefinition(
@@ -94,7 +100,18 @@ def create_agent_package(*, tools=None, kernel=None, information_reader=None):
                     NodePort("unit", "CONTEXT_UNIT"), NodePort("facts", "AGENT_RECEIPTS")),
             outputs=(NodePort("output", "AGENT_DELTA"),),
             capabilities=("artifacts:read", "facts:read"), input_storage="references"), _delta)
-        for version in ("1", "2", "3"):
+        host.register_node(NodeDefinition(
+            "agents.execute", "4", "原生上下文 Agent", "Agent", {}, object_schema({}),
+            inputs=(NodePort("prompt", "PROMPT", data_schema_version=6),
+                    NodePort("model", "MODEL_BINDING", data_schema_version=2),
+                    NodePort("compaction_policy", "CONTEXT_COMPACTION_POLICY", required=False)),
+            outputs=(NodePort("result", "TEXT", data_schema_version=2),
+                     NodePort("context", "AGENT_CONTEXT_UPDATE")),
+            capabilities=("models:call", "artifacts:read"), input_storage="references",
+            service_requirements=(model_service_requirement(
+                "models:call", "kernel-model", "kernel-compaction"),)),
+            None, executor_ref=AGENT_EXECUTOR_REF)
+        for version in ("1", "2", "3", "4"):
             host.register_information_source(InformationSourceDefinition(
                 InformationSourceReference("workflow.agents.execute-" + version + ".facts", "1"),
                 "agents.execute", version, "execution-facts", "workflow.executor-facts",
@@ -104,14 +121,17 @@ def create_agent_package(*, tools=None, kernel=None, information_reader=None):
     return CapabilityPackage(PackageManifest(
         AGENT_PACKAGE_ID, "1.0.0", (PackageDependency("workflow.context", "1.0.0"),
                                   PackageDependency("workflow.models", "1.0.0")),
-        exports={"data_types": [{"scope": "content", "type_id": "AGENT_RECEIPTS", "schema_version": 1}],
+        exports={"data_types": [{"scope": "content", "type_id": "AGENT_RECEIPTS", "schema_version": 1},
+                                *policy_exports["data_types"]],
                  "nodes": [{"component_id": "agents.execute", "component_version": "1"},
                            {"component_id": "agents.execute", "component_version": "2"},
                            {"component_id": "agents.execute", "component_version": "3"},
-                           {"component_id": "agents.delta", "component_version": "1"}],
+                           {"component_id": "agents.execute", "component_version": "4"},
+                           {"component_id": "agents.delta", "component_version": "1"},
+                           *policy_exports["nodes"]],
                  "executors": [AGENT_EXECUTOR_REF.to_dict()],
                  "pause_support": [AGENT_EXECUTOR_REF.to_dict()],
                  "information_sources": [
                      InformationSourceReference("workflow.agents.execute-" + version + ".facts", "1").to_dict()
-                     for version in ("1", "2", "3")]},
+                     for version in ("1", "2", "3", "4")]},
         schema_version=4), register)

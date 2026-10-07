@@ -11,6 +11,9 @@ from phase1_agent.agent_package import create_agent_package
 from phase1_agent.content_contracts import text_content
 from phase1_agent.context_contract import read_context_view
 from phase1_agent.context_prompt import assemble_context_prompt
+from phase1_agent.context_compaction_policy import (
+    COMPACTION_POLICY_COMPONENT, COMPACTION_POLICY_TYPE, default_compaction_policy,
+)
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.graph_execution import NodeExecutionContext
 from phase1_agent.capability_registry import create_package_registry
@@ -124,6 +127,23 @@ def test_opt_in_registration_exposes_public_contracts_without_constructing_agent
     assert catalog_entry["default_config"] == {}
     assert catalog_entry["config_schema"]["properties"] == {}
     assert create_package_registry(enabled={}).registry.get("agents.execute", "1") is None
+
+
+def test_agent_package_exports_stateless_compaction_policy_without_changing_execution_ports():
+    loaded = create_package_registry(enabled={"workflow.agents": "1.0.0"})
+    policy_node = loaded.registry.get(COMPACTION_POLICY_COMPONENT, "1")
+    assert policy_node.definition.inputs == ()
+    assert policy_node.definition.capabilities == ()
+    assert loaded.registry.data_types.get(COMPACTION_POLICY_TYPE, 1, scope="content")
+    result = policy_node.executor(deepcopy(policy_node.definition.default_config), {}, None)
+    assert result == {"output": default_compaction_policy()}
+    assert [port.port_id for port in loaded.registry.get("agents.execute", "3").definition.inputs] == [
+        "prompt", "model",
+    ]
+    package = create_agent_package()
+    assert {"component_id": COMPACTION_POLICY_COMPONENT, "component_version": "1"} in (
+        package.manifest.exports["nodes"])
+    assert create_package_registry(enabled={}).registry.get(COMPACTION_POLICY_COMPONENT, "1") is None
 
 
 def test_snapshot_frozen_public_binding_has_no_provider_body_and_result_has_owned_receipts():

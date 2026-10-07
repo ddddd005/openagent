@@ -39,6 +39,11 @@ PROMPT_FRONTEND_EXTENSIONS = (
      "component_id": "prompts.global-reference", "component_version": "1",
      "binding": {"surface": "workbench", "slot": "node-fields",
                  "target": {"component_id": "prompts.global-reference", "component_version": "1"}}},
+    {"extension_id": "workflow.prompts.node-fields-v2", "kind": "field-editor",
+     "entrypoint": "workflow.prompts.workbench.node-fields-v2",
+     "component_id": "prompts.global-reference", "component_version": "2",
+     "binding": {"surface": "workbench", "slot": "node-fields",
+                 "target": {"component_id": "prompts.global-reference", "component_version": "2"}}},
 )
 
 
@@ -259,13 +264,18 @@ def create_prompt_package(*, tool_catalog: Mapping | None = None) -> CapabilityP
                  port.port_id: merge_prompt_materials(inputs.get(port.port_id, [])) for port in tool_ports},
              inputs=tuple(prompt_port(port.port_id, required=False, multiple=True) for port in tool_ports),
              outputs=tool_ports)
+        from .prompt_lifecycle_nodes import register_lifecycle_prompt_nodes
+        register_lifecycle_prompt_nodes(host, tools=tools)
 
+    from .prompt_lifecycle_nodes import LIFECYCLE_PROMPT_COMPONENTS
     exports = {
-        "data_types": [{"scope": "global", "type_id": PROMPT_RESOURCE_TYPE, "schema_version": 1}],
+        "data_types": [{"scope": "global", "type_id": PROMPT_RESOURCE_TYPE, "schema_version": version}
+                       for version in (1, 2)],
         "nodes": [{"component_id": "prompts." + name, "component_version": "1"} for name in (
             "item", "group", "source", "summary", "assembly", "global-reference", "global-resolve",
             "tool", "tool-summary",
-        )],
+        )] + [{"component_id": "prompts." + name, "component_version": "2"}
+               for name in LIFECYCLE_PROMPT_COMPONENTS],
         "frontend_extensions": [{"extension_id": row["extension_id"]} for row in PROMPT_FRONTEND_EXTENSIONS],
     }
     return CapabilityPackage(PackageManifest(

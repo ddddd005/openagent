@@ -118,7 +118,7 @@ function button(root: HostNode, text: string) {
 function model(node: HostNode, value: unknown) {
   (node.props["onUpdate:modelValue"] as (value: unknown) => void)(value);
 }
-async function trigger(node: HostNode, event: "Click" | "Submit") {
+async function trigger(node: HostNode, event: "Click" | "Submit" | "Change") {
   await (node.props[`on${event}`] as (event: { preventDefault(): void }) => unknown)({ preventDefault() {} });
   await flush();
 }
@@ -161,11 +161,34 @@ describe("current prompt panel form interactions", () => {
     await trigger(form, "Submit");
     expect(f.save).toHaveBeenCalledTimes(1);
     expect(f.save.mock.calls[0]![0]).toMatchObject({
-      expected_sequence: 0, record: { scope: "workspace", update_sequence: 1, value: { enabled: true, members: [] } },
+      expected_sequence: 0, record: { scope: "workspace", data_schema_version: 2,
+        update_sequence: 1, value: { enabled: true, members: [] } },
     });
     expect(Object.keys(f.save.mock.calls[0]![0].record.value)).toEqual(["enabled", "members"]);
     expect(f.resources.records.value).toHaveLength(1);
     expect(elements(root).some(node => node.props["aria-label"] === "提示词当前资源表单")).toBe(false);
+  });
+  it("saves schema-two lifecycle settings and clears incompatible compaction permission on role change", async () => {
+    const record = newPromptResource(2);
+    record.value.members = [newPromptMember("Long-running background", 2)];
+    const f = fixture([record]), root = await mount(CurrentPromptPanel, f);
+    await trigger(find(root, node => node.tag === "button" && node.children.some(child => child.tag === "strong")), "Click");
+    const role = label(root, "条目 1 Role"), lifecycle = label(root, "条目 1 生命周期");
+    model(role, "user"); await trigger(role, "Change");
+    model(lifecycle, "context_once"); await trigger(lifecycle, "Change");
+    const permission = label(root, "条目 1 精简许可");
+    expect(permission.props.disabled).toBe(false);
+    model(permission, "allowed");
+    await trigger(label(root, "提示词当前资源表单"), "Submit");
+    expect(f.save.mock.calls[0]![0].record.value.members[0]).toMatchObject({
+      lifecycle: "context_once", compaction: "allowed", presentation: { role: "user" } });
+    await trigger(find(root, node => node.tag === "button" && node.children.some(child => child.tag === "strong")), "Click");
+    const nextRole = label(root, "条目 1 Role");
+    model(nextRole, "system"); await trigger(nextRole, "Change");
+    expect(label(root, "条目 1 精简许可").props.disabled).toBe(true);
+    await trigger(label(root, "提示词当前资源表单"), "Submit");
+    expect(f.save.mock.calls[1]![0].record.value.members[0]).toMatchObject({
+      lifecycle: "context_once", compaction: "never", presentation: { role: "system" } });
   });
 
   it("preserves unknown metadata and negative order while editing text, all presentation fields and resource enabled", async () => {
@@ -270,7 +293,7 @@ describe("current prompt reference configuration", () => {
         .provide(workbenchFrontendHostKey, host).provide(workflowFrontendSdkKey, f.sdk)
         .provide(promptResourceControllerKey, f.resources));
       expect(host.extensions.value.map(row => row.declaration.extension_id))
-        .toEqual(["workflow.prompts.workbench-panel", "workflow.prompts.node-fields"]);
+        .toEqual(["workflow.prompts.workbench-panel", "workflow.prompts.node-fields", "workflow.prompts.node-fields-v2"]);
       expect(host.extensions.value[1]!.configurationFields).toEqual(["reference"]);
       expect(html).toContain('aria-label="提示词引用配置"');
       expect(html).not.toContain("<textarea");
@@ -325,6 +348,22 @@ describe("current prompt reference configuration", () => {
     expect(html).toContain("所选提示词资源已停用");
     expect(html).toContain("（已停用）");
     expect(html).not.toContain("缺失引用");
+  });
+
+  it("selects schema-2 resources only through the explicit version-2 prompt editor", async () => {
+    const old = newPromptResource(), current = newPromptResource(2);
+    const f = fixture([old, current]);
+    f.node.component_version = "2";
+    f.node.config = { reference: promptIdentity(current) };
+    const root = await mount(PromptReferenceFields, f);
+    const options = label(root, "提示词当前资源").options;
+    expect(options.some(option => String(option.props.value).includes(old.resource_id))).toBe(false);
+    expect(options.some(option => String(option.props.value).includes(current.resource_id))).toBe(true);
+    await trigger(label(root, "提示词引用配置"), "Submit");
+    expect(f.configureNode).toHaveBeenCalledWith(expect.objectContaining({
+      componentVersion: "2", extensionId: "workflow.prompts.node-fields-v2",
+      patch: { reference: promptIdentity(current) },
+    }));
   });
 
   it.each(["type", "envelope", "extra config", "missing config"] as const)(

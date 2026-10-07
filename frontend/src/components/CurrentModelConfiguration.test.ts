@@ -61,15 +61,42 @@ describe("current model package UI", () => {
       .provide(workflowFrontendSdkKey, f.sdk).provide(modelResourceControllerKey, f.resources));
     expect(html).toContain(mode === "missing" ? "缺失引用" : mode === "disabled" ? "已停用" : "未配置后端凭据引用");
   });
-  it("loads both exact models declarations and unmounts them when the package or declaration changes", async () => {
+  it("loads exact models declarations and unmounts them when the package or declaration changes", async () => {
     const f = fixture();
     expect(f.host.extensions.value.map(row => row.declaration.extension_id))
-      .toEqual(["workflow.models.workbench-panel", "workflow.models.node-fields"]);
+      .toEqual(["workflow.models.workbench-panel", "workflow.models.node-fields", "workflow.models.node-fields-v2"]);
     const html = await renderToString(createSSRApp(CurrentProviderPanel).provide(modelResourceControllerKey, f.resources));
     expect(html).toContain("DeepSeek"); expect(html).toContain("当前资源");
     const mismatch = modelFrontendExtensions.map(row => ({ ...row, entrypoint: row.entrypoint + ".forged" }));
     const host = createWorkbenchFrontendHost(() => mismatch, () => f.sdk.packages.value);
     expect(host.extensions.value).toEqual([]);
     expect(createWorkbenchFrontendHost(() => modelFrontendExtensions, () => []).extensions.value).toEqual([]);
+  });
+  it("renders source two capacity controls without duplicate raw configuration fields", async () => {
+    const f = fixture();
+    f.node.component_version = "2"; f.definition.component_version = "2";
+    f.node.config = { ...f.node.config, parameters: { ...f.node.config.parameters as object, max_tokens: 1024 },
+      capacity: { context_window_tokens: 128000, output_reserve_tokens: 1024,
+        summary_max_tokens: 128, max_cold_input_tokens: 128000 } };
+    const app = createSSRApp(ModelSourceFields, { node: f.node, document: f.document })
+      .provide(workflowFrontendSdkKey, f.sdk).provide(modelResourceControllerKey, f.resources);
+    const html = await renderToString(app);
+    for (const label of ["上下文窗口 tokens", "输出预留 tokens", "摘要最大输出 tokens", "摘要冷输入上限 tokens"])
+      expect(html).toContain(`aria-label="${label}"`);
+    expect(html).toContain('value="128000"'); expect(html).toContain('value="1024"');
+    expect(html).not.toContain("<textarea");
+    expect(f.sdk.configureNode).not.toHaveBeenCalled();
+  });
+  it("preserves explicit budget defaults while provider and window are still unconfigured", async () => {
+    const f = fixture();
+    f.node.component_version = "2";
+    f.node.config = { reference: { ...f.node.config.reference as object, resource_id: "" },
+      parameters: { model: "", thinking: "disabled", stream: false, max_tokens: 1024 },
+      capacity: { context_window_tokens: 0, output_reserve_tokens: 1024,
+        summary_max_tokens: 128, max_cold_input_tokens: 0 } };
+    const html = await renderToString(createSSRApp(ModelSourceFields, { node: f.node, document: f.document })
+      .provide(workflowFrontendSdkKey, f.sdk).provide(modelResourceControllerKey, f.resources));
+    expect(html).toContain('value="1024"'); expect(html).toContain('value="128"'); expect(html).toContain('value="0"');
+    expect(f.sdk.configureNode).not.toHaveBeenCalled();
   });
 });

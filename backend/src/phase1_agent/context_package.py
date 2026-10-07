@@ -239,9 +239,11 @@ def create_context_package():
         from .context_host_service import (
             CONTEXT_SERVICE_DEFINITION, create_context_host_service, service_requirement,
             SUMMARY_CONTEXT_SERVICE_DEFINITION, create_summary_context_host_service,
+            NATIVE_CONTEXT_SERVICE_DEFINITION, create_native_context_host_service,
         )
         host.register_service(CONTEXT_SERVICE_DEFINITION, create_context_host_service)
         host.register_service(SUMMARY_CONTEXT_SERVICE_DEFINITION, create_summary_context_host_service)
+        host.register_service(NATIVE_CONTEXT_SERVICE_DEFINITION, create_native_context_host_service)
         host.register_data_type(DataTypeDefinition(
             EFFECTIVE_CONTEXT_TYPE, 1, object_schema({
                 "view_ref": {"type": ["object", "null"]}, "accepted_delta_ids": {"type": "array"},
@@ -296,10 +298,13 @@ def create_context_package():
         register_bound_context(host)
         from .context_v3_nodes import register_summary_context
         register_summary_context(host)
+        from .context_v4_nodes import register_native_context
+        register_native_context(host)
 
-    from .context_host_service import CONTEXT_SERVICE_REF, SUMMARY_CONTEXT_SERVICE_REF
+    from .context_host_service import CONTEXT_SERVICE_REF, SUMMARY_CONTEXT_SERVICE_REF, NATIVE_CONTEXT_SERVICE_REF
     return CapabilityPackage(PackageManifest(
         CONTEXT_PACKAGE_ID, "1.0.0", (PackageDependency("workflow.content", "1.0.0"),
                                     PackageDependency("workflow.prompts", "1.0.0")),
-        exports={"services": [CONTEXT_SERVICE_REF.to_dict(), SUMMARY_CONTEXT_SERVICE_REF.to_dict()]},
+        exports={"services": [CONTEXT_SERVICE_REF.to_dict(), SUMMARY_CONTEXT_SERVICE_REF.to_dict(),
+                              NATIVE_CONTEXT_SERVICE_REF.to_dict()]},
         schema_version=3), register)

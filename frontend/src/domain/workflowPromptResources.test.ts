@@ -53,7 +53,7 @@ describe("current independent prompt resource contracts", () => {
     expect(isPromptIdentity({ ...identity, scope: "\ud83d\ude00".repeat(128) })).toBe(true);
   });
   it.each([
-    { data_schema_version: 2 }, { data_schema_version: "1" }, { update_sequence: 0 }, { update_sequence: -1 },
+    { data_schema_version: 3 }, { data_schema_version: "1" }, { update_sequence: 0 }, { update_sequence: -1 },
     { update_sequence: 1.5 }, { update_sequence: Number.MAX_SAFE_INTEGER + 1 }, { update_sequence: Infinity },
     { update_sequence: NaN }, { name: "legacy" }, { kind: "role_card" },
     { value: { enabled: true, members: [], name: "legacy" } },
@@ -120,6 +120,23 @@ describe("current independent prompt resource contracts", () => {
     member.metadata = { valid: "\ud83d\ude00", nested: { nil: null, flags: [false, 2, "body"] } };
     expect(isCurrentPromptResource(record)).toBe(true);
     member.text = "\udc00";
+    expect(isCurrentPromptResource(record)).toBe(false);
+  });
+  it("requires explicit lifecycle fields in schema two without silently upgrading schema one", () => {
+    const record = newPromptResource(2), member = newPromptMember("Persistent facts", 2);
+    record.value.members = [member];
+    expect(member).toMatchObject({ lifecycle: "per_request", compaction: "never" });
+    expect(isCurrentPromptResource(record)).toBe(true);
+    member.lifecycle = "context_once"; member.compaction = "allowed";
+    expect(isCurrentPromptResource(record)).toBe(false);
+    member.presentation.role = "user";
+    expect(isCurrentPromptResource(record)).toBe(true);
+    member.lifecycle = "per_request";
+    expect(isCurrentPromptResource(record)).toBe(false);
+    member.compaction = "never";
+    expect(isCurrentPromptResource(record)).toBe(true);
+    expect(isCurrentPromptResource({ ...record, data_schema_version: 1 })).toBe(false);
+    record.value.members = [newPromptMember()];
     expect(isCurrentPromptResource(record)).toBe(false);
   });
 });

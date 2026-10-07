@@ -10,6 +10,7 @@ from .model_configuration import DEFAULT_PROVIDER_ID
 from .model_contract import (
     CHAT_PROVIDER_TYPE, MODEL_PACKAGE_ID, model_type_definitions, object_schema,
     validate_model_source_config, validate_provider_record, validate_public_model_binding,
+    validate_native_model_source_config,
 )
 from .prompt_contract import validate_ready_prompt
 from .model_host_service import (
@@ -25,6 +26,11 @@ MODEL_FRONTEND_EXTENSIONS = (
      "component_id": "models.source", "component_version": "1",
      "binding": {"surface": "workbench", "slot": "node-fields",
                  "target": {"component_id": "models.source", "component_version": "1"}}},
+    {"extension_id": "workflow.models.node-fields-v2", "kind": "field-editor",
+     "entrypoint": "workflow.models.workbench.node-fields-v2",
+     "component_id": "models.source", "component_version": "2",
+     "binding": {"surface": "workbench", "slot": "node-fields",
+                 "target": {"component_id": "models.source", "component_version": "2"}}},
 )
 
 
@@ -60,6 +66,31 @@ def create_model_package() -> CapabilityPackage:
                 {"kind": "global-resource", "reference": deepcopy(config["reference"])}],
             resource_preflight_validator=preflight)
 
+        native_config = {**deepcopy(config),
+                         "parameters": {**deepcopy(config["parameters"]), "max_tokens": 1024},
+                         "capacity": {"context_window_tokens": 0, "output_reserve_tokens": 1024,
+                                      "summary_max_tokens": 128, "max_cold_input_tokens": 0}}
+
+        def native_validate(value):
+            from .graph_contracts import require
+            require(type(value) is dict and set(value) == {"reference", "parameters", "capacity"},
+                    "model_source_invalid", "Native model source requires explicit capacity budgets")
+            return validate_native_model_source_config(value)
+
+        host.register_node(NodeDefinition(
+            "models.source", "2", "容量模型来源", "Models", native_config,
+            object_schema({"reference": {"type": "object"}, "parameters": {"type": "object"},
+                           "capacity": {"type": "object"}}),
+            outputs=(NodePort("output", "MODEL_BINDING", data_schema_version=2),),
+            capabilities=("models:resolve", "resources:read"), input_storage="references",
+            service_requirements=(model_service_requirement("models:resolve", "bind-native-model"),),
+        ), lambda config, inputs, context: {
+            "output": context.host_call("models:resolve", "bind-native-model", config)},
+            config_validator=native_validate,
+            resource_dependencies_declaration=lambda config: [
+                {"kind": "global-resource", "reference": deepcopy(config["reference"])}],
+            resource_preflight_validator=preflight)
+
         def chat(config, inputs, context):
             validate_ready_prompt(inputs["prompt"])
             binding = validate_public_model_binding(inputs["model"])
@@ -80,7 +111,8 @@ def create_model_package() -> CapabilityPackage:
                         "schema_version": definition.schema_version}
                        for definition in model_type_definitions()],
         "nodes": [{"component_id": component, "component_version": "1"}
-                  for component in ("models.source", "models.chat")],
+                  for component in ("models.source", "models.chat")] + [
+                      {"component_id": "models.source", "component_version": "2"}],
         "services": [MODEL_SERVICE_REF.to_dict()],
         "frontend_extensions": [{"extension_id": row["extension_id"]} for row in MODEL_FRONTEND_EXTENSIONS],
     }

@@ -21,12 +21,12 @@ from openai import APIStatusError
 
 from .adapter import DeepSeekAdapter, ProviderResponseError
 from .contract_errors import ContractValidationError, ModelRequestError
-from .contract_json import content_digest, validate_json_value
+from .contract_json import canonical_bytes, content_digest, validate_json_value
 from .contracts import ModelResponse, ModelToolCall
 from .frozen_model import FrozenConfiguredAdapter, FrozenModelParameters
 from .graph_contracts import GraphDiagnosticError, require, uuid4_string
 from .model_contract import (
-    validate_model_source_config, validate_provider_record, validate_public_model_binding,
+    validate_any_model_source_config, validate_provider_record, validate_public_model_binding,
     validate_public_model_result,
 )
 from .prompt_contract import validate_ready_prompt
@@ -101,17 +101,26 @@ class ModelCapabilityAdapter:
         return deepcopy(self._binding["parameters"])
 
     def generate(self, messages, tools):
+        return self._generate(messages, tools, "kernel-model")
+
+    def generate_compaction(self, messages, tools):
+        return self._generate(messages, tools, "kernel-compaction")
+
+    def _generate(self, messages, tools, operation):
+        suffix = str(self._index) if operation == "kernel-model" else "compaction:" + str(self._index)
         try:
-            value = self._context.host_call("models:call", "kernel-model", {
+            value = self._context.host_call("models:call", operation, {
                 "binding_id": self._binding["binding_id"], "messages": deepcopy(list(messages)),
-                "tools": deepcopy(list(tools)), "request_key": self._prefix + ":" + str(self._index),
+                "tools": deepcopy(list(tools)), "request_key": self._prefix + ":" + suffix,
             })
         except ContractValidationError as error:
             code = getattr(error, "reason_code", None)
             if code in {
                 "model_provider_error", "model_dispatch_unknown",
                 "model_not_dispatched", "model_response_invalid",
-            }:
+            } or (self._binding["schema_version"] == 2 and code in {
+                "model_fact_acceptance_failed", "context_compaction_cold_input_budget_exceeded",
+            }):
                 raise ModelRequestError(code) from None
             raise
         value = validate_public_model_result(value)
@@ -134,6 +143,7 @@ class _Frame:
     producer_node_run_id: str | None = None
     output_id: str | None = None
     adapter: object | None = field(default=None, repr=False)
+    compaction_adapter: object | None = field(default=None, repr=False)
     lock: object = field(default_factory=RLock, repr=False)
     active_calls: int = 0
     released: bool = False
@@ -185,7 +195,7 @@ class PublicModelService:
         prepared = {}
         for node_id, config in node_configs.items():
             uuid4_string(node_id)
-            config = validate_model_source_config(config)
+            config = validate_any_model_source_config(config)
             reference = config["reference"]
             record = next((record for record in records if all(
                 record.get(key) == reference[key] for key in reference)), None)
@@ -206,9 +216,12 @@ class PublicModelService:
                 frame.released = True
                 if frame.binding:
                     self._bindings.pop(frame.binding["binding_id"], None)
-                if frame.active_calls == 0 and frame.adapter is not None:
-                    adapters.append(frame.adapter)
-                    frame.adapter = None
+                if frame.active_calls == 0:
+                    for field_name in ("adapter", "compaction_adapter"):
+                        adapter = getattr(frame, field_name)
+                        if adapter is not None:
+                            adapters.append(adapter)
+                            setattr(frame, field_name, None)
             for key in list(self._requests):
                 if key[:2] == owner:
                     self._requests.pop(key)
@@ -225,7 +238,7 @@ class PublicModelService:
 
     @contextmanager
     def _frame_operation(self, frame):
-        adapter = None
+        adapters = []
         try:
             with frame.lock:
                 with self._lock:
@@ -238,9 +251,13 @@ class PublicModelService:
                     with self._lock:
                         frame.active_calls -= 1
                         if frame.released and frame.active_calls == 0:
-                            adapter, frame.adapter = frame.adapter, None
+                            for field_name in ("adapter", "compaction_adapter"):
+                                adapter = getattr(frame, field_name)
+                                if adapter is not None:
+                                    adapters.append(adapter)
+                                    setattr(frame, field_name, None)
         finally:
-            if adapter is not None:
+            for adapter in adapters:
                 self._close_adapter(adapter)
 
     @property
@@ -257,7 +274,9 @@ class PublicModelService:
     def __call__(self, context, capability: str, operation: str, payload: dict):
         require(capability in context.definition.capabilities, "graph_capability_denied",
                 "Model operation requires a declared capability")
-        if capability == "models:resolve" and operation == "bind-model":
+        if capability == "models:resolve" and operation in ("bind-model", "bind-native-model"):
+            require(type(payload) is dict and ("capacity" in payload) == (operation == "bind-native-model"),
+                    "model_source_invalid", "Model resolution operation differs from its source version")
             return self.bind_model(context, payload)
         if capability == "models:call" and operation == "chat":
             require(type(payload) is dict and set(payload) == {"binding_id"},
@@ -270,14 +289,15 @@ class PublicModelService:
             require(not result["tool_calls"], "model_unexpected_tool_calls",
                     "Ordinary Chat does not execute or publish tool calls")
             return result
-        if capability == "models:call" and operation == "kernel-model":
+        if capability == "models:call" and operation in ("kernel-model", "kernel-compaction"):
             require(type(payload) is dict and set(payload) == {
                 "binding_id", "messages", "tools", "request_key",
             }, "model_call_invalid", "Model facade requires an explicit logical request")
             # The package owns its loop and ready-prompt semantics. The host
             # still resolves the exact frozen prompt of this invocation.
             self._input(context, "prompt")
-            return self.call_model(context, **payload)
+            return self.call_model(context, **payload,
+                                   purpose="compaction" if operation == "kernel-compaction" else "normal")
         require(False, "model_operation_denied", "Unknown controlled model operation")
 
     def _input(self, context, port):
@@ -291,7 +311,7 @@ class PublicModelService:
         require("models:resolve" in context.definition.capabilities,
                 "graph_capability_denied", "Model source requires declared resolution capability")
         owner = self._owner(context)
-        config = validate_model_source_config(config)
+        config = validate_any_model_source_config(config)
         with self._lock:
             frame = self._frames.get((*owner, context.node_binding_id))
             require(frame is not None, "model_recovery_unavailable",
@@ -301,11 +321,12 @@ class PublicModelService:
             if frame.binding is None:
                 frame.producer_node_run_id = uuid4_string(context.node_run_id)
                 frame.binding = validate_public_model_binding({
-                    "schema_version": 1, "kind": "workflow.model-binding",
+                    "schema_version": 2 if "capacity" in config else 1, "kind": "workflow.model-binding",
                     "binding_id": str(uuid4()), "reference": config["reference"],
                     "parameters": config["parameters"],
                     "capabilities": {"protocol": "chat", "tools": True, "stream": False,
                                      "thinking": "disabled"},
+                    **({"capacity": config["capacity"]} if "capacity" in config else {}),
                 })
                 self._bindings[frame.binding["binding_id"]] = frame
             require(frame.producer_node_run_id == context.node_run_id, "model_owner_mismatch",
@@ -387,7 +408,7 @@ class PublicModelService:
         return validate_public_model_result({**request.result, "fact_refs": request.facts})
 
     def call_model(self, context, *, binding_id: str, messages: list[dict],
-                   tools: list[dict], request_key: str) -> dict:
+                   tools: list[dict], request_key: str, purpose: str = "normal") -> dict:
         """Public facade for authorized callers; tool schemas never execute tools."""
         require(type(request_key) is str and 0 < len(request_key) <= 128,
                 "model_request_invalid", "Logical request key is invalid")
@@ -411,17 +432,33 @@ class PublicModelService:
         wire_messages = DeepSeekAdapter._project_messages(messages)
         frame = self._authorize_binding(context, binding_id)
         with self._frame_operation(frame):
-            wire = {"model": frame.config["parameters"]["model"], "messages": wire_messages,
+            require(purpose in ("normal", "compaction"), "model_request_invalid", "Unknown model purpose")
+            parameters = deepcopy(frame.config["parameters"])
+            if purpose == "compaction":
+                require(frame.binding["schema_version"] == 2, "model_capacity_unknown",
+                        "Compaction requires an explicit native model capacity binding")
+                parameters["max_tokens"] = frame.config["capacity"]["summary_max_tokens"]
+                cold_estimate = len(canonical_bytes({"messages": wire_messages, "tools": tools}))
+                require(cold_estimate <= frame.config["capacity"]["max_cold_input_tokens"],
+                        "context_compaction_cold_input_budget_exceeded",
+                        "Unconfirmed cache cannot exceed the explicit cold-input budget")
+            wire = {"model": parameters["model"], "messages": wire_messages,
                     "tools": tools, "tool_choice": "auto", "stream": False,
                     "extra_body": {"thinking": {"type": "disabled"}}}
-            wire.update({key: frame.config["parameters"][key]
-                         for key in ("max_tokens", "temperature") if key in frame.config["parameters"]})
+            wire.update({key: parameters[key]
+                         for key in ("max_tokens", "temperature") if key in parameters})
             basis = {"messages": messages, "tools": tools, "wire_request": wire,
                      "projection": "deepseek-chat@1",
                      "provider_reference": deepcopy(frame.config["reference"]),
-                     "parameters": deepcopy(frame.config["parameters"]),
+                     "parameters": deepcopy(parameters),
                      "input_refs": {"model": context.input_artifact_refs("model"),
                                     "prompt": context.input_artifact_refs("prompt")}}
+            if purpose == "compaction":
+                basis["purpose"] = "context_compaction"
+                basis["cold_input_estimate"] = {
+                    "input_tokens": cold_estimate, "token_count_kind": "utf8_bytes_estimate",
+                    "max_cold_input_tokens": frame.config["capacity"]["max_cold_input_tokens"],
+                }
             # The SDK merges extra_body into the transmitted JSON object.
             basis["transport_arguments"] = deepcopy(wire)
             basis["wire_request"] = {key: deepcopy(value) for key, value in wire.items()
@@ -451,17 +488,20 @@ class PublicModelService:
                     {"attempt_id": request.attempt_id, "attempt_index": 1,
                      "dispatch_state": "intent", "attempts_consumed": 1})))
                 secret = self._boundary(frame)
-                if frame.adapter is None:
+                adapter_field = "compaction_adapter" if purpose == "compaction" else "adapter"
+                selected_adapter = getattr(frame, adapter_field)
+                if selected_adapter is None:
                     implementation = self._factory(provider=deepcopy(frame.provider),
-                                                   parameters=deepcopy(frame.config["parameters"]),
+                                                   parameters=deepcopy(parameters),
                                                    api_key=secret)
-                    frame.adapter = (implementation if isinstance(implementation, FrozenConfiguredAdapter)
-                                     else FrozenConfiguredAdapter(
+                    selected_adapter = (implementation if isinstance(implementation, FrozenConfiguredAdapter)
+                                        else FrozenConfiguredAdapter(
                                          implementation,
-                                         FrozenModelParameters.from_mapping(frame.config["parameters"]),
+                                         FrozenModelParameters.from_mapping(parameters),
                                          provider_address=frame.provider["base_url"]))
-                frame.adapter.verify_settings()
-                require(getattr(frame.adapter, "max_retries", 0) == 0,
+                    setattr(frame, adapter_field, selected_adapter)
+                selected_adapter.verify_settings()
+                require(getattr(selected_adapter, "max_retries", 0) == 0,
                         "model_retry_policy_invalid", "Transport must disable SDK retries")
                 # Recheck after construction and immediately before entering transport.
                 self._boundary(frame)
@@ -480,7 +520,7 @@ class PublicModelService:
                     "model_not_dispatched", "Model request was blocked before transport entry") from None
             request.dispatched = True
             try:
-                response = frame.adapter.generate(messages, tools)
+                response = selected_adapter.generate(messages, tools)
                 result = {
                     "schema_version": 1, "kind": "workflow.model-result",
                     "binding_id": binding_id, "request_id": request.request_id,

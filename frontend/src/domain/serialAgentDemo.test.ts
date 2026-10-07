@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSerialAgentDemo } from "./serialAgentDemo";
+import { createCompactingSerialAgentDemo, createSerialAgentDemo } from "./serialAgentDemo";
 import { graphClone, isGraphDocument, type GraphNodeType } from "./workflowGraph";
 import { frontendCatalog } from "../testUtils/frontendFixture";
 
@@ -90,5 +90,57 @@ describe("serial Agent example", () => {
       .toThrow("context.merge@2");
     expect(() => createSerialAgentDemo(catalog, packageLock.filter(row => row.package_id !== "workflow.frontend-business"), model))
       .toThrow("workflow.frontend-business");
+  });
+});
+
+describe("native compacting serial example", () => {
+  const capacity = { context_window_tokens: 0, output_reserve_tokens: 1024, summary_max_tokens: 128,
+    max_cold_input_tokens: 0 };
+  const nativeCatalog: GraphNodeType[] = [...catalog,
+    { ...base, component_id: "models.source", component_version: "2", default_config: {
+      reference: model.reference, parameters: { ...model.parameters, max_tokens: 1024 }, capacity } },
+    { ...base, component_id: "prompts.item", component_version: "2", default_config: {
+      ...(catalog.find(row => row.component_id === "prompts.item")!.default_config),
+      lifecycle: "per_request", compaction: "never" } },
+    { ...base, component_id: "prompts.source", component_version: "2", default_config: {
+      value: { schema_version: 1, kind: "workflow.prompt-materials", items: [] }, member_id: crypto.randomUUID(),
+      presentation: {}, lifecycle: "per_request", compaction: "never" } },
+    ...["context.output", "context.assembly", "context.merge", "agents.execute"].map(component_id =>
+      ({ ...base, component_id, component_version: "4" })),
+    { ...base, component_id: "agents.compaction-policy", default_config: {
+      enabled: true, trigger_tokens: 0, keep_depth: 2, summary_prompt: "", target_tokens: null } },
+  ];
+  it("uses only explicitly versioned native paths and leaves provider capacity unconfigured", () => {
+    const doc = createCompactingSerialAgentDemo(nativeCatalog, packageLock);
+    expect(isGraphDocument(doc)).toBe(true);
+    expect(doc.nodes.find(row => row.component_id === "models.source")!).toMatchObject({
+      component_version: "2", config: { capacity, reference: { resource_id: "" }, parameters: { model: "", max_tokens: 1024 } } });
+    expect(doc.nodes.filter(row => row.component_id.startsWith("context."))).toHaveLength(6);
+    expect(doc.nodes.filter(row => row.component_id.startsWith("context.")).every(row => row.component_version === "4")).toBe(true);
+    expect(doc.nodes.filter(row => row.component_id === "agents.execute").every(row => row.component_version === "4")).toBe(true);
+    expect(doc.object_bindings!.filter(row => row.type_id === "workflow.effective-context")
+      .map(row => row.schema_version)).toEqual([4, 4]);
+    expect(doc.nodes.some(row => row.component_id === "tools.text-to-prompt")).toBe(false);
+    expect(doc.nodes.find(row => row.title === "A 本轮分析材料")!).toMatchObject({
+      component_id: "prompts.source", component_version: "2",
+      config: { lifecycle: "per_request", compaction: "never", presentation: { role: "user", placement: "after" } } });
+  });
+  it("wires independent policies and exact capacity configuration without sharing mutable drafts", () => {
+    const configured = { ...model, parameters: { ...model.parameters, max_tokens: 1024 },
+      capacity: { ...capacity, context_window_tokens: 128000, max_cold_input_tokens: 128000 } };
+    const doc = createCompactingSerialAgentDemo(nativeCatalog, packageLock, configured);
+    expect(doc.nodes.find(row => row.component_id === "models.source")!.config).toEqual(configured);
+    const policies = doc.nodes.filter(row => row.component_id === "agents.compaction-policy");
+    expect(policies).toHaveLength(2);
+    for (const label of ["A", "B"]) {
+      expect(doc.edges).toContainEqual(expect.objectContaining({
+        source_node_id: policies.find(row => row.title === `${label} 精简策略`)!.node_binding_id,
+        target_node_id: doc.nodes.find(row => row.title === `Agent ${label}`)!.node_binding_id,
+        target_port_id: "compaction_policy" }));
+    }
+    configured.capacity.summary_max_tokens = 42;
+    expect((doc.nodes.find(row => row.component_id === "models.source")!.config.capacity as typeof capacity)
+      .summary_max_tokens).toBe(128);
+    expect(() => createCompactingSerialAgentDemo(catalog, packageLock)).toThrow("models.source@2");
   });
 });

@@ -112,6 +112,7 @@ def test_prompt_package_declares_exact_current_panel_and_reference_editor_withou
     assert {(row["extension_id"], row["entrypoint"]) for row in expected} == {
         ("workflow.prompts.workbench-panel", "workflow.prompts.workbench.panel"),
         ("workflow.prompts.node-fields", "workflow.prompts.workbench.node-fields"),
+        ("workflow.prompts.node-fields-v2", "workflow.prompts.workbench.node-fields-v2"),
     }
     manifest = package.manifest.to_dict()
     assert manifest["schema_version"] == 1

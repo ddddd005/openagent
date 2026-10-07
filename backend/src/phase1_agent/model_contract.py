@@ -15,6 +15,10 @@ MODEL_PACKAGE_ID = "workflow.models"
 CHAT_PROVIDER_TYPE = "workflow.chat-provider"
 MODEL_BINDING_TYPE = "MODEL_BINDING"
 MODEL_RESULT_TYPE = "MODEL_RESULT"
+_CAPACITY_FIELDS = (
+    "context_window_tokens", "output_reserve_tokens", "summary_max_tokens", "max_cold_input_tokens",
+)
+_CAPACITY_FIELD_SET = frozenset(_CAPACITY_FIELDS)
 
 
 def object_schema(properties: dict) -> dict:
@@ -57,6 +61,33 @@ def validate_model_source_config(value: object) -> dict:
             "parameters": validate_model_parameters(value["parameters"])}
 
 
+def validate_native_model_source_config(value: object) -> dict:
+    require(type(value) is dict and set(value) == {"reference", "parameters", "capacity"},
+            "model_source_invalid", "Native model source requires explicit capacity budgets")
+    result = validate_model_source_config({key: value[key] for key in ("reference", "parameters")})
+    return {**result, "capacity": validate_model_capacity(value["capacity"], result["parameters"])}
+
+
+def validate_any_model_source_config(value: object) -> dict:
+    return (validate_native_model_source_config(value) if type(value) is dict and "capacity" in value
+            else validate_model_source_config(value))
+
+
+def validate_model_capacity(value: object, parameters: dict) -> dict:
+    require(type(value) is dict and set(value) == _CAPACITY_FIELD_SET
+            and all(type(value[field]) is int and 0 < value[field] <= 2**53 - 1
+                    for field in _CAPACITY_FIELDS),
+            "model_capacity_invalid", "Native Agent requires explicit positive capacity budgets")
+    maximum = parameters.get("max_tokens")
+    require(type(maximum) is int and maximum > 0,
+            "model_output_reserve_unknown", "Native Agent requires an explicit model output limit")
+    require(maximum <= value["output_reserve_tokens"] < value["context_window_tokens"]
+            and value["summary_max_tokens"] <= value["output_reserve_tokens"]
+            and value["summary_max_tokens"] <= CHAT_MAX_TOKENS,
+            "model_capacity_invalid", "Output and summary reserves exceed the explicit capacity")
+    return deepcopy(value)
+
+
 def validate_provider_record(record: object, reference: dict) -> dict:
     require(type(record) is dict and all(record.get(key) == reference[key] for key in reference)
             and record.get("data_schema_version") == 1,
@@ -70,15 +101,20 @@ def validate_provider_record(record: object, reference: dict) -> dict:
 
 def validate_public_model_binding(value: object) -> dict:
     validate_json_value(value)
-    require(type(value) is dict and set(value) == {
+    version = value.get("schema_version") if type(value) is dict else None
+    expected = {
         "schema_version", "kind", "binding_id", "reference", "parameters", "capabilities",
-    } and type(value["schema_version"]) is int and value["schema_version"] == 1
+    } | ({"capacity"} if version == 2 else set())
+    require(type(value) is dict and set(value) == expected
+            and type(version) is int and version in (1, 2)
             and value["kind"] == "workflow.model-binding",
             "model_binding_invalid", "Public model binding fields are invalid")
     uuid4_string(value["binding_id"])
     validate_model_reference(value["reference"])
     parameters = validate_model_parameters(value["parameters"])
     require(parameters == value["parameters"], "model_binding_invalid", "Binding parameters must be explicit")
+    if version == 2:
+        validate_model_capacity(value["capacity"], parameters)
     require(type(value["capabilities"]) is dict
             and type(value["capabilities"].get("tools")) is bool
             and type(value["capabilities"].get("stream")) is bool
@@ -139,6 +175,12 @@ def model_type_definitions() -> tuple[DataTypeDefinition, ...]:
             "stream": {"type": "boolean", "const": False}, "thinking": {"const": "disabled"},
         }),
     })
+    native_binding_schema = deepcopy(binding_schema)
+    native_binding_schema["properties"]["schema_version"] = {"const": 2}
+    native_binding_schema["properties"]["capacity"] = object_schema({
+        field: {"type": "integer", "minimum": 1} for field in _CAPACITY_FIELDS
+    })
+    native_binding_schema["required"].append("capacity")
     result_schema = object_schema({
         "schema_version": {"const": 1}, "kind": {"const": "workflow.model-result"},
         "binding_id": _uuid_schema(), "request_id": _uuid_schema(),
@@ -156,6 +198,10 @@ def model_type_definitions() -> tuple[DataTypeDefinition, ...]:
         DataTypeDefinition(CHAT_PROVIDER_TYPE, 1, provider_schema, scope="global",
                            validator=validate_chat_provider, max_bytes=8192),
         DataTypeDefinition(MODEL_BINDING_TYPE, 1, binding_schema, scope="content",
+                           validator=validate_public_model_binding, max_bytes=8192,
+                           references=lambda value: [deepcopy(value["reference"])],
+                           reference_mapper=lambda value, mapping: deepcopy(value)),
+        DataTypeDefinition(MODEL_BINDING_TYPE, 2, native_binding_schema, scope="content",
                            validator=validate_public_model_binding, max_bytes=8192,
                            references=lambda value: [deepcopy(value["reference"])],
                            reference_mapper=lambda value, mapping: deepcopy(value)),

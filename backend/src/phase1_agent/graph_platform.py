@@ -145,10 +145,12 @@ class GraphPlatform:
             document = self._document(repo, session["workflow_definition_id"], session["definition_revision"])
             writer = next((node for node in document["nodes"] if node["node_binding_id"] == node_id), None)
             require(writer is not None and (writer["component_id"], writer["component_version"])
-                    in (("context.save", "1"), ("context.merge", "1"), ("context.merge", "2")), "context_adoption_writer_denied",
+                    in (("context.save", "1"), ("context.merge", "1"), ("context.merge", "2"),
+                        ("context.merge", "4")), "context_adoption_writer_denied",
                     "Adoption requires this workflow's declared context writer", 403)
             bound = writer["component_id"] == "context.merge"
             summary_aware = bound and writer["component_version"] == "2"
+            native = bound and writer["component_version"] == "4"
             key = writer["config"]["object_key"]
             objects = self._objects(repo)
             current = objects.read(sid, key, node_id=node_id)
@@ -162,7 +164,7 @@ class GraphPlatform:
             original = self._document_for_runtime_output(repo, output)
             source = next(node for node in original["nodes"]
                           if node["node_binding_id"] == output["node_binding_id"])
-            require(source["component_version"] == ("2" if summary_aware else "1"), "context_adoption_source_invalid",
+            require(source["component_version"] == ("4" if native else "2" if summary_aware else "1"), "context_adoption_source_invalid",
                     "View producer implementation version is unsupported")
             view_ref = {"scope": "artifact", "output_id": view_output_id}
             allowed = self._artifact_closure(repo, [view_ref])
@@ -181,7 +183,16 @@ class GraphPlatform:
                         and output["node_binding_id"] == node_id
                         and output["port_id"] == "output", "context_adoption_source_invalid",
                         "Bound adoption requires the same merge node's accepted context candidate")
-                if summary_aware:
+                if native:
+                    from .context_v4 import prepare_native_context_adoption, prove_native_context_view
+
+                    def resolve_detail(reference):
+                        resolve(reference)
+                        return objects._resolve_write_artifact(sid, reference)
+
+                    view = prove_native_context_view(view_ref, resolve_detail)
+                    prepare = prepare_native_context_adoption
+                elif summary_aware:
                     from .context_v3 import prepare_effective_view_adoption, prove_effective_view
 
                     def resolve_detail(reference):

@@ -146,6 +146,9 @@ def validate_bound_context_prompt(value):
 
 
 def validate_any_context_prompt(value):
+    if type(value) is dict and value.get("schema_version") == 6:
+        from .context_prompt_v6 import validate_native_context_prompt
+        return validate_native_context_prompt(value)
     if type(value) is dict and value.get("schema_version") == 5:
         return validate_summary_context_prompt(value)
     return (validate_bound_context_prompt(value) if type(value) is dict and value.get("schema_version") == 4

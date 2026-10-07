@@ -2,9 +2,11 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { RefreshCw, Save } from "lucide-vue-next";
 import type { GraphDocument, GraphNode } from "../domain/workflowGraph";
-import { graphClone } from "../domain/workflowGraph";
-import { isModelSourceConfiguration, isModelParameters, modelFieldsExtensionId, providerIdentity,
-  sameProviderIdentity, type ModelParameters } from "../domain/workflowModelResources";
+import { graphClone, graphObject } from "../domain/workflowGraph";
+import { isModelSourceConfiguration, isCapacityModelSourceConfiguration, isModelCapacity,
+  isModelParameters, modelFieldsExtensionId, capacityModelFieldsExtensionId, providerIdentity,
+  sameProviderIdentity, type ModelParameters, type ModelSourceConfiguration,
+  type ModelCapacity } from "../domain/workflowModelResources";
 import { useWorkflowFrontendSdk, type WorkflowNodeConfigurationRequest } from "../plugins/workflowFrontendSdk";
 import { useProviderResources } from "../application/workflowResources";
 
@@ -12,9 +14,13 @@ const props = defineProps<{ node: GraphNode; document: GraphDocument; disabled?:
 const sdk = useWorkflowFrontendSdk(), resources = useProviderResources();
 const records = resources.records, loading = resources.loading, resourceError = resources.error;
 const selected = ref(""), model = ref(""), maxTokens = ref(""), temperature = ref("");
+const windowTokens = ref(""), outputReserve = ref(""), summaryMaxTokens = ref(""), coldInputLimit = ref("");
+const capacityAware = computed(() => props.node.component_version === "2");
 const status = ref(""), basis = ref<WorkflowNodeConfigurationRequest | null>(null);
 const identityKey = (value: { scope: string; resource_id: string }) => JSON.stringify([value.scope, value.resource_id]);
-const sourceConfig = computed(() => isModelSourceConfiguration(props.node.config) ? props.node.config : null);
+const sourceConfig = computed<(ModelSourceConfiguration & { capacity?: ModelCapacity }) | null>(() => (capacityAware.value
+  ? isCapacityModelSourceConfiguration(props.node.config) : isModelSourceConfiguration(props.node.config))
+  ? props.node.config as unknown as ModelSourceConfiguration & { capacity?: ModelCapacity } : null);
 const chosen = computed(() => records.value.find(record => identityKey(record) === selected.value));
 const disabled = computed(() => !!props.disabled || sdk.locked.value || !basis.value);
 const diagnosis = computed(() => {
@@ -25,16 +31,24 @@ const diagnosis = computed(() => {
   if (!record.value.credential_ref) return "所选供应商未配置后端凭据引用";
   return "后端环境凭据在运行准备时核实";
 });
-watch(() => [sdk.lifecycle.value, props.node.node_binding_id, props.node.config], () => {
+watch(() => [sdk.lifecycle.value, props.node.node_binding_id, props.node.component_version, props.node.config], () => {
   status.value = "";
   const config = sourceConfig.value;
+  const parameters = config?.parameters ?? (graphObject(props.node.config.parameters) ? props.node.config.parameters : {});
+  const capacity = config?.capacity ?? (graphObject(props.node.config.capacity) ? props.node.config.capacity : {});
+  const numericDraft = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? String(value) : "";
   selected.value = config ? identityKey(config.reference) : "";
-  model.value = config?.parameters.model ?? "";
-  maxTokens.value = config?.parameters.max_tokens === undefined ? "" : String(config.parameters.max_tokens);
-  temperature.value = config?.parameters.temperature === undefined ? "" : String(config.parameters.temperature);
+  model.value = typeof parameters.model === "string" ? parameters.model : "";
+  maxTokens.value = numericDraft(parameters.max_tokens);
+  temperature.value = numericDraft(parameters.temperature);
+  windowTokens.value = numericDraft(capacity.context_window_tokens);
+  outputReserve.value = numericDraft(capacity.output_reserve_tokens);
+  summaryMaxTokens.value = numericDraft(capacity.summary_max_tokens);
+  coldInputLimit.value = numericDraft(capacity.max_cold_input_tokens);
   basis.value = { workflowId: sdk.workflowId.value, nodeId: props.node.node_binding_id,
     componentId: props.node.component_id, componentVersion: props.node.component_version,
-    expectedConfig: graphClone(props.node.config), patch: {}, extensionId: modelFieldsExtensionId,
+    expectedConfig: graphClone(props.node.config), patch: {},
+    extensionId: capacityAware.value ? capacityModelFieldsExtensionId : modelFieldsExtensionId,
     lifecycle: sdk.lifecycle.value };
 }, { immediate: true, deep: true });
 onMounted(() => { void resources.refresh(); });
@@ -44,8 +58,14 @@ function apply() {
   if (maxTokens.value !== "") parameters.max_tokens = Number(maxTokens.value);
   if (temperature.value !== "") parameters.temperature = Number(temperature.value);
   if (!isModelParameters(parameters)) { status.value = "模型名称或参数无效"; return; }
+  const capacity = { context_window_tokens: Number(windowTokens.value), output_reserve_tokens: Number(outputReserve.value),
+    summary_max_tokens: Number(summaryMaxTokens.value), max_cold_input_tokens: Number(coldInputLimit.value) };
+  if (capacityAware.value && (!isModelCapacity(capacity) || parameters.max_tokens === undefined
+    || capacity.output_reserve_tokens < parameters.max_tokens)) {
+    status.value = "上下文窗口、输出预留、摘要输出或冷输入上限无效"; return;
+  }
   const result = sdk.configureNode({ ...graphClone(basis.value),
-    patch: { reference: providerIdentity(chosen.value), parameters } });
+    patch: { reference: providerIdentity(chosen.value), parameters, ...(capacityAware.value ? { capacity } : {}) } });
   status.value = result ? result.workflowId === basis.value.workflowId ? "模型配置已更新" : "模型配置已写入新副本"
     : "配置依据已变化或当前不可编辑，请重新选择节点";
 }
@@ -65,8 +85,15 @@ function apply() {
       </div>
     </label>
     <label>模型名称<input v-model="model" :disabled="disabled" required autocomplete="off" /></label>
-    <label>最大输出 tokens<input v-model="maxTokens" :disabled="disabled" type="number" min="1" max="8192" step="1" placeholder="未指定" /></label>
+    <label>最大输出 tokens<input v-model="maxTokens" :disabled="disabled" :required="capacityAware" type="number" min="1" max="8192" step="1" placeholder="未指定" /></label>
     <label>temperature<input v-model="temperature" :disabled="disabled" type="number" min="0" max="2" step="0.1" placeholder="未指定" /></label>
+    <fieldset v-if="capacityAware" :disabled="disabled">
+      <legend>上下文容量</legend>
+      <label>上下文窗口 tokens<input v-model="windowTokens" aria-label="上下文窗口 tokens" type="number" min="1" step="1" required /></label>
+      <label>输出预留 tokens<input v-model="outputReserve" aria-label="输出预留 tokens" type="number" min="1" step="1" required /></label>
+      <label>摘要最大输出 tokens<input v-model="summaryMaxTokens" aria-label="摘要最大输出 tokens" type="number" min="1" step="1" required /></label>
+      <label>摘要冷输入上限 tokens<input v-model="coldInputLimit" aria-label="摘要冷输入上限 tokens" type="number" min="1" step="1" required /></label>
+    </fieldset>
     <p role="status">{{ diagnosis }}</p>
     <p v-if="resourceError" class="warning" role="status">{{ resourceError }}</p>
     <p v-if="status" role="status">{{ status }}</p>
@@ -76,6 +103,8 @@ function apply() {
 <style scoped>
 .model-source-fields { display:grid; gap:10px; min-width:0; font-size:12px; }
 label { display:grid; gap:5px; min-width:0; } .resource-row { display:flex; gap:5px; min-width:0; }
+fieldset { display:grid; gap:10px; margin:0; padding:10px 0 0; border:0; border-top:1px solid #505059; min-width:0; }
+legend { padding:0; color:#b9bec6; }
 input,select { width:100%; min-width:0; box-sizing:border-box; padding:6px; background:#222226; color:#dedee4; border:1px solid #505059; border-radius:3px; }
 button { display:flex; align-items:center; justify-content:center; gap:6px; padding:6px; border:1px solid #64776d; border-radius:3px; }
 p { margin:0; color:#b9bec6; overflow-wrap:anywhere; } .warning { color:#e4a0a0; } :disabled { opacity:.55; }

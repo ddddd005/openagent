@@ -12,12 +12,21 @@ from .contract_errors import ContractValidationError
 from .contract_graph import validate_message_history, validate_pending_message_history
 from .contract_json import canonical_bytes, loads_strict, validate_json_value
 from .contracts_v2 import validate_record
+from .context_compaction import (
+    compaction_instruction, compaction_parameters, eligible_compaction_ids,
+    is_compactable_text, measure_context_capacity,
+    policy_config, replace_compacted_messages, should_compact, validate_capacity,
+    validate_compaction_operation, validate_compaction_request, validate_compaction_settings,
+    validate_summary_result,
+)
+from .context_compaction_policy import effective_summary_prompt
 
 
 EXECUTION_FACT_SCHEMA_VERSION = 1
 EXECUTION_FACT_KINDS = frozenset((
     "message_accepted", "model_request", "model_attempt_started",
     "model_attempt_finished", "tool_dispatch", "tool_settled", "execution_failed",
+    "context_compaction_started", "context_compaction_finished", "context_compaction_applied",
 ))
 _IDENTITY_FIELDS = (
     "run_id", "chain_run_id", "workflow_session_id", "node_binding_id", "snapshot_id",
@@ -38,6 +47,14 @@ _PAYLOAD_FIELDS = {
     "tool_dispatch": {"tool_call_id", "tool_execution_id"},
     "tool_settled": {"tool_call_id", "tool_execution_id", "outcome", "message"},
     "execution_failed": {"code", "category", "model_requests", "attempts"},
+    "context_compaction_started": {
+        "compaction_id", "before_message_ids", "covered_message_ids", "request", "capacity",
+    },
+    "context_compaction_finished": {"compaction_id", "outcome", "result"},
+    "context_compaction_applied": {
+        "kind", "compaction_id", "before_message_ids", "covered_message_ids",
+        "checkpoint", "after_message_ids", "request", "result", "capacity",
+    },
 }
 _ATTEMPT_OUTCOMES = frozenset((
     "responded", "model_error", "protocol_error", "adapter_contract_error",
@@ -129,6 +146,30 @@ def validate_execution_fact(value: dict[str, Any]) -> dict[str, Any]:
                  "Usage must be reported JSON or null when unknown")
         _require(all(payload[field] is None or type(payload[field]) is str
                      for field in ("response_id", "model")), "Invalid model response metadata")
+    elif kind == "context_compaction_started":
+        _require(_uuid(payload["compaction_id"]), "Invalid compaction identity")
+        request = validate_compaction_request(payload["request"], payload["compaction_id"])
+        before = request["messages"][:-1]
+        _require(payload["before_message_ids"] == [message["message_id"] for message in before],
+                 "Compaction request must preserve its complete before prefix")
+        covered = payload["covered_message_ids"]
+        _require(type(covered) is list and bool(covered)
+                 and all(_uuid(identity) for identity in covered) and len(set(covered)) == len(covered)
+                 and [message["message_id"] for message in before
+                      if message["message_id"] in covered] == covered
+                 and all(is_compactable_text(message) for message in before
+                         if message["message_id"] in covered),
+                 "Compaction coverage must be ordered text, not tools or current input")
+        validate_capacity(payload["capacity"])
+    elif kind == "context_compaction_finished":
+        _require(_uuid(payload["compaction_id"]) and payload["outcome"] in _ATTEMPT_OUTCOMES,
+                 "Invalid compaction finish")
+        _require(payload["result"] is not None if payload["outcome"] == "responded" else True,
+                 "Responded compaction must retain its response")
+        if payload["result"] is not None:
+            validate_summary_result(payload["result"], successful=payload["outcome"] == "responded")
+    elif kind == "context_compaction_applied":
+        validate_compaction_operation(payload)
     elif kind in {"tool_dispatch", "tool_settled"}:
         _require(_uuid(payload["tool_call_id"]), "Invalid tool call identity")
         if kind == "tool_dispatch":
@@ -173,11 +214,21 @@ class ExecutionFactHistory:
     def __init__(
         self, snapshot: dict[str, Any] | None = None,
         *, owner: dict[str, Any] | None = None,
+        token_counter=None,
     ) -> None:
         self._snapshot = snapshot
         self._owner = owner
         self._facts: list[dict[str, Any]] = []
         self._accepted: list[dict[str, Any]] = []
+        self._effective = list(snapshot["s0"]) if snapshot is not None else []
+        descriptor = (snapshot.get("config", {}).get("payload", {}).get("context_compaction")
+                      if snapshot is not None else None)
+        self._compaction_settings = (validate_compaction_settings(descriptor, snapshot["s0"])
+                                     if snapshot is not None else None)
+        self._token_counter = token_counter
+        self._compactions: dict[str, dict[str, Any]] = {}
+        self._compaction_results: dict[str, dict[str, Any]] = {}
+        self._active_compaction: str | None = None
         self._message_ids = {
             item["message_id"] for item in snapshot["s0"]
         } if snapshot is not None else set()
@@ -205,6 +256,10 @@ class ExecutionFactHistory:
     def facts(self) -> list[dict[str, Any]]:
         return list(self._facts)
 
+    @property
+    def effective_messages(self) -> list[dict[str, Any]]:
+        return loads_strict(canonical_bytes(self._effective).decode("utf-8"))
+
     def append(self, fact: dict[str, Any]) -> dict[str, Any]:
         value = validate_execution_fact(fact)
         if self._owner is not None:
@@ -230,6 +285,12 @@ class ExecutionFactHistory:
             self._start_attempt(payload)
         elif kind == "model_attempt_finished":
             self._finish_attempt(payload)
+        elif kind == "context_compaction_started":
+            self._start_compaction(payload)
+        elif kind == "context_compaction_finished":
+            self._finish_compaction(payload)
+        elif kind == "context_compaction_applied":
+            self._apply_compaction(payload)
         elif kind == "tool_dispatch":
             call_id, execution_id = payload["tool_call_id"], payload["tool_execution_id"]
             _require(call_id in self._calls and call_id not in self._dispatches
@@ -251,6 +312,8 @@ class ExecutionFactHistory:
         return value
 
     def _accept(self, message: dict[str, Any]) -> None:
+        _require(self._active_compaction is None,
+                 "Accepted messages cannot overlap an unfinished context replacement")
         _require(message["message_id"] not in self._message_ids, "Accepted message identity was reused")
         source = message["source"]
         _require(not self._pending_calls or message["role"] == "tool",
@@ -298,6 +361,7 @@ class ExecutionFactHistory:
         else:
             validate_message_history(prefix)
         self._accepted.append(message)
+        self._effective.append(message)
 
     def _request(self, payload: dict[str, Any]) -> None:
         request_id = payload["request_id"]
@@ -307,13 +371,22 @@ class ExecutionFactHistory:
         _require(not any(attempt_id not in self._finished for attempt_id in self._attempts),
                  "Model request overlaps an unfinished attempt")
         _require(not self._pending_calls, "Model request bypassed unaccepted tool settlements")
+        _require(self._active_compaction is None,
+                 "Model request bypassed an unfinished context replacement")
         validate_message_history(payload["messages"])
         if self._snapshot is not None:
             _require(canonical_bytes(payload["messages"]) ==
-                     canonical_bytes(self._snapshot["s0"] + self._accepted),
-                     "Model request does not contain the complete accepted history")
+                     canonical_bytes(self._effective),
+                     "Model request does not match the accepted effective history")
+            self._check_request_basis(payload)
+        self._requests[request_id] = payload
+
+    def _check_request_basis(self, payload: dict[str, Any], *, compaction=False) -> None:
+        if self._snapshot is not None:
+            parameters = (compaction_parameters(self._snapshot["model_parameters"], self._compaction_settings)
+                          if compaction else self._snapshot["model_parameters"])
             _require(canonical_bytes(payload["model_parameters"]) ==
-                     canonical_bytes(self._snapshot["model_parameters"]),
+                     canonical_bytes(parameters),
                      "Model request parameters differ from frozen snapshot")
             definitions = self._snapshot["tool_definitions"]
             _require(len(payload["tools"]) == len(definitions),
@@ -327,7 +400,91 @@ class ExecutionFactHistory:
                          and ("description" not in definition or
                               function.get("description") == definition["description"]),
                          "Model request tool differs from frozen snapshot")
-        self._requests[request_id] = payload
+
+    def _start_compaction(self, payload: dict[str, Any]) -> None:
+        identity = payload["compaction_id"]
+        _require(identity not in self._compactions and self._active_compaction is None,
+                 "Compaction identity was reused or another replacement is active")
+        _require(not self._pending_calls
+                 and not any(attempt_id not in self._finished for attempt_id in self._attempts),
+                 "Context compaction requires a closed tool and request boundary")
+        before = payload["request"]["messages"][:-1]
+        if self._snapshot is not None:
+            _require(canonical_bytes(before) == canonical_bytes(self._effective),
+                     "Compaction request changed the accepted prefix")
+            settings = self._compaction_settings
+            _require(settings is not None, "Compaction requires frozen native settings")
+            config = policy_config(settings)
+            _require(config is not None and config["enabled"]
+                     and should_compact(payload["capacity"], config),
+                     "Compaction bypassed its enabled policy or trigger")
+            _require(payload["covered_message_ids"] == eligible_compaction_ids(
+                self._snapshot["s0"], self._effective, settings, self._accepted,
+            ), "Compaction changed fixed/current material or protected recent history")
+            instruction = payload["request"]["messages"][-1]
+            _require(instruction == compaction_instruction(
+                identity, instruction["message_id"], effective_summary_prompt(settings["policy"]),
+                payload["covered_message_ids"], self._effective,
+            ), "Compaction instruction differs from its frozen prompt and permitted range")
+            _require(payload["capacity"]["context_window_tokens"] == settings["context_window_tokens"]
+                     and payload["capacity"]["output_reserve_tokens"] == settings["output_reserve_tokens"],
+                     "Compaction changed the frozen capacity limits")
+            if payload["capacity"]["token_count_kind"] == "utf8_bytes_estimate" or self._token_counter:
+                _require(payload["capacity"] == measure_context_capacity(
+                    self._effective, payload["request"]["tools"], settings, self._token_counter,
+                ), "Compaction capacity differs from its request")
+                auxiliary_settings = {
+                    **settings, "output_reserve_tokens": settings.get(
+                        "summary_max_tokens", settings["output_reserve_tokens"]),
+                }
+                auxiliary = measure_context_capacity(
+                    payload["request"]["messages"], payload["request"]["tools"],
+                    auxiliary_settings, self._token_counter,
+                )
+                _require(auxiliary["total_tokens"] < auxiliary["context_window_tokens"],
+                         "Compaction request exceeds its frozen context capacity")
+                _require(auxiliary["input_tokens"] <= settings.get(
+                    "max_cold_input_tokens", auxiliary["input_tokens"]),
+                    "Compaction request exceeds its frozen cold input budget")
+            self._check_request_basis(payload["request"], compaction=True)
+        self._compactions[identity] = payload
+        self._active_compaction = identity
+
+    def _finish_compaction(self, payload: dict[str, Any]) -> None:
+        identity = payload["compaction_id"]
+        _require(identity == self._active_compaction and identity in self._compactions
+                 and identity not in self._compaction_results,
+                 "Compaction finish has no unmatched maintenance dispatch")
+        self._compaction_results[identity] = payload
+
+    def _apply_compaction(self, payload: dict[str, Any]) -> None:
+        identity = payload["compaction_id"]
+        started = self._compactions.get(identity)
+        finished = self._compaction_results.get(identity)
+        _require(identity == self._active_compaction and started is not None
+                 and finished is not None and finished["outcome"] == "responded",
+                 "Context replacement has no accepted successful summary")
+        _require(all(canonical_bytes(payload[key]) == canonical_bytes(started[key]) for key in
+                     ("before_message_ids", "covered_message_ids", "request"))
+                 and canonical_bytes(payload["result"]) == canonical_bytes(finished["result"])
+                 and payload["capacity"]["before"] == started["capacity"],
+                 "Context replacement differs from its accepted maintenance facts")
+        before = payload["request"]["messages"][:-1]
+        if self._snapshot is not None:
+            _require(canonical_bytes(before) == canonical_bytes(self._effective),
+                     "Context replacement used a stale effective view")
+        _require(payload["checkpoint"]["message_id"] not in self._message_ids,
+                 "Context checkpoint reused an original message identity")
+        after = replace_compacted_messages(before, payload["covered_message_ids"], payload["checkpoint"])
+        if self._compaction_settings is not None and (
+            payload["capacity"]["after"]["token_count_kind"] == "utf8_bytes_estimate" or self._token_counter
+        ):
+            _require(payload["capacity"]["after"] == measure_context_capacity(
+                after, payload["request"]["tools"], self._compaction_settings, self._token_counter,
+            ), "Context replacement capacity differs from its derived view")
+        self._effective = after
+        self._message_ids.add(payload["checkpoint"]["message_id"])
+        self._active_compaction = None
 
     def _start_attempt(self, payload: dict[str, Any]) -> None:
         request_id, attempt_id = payload["request_id"], payload["attempt_id"]

@@ -8,6 +8,7 @@ import {
 } from "../domain/graphInformation";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { useWorkspaceStore } from "../stores/workspace";
+import ContextMaintenanceFact from "./ContextMaintenanceFact.vue";
 
 const props = defineProps<{ sessionId?: string; chainId?: string; nodeId?: string; initialKind?: string }>();
 const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
@@ -116,7 +117,10 @@ onUnmounted(() => { directoryGeneration++; directoryAccess.invalidate(); clearRe
       <p v-if="page?.status === 'gap'" class="notice" role="status">来源存在缺口，本页不代表完整历史。</p>
       <p v-if="page?.status === 'reset'" class="notice" role="status">来源要求重取，原游标已重置。</p>
       <p v-if="page && !page.items.length">本页无内容</p>
-      <pre v-for="(item, index) in page?.items ?? []" :key="index">{{ JSON.stringify(item, null, 2) }}</pre>
+      <template v-for="(item, index) in page?.items ?? []" :key="index">
+        <ContextMaintenanceFact v-if="page?.format_id === 'workflow.executor-facts'" :item="item" />
+        <pre v-else>{{ JSON.stringify(item, null, 2) }}</pre>
+      </template>
       <nav class="pagination" aria-label="信息分页">
         <button type="button" title="上一页信息" aria-label="上一页信息" :disabled="reading || readCursors.length < 2" @click="read(readCursors[readCursors.length - 2], true)"><ArrowLeft :size="14" /></button>
         <span>第 {{ readCursors.length }} 页<span v-if="page"> · {{ page.status }}</span></span>

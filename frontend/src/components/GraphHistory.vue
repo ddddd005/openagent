@@ -4,6 +4,7 @@ import { Check, GitBranch, RefreshCw } from "lucide-vue-next";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { resolveGraphRunInputs, type GraphRunDetail } from "../domain/workflowGraph";
 import GraphInformation from "./GraphInformation.vue";
+import { contextMaintenanceDiagnosis } from "../domain/contextMaintenance";
 const graph = useWorkflowGraphStore();
 const selected = ref<string | null>(null);
 const detail = ref<GraphRunDetail | null>(null);
@@ -44,7 +45,18 @@ onUnmounted(() => { generation++; });
         <div v-for="candidate in candidates" :key="candidate.candidate_id" class="graph-candidate"><button class="candidate-result" type="button" :class="{ active: selected === candidate.chain_run_id }" @click="selected = candidate.chain_run_id"><code>{{ candidate.chain_run_id.slice(0,8) }}</code><span>{{ candidate.selected ? '当前候选' : '候选' }} · 数据 r{{ candidate.data_revision }}</span><small :title="candidate.source_workflow_definition_id">定义 {{ candidate.source_workflow_definition_id.slice(0,8) }} r{{ candidate.source_definition_revision }}</small><small v-if="candidate.diagnostic" class="error">{{ candidate.diagnostic.message }}</small></button><button type="button" title="恢复候选完整状态" aria-label="恢复候选完整状态" :disabled="graph.locked || !graph.session?.can_submit || !candidate.can_select" @click="graph.changeCandidate(candidate.candidate_id)"><Check :size="14" /></button><button type="button" title="从候选新建分叉会话" aria-label="从候选新建分叉会话" :disabled="graph.locked || !graph.session?.can_submit || !candidate.can_select" @click="graph.changeCandidate(candidate.candidate_id, true)"><GitBranch :size="14" /></button></div>
         <p v-if="!candidates.length">暂无已完成候选</p>
       </section>
-      <p v-if="loading">读取中</p><p v-if="error" class="error">{{ error }}</p><p v-if="chain">定义 r{{ chain.definition_revision }} · {{ chain.status }} · 会话 {{ chain.workflow_session_id }}</p><pre v-if="chain?.diagnostic" class="error">{{ JSON.stringify(chain.diagnostic, null, 2) }}</pre><GraphInformation v-if="selected && graph.session" :session-id="graph.session.workflow_session_id" :chain-id="selected" initial-kind="information_binding" /><section v-for="run in detail?.node_runs ?? []" :key="run.run_id" class="node-history"><header>{{ run.node_binding_id.slice(0,8) }} · {{ run.status }}</header><details><summary>输入与读取依据</summary><pre>{{ JSON.stringify(inputEvidence(run), null, 2) }}</pre></details><details v-if="run.effects.length"><summary>会话写入</summary><pre>{{ JSON.stringify(run.effects, null, 2) }}</pre></details><pre v-if="run.diagnostic" class="error">{{ JSON.stringify(run.diagnostic, null, 2) }}</pre></section><section v-for="output in outputs" :key="output.output_id"><header>{{ output.node_binding_id.slice(0,8) }} / {{ output.port_id }}</header><pre>{{ JSON.stringify(output.payload, null, 2) }}</pre></section><p v-if="!outputs.length && !loading">暂无结果</p>
+      <p v-if="loading">读取中</p><p v-if="error" class="error">{{ error }}</p><p v-if="chain">定义 r{{ chain.definition_revision }} · {{ chain.status }} · 会话 {{ chain.workflow_session_id }}</p>
+      <p v-if="contextMaintenanceDiagnosis(chain?.diagnostic)" class="error" role="status">{{ contextMaintenanceDiagnosis(chain?.diagnostic) }}</p>
+      <pre v-if="chain?.diagnostic" class="error">{{ JSON.stringify(chain.diagnostic, null, 2) }}</pre>
+      <GraphInformation v-if="selected && graph.session" :session-id="graph.session.workflow_session_id" :chain-id="selected" initial-kind="information_binding" />
+      <section v-for="run in detail?.node_runs ?? []" :key="run.run_id" class="node-history">
+        <header>{{ run.node_binding_id.slice(0,8) }} · {{ run.status }}</header>
+        <details><summary>输入与读取依据</summary><pre>{{ JSON.stringify(inputEvidence(run), null, 2) }}</pre></details>
+        <details v-if="run.effects.length"><summary>会话写入</summary><pre>{{ JSON.stringify(run.effects, null, 2) }}</pre></details>
+        <p v-if="contextMaintenanceDiagnosis(run.diagnostic)" class="error" role="status">{{ contextMaintenanceDiagnosis(run.diagnostic) }}</p>
+        <pre v-if="run.diagnostic" class="error">{{ JSON.stringify(run.diagnostic, null, 2) }}</pre>
+      </section>
+      <section v-for="output in outputs" :key="output.output_id"><header>{{ output.node_binding_id.slice(0,8) }} / {{ output.port_id }}</header><pre>{{ JSON.stringify(output.payload, null, 2) }}</pre></section><p v-if="!outputs.length && !loading">暂无结果</p>
     </main>
   </section>
 </template>

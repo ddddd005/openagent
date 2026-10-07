@@ -17,8 +17,16 @@ _RESULT_SCHEMA = {"type": "object", "required": ["schema_version", "kind", "bind
 MODEL_SERVICE_DEFINITION = ServiceDefinition(MODEL_SERVICE_REF, (
     ServiceOperation("models:resolve", "bind-model", object_schema({
         "reference": {"type": "object"}, "parameters": {"type": "object"}}), _BINDING_SCHEMA),
+    ServiceOperation("models:resolve", "bind-native-model", object_schema({
+        "reference": {"type": "object"}, "parameters": {"type": "object"},
+        "capacity": {"type": "object"}}),
+        {**_BINDING_SCHEMA, "properties": {
+            **_BINDING_SCHEMA["properties"], "schema_version": {"const": 2}}}),
     ServiceOperation("models:call", "chat", object_schema({"binding_id": {"type": "string"}}), _RESULT_SCHEMA),
     ServiceOperation("models:call", "kernel-model", object_schema({
+        "binding_id": {"type": "string"}, "request_key": {"type": "string"},
+        "messages": {"type": "array"}, "tools": {"type": "array"}}), _RESULT_SCHEMA),
+    ServiceOperation("models:call", "kernel-compaction", object_schema({
         "binding_id": {"type": "string"}, "request_key": {"type": "string"},
         "messages": {"type": "array"}, "tools": {"type": "array"}}), _RESULT_SCHEMA),
 ))
@@ -49,7 +57,8 @@ class ModelHostService:
 
     def prepare_run(self, *, workflow_session_id, chain_run_id, nodes, resources):
         source_ids = {node["node_binding_id"] for node in nodes if any(
-            grant["capability"] == "models:resolve" and "bind-model" in grant["operations"]
+            grant["capability"] == "models:resolve"
+            and bool({"bind-model", "bind-native-model"} & set(grant["operations"]))
             for grant in node["service_requirements"])}
         self.implementation.prepare_run(
             workflow_session_id=workflow_session_id, chain_run_id=chain_run_id,

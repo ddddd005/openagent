@@ -13,13 +13,13 @@ const form = ref<CurrentPromptResource | null>(null), expectedSequence = ref(0),
 const identityKey = (record: CurrentPromptResource) => JSON.stringify(promptIdentity(record));
 function edit(record: CurrentPromptResource | null) {
   if (locked.value) return;
-  form.value = record ? clonePromptResource(record) : newPromptResource();
+  form.value = record ? clonePromptResource(record) : newPromptResource(2);
   expectedSequence.value = record?.update_sequence ?? 0;
   formError.value = "";
 }
 function addMember() {
   if (!form.value || locked.value || form.value.value.members.length >= 1024) return;
-  form.value.value.members.push(newPromptMember());
+  form.value.value.members.push(newPromptMember("", form.value.data_schema_version));
   formError.value = "";
 }
 function removeMember(index: number) {
@@ -31,6 +31,16 @@ function changePlacement(member: PromptMember, placement: PromptPresentation["pl
   if (locked.value) return;
   member.presentation.placement = placement;
   member.presentation.depth = placement === "middle" ? member.presentation.depth ?? 0 : null;
+}
+function changeLifecycle(member: PromptMember, lifecycle: "per_request" | "context_once") {
+  if (locked.value) return;
+  member.lifecycle = lifecycle;
+  if (lifecycle === "per_request") member.compaction = "never";
+}
+function changeRole(member: PromptMember, role: PromptPresentation["role"]) {
+  if (locked.value) return;
+  member.presentation.role = role;
+  if (role === "system" && member.compaction) member.compaction = "never";
 }
 async function save() {
   if (!form.value || locked.value) return;
@@ -59,7 +69,7 @@ onMounted(() => { void resources.refresh(); });
       <li v-for="record in records" :key="identityKey(record)">
         <button type="button" :disabled="locked" @click="edit(record)">
           <strong :title="promptResourceLabel(record)">{{ promptResourceLabel(record) }}</strong>
-          <span>{{ record.value.enabled ? '启用' : '已停用' }} · s{{ record.update_sequence }}</span>
+          <span>{{ record.value.enabled ? '启用' : '已停用' }} · v{{ record.data_schema_version }} · s{{ record.update_sequence }}</span>
           <small :title="record.resource_id">{{ record.scope }} · {{ record.resource_id.slice(0, 8) }} · {{ record.value.members.length }} 个条目</small>
         </button>
       </li>
@@ -82,12 +92,29 @@ onMounted(() => { void resources.refresh(); });
           </header>
           <label>正文<textarea v-model="member.text" rows="5" :aria-label="`条目 ${index + 1} 正文`"></textarea></label>
           <div class="presentation-row">
-            <label>Role<select v-model="member.presentation.role" :aria-label="`条目 ${index + 1} Role`">
+            <label>Role<select v-model="member.presentation.role" :aria-label="`条目 ${index + 1} Role`"
+              @change="changeRole(member, member.presentation.role)">
               <option value="system">system</option>
               <option value="user">user</option>
               <option value="assistant">assistant</option>
             </select></label>
             <label class="enabled"><input v-model="member.presentation.enabled" type="checkbox" />启用条目</label>
+          </div>
+          <div v-if="form.data_schema_version === 2" class="presentation-row">
+            <label>进入上下文
+              <select v-model="member.lifecycle" :aria-label="`条目 ${index + 1} 生命周期`"
+                @change="changeLifecycle(member, member.lifecycle ?? 'per_request')">
+                <option value="per_request">每次装配</option>
+                <option value="context_once">仅一次</option>
+              </select>
+            </label>
+            <label>精简许可
+              <select v-model="member.compaction" :aria-label="`条目 ${index + 1} 精简许可`"
+                :disabled="member.lifecycle !== 'context_once' || member.presentation.role === 'system'">
+                <option value="never">保留原文</option>
+                <option value="allowed">允许精简</option>
+              </select>
+            </label>
           </div>
           <div class="presentation-position">
             <span>位置</span>
