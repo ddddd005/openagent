@@ -5,8 +5,6 @@ from copy import deepcopy
 import json
 from uuid import uuid4
 
-import pytest
-
 from phase1_agent.builtin_packages import DEFAULT_PACKAGES
 from phase1_agent.contracts import ModelResponse, ModelToolCall
 from phase1_agent.graph_service import GraphWorkflowService
@@ -108,7 +106,7 @@ def serial_graph(service):
         readers=tuple(entry["node_binding_id"] for entry in (read_user, user, read_assistant, assistant)),
         writers=(user["node_binding_id"], assistant["node_binding_id"])).to_dict())
     doc = document(entries, connections)
-    doc.update(schema_version=2, package_lock=list(registry.package_lock), object_bindings=bindings,
+    doc.update(schema_version=2, package_lock=list(registry.execution_package_lock), object_bindings=bindings,
                control_edges=controls, execution_roots=[
                    agents["A"]["merge"]["node_binding_id"], agents["B"]["merge"]["node_binding_id"],
                    display["node_binding_id"]])
@@ -139,29 +137,21 @@ def assert_round(view, agents, roots, *, local_rounds=None):
     assert frontend["revision"] == local_rounds * 2 + 1
 
 
-def configure_serial_packages(service, compat_enabled):
-    if compat_enabled:
-        service.configure_capability_packages({**DEFAULT_PACKAGES, "workflow.compat": "1.0.0"})
-    assert_serial_packages(service, compat_enabled)
-
-
-def assert_serial_packages(service, compat_enabled):
+def assert_serial_packages(service):
     packages = {item["package_id"] for item in service.registry.package_lock}
-    assert ("workflow.compat" in packages) == compat_enabled
-    if not compat_enabled:
-        assert service.registry.get("workflow.agent", "2") is None
-    assert service._native_runtime is None
+    assert set(DEFAULT_PACKAGES) <= packages and "workflow.compat" not in packages
+    assert service.registry.get("workflow.agent", "2") is None
+    assert not hasattr(service, "_native_runtime")
 
 
-@pytest.mark.parametrize("compat_enabled", [False, True], ids=["default-without-compat", "explicit-compat"])
 def test_serial_two_rounds_distinct_contexts_exact_handoff_and_completed_checkpoint(
-    tmp_path, monkeypatch, compat_enabled,
+    tmp_path, monkeypatch,
 ):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-serial-test")
     transport = SerialTransport()
     database = tmp_path / "serial.sqlite"
     with closing(GraphWorkflowService(database, public_model_factory=transport.factory)) as service:
-        configure_serial_packages(service, compat_enabled)
+        assert_serial_packages(service)
         ModelDatabaseFixture.write(service, 1)
         doc, agents, display = serial_graph(service)
         initial = create(service, doc)
@@ -190,7 +180,7 @@ def test_serial_two_rounds_distinct_contexts_exact_handoff_and_completed_checkpo
         branch = run(service, forked, "branch question")
         assert_round(branch, agents, ["first original question", "branch question"], local_rounds=1)
         assert service.get_session(second["workflow_session_id"])["objects"] == second["objects"]
-        assert_serial_packages(service, compat_enabled)
+        assert_serial_packages(service)
         sid, expected = second["workflow_session_id"], deepcopy(second["objects"])
     calls = len(transport.calls)
     with closing(GraphWorkflowService(database, public_model_factory=transport.factory)) as service:
@@ -200,15 +190,14 @@ def test_serial_two_rounds_distinct_contexts_exact_handoff_and_completed_checkpo
         continued = run(service, reopened, "reopened question")
         assert_round(continued, agents, ["first original question", "second original question", "reopened question"])
         assert len(transport.calls) == calls + 2
-        assert_serial_packages(service, compat_enabled)
+        assert_serial_packages(service)
 
 
-@pytest.mark.parametrize("compat_enabled", [False, True], ids=["default-without-compat", "explicit-compat"])
-def test_serial_copy_remaps_agents_keeps_parent_future_outside_child(tmp_path, monkeypatch, compat_enabled):
+def test_serial_copy_remaps_agents_keeps_parent_future_outside_child(tmp_path, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-serial-copy")
     transport = SerialTransport()
     with closing(GraphWorkflowService(tmp_path / "serial-copy.sqlite", public_model_factory=transport.factory)) as service:
-        configure_serial_packages(service, compat_enabled)
+        assert_serial_packages(service)
         ModelDatabaseFixture.write(service, 1)
         doc, agents, _ = serial_graph(service)
         first = run(service, create(service, doc), "shared first")
@@ -243,4 +232,4 @@ def test_serial_copy_remaps_agents_keeps_parent_future_outside_child(tmp_path, m
             owner = result(child, child_agents[label]["merge"])["owner"]
             assert owner["workflow_session_id"] == child["workflow_session_id"]
             assert owner["agent_node_id"] == child_agents[label]["execute"]["node_binding_id"]
-        assert_serial_packages(service, compat_enabled)
+        assert_serial_packages(service)

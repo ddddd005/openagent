@@ -1,6 +1,6 @@
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import {
-  readGraphArchive, readGraphCandidates, readGraphCatalogDetails, readGraphDefinition,
+  readGraphCandidates, readGraphCatalogDetails, readGraphDefinition,
   readGraphRun, readGraphSession, readGraphSessions,
 } from "../adapters/workflowGraphApi";
 import {
@@ -29,7 +29,6 @@ export const workflowManagementQueries = {
   session: readGraphSession,
   candidates: readGraphCandidates,
   run: readGraphRun,
-  archive: readGraphArchive,
   registrations: readGraphRegistrations,
   information: readGraphInformation,
   events: readWorkflowEventBindings,

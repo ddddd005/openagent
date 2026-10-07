@@ -12,7 +12,7 @@ from phase1_agent.contracts import ModelResponse, ModelToolCall
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.graph_contracts import GraphDiagnosticError
 from phase1_agent.host_sdk import ObjectBinding
-from phase1_agent.graph_nodes import create_package_registry
+from phase1_agent.capability_registry import create_package_registry
 from phase1_agent.session_objects import SessionObjectStore
 from phase1_agent.storage import SqliteStore
 

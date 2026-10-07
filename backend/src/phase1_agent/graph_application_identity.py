@@ -38,7 +38,6 @@ def native_command_request(operation, parameters):
     name = aliases.get(operation, operation)
     native_operations = {
         "definition.save": "graph.definition.save",
-        "legacy.migrate": "graph.legacy.migrate",
         "session.create": "graph.session.create",
         "run.start": "graph.run.start",
         "event.submit": "graph.event.submit",
@@ -62,9 +61,6 @@ def native_command_request(operation, parameters):
             request.setdefault("shared", None)
         if name == "run.start":
             request["inputs"] = request.get("inputs") if request.get("inputs") is not None else {}
-        if name == "run.control":
-            request.setdefault("add_model_requests", 0)
-            request.setdefault("add_model_attempts", 0)
         return {
             "table": "idempotency", "operation": native_operations[name],
             "key": parameters["idempotency_key"],
@@ -72,7 +68,6 @@ def native_command_request(operation, parameters):
         }
     resource_operations = {
         "resource.save": "write", "resource.delete": "delete",
-        "resource.import": "import-legacy-current",
     }
     if name not in resource_operations:
         return None
@@ -83,9 +78,6 @@ def native_command_request(operation, parameters):
         request = {"operation": "delete",
                    "reference": ResourceIdentity.from_dict(request["identity"]).to_dict(),
                    "expected_sequence": request["expected_sequence"]}
-    else:
-        request = {"operation": "import-legacy-current", "resource_id": request["legacy_id"],
-                   "scope": request.get("scope", "workspace")}
     return {
         "table": "global_resource_receipts", "operation": resource_operations[name],
         "key": parameters["idempotency_key"], "request_digest": content_digest(request),

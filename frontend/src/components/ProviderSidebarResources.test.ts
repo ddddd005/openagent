@@ -10,11 +10,9 @@ import { listCurrentProviders, readCurrentProviderReceipt, saveCurrentProvider,
 import { graphReceiptReadResponse } from "../testUtils/graphApplicationServer";
 import { chatProviderType, newProvider, providerIdentity, type CurrentProvider } from "../domain/workflowModelResources";
 import { graphClone, newGraph, type GraphNode } from "../domain/workflowGraph";
-import { EMPTY_WORKFLOW_ID } from "../fixtures/workflows";
 import { modelFrontendExtensions } from "../plugins/modelFrontendManifest";
 import { workflowFrontendSdkKey, type WorkflowFrontendSdk } from "../plugins/workflowFrontendSdk";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
-import { useWorkspaceStore } from "../stores/workspace";
 
 type SaveOutcome = "accept" | "accepted-without-response" | "stale_revision" | "invalid_origin" | "idempotency_conflict";
 type ResourceController = ReturnType<typeof createProviderResources>;
@@ -81,9 +79,8 @@ function controlledResources(initial: CurrentProvider[] = []) {
 async function renderResources(resources: ResourceController, reference: CurrentProvider) {
   const pinia = createPinia();
   setActivePinia(pinia);
-  const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
-  graph.ensureEmpty(EMPTY_WORKFLOW_ID);
-  workspace.openWorkflow(EMPTY_WORKFLOW_ID);
+  const graph = useWorkflowGraphStore();
+  graph.createWorkflow();
   graph.frontendExtensions = graphClone(modelFrontendExtensions);
   graph.packageLock = [{ package_id: "workflow.models", version: "1.0.0" }];
   const node: GraphNode = {

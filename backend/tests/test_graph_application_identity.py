@@ -13,6 +13,7 @@ from phase1_agent.graph_application_identity import (
     application_identity_key, bind_application_command, native_command_request,
     persist_application_command_identity,
 )
+from phase1_agent.prompt_package import PROMPT_RESOURCE_TYPE
 
 
 SESSION = str(UUID(int=1, version=4))
@@ -28,10 +29,6 @@ def fingerprint(value):
 @pytest.mark.parametrize("operation,parameters,native_operation,normalized", [
     ("definition.save", {"document": {"revision": 1}, "expected_revision": 0},
      "graph.definition.save", {"document": {"revision": 1}, "expected_revision": 0}),
-    ("legacy.migrate", {"document": {}, "source_session_id": None,
-                       "expected_source_revision": None, "mappings": []},
-     "graph.legacy.migrate", {"document": {}, "source_session_id": None,
-                             "expected_source_revision": None, "mappings": []}),
     ("session.create", {"workflow_definition_id": DEFINITION, "definition_revision": 1},
      "graph.session.create", {"workflow_definition_id": DEFINITION, "definition_revision": 1}),
     ("consumer.session.create", {"workflow_definition_id": DEFINITION, "definition_revision": 1},
@@ -41,12 +38,9 @@ def fingerprint(value):
     ("consumer.run.start", {"session_id": SESSION, "expected_revision": 1, "inputs": {"x": 2}},
      "graph.run.start", {"session": SESSION, "expected_revision": 1, "inputs": {"x": 2}}),
     ("run.control", {"session_id": SESSION, "action": "pause", "expected_revision": 1},
-     "graph.run.control", {"session": SESSION, "action": "pause", "expected_revision": 1,
-                           "add_model_requests": 0, "add_model_attempts": 0}),
-    ("consumer.run.control", {"session_id": SESSION, "action": "extend_budget",
-                              "expected_revision": 1, "add_model_requests": 2, "add_model_attempts": 3},
-     "graph.run.control", {"session": SESSION, "action": "extend_budget", "expected_revision": 1,
-                           "add_model_requests": 2, "add_model_attempts": 3}),
+     "graph.run.control", {"session": SESSION, "action": "pause", "expected_revision": 1}),
+    ("consumer.run.control", {"session_id": SESSION, "action": "resume", "expected_revision": 2},
+     "graph.run.control", {"session": SESSION, "action": "resume", "expected_revision": 2}),
     ("session.copy", {"session_id": SESSION, "document": {}, "expected_session_revision": 1,
                       "expected_data_revision": 0, "expected_definition_revision": 1,
                       "expected_head_revision": 1},
@@ -103,21 +97,19 @@ def test_event_request_retains_definition_payload_and_public_native_operation(op
 
 @pytest.mark.parametrize("operation,parameters,normalized", [
     ("resource.save", {"record": {"envelope_version": 1, "scope": "workspace",
-                                  "type_id": "workflow.global-content", "resource_id": RESOURCE,
+                                  "type_id": PROMPT_RESOURCE_TYPE, "resource_id": RESOURCE,
                                   "data_schema_version": 1, "update_sequence": 1, "value": {}},
                        "expected_sequence": 0},
      {"operation": "write", "record": {"envelope_version": 1, "scope": "workspace",
-                                      "type_id": "workflow.global-content", "resource_id": RESOURCE,
+                                      "type_id": PROMPT_RESOURCE_TYPE, "resource_id": RESOURCE,
                                       "data_schema_version": 1, "update_sequence": 1, "value": {}},
       "expected_sequence": 0}),
     ("resource.delete", {"identity": {"envelope_version": 1, "scope": "workspace",
-                                      "type_id": "workflow.global-content", "resource_id": RESOURCE},
+                                      "type_id": PROMPT_RESOURCE_TYPE, "resource_id": RESOURCE},
                          "expected_sequence": 2},
      {"operation": "delete", "reference": {"envelope_version": 1, "scope": "workspace",
-                                          "type_id": "workflow.global-content", "resource_id": RESOURCE},
+                                          "type_id": PROMPT_RESOURCE_TYPE, "resource_id": RESOURCE},
       "expected_sequence": 2}),
-    ("resource.import", {"legacy_id": RESOURCE},
-     {"operation": "import-legacy-current", "resource_id": RESOURCE, "scope": "workspace"}),
 ])
 def test_resource_normalization_keeps_its_separate_native_digest_profile(operation, parameters, normalized):
     assert native_command_request(operation, {**parameters, "idempotency_key": KEY}) == {

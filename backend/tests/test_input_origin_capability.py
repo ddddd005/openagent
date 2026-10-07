@@ -6,21 +6,23 @@ from uuid import uuid4
 
 import pytest
 
-from phase1_agent.graph_contracts import NodeDefinition, NodePort, json_value
-from phase1_agent.graph_nodes import create_default_registry
+from phase1_agent.capability_registry import create_package_registry
+from phase1_agent.content_contracts import json_content
+from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_service import GraphWorkflowService
 
 from test_graph_service import create, document, edge, node, uid
 
 
 def fixture(tmp_path, query=None, *, capability=True):
-    registry = create_default_registry()
+    registry = create_package_registry().registry.detached()
     captured = {}
     registry.register(NodeDefinition(
         "sample.producer", "1", "Producer", "Sample", {"note": "private-producer-config"},
         {"type": "object", "properties": {"note": {"type": "string"}},
          "required": ["note"], "additionalProperties": False},
-        inputs=(NodePort("input", "TEXT"),), outputs=(NodePort("output", "TEXT"),),
+        inputs=(NodePort("input", "TEXT", data_schema_version=2),),
+        outputs=(NodePort("output", "TEXT", data_schema_version=2),),
         input_storage="references",
         private_state_schema={"type": "object", "properties": {"secret": {"type": "string"}},
                               "required": ["secret"], "additionalProperties": False},
@@ -31,14 +33,15 @@ def fixture(tmp_path, query=None, *, capability=True):
         captured["context"] = context
         operation = query or (lambda ctx, owner: ctx.host_call(
             "artifacts:read", "describe-input-origin", {"port": "result"}))
-        return {"output": json_value(operation(context, service))}
+        return {"output": json_content(operation(context, service))}
 
     registry.register(NodeDefinition(
         "sample.origin", "1", "Origin", "Sample", {}, {"type": "object", "additionalProperties": False},
-        inputs=(NodePort("result", "TEXT"),), outputs=(NodePort("output", "JSON"),), is_output=True,
+        inputs=(NodePort("result", "TEXT", data_schema_version=2),),
+        outputs=(NodePort("output", "JSON", data_schema_version=2),), is_output=True,
         capabilities=("artifacts:read",) if capability else (), input_storage="references"), read)
     service = GraphWorkflowService(tmp_path / "origin.sqlite", registry=registry)
-    source = node(service.registry, "workflow.text", 1, text="private-input-body")
+    source = node(service.registry, "tools.text", 1, text="private-input-body")
     producer = node(service.registry, "sample.producer", 2)
     reader = node(service.registry, "sample.origin", 3)
     graph = document([source, producer, reader], [

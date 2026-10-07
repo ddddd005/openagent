@@ -2,10 +2,6 @@
 
 from contextlib import closing
 from copy import deepcopy
-import os
-from pathlib import Path
-import subprocess
-import sys
 from threading import RLock
 
 import pytest
@@ -16,7 +12,6 @@ from phase1_agent.capability_packages import (
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.graph_package_selection import (
     CURRENT_EXECUTION_CONFIGURATION, GraphPackageSelectionStore,
-    HISTORICAL_PROJECT_CONFIGURATION,
 )
 from phase1_agent.graph_platform import GraphPlatform
 from phase1_agent.host_sdk import DataTypeDefinition, HostContractError
@@ -38,24 +33,21 @@ def selections(store):
     }
 
 
-@pytest.mark.parametrize("current,historical,source,expected", [
-    ('{}', '{"workflow.compat":"1.0.0"}', CURRENT_EXECUTION_CONFIGURATION, {}),
-    ('{}', '{invalid historical JSON', CURRENT_EXECUTION_CONFIGURATION, {}),
-    ('{"example.current":"3"}', '{"example.old":"2"}', CURRENT_EXECUTION_CONFIGURATION,
+@pytest.mark.parametrize("current,source,expected", [
+    ('{}', CURRENT_EXECUTION_CONFIGURATION, {}),
+    ('{"example.current":"3"}', CURRENT_EXECUTION_CONFIGURATION,
      {"example.current": "3"}),
-    (None, '{}', HISTORICAL_PROJECT_CONFIGURATION, {}),
-    (None, ' {\n "example.exact": "2"\n}\n', HISTORICAL_PROJECT_CONFIGURATION,
+    (' {\n "example.exact": "2"\n}\n', CURRENT_EXECUTION_CONFIGURATION,
      {"example.exact": "2"}),
-    (None, None, None, {"example.default": "1"}),
+    (None, None, {"example.default": "1"}),
 ])
-def test_store_reads_only_effective_payload_and_preserves_literal_history(
-    tmp_path, current, historical, source, expected,
+def test_store_reads_only_current_payload_and_preserves_exact_selection(
+    tmp_path, current, source, expected,
 ):
     default = {"example.default": "1"}
     with closing(SqliteStore(tmp_path / "effective.sqlite")) as store:
         for identity, payload in (
             (CURRENT_EXECUTION_CONFIGURATION, current),
-            (HISTORICAL_PROJECT_CONFIGURATION, historical),
             ("unknown-configuration", "{opaque invalid JSON"),
         ):
             if payload is not None:
@@ -69,7 +61,6 @@ def test_store_reads_only_effective_payload_and_preserves_literal_history(
         result.enabled_packages["example.detached"] = "9"
         assert repository.read_effective(default).enabled_packages == expected
         assert default == {"example.default": "1"}
-        assert repository.historical_payload() == historical
         assert repository.current_payload() == current
         assert selections(store) == before
 
@@ -77,10 +68,9 @@ def test_store_reads_only_effective_payload_and_preserves_literal_history(
 @pytest.mark.parametrize("payload", [
     "{invalid", '{"example.duplicate":"1","example.duplicate":"2"}', '{"x":NaN}',
 ])
-def test_invalid_effective_current_does_not_fall_back_to_valid_history(tmp_path, payload):
+def test_invalid_effective_current_does_not_fall_back_to_defaults(tmp_path, payload):
     with closing(SqliteStore(tmp_path / "invalid-current.sqlite")) as store:
         put_selection(store, CURRENT_EXECUTION_CONFIGURATION, payload)
-        put_selection(store, HISTORICAL_PROJECT_CONFIGURATION, '{}')
         before = selections(store)
         with pytest.raises(ContractValidationError):
             GraphPackageSelectionStore(store).read_effective({})
@@ -89,8 +79,6 @@ def test_invalid_effective_current_does_not_fall_back_to_valid_history(tmp_path,
 
 def test_store_requires_owning_transaction_and_writes_only_current_row(tmp_path):
     with closing(SqliteStore(tmp_path / "writes.sqlite")) as store:
-        old = ' {\n "workflow.compat": "1.0.0"\n}\n'
-        put_selection(store, HISTORICAL_PROJECT_CONFIGURATION, old)
         put_selection(store, "unknown-configuration", "raw unknown payload")
         before = selections(store)
         repository = GraphPackageSelectionStore(store)
@@ -235,40 +223,6 @@ def test_resolver_default_selection_and_explicit_empty_remain_distinct():
     assert calls == []
 
 
-def test_fresh_process_resolver_never_loads_legacy_compatibility_implementations():
-    program = r"""
-import importlib.abc
-import sys
-blocked = {
-    "phase1_agent.graph_nodes", "phase1_agent.graph_agent_nodes",
-    "phase1_agent.graph_agent_runtime", "phase1_agent.workflow",
-    "phase1_agent.workbench_resources", "phase1_agent.prepared_context",
-}
-class NoLegacyImplementation(importlib.abc.MetaPathFinder):
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname in blocked:
-            raise AssertionError("Pure resolver imported legacy implementation: " + fullname)
-        return None
-sys.meta_path.insert(0, NoLegacyImplementation())
-from phase1_agent.capability_packages import CapabilityPackageLoader, create_builtin_compatibility_package
-loader = CapabilityPackageLoader((create_builtin_compatibility_package(),))
-resolved = loader.resolve({"workflow.compat": "1.0.0"})
-assert resolved.package_lock == ({"package_id": "workflow.compat", "version": "1.0.0"},)
-assert resolved.package_manifests[0]["exports"] == {}
-assert not blocked.intersection(sys.modules)
-print("pure package resolution passed")
-"""
-    environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-    source = str(Path(__file__).resolve().parents[1] / "src")
-    environment["PYTHONPATH"] = os.pathsep.join(filter(None, [source, environment.get("PYTHONPATH", "")]))
-    result = subprocess.run(
-        [sys.executable, "-B", "-c", program], capture_output=True, text=True,
-        env=environment, timeout=60,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.strip() == "pure package resolution passed"
-
-
 class SelectionPlatform(GraphPlatform):
     def __init__(self, path, loader):
         self.path, self._package_loader = path, loader
@@ -276,6 +230,15 @@ class SelectionPlatform(GraphPlatform):
         self._frontend_extensions, self._package_manifests = (), ()
         self._package_diagnostics = [{"reason_code": "package_missing_dependency"}]
         self._lock = RLock()
+        self._pauses, self._resuming = set(), set()
+        for name in (
+            "_futures", "_resource_frames", "_execution_registries", "_runtime_hosts",
+            "_service_runs", "_acceptance_candidates", "_failed_retry_candidates", "_information_routers",
+        ):
+            setattr(self, name, {})
+
+    def _load_current_capabilities(self, selected):
+        return self._package_loader.load(selected)
 
     def _store(self):
         return SqliteStore(self.path)
@@ -290,10 +253,9 @@ def type_package():
     return CapabilityPackage(PackageManifest("example.selection", "1"), register)
 
 
-def test_configure_selection_and_type_evidence_commit_together_without_touching_history(tmp_path):
+def test_configure_selection_and_type_evidence_commit_together_without_touching_unrelated_rows(tmp_path):
     path = tmp_path / "configuration.sqlite"
     with closing(SqliteStore(path)) as store:
-        put_selection(store, HISTORICAL_PROJECT_CONFIGURATION, "original unreadable history")
         put_selection(store, "unknown-configuration", "opaque untouched payload")
         original = selections(store)
     platform = SelectionPlatform(path, CapabilityPackageLoader((type_package(),)))
@@ -312,7 +274,6 @@ def test_configure_selection_and_type_evidence_commit_together_without_touching_
 def test_configure_failed_current_write_rolls_back_type_evidence_and_published_registry(tmp_path, monkeypatch):
     path = tmp_path / "rollback.sqlite"
     with closing(SqliteStore(path)) as store:
-        put_selection(store, HISTORICAL_PROJECT_CONFIGURATION, ' {"workflow.compat":"1.0.0"}\n')
         put_selection(store, CURRENT_EXECUTION_CONFIGURATION, "{}")
         original = selections(store)
     platform = SelectionPlatform(path, CapabilityPackageLoader((type_package(),)))

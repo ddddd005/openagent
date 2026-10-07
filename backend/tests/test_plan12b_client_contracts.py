@@ -79,7 +79,7 @@ def test_named_consumer_replay_separates_original_receipt_from_current_observati
     assert current["revision"] > accepted["session_revision"]
     assert len(query(service, "candidate.list", {"session_id": session_id})["candidates"]) == 1
     assert query(service, "consumer.read", {"session_id": session_id}, consumer=True)["status"] == "succeeded"
-    assert service._native_runtime is None
+    assert not hasattr(service, "_native_runtime")
 
 
 def test_named_directory_pagination_never_reads_provider_or_executes_nodes(information_service):

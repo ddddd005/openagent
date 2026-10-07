@@ -38,7 +38,6 @@ def dispatch_platform(service, method, path, data):
         "/resources/list": ("query", "resource.list"),
         "/resources/save": ("command", "resource.save"),
         "/resources/delete": ("command", "resource.delete"),
-        "/resources/import": ("command", "resource.import"),
         "/packages/configure": ("command", "packages.configure"),
         "/registrations/list": ("query", "registration.list"),
     }
@@ -85,10 +84,6 @@ def dispatch_graph(service, method, path, data=None):
         return platform
     if method == "GET" and path in (prefix + "/node-types", prefix + "/node-types/v2"):
         return _query(application, "catalog.node-types", {"protocol_version": 2 if path.endswith("/v2") else 1})
-    archive = re.fullmatch(prefix + r"/sessions/([^/]+)/archives/([^/]+)", path)
-    if method == "GET" and archive:
-        require(uuid_value(archive[1]) and uuid_value(archive[2]), "not_found", "Archive not found", 404)
-        return _query(application, "archive.read", {"archive_id": archive[2]}, archive[1])
     history = re.fullmatch(prefix + r"/sessions/([^/]+)/runs/([^/]+)", path)
     if method == "GET" and history:
         require(uuid_value(history[1]) and uuid_value(history[2]), "not_found", "Execution not found", 404)
@@ -113,7 +108,7 @@ def dispatch_graph(service, method, path, data=None):
             return _query(application, reads[match[2]], session_id=match[1])
     require(method == "POST", "not_found", "Graph route not found", 404)
     global_commands = {"/definitions": "definition.save", "/sessions": "session.create",
-                       "/migrations": "legacy.migrate", "/consumer/sessions": "consumer.session.create"}
+                       "/consumer/sessions": "consumer.session.create"}
     route = path[len(prefix):]
     if route in global_commands:
         return _command(application, global_commands[route], data)

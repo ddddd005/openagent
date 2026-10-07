@@ -15,7 +15,6 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.1,<9"]
-smolagents-compat = ["smolagents==1.27.0.dev0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

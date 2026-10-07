@@ -1,4 +1,4 @@
-"""Lightweight request gate for ordinary and explicitly prepared snapshots."""
+"""Reject retired fixed-workflow preparation before a public Agent dispatch."""
 
 from __future__ import annotations
 
@@ -31,6 +31,4 @@ def check_prepared_request_capacity(
             raise ContractValidationError("Legacy Context cannot carry prepared projection evidence")
         return
 
-    from .prepared_context import _check_validated_prepared_request_capacity
-
-    _check_validated_prepared_request_capacity(frozen, messages=messages)
+    raise ContractValidationError("Fixed-workflow prepared snapshots are no longer supported")

@@ -1,4 +1,4 @@
-import { stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
+import { graphReceiptReadResponse, stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useWorkflowGraphStore } from "./workflowGraph";
@@ -6,7 +6,7 @@ import { useWorkspaceStore } from "./workspace";
 import { useWorkbenchPersistenceStore } from "./workbenchPersistence";
 import { useWorkbenchNoticesStore } from "./workbenchNotices";
 import { graphClone, newGraph, type GraphDocument, type GraphSession } from "../domain/workflowGraph";
-import { legacyWorkbenchStorage } from "../testUtils/legacyWorkbenchStorage";
+import { graphWorkbenchStorage } from "../testUtils/graphWorkbenchStorage";
 
 const json = (value: unknown) => new Response(JSON.stringify(value));
 function deferred<T>() {
@@ -16,7 +16,7 @@ function deferred<T>() {
 }
 function memory() {
   const workspace = useWorkspaceStore();
-  return legacyWorkbenchStorage({ graph: useWorkflowGraphStore().storeSnapshot(), catalog: workspace.workflows,
+  return graphWorkbenchStorage({ graph: useWorkflowGraphStore().storeSnapshot(), catalog: workspace.workflows,
     activeWorkflowId: workspace.activeWorkflowId, selectedWorkflowId: workspace.selectedWorkflowId });
 }
 function fixture() {
@@ -107,7 +107,15 @@ describe("workflow application coordination", () => {
     expect(reopened.entries[id].pending).toEqual(request);
     const sent: unknown[] = [];
     stubGraphApplicationFetch( vi.fn(async (path, init) => {
-      if (path === request.path) { sent.push(JSON.parse(init.body)); return json(selected); }
+      if (path === "/api/graph/receipts/read") {
+        const envelope = JSON.parse(init.body);
+        expect(envelope.operation).toBe("candidate.select");
+        const { session_id, ...body } = envelope.parameters;
+        expect(session_id).toBe(request.source_session_id);
+        sent.push(body);
+        return graphReceiptReadResponse(envelope.operation, envelope.parameters, selected);
+      }
+      expect(path).not.toBe(request.path);
       if (path.includes("/revisions/")) return json(old);
       if (path.endsWith("/sessions")) return json([selected]);
       return json(selected);
@@ -147,7 +155,15 @@ describe("workflow application coordination", () => {
     graph.views[view.workflow_session_id] = later;
     const requests: unknown[] = [];
     stubGraphApplicationFetch( vi.fn(async (path, init) => {
-      if (path === original.path) { requests.push(JSON.parse(init.body)); return json(selected); }
+      if (path === "/api/graph/receipts/read") {
+        const envelope = JSON.parse(init.body);
+        expect(envelope.operation).toBe("candidate.select");
+        const { session_id, ...body } = envelope.parameters;
+        expect(session_id).toBe(original.source_session_id);
+        requests.push(body);
+        return graphReceiptReadResponse(envelope.operation, envelope.parameters, selected);
+      }
+      expect(path).not.toBe(original.path);
       if (path.includes("/revisions/")) {
         expect(path).toBe(`/api/graph/definitions/${current.workflow_definition_id}/revisions/2`);
         return json(current);
@@ -175,7 +191,7 @@ describe("workflow application coordination", () => {
     const target = { workflowId: id };
     graph.entries[id].external_inputs = { prompt: { text: "original input" } };
     const running = graph.management.commands.start(target);
-    target.workflowId = "frontend:main-test";
+    target.workflowId = crypto.randomUUID();
     graph.entries[id].external_inputs = { prompt: { text: "later input" } };
     expect(graph.locked).toBe(true);
     expect(graph.moveNodes([])).toBeNull();

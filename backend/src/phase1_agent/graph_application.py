@@ -64,7 +64,7 @@ class GraphApplication:
         if spec.session:
             positional.append(arguments.pop("session_id"))
         # The existing read APIs use different positional identity names.
-        for field in ("identity", "archive_id"):
+        for field in ("identity",):
             if field in arguments and spec.name not in ("resource.read", "resource.delete"):
                 positional.append(arguments.pop(field))
         return callback(*positional, **arguments)

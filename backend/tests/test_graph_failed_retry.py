@@ -307,12 +307,13 @@ def test_failed_attempt_information_remains_readable_after_success_and_on_copied
 
 
 def test_non_agent_registered_failure_hook_can_restart_and_unregistered_ordinary_node_cannot(tmp_path):
-    from phase1_agent.graph_contracts import NodeDefinition, NodePort, text_value
-    from phase1_agent.graph_nodes import create_default_registry
+    from phase1_agent.capability_registry import create_package_registry
+    from phase1_agent.content_contracts import text_content
+    from phase1_agent.graph_contracts import NodeDefinition, NodePort
     from phase1_agent.runtime_executor_contracts import ExecutorDefinition, ExecutorReference
     calls, disposals, validations = [], [], []
     reference = ExecutorReference("sample.confirmed-failure", "1")
-    registry = create_default_registry()
+    registry = create_package_registry().registry.detached()
 
     class Handle:
         def advance(self, callbacks, continuation):
@@ -320,7 +321,7 @@ def test_non_agent_registered_failure_hook_can_restart_and_unregistered_ordinary
             if len(calls) == 1:
                 callbacks.publish_fact("rejected", {"rejected": True})
                 raise RuntimeError("known offline business failure")
-            return {"output": text_value("accepted")}
+            return {"output": text_content("accepted")}
 
         def dispose(self):
             disposals.append(True)
@@ -332,7 +333,7 @@ def test_non_agent_registered_failure_hook_can_restart_and_unregistered_ordinary
 
     registry.executors.register_executor(ExecutorDefinition(reference), lambda config, inputs, context: Handle())
     registry.register(NodeDefinition("sample.rejected", "1", "Rejected", "Sample", {}, {"type": "object"},
-                                    outputs=(NodePort("output", "TEXT"),), is_output=True),
+                                    outputs=(NodePort("output", "TEXT", data_schema_version=2),), is_output=True),
                       None, executor_ref=reference, failed_retry_validator=validate)
     frozen = registry.detached(frozen=True)
     assert frozen.get("sample.rejected", "1").failed_retry_validator is validate
@@ -353,7 +354,9 @@ def test_non_agent_registered_failure_hook_can_restart_and_unregistered_ordinary
         assert service.get_session(initial["workflow_session_id"])["status"] == "succeeded"
         assert len(calls) == len(disposals) == 2 and len(set(calls)) == 2 and len(validations) == 1
         service.registry.register(NodeDefinition("sample.ordinary-failure", "1", "Failure", "Sample", {},
-                                                {"type": "object"}, outputs=(NodePort("output", "TEXT"),), is_output=True),
+                                                {"type": "object"},
+                                                outputs=(NodePort("output", "TEXT", data_schema_version=2),),
+                                                is_output=True),
                                   lambda config, inputs, context: (_ for _ in ()).throw(RuntimeError("ordinary failure")))
         ordinary = create(service, document([node(service.registry, "sample.ordinary-failure", 3302)], []))
         started = service.start(ordinary["workflow_session_id"], expected_revision=ordinary["revision"],

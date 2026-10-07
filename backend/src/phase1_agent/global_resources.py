@@ -1,8 +1,4 @@
-"""Registered global resources retain current values and lightweight receipts.
-
-The workbench v1 revision archive remains an explicit legacy boundary.  Importing
-its current head does not delete historical requests, Agent scenes, or old tables.
-"""
+"""Registered global resources retain current values and lightweight receipts."""
 
 from __future__ import annotations
 
@@ -13,11 +9,9 @@ from typing import Any
 from .contract_errors import ContractValidationError
 from .contract_json import canonical_bytes, content_digest, loads_strict, validate_json_value
 from .graph_application_identity import persist_application_command_identity
-from .resource_contracts import resource_error, resource_id, resource_revision, validate_global_content
+from .resource_contracts import resource_error, resource_id, resource_revision
 
 
-GLOBAL_CONTENT_TYPE = "workflow.global-content"
-GLOBAL_CONTENT_SCHEMA_VERSION = 1
 GLOBAL_RESOURCE_REF_TYPE = "GLOBAL_RESOURCE_REF"
 MAX_GLOBAL_RESOURCE_BYTES = 1_000_000
 
@@ -35,35 +29,6 @@ def _identity(value: Any) -> dict:
 
 def _coordinates(identity: dict) -> tuple[str, str, str]:
     return identity["scope"], identity["type_id"], identity["resource_id"]
-
-
-def _global_content_validator(value: Any) -> None:
-    _require(type(value) is dict and set(value) == {"kind", "name", "enabled", "members"},
-             "global_resource_invalid", "Global content fields are invalid")
-    validate_global_content({
-        "schema_version": 1, "resource_id": "7be319b8-30bd-4674-b7bf-d1cf54a1a133",
-        "revision": 1, **value,
-    })
-
-
-def register_global_content_type(registry: Any) -> None:
-    """The legacy prompt implementation declares its new current-value type."""
-    from .host_sdk import DataTypeDefinition
-
-    registry.register(DataTypeDefinition(
-        type_id=GLOBAL_CONTENT_TYPE, schema_version=GLOBAL_CONTENT_SCHEMA_VERSION,
-        scope="global", schema={
-            "type": "object", "additionalProperties": False,
-            "required": ["kind", "name", "enabled", "members"],
-            "properties": {
-                "kind": {"enum": ["global_prompt", "role_card"]},
-                "name": {"type": "string", "minLength": 1, "maxLength": 128},
-                "enabled": {"type": "boolean"},
-                "members": {"type": "array", "minItems": 1, "maxItems": 128,
-                            "items": {"type": "object"}},
-            },
-        }, validator=_global_content_validator, max_bytes=60 * 1024,
-    ))
 
 
 def validate_global_resource_reference(value: Any) -> dict:
@@ -109,34 +74,12 @@ def create_global_type_registry():
     from .host_sdk import TypeRegistry
 
     registry = TypeRegistry()
-    register_global_content_type(registry)
     register_global_resource_ref_type(registry)
     return registry
 
 
-def legacy_content_to_current(record: dict, *, scope: str = "workspace") -> dict:
-    """An explicit adapter, never an in-place reinterpretation of strict v1."""
-    record = validate_global_content(record)
-    return {
-        "envelope_version": 1, "scope": scope, "type_id": GLOBAL_CONTENT_TYPE,
-        "resource_id": record["resource_id"], "data_schema_version": GLOBAL_CONTENT_SCHEMA_VERSION,
-        "update_sequence": 1,
-        "value": {key: deepcopy(record[key]) for key in ("kind", "name", "enabled", "members")},
-    }
-
-
-def current_content_as_legacy(record: dict) -> dict:
-    """Temporary material projection; this function creates no history archive."""
-    _require(record["type_id"] == GLOBAL_CONTENT_TYPE and record["data_schema_version"] == 1,
-             "global_resource_type_mismatch", "Resource is not supported global content", 409)
-    return validate_global_content({
-        "schema_version": 1, "resource_id": record["resource_id"],
-        "revision": record["update_sequence"], **deepcopy(record["value"]),
-    })
-
-
 def initialize_global_resource_tables(connection: Any) -> None:
-    """Add current-only tables without rewriting or deleting legacy resources."""
+    """Initialize current values and their request receipts."""
     connection.execute(
         "CREATE TABLE IF NOT EXISTS global_resource_current ("
         "scope TEXT NOT NULL, type_id TEXT NOT NULL, resource_id TEXT NOT NULL, "
@@ -162,7 +105,7 @@ class GlobalResourceStore:
         # for standalone stores whose connection predates the host migration.
         initialize_global_resource_tables(self._connection)
 
-    def _validate_record(self, record: Any) -> dict:
+    def _validate_record(self, record: Any, *, validate_type=True) -> dict:
         validate_json_value(record)
         _require(type(record) is dict and set(record) == {
             "envelope_version", "scope", "type_id", "resource_id", "data_schema_version",
@@ -174,10 +117,11 @@ class GlobalResourceStore:
         resource_revision(record["data_schema_version"])
         _require(len(canonical_bytes(record)) <= MAX_GLOBAL_RESOURCE_BYTES,
                  "global_resource_invalid", "Global resource exceeds its size limit")
-        self.types.validate(record["type_id"], record["data_schema_version"], record["value"], scope="global")
-        from .type_contract_store import TypeContractStore
-        TypeContractStore(self._store).check(self.types, record["type_id"], record["data_schema_version"],
-                                            "global", allow_legacy=True)
+        if validate_type:
+            self.types.validate(record["type_id"], record["data_schema_version"], record["value"], scope="global")
+            from .type_contract_store import TypeContractStore
+            TypeContractStore(self._store).check(self.types, record["type_id"], record["data_schema_version"],
+                                                "global", allow_legacy=True)
         return deepcopy(record)
 
     def _row(self, identity: dict):
@@ -290,7 +234,7 @@ class GlobalResourceStore:
             raise
 
     def write(self, record: dict, *, expected_sequence: int, idempotency_key: str) -> dict:
-        record = self._validate_record(record)
+        record = self._validate_record(record, validate_type=False)
         resource_revision(expected_sequence, zero=True)
         _require(record["update_sequence"] == expected_sequence + 1,
                  "invalid_request", "Update sequence must advance once")
@@ -298,6 +242,7 @@ class GlobalResourceStore:
         request = {"operation": "write", "record": record, "expected_sequence": expected_sequence}
 
         def change():
+            self._validate_record(record)
             from .type_contract_store import TypeContractStore
             TypeContractStore(self._store).check(self.types, record["type_id"], record["data_schema_version"], "global")
             row = self._row(identity)
@@ -323,42 +268,15 @@ class GlobalResourceStore:
             row = self._row(identity)
             _require(row is not None and not row["deleted"] and row["update_sequence"] == expected_sequence,
                      "stale_revision", "Global resource sequence changed", 409)
+            record = loads_strict(row["payload"])
+            from .type_contract_store import TypeContractStore
+            TypeContractStore(self._store).check(
+                self.types, identity["type_id"], record["data_schema_version"], "global")
             self._connection.execute(
                 "UPDATE global_resource_current SET update_sequence=?,deleted=1,payload=NULL "
                 "WHERE scope=? AND type_id=? AND resource_id=?",
                 (expected_sequence + 1, *_coordinates(identity)),
             )
             return {"reference": identity, "update_sequence": expected_sequence + 1, "deleted": True}
-
-        return self._mutate(request, idempotency_key, change)
-
-    def import_legacy_current(self, identity: str, *, scope: str = "workspace",
-                              idempotency_key: str) -> dict:
-        """Opt-in migration of one current head; legacy rows stay untouched."""
-        resource_id(identity)
-        request = {"operation": "import-legacy-current", "resource_id": identity, "scope": scope}
-        # Validate scope/identity before accepting an idempotency receipt.
-        reference = _identity({
-            "envelope_version": 1, "scope": scope, "type_id": GLOBAL_CONTENT_TYPE, "resource_id": identity,
-        })
-
-        def change():
-            _require(self._row(reference) is None, "stale_revision", "Current global resource already exists", 409)
-            row = self._connection.execute(
-                "SELECT r.payload FROM workbench_resource_revisions r "
-                "JOIN workbench_resource_heads h ON h.kind=r.kind AND h.resource_id=r.resource_id "
-                "AND h.revision=r.revision WHERE r.kind='content' AND r.resource_id=? AND h.deleted=0",
-                (identity,),
-            ).fetchone()
-            _require(row is not None, "global_content_missing", "Legacy global current content is missing", 404)
-            record = self._validate_record(legacy_content_to_current(loads_strict(row["payload"]), scope=scope))
-            from .type_contract_store import TypeContractStore
-            TypeContractStore(self._store).check(self.types, record["type_id"], record["data_schema_version"], "global")
-            self._connection.execute(
-                "INSERT INTO global_resource_current VALUES(?,?,?,?,0,?)",
-                (*_coordinates(reference), 1, canonical_bytes(record).decode("utf-8")),
-            )
-            return {"reference": reference, "update_sequence": 1, "deleted": False,
-                    "legacy_source": {"resource_id": identity, "revision": loads_strict(row["payload"])["revision"]}}
 
         return self._mutate(request, idempotency_key, change)

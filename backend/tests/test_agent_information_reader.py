@@ -103,23 +103,3 @@ def test_fact_reader_generation_cursor_and_byte_pages_are_bounded(tmp_path):
         assert facts.read_executor_page(owner, reference, 1, cursor=page["next_cursor"]) == {
             "items": [], "next_cursor": None, "status": "gap",
         }
-
-
-def test_existing_registry_composition_preserves_registered_information_readers():
-    from phase1_agent.capability_packages import CapabilityPackageLoader, create_compatibility_package
-    from phase1_agent.graph_nodes import create_default_registry
-    from phase1_agent.host_sdk import InformationSourceDefinition, InformationSourceReference
-    registry = create_default_registry()
-    reference = InformationSourceReference("sample.text.history", "1")
-
-    def read(request):
-        return {"items": [], "next_cursor": None, "status": "ok"}
-
-    registry.information_sources.register(InformationSourceDefinition(
-        reference, "workflow.text", "1", "history", "sample.text.page", source_scope="history",
-    ), history_reader=read)
-    package = create_compatibility_package(registry)
-    assert package.manifest.schema_version == 4
-    loaded = CapabilityPackageLoader([package]).load({"workflow.compat": "1.0.0"})
-    assert loaded.registry.information_sources.catalog() == registry.information_sources.catalog()
-    assert loaded.registry.information_sources.get(reference).history_reader is read

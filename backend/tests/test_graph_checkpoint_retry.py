@@ -132,7 +132,7 @@ def test_business_failure_does_not_gain_checkpoint_retry(service):
 
     service.registry.register(NodeDefinition(
         "test.business-failure", "1", "Failure", "test", {}, {"type": "object"},
-        outputs=(NodePort("output", "TEXT"),)), execute)
+        outputs=(NodePort("output", "TEXT", data_schema_version=2),)), execute)
     failing, output = node(service.registry, "test.business-failure", 1), node(service.registry, "output", 2)
     initial = create(service, document([failing, output], [edge(failing, output, 1)]))
     started = service.start(initial["workflow_session_id"], expected_revision=initial["revision"],

@@ -12,19 +12,18 @@
 | 统一应用命令与查询 | `graph_application.py`、`graph_application_contracts.py` |
 | 应用请求身份与纯回执读取 | `graph_application_identity.py`、`graph_receipts.py`；HTTP 读取在构造服务前截获 |
 | 图服务与编译/执行 | `graph_service.py`、`graph_contracts.py`、`graph_execution.py`、`graph_runtime_host.py` |
-| 公共资源预检与冻结读取 | `graph_resource_host.py`；旧 host 的同名方法仅保留兼容委托 |
-| 资源纯契约与请求门禁 | `resource_contracts.py`、`prepared_request.py`；旧资源/准备模块保留同名导出 |
+| 公共资源预检与冻结读取 | `graph_resource_host.py` |
+| 资源纯契约与请求门禁 | `resource_contracts.py`、`prepared_request.py`；旧 prepared 请求直接拒绝 |
 | 公共 Runtime 与控制 | `runtime.py`、`runtime_hosting.py`、`runtime_control.py`、`runtime_executor_contracts.py` |
-| 能力声明与注册 | `host_sdk.py`、`capability_packages.py`、`builtin_packages.py` |
-| 当前/历史包选择与纯分类准备 | `graph_package_selection.py`、`CapabilityPackageLoader.resolve`、`graph_record_classification.py`；分类尚未用于运行/写守卫 |
+| 能力声明与注册 | `host_sdk.py`、`capability_packages.py`、`builtin_packages.py`、`capability_registry.py` |
+| 当前精确包选择与依赖解析 | `graph_package_selection.py`、`CapabilityPackageLoader.resolve`；无旧配置运行回退 |
 | 普通内容、提示词与模型节点 | `tool_package.py`、`prompt_package.py`、`model_package.py` |
-| Agent 执行与失败分类 | `agent_package.py`、`agent_executor.py`、`kernel.py`、`agent_failed_retry.py` |
+| Agent 执行与失败分类 | `agent_package.py`、`agent_executor.py`、`runtime.py`、`agent_failed_retry.py` |
 | 模型调用 | `model_service.py`、`model_host_service.py`、`adapter.py` |
 | 上下文读、装配、写回 | `context_package.py`、`context_v3_nodes.py`、`context_v3.py` |
 | 前端业务节点 | `frontend_package.py`、`frontend_business.py` |
 | 定义、会话、对象与运行存储 | `storage.py`、`graph_store.py`、`graph_records.py`、`session_objects.py`、`runtime_fact_store.py` |
-| 冻结旧 Agent 证据的纯校验 | `graph_agent_contracts.py`；旧执行器保留同名导出，不参与历史读取 |
-| 旧闭合 Turn 与上下文纯投影 | `legacy_archive.py`、`legacy_context_contracts.py`；只接收 reader，调用者负责作用域，不构造旧 Context/执行器 |
+| 旧测试数据的一次性清理 | `storage_retirement.py`；仅版本升级事务使用，不提供旧读写 API |
 | 信息源与事实读取 | `graph_information.py`、`runtime_information.py` |
 | 独立聊天客户端 | `static/graph-chat.js`、`static/graph-chat-core.js` |
 
@@ -91,22 +90,18 @@
 
 验证至少覆盖正常输出、错误类型/配置、目录与编译、实例间隔离。需要界面专用编辑器时再接可信本地扩展，不先修改通用调度器。本版不提供完整公共插件 SDK、远程不可信插件隔离或插件市场。
 
-## 新旧路径
+## 退役边界
 
-`workflow.py`、`workflow_control.py` 等保留旧固定流程兼容；新版普通图以 `graph_*`、公共 Runtime 与能力包为主。新增工作流能力应先选择新版路径，不因已有旧 UI 或 `--mode deepseek` 就接回固定 A/B。不要在本次 demo 发布中顺带删除全部兼容层。
+当前入口只使用普通 Graph、公共 Runtime 与独立能力包。旧固定宿主、私有 Agent 执行器、兼容节点工厂、旧客户端/store、旧 HTTP 路由、在线迁移和私有档案入口已从源码删除；不保留旧运行 fallback 或旧会话只读门面。当前包选择只读 `current-execution`。
 
-无正式入口调用者的早期 mock 原型已退役，旧 Agent 历史读取改用纯契约校验，见 [历史校验与原型退役](REPLACE-HISTORY-RETIREMENT.md)。正式兼容客户端与旧宿主仍待退出；不能从局部退役推断所有兼容实现已删除，也不能改写原型旧存储键或既存档案。
+SQLite v14 在单笔升级事务中识别确切固定/compat 内容，沿明确归属/引用和共享对象 revision 形成关联闭包，包含 Runtime facts 的 payload 引用及 chain/node 归属；整组删除相关定义/会话、事实、对象、manifest、回执及旧专用表。引用旧历史的当前对象/manifest 和共享旧 revision 不再单独保留，正常关联不再作为升级回滚保全的理由；无关联当前记录、独立资源与配置保留，不因缺包或未知节点而猜旧。有效旧 `project` 选择仅在没有当前行时转入当前配置，移除兼容包，然后删除旧行。保留下来的当前 `node_run@4` 空 `agent` 字段迁为版本 5。升级不是旧接口，不能用来重新启动旧工作流。
 
-下一步支持边界见 [联合处置矩阵](REPLACE-SUPPORT-MATRIX.md)：当前独立包及精确可信扩展保留，旧固定流程/compat 图以整份冻结只读为目标；判定包含完整包锁，不按前缀或版本数字直接删节点。配置分流及纯分类准备已有后续切片，冻结授权/恢复与同库隔离、纯 archive/receipt-only 和前端 passthrough 仍待实现。先迁出公共依赖与纯读取，再退役正式旧入口，不清旧 active/status/facts，也不靠重 POST 核实退役操作。
+当前回执仍通过 raw SQLite `mode=ro` 查询，缺原应用身份或证据不匹配返回 unresolved，不重发 mutation；当前 Vue/GraphChat 保留完整 pending，不为已删除的关联测试内容重建兼容证据。无关联当前数据、可信扩展及共用类型/事实/对象设施保留。旧源码留在 Git 标签及仓库外归档，不放回正式源码树。
 
-阶段 B 的 [公共资源与请求门禁切片](REPLACE-RESOURCE-BOUNDARY.md)已让当前 start 直接选择 GraphResourceHost，current 资源读取不再进入旧 host fallback；runtime 先走轻量门禁，普通请求不加载旧 prepared-context 链。只有实际旧资源/模型或 prepared 请求才按需加载原实现。当前资源、Agent 多轮/分叉及历史重开的新进程隔离已有定向证据，但 GraphWorkflowService 仍继承旧宿主，迁移/档案与正式旧调用者仍保留，不代表全部退役。
+最终扫描已删除 `frozen_model.py` 无调用者的旧 stage factory/`legacy_adapter` 透传及前端 `archive.read` 死导出、类型、mock、旧专属测试。本批后端初轮 55 个目标、789 个案例为 780 通过 / 9 失败；修复后 8 文件 55 项通过（47.31 秒），9 项原失败均通过；最终扫描对应后端补测 4 文件 64 项通过（24.46 秒）。前端初轮 16 文件 331 通过 / 10 失败、相关修复后 3 文件 102 项通过，最终持久化/API 两文件 26 项及类型/构建通过；期间 TS2345 索引类型收窄错误已通过绑定 `entryRow` 修复。最终 JS 430.45 kB / gzip 137.23 kB。工具中断无可用最终结果不计，后端两批及前端持久化 15 项等重叠范围不累加。
 
-[执行配置与分类准备](REPLACE-EXECUTION-SELECTION.md)使用原配置表的 `current-execution` 行承载新选择，旧 `project` 仅作为没有当前行时的读取后备且原文不重写。显式空选择有效，解析仅针对有效行；类型证据检查与配置写入同事务。`resolve` 不注册包，其 manifest 是原声明而非已接纳实际导出；纯分类需要精确来源和实际证据，不按 prefix 推断 owner。分类尚未接入 HTTP、写守卫或恢复；原 active/缺包阻断保持，旧事实与客户端 pending 的完整保护仍待实施。
+第一批实际代码移除及定向验证已完成；208 文件 AST 本地导入扫描 0 缺失已复核，基线哈希/标签解引用提交不变。第二批独立非 editable wheel 安装最终 33/33、限定 Mock 浏览器只读联合核对 74/74 通过；前端观察/终态同步窄修后 1 文件 13 项及类型/构建通过，最终 JS 431.16 kB / gzip 137.41 kB。上述代码及文档纳入本次阶段性整合提交，不重复运行已有验证。阶段 C 部分通过，常驻部署及剩余基础使用验收待继续，1.0 未完成；本次不做收费调用、产品库操作或常驻切换。集中结果、具体文件与本地日志/JUnit 见 [实际移除记录](REPLACE-REMOVAL.md)。
 
-[回执边界与原请求保护](REPLACE-RECEIPT-BOUNDARY.md)新增 raw SQLite `mode=ro` 快照读取，不构造 `SqliteStore`、GraphWorkflowService 或旧宿主。仅首次原生命令回执写入时，同事务附加 `graph.application.command-identity.v1` 元数据；不复制请求/资源正文，不变更原 digest/replay 意义。缺原应用身份、缺原生回执或证据不匹配返回 unresolved，旧 replay 不回填身份。consumer 只返回原八字段公开回执，不制造 live consumer；工作台观察单独刷新。当前 Vue/GraphChat 核实失败保留完整 pending，旧固定流程 UI/store、静态 `app.js` 和 schema1–6 passthrough 尚未完成隔离。
-
-[旧客户端保全](REPLACE-LEGACY-PENDING.md)已将旧 runtime/资源 reconcile 与旧副本恢复改为纯本地 unresolved，不 POST、不从缺原身份的请求猜应用回执。首次结果处理有完整 pending/恢复代际和本机结算保存围栏；静态旧聊天保护已持久化输入和本页面控制 pending，但没有跨重载控制 journal。旧保存重编码、完整只读档案与冻结授权仍待完成。这些临时保护不改变退役目标：阶段 B 须实际关闭并删除旧专用执行/客户端/路由，只留裁决保留的公共设施和纯历史读取。
-
-[Agent 归档只读接线](REPLACE-GRAPH-ARCHIVE-READ.md)让现有管理 `archive.read` 路由及直接服务查询使用 `graph_archives.read_graph_archive`，不调用 `_store`；HTTP 在服务 getter 前分派，旧 context/operation 模块仅相应旧路由按需导入。只读快照复用 `resolve_graph_archive` 的冻结作用域与纯闭合校验，consumer 不取得私有档案。完整旧会话门面、可信历史来源分类、冻结守卫/恢复隔离及正式旧客户端/宿主删除仍未完成；相关种类的损坏行仍可能阻断扫描，不承诺混合库损坏隔离。
+此前 `REPLACE-*` 切片记录的是当时方案与证据，旧数据保留/引用回滚条款已被最新关联数据整组删除授权替代，不应当作当前 API 文档；固定基线不倒改。尚未宣称完整交互验收或 1.0 完成。
 
 安装、测试和调试分别见 [快速启动](QUICKSTART.md)、[测试说明](TESTING.md)、[调试说明](DEBUGGING.md)。来源边界见 [第三方说明](../THIRD_PARTY_NOTICES.md)。

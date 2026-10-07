@@ -20,10 +20,8 @@ from .graph_store import GraphRecordStore
 from .program_variable_store import ProgramVariableStore
 from .preparation_program import validate_program_state
 from .storage import SqliteStore
-from .graph_agent_host import GraphAgentHost
 from .graph_public import GraphPublic
 from .graph_candidates import GraphCandidateHost
-from .workbench_interfaces import WorkbenchInterfaces
 from .graph_platform import GraphPlatform
 from .graph_runtime_host import GraphRuntimeHost
 from .graph_resource_host import GraphResourceHost
@@ -70,8 +68,8 @@ class _GraphLease:
         self.file.close()
 
 
-class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost, GraphResourceHost, GraphPlatform, GraphPublic, GraphCandidateHost, GraphAgentHost, WorkbenchInterfaces):
-    def __init__(self, database_path: str | Path, *, registry=None, fault_injector=None, model_factory=None,
+class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost, GraphResourceHost, GraphPlatform, GraphPublic, GraphCandidateHost):
+    def __init__(self, database_path: str | Path, *, registry=None, fault_injector=None,
                  capability_packages=(), enabled_packages=None, trusted_package_entrypoints=(),
                  public_model_factory=None):
         self.database = Path(database_path).resolve()
@@ -101,14 +99,14 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                     selected = (deepcopy(enabled_packages)
                                 if enabled_packages is not None else saved.enabled_packages)
                     try:
-                        loaded = self._package_loader.load(selected)
+                        loaded = self._load_current_capabilities(selected)
                     except Exception as exc:
                         if enabled_packages is not None or saved.configuration_id is None \
                                 or getattr(exc, "reason_code", None) != "package_missing_dependency":
                             raise
-                        self._package_diagnostics = [{"reason_code": "package_missing_dependency",
+                        self._package_diagnostics = [{"reason_code": exc.reason_code,
                                                       "message": str(exc), "enabled_packages": deepcopy(selected)}]
-                        loaded = self._package_loader.load({})
+                        loaded = self._load_current_capabilities({})
                     self.registry, self._frontend_extensions = loaded.registry.detached(), loaded.frontend_extensions
                     self._package_manifests = loaded.package_manifests
                     from .type_contract_store import TypeContractStore
@@ -132,8 +130,8 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
             except BaseException:
                 self._lease.close()
                 raise
-            # Legacy trusted callers can add declarations before launching a
-            # run. Every accepted run receives its own immutable registry.
+            # Trusted callers can add declarations before launching a run.
+            # Every accepted run receives its own immutable registry.
             self.registry = registry.detached()
         self._resource_frames = {}
         self._execution_registries = {}
@@ -142,9 +140,6 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
         self._futures: dict[str, Any] = {}
         self._pauses: set[str] = set()
         self._resuming: set[str] = set()
-        self._native_runtime = None
-        self._model_factory = model_factory
-        self._public_model_factory = public_model_factory
         self._runtime_hosts = {}
         self._information_routers = {}
         self._acceptance_candidates = {}
@@ -165,11 +160,35 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
     def _store(self):
         return SqliteStore(self.database, fault_injector=self._fault_injector)
 
+    def _check_open(self):
+        require(not self._closed, "service_closed", "Graph service is closed", 409)
+
+    def _load_current_capabilities(self, selected):
+        resolved = self._package_loader.resolve(selected)
+        require(all(item["package_id"] != "workflow.compat" for item in resolved.package_lock),
+                "package_retired", "Compatibility packages are no longer supported", 409)
+        return self._package_loader.load(selected)
+
+    def _document_available(self, repo, document):
+        if self._package_diagnostics:
+            return False
+        packages = {row["package_id"]: row["version"] for row in self.registry.package_lock}
+        if any(packages.get(row["package_id"]) != row["version"]
+               for row in document.get("package_lock", [])):
+            return False
+        for node in document["nodes"]:
+            entry = self.registry.get(node["component_id"], node["component_version"])
+            saved = repo.maybe("node_definition", component_id=node["component_id"],
+                               component_version=node["component_version"])
+            if saved is not None and (entry is None or not repo.equal(
+                    saved["descriptor"], self._runtime_descriptor(entry))):
+                return False
+        return True
+
     def _change(self, operation, key, request, callback):
         def change(repo):
             require(not self._package_diagnostics or operation == "graph.run.recover",
-                    "package_missing_dependency",
-                    "Restore the saved project packages before changing or executing workflows", 409)
+                    "package_missing_dependency", "Restore the saved packages before changing workflows", 409)
             return callback(repo)
 
         with self._lock, closing(self._store()) as store:
@@ -216,6 +235,11 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
         for node in document["nodes"]:
             entry = self.registry.get(node["component_id"], node["component_version"])
             if entry is not None:
+                saved = repo.maybe("node_definition", component_id=node["component_id"],
+                                   component_version=node["component_version"])
+                require(saved is None or repo.equal(saved["descriptor"], self._runtime_descriptor(entry)),
+                        "node_definition_changed", "Registered declaration differs from its saved version", 409,
+                        node_id=node["node_binding_id"])
                 repo.put("node_definition", graph_record("node_definition",
                     component_id=node["component_id"], component_version=node["component_version"],
                     descriptor=self._runtime_descriptor(entry)))
@@ -373,6 +397,7 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
     def _view(self, repo, sid):
         session = repo.get("workflow_session", workflow_session_id=sid)
         document = self._document(repo, session["workflow_definition_id"], session["definition_revision"])
+        available = self._document_available(repo, document)
         chains = [row for row in repo.rows("chain_run") if row["workflow_session_id"] == sid]
         all_chains = {row["chain_run_id"]: row for row in repo.rows("chain_run")}
         selected = self._selected_chain(repo, sid)
@@ -389,16 +414,15 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                             if selected and row["chain_run_id"] == selected["chain_run_id"]}
         active = next((row for row in chains if row["chain_run_id"] == session["active_chain_run_id"]), None)
         status = active["status"] if active else selected["status"] if selected else "idle"
-        active_run = (repo.get("node_run", run_id=active["node_run_ids"][active["next_node_index"]])
-                      if active and active["next_node_index"] < len(active["node_run_ids"]) else None)
         actions = ["pause"] if status in ("running", "prepared") else (
-            (["resume", "extend_budget", "close"] if active_run and active_run.get("agent") else ["resume", "close"]) if status in ("paused", "budget_exhausted") else
+            ["resume", "close"] if status in ("paused", "budget_exhausted") else
             (["retry_acceptance", "close"] if active
                 and active["next_node_index"] < len(active["node_run_ids"])
                 and active["node_run_ids"][active["next_node_index"]] in self._acceptance_candidates.get(
                     active["chain_run_id"], {}) else ["retry_archive", "close"]) if status == "archive_failed" else
             ["close"] if active and status in ("failed", "recovery_unavailable") else [])
-        retry_permission = self._failed_retry_permission(repo, active) if active and status == "failed" else None
+        retry_permission = (self._failed_retry_permission(repo, active)
+                            if available and active and status == "failed" else None)
         if retry_permission and retry_permission["allowed"]:
             actions.insert(0, "retry_failed_node")
         nodes = []
@@ -413,7 +437,7 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                 "status": run["status"] if run else "idle", "run_id": run["run_id"] if run else None,
                 "revision": run["revision"] if run else None, "diagnostic": run["diagnostic"] if run else None,
                 "source_workflow_session_id": run["workflow_session_id"] if run else None,
-                "budget": ({**run["agent"]["limits"], **run["agent"]["progress"]} if run and run.get("agent") else None),
+                "budget": None,
                 "outputs": {port: selected_outputs[oid]["payload"]
                             for port, oid in refs.items()}})
             if retry_permission and run and run["run_id"] == retry_permission["node_run_id"]:
@@ -423,8 +447,9 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
         return {**session, "data_revision": data["revision"], "head_revision": head["revision"],
             "head_commit_id": head["head_commit_id"], "status": status,
             "selected_chain_run_id": selected["chain_run_id"] if selected else None,
-            "can_submit": active is None and not self._package_diagnostics,
-            "available_actions": [] if self._package_diagnostics else actions,
+            "can_submit": active is None and available,
+            "available_actions": actions if available else [],
+            "readonly": not available,
             "nodes": nodes, "chains": chains, "outputs": outputs,
             "data": data, "private_states": self._private(repo, sid), "messages": [],
             "objects": self._objects(repo).current(sid),
@@ -488,33 +513,9 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                                   node_id=node_id) from exc
         return result
 
-    def _mapped_data(self, repo, source, document, mappings, *, state=None):
-        """Preserve shared current state; schema changes require an explicit reset."""
-        from .resource_contracts import validate_data_definition, session_data_entry
+    def _copied_data(self, repo, source, *, state=None):
+        """Copy the current shared state independently of retired node declarations."""
         state = ProgramVariableStore(repo.store).current(source["workflow_session_id"]) if state is None else deepcopy(state)
-        resets = {item["target_node_id"] for item in mappings if item["action"] == "reset"}
-        declarations = {}
-        for node in document["nodes"]:
-            config = node["config"]
-            if node["component_id"] == "workflow.variable-register" and config.get("name") in state["values"]:
-                name, value_type = config["name"], config.get("valueType")
-                require(name not in declarations or declarations[name] == value_type,
-                        "variable_type_conflict", "Copied graph has conflicting variable declarations", 409)
-                declarations[name] = value_type
-                if state["values"][name]["type"] != value_type:
-                    require(node["node_binding_id"] in resets, "state_migration_required",
-                            "Variable type changed; explicit reset is required", 409, node_id=node["node_binding_id"])
-                    state["values"][name] = {"type": value_type, "source": "unassigned"}
-                    if config.get("hasInitialValue"):
-                        state["values"][name].update(source="default", value=config["initialValue"])
-            if node["component_id"] in ("workflow.session-data-read", "workflow.session-data-write"):
-                definition = validate_data_definition(config.get("definition"))
-                key = definition["key"]
-                old = state.get("data", {}).get(key)
-                if old and not repo.equal(old["definition"], definition):
-                    require(node["node_binding_id"] in resets, "state_migration_required",
-                            "Shared data declaration changed; explicit reset is required", 409, node_id=node["node_binding_id"])
-                    state["data"][key] = session_data_entry(definition)
         return validate_program_state(state)
 
     def copy_session(self, sid, *, document, expected_session_revision, expected_data_revision,
@@ -530,14 +531,14 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
             require(target_document["workflow_definition_id"] != source["workflow_definition_id"], "invalid_request", "Copy needs a new workflow identity")
             target = self._save_definition(repo, target_document, 0)
             private = self._map_state(repo, source, target, request["mappings"])
-            state = self._mapped_data(repo, source, target, request["mappings"])
+            state = self._copied_data(repo, source)
             return self._new_session(repo, target, state=state, private=private,
                 objects=self._objects(repo).current(sid),
                 source={"kind": "copy_current", "workflow_session_id": sid,
                         "workflow_definition_id": source["workflow_definition_id"],
                         "definition_revision": source["definition_revision"],
                         "head_commit_id": self._head(repo, sid)["head_commit_id"], "data_revision": state["revision"],
-                        "state_mappings": request["mappings"], "legacy_archives": self._legacy_refs(repo, sid)},
+                        "state_mappings": request["mappings"]},
                 history=self._history(repo, sid))
         return self._change("graph.session.copy", idempotency_key, request, change)
 
@@ -550,7 +551,7 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
             session = self._stable(repo, sid, expected_revision, expected_data_revision, expected_head_revision)
             document = self._document(repo, session["workflow_definition_id"], _revision(definition_revision))
             private = self._map_state(repo, session, document, request["mappings"])
-            state = self._mapped_data(repo, session, document, request["mappings"])
+            state = self._copied_data(repo, session)
             current = ProgramVariableStore(repo.store).current(sid)
             if not repo.equal(state, current):
                 ProgramVariableStore(repo.store).write_in_transaction(sid, state,
@@ -772,7 +773,7 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
             run["input_values"] = ({} if run.get("input_storage") == "references"
                                    else deepcopy(event["inputs"]))
             run["input_refs"] = {}
-            if run["schema_version"] == 4:
+            if run["schema_version"] >= 4:
                 run["control_refs"] = []
                 for edge in document.get("control_edges", []):
                     if edge["target_node_id"] == run["node_binding_id"]:
@@ -987,9 +988,6 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
             self._change("graph.run.finish", retained["finish_key"] if retained is not None
                          else chain_id + ":finish:" + str(chain["revision"]),
                          {"chain": chain_id, "result": result.status}, finish)
-            if result.status == "succeeded" and self._native_runtime is not None:
-                for run_id in chain["node_run_ids"]:
-                    self._native_runtime.discard(run_id)
             if result.status == "succeeded" or result.status == "failed" and chain_id not in self._failed_retry_candidates:
                 with self._lock:
                     self._release_public_capabilities(sid, chain_id)
@@ -998,7 +996,7 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                     self._acceptance_candidates.pop(chain_id, None)
                     self._failed_retry_candidates.pop(chain_id, None)
         except BaseException as exc:
-            # Only an exact retained result or native accepted archive can retry.
+            # Only an exact retained result can retry.
             # Unknown execution and rejected business results cannot be replayed.
             archive_retry = False
             try:
@@ -1013,8 +1011,7 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                                     and getattr(exc, "reason_code", None) is None)
                     completion_retry = (getattr(exc, "reason_code", None) is None
                                         and self._completed_result_matches(repo, sid, chain, pending.get("completed_execution")))
-                    retryable = completion_retry or result_retry or self._native_runtime is not None and index < len(chain["node_run_ids"]) and (
-                        self._native_runtime.has_accepted(chain["node_run_ids"][index]))
+                    retryable = completion_retry or result_retry
                     chain["status"] = "archive_failed" if retryable else "recovery_unavailable"
                     acknowledged_failure = getattr(exc, "reason_code", None) == "result_committed_notification_failed"
                     ambiguous_recovery = getattr(exc, "reason_code", None) == "host_result_recovery_ambiguous"
@@ -1035,9 +1032,8 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                     for identity in chain["node_run_ids"]:
                         run = repo.get("node_run", run_id=identity)
                         if run["status"] == "running":
-                            run["status"] = "archive_failed" if (
-                                result_retry and identity in pending or retryable and self._native_runtime is not None
-                                and self._native_runtime.has_accepted(identity)) else "recovery_unavailable"
+                            run["status"] = ("archive_failed" if result_retry and identity in pending
+                                             else "recovery_unavailable")
                             run["revision"] += 1
                             repo.put("node_run", run)
                     session = repo.get("workflow_session", workflow_session_id=sid)
@@ -1061,12 +1057,10 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                     self._acceptance_candidates.pop(chain_id, None)
                     self._failed_retry_candidates.pop(chain_id, None)
 
-    def control(self, sid, *, action, expected_revision, idempotency_key, add_model_requests=0, add_model_attempts=0):
-        require(action in ("pause", "resume", "close", "extend_budget", "retry_archive", "retry_acceptance", "retry_failed_node"), "invalid_request", "Unknown graph control")
-        require(action == "extend_budget" or add_model_requests == 0 and add_model_attempts == 0,
-                "invalid_request", "Budget increments require the budget operation")
-        request = {"session": sid, "action": action, "expected_revision": expected_revision,
-                   "add_model_requests": add_model_requests, "add_model_attempts": add_model_attempts}
+    def control(self, sid, *, action, expected_revision, idempotency_key):
+        require(action in ("pause", "resume", "close", "retry_archive", "retry_acceptance", "retry_failed_node"),
+                "invalid_request", "Unknown graph control")
+        request = {"session": sid, "action": action, "expected_revision": expected_revision}
         accepted = []
         def change(repo):
             session = repo.get("workflow_session", workflow_session_id=sid)
@@ -1103,23 +1097,6 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                 chain["status"] = "prepared"
                 chain["revision"] += 1
                 repo.put("chain_run", chain)
-            elif action == "extend_budget":
-                require(chain["status"] in ("paused", "budget_exhausted") and self._native_runtime is not None,
-                        "invalid_state", "No retained Agent budget boundary", 409)
-                run_id = chain["node_run_ids"][chain["next_node_index"]]
-                run = repo.get("node_run", run_id=run_id)
-                require(run.get("agent") is not None and self._native_runtime.has_checkpoint(run_id),
-                        "recovery_unavailable", "No retained native checkpoint", 409)
-                require(type(add_model_requests) is int and type(add_model_attempts) is int
-                        and add_model_requests >= 0 and add_model_attempts >= 0
-                        and add_model_requests + add_model_attempts > 0, "invalid_request", "Invalid budget increments")
-                limits = run["agent"]["limits"]
-                limits["max_model_requests"] += add_model_requests
-                limits["max_model_attempts"] += add_model_attempts
-                require(limits["max_model_requests"] <= 64 and limits["max_model_attempts"] <= 256,
-                        "invalid_request", "Budget exceeds supported limits")
-                run["revision"] += 1
-                repo.put("node_run", run)
             else:
                 require(chain["status"] in ("failed", "recovery_unavailable", "archive_failed", "paused", "budget_exhausted"),
                         "invalid_state", "Only settled failures or acknowledged pauses can close", 409)
@@ -1150,9 +1127,9 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                 with closing(self._store()) as store:
                     replay = store.read_receipt_with_digest("graph.run.control", idempotency_key)
                     if replay is None:
-                        require(not self._package_diagnostics, "package_missing_dependency",
-                                "Restore the saved project packages before retrying workflows", 409)
                         repo = GraphRecordStore(store)
+                        require(not self._package_diagnostics, "package_missing_dependency",
+                                "Restore the saved packages before retrying workflows", 409)
                         session = repo.get("workflow_session", workflow_session_id=sid)
                         require(session["revision"] == _revision(expected_revision),
                                 "stale_revision", "Session changed", 409)
@@ -1186,25 +1163,9 @@ class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, Grap
                 if current["status"] == "prepared" and chain_id not in self._resuming:
                     self._resuming.add(chain_id)
                     schedule_resume = True
-            elif action == "extend_budget":
-                with closing(self._store()) as store:
-                    repo = GraphRecordStore(store)
-                    current = repo.get("chain_run", chain_run_id=chain_id)
-                    if current["status"] in ("paused", "budget_exhausted") and current["next_node_index"] < len(current["node_run_ids"]):
-                        run_id = current["node_run_ids"][current["next_node_index"]]
-                        limits = repo.get("node_run", run_id=run_id)["agent"]["limits"]
-                        evidence = self._native_runtime.read_evidence(run_id)
-                        if evidence is not None and self._native_runtime.has_checkpoint(run_id):
-                            existing = evidence["limits"]
-                            if existing != limits:
-                                self._native_runtime.extend_budget(run_id,
-                                    requests=limits["max_model_requests"] - existing["max_model_requests"],
-                                    attempts=limits["max_model_attempts"] - existing["max_model_attempts"])
-            elif action == "close" and self._native_runtime is not None:
-                settled = response["chains"][-1]
-                for run_id in settled["node_run_ids"]:
-                    self._native_runtime.discard(run_id)
             if action == "close":
+                self._pauses.discard(controlled_chain_id)
+                self._resuming.discard(controlled_chain_id)
                 self._release_public_capabilities(sid, controlled_chain_id)
                 self._resource_frames.pop(controlled_chain_id, None)
                 self._execution_registries.pop(controlled_chain_id, None)

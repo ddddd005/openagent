@@ -191,16 +191,6 @@ export interface GraphRunDetail {
     control_refs?: { edge_id: string; run_id: string }[] }[];
   outputs: GraphSession["outputs"];
 }
-export interface GraphMigrationReceipt {
-  document: GraphDocument;
-  session: GraphSession;
-  provenance: Record<string, unknown>;
-}
-export interface GraphArchiveDetail {
-  turn: Record<string, unknown> & { turn_id: string };
-  root: Record<string, unknown>[];
-  snapshot: Record<string, unknown>;
-}
 export interface GraphEntry {
   document: GraphDocument;
   saved_revision: number;
@@ -210,8 +200,6 @@ export interface GraphEntry {
   diagnostics?: GraphDiagnostic[];
   external_inputs?: Record<string, unknown>;
   state_mappings?: { source_node_id: string; target_node_id: string; action: "copy" | "reset" }[];
-  migration_request?: GraphCommand;
-  migration_provenance?: Record<string, unknown>;
 }
 export const graphClone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 export const graphObject = (value: unknown): value is Record<string, unknown> =>

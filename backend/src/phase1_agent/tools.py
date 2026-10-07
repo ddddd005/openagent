@@ -1,4 +1,4 @@
-"""Native callable tools and an optional smolagents.Tool compatibility adapter."""
+"""Native callable tools with immutable, validated model-facing declarations."""
 
 from __future__ import annotations
 
@@ -168,29 +168,6 @@ def register_callable(
         if parameter.default is not inspect.Parameter.empty:
             raise ValueError(f"Input '{parameter.name}' is optional; all registered inputs must be required")
     return _registered_tool(name, description, deepcopy(schema), implementation)
-
-
-def register_tool(tool: Any) -> RegisteredTool:
-    """Adapt a smolagents.Tool when that optional package is installed."""
-    from smolagents import Tool
-
-    if not isinstance(tool, Tool):
-        raise TypeError("tool must be an instance of smolagents.Tool")
-    if tool.name == "final_answer":
-        raise ValueError("'final_answer' is reserved for the control tool")
-
-    for name, parameter in inspect.signature(tool.forward).parameters.items():
-        if parameter.default is not inspect.Parameter.empty:
-            raise ValueError(f"Input '{name}' is optional; all registered inputs must be required")
-
-    properties = _scalar_properties(tool.inputs)
-    schema: dict[str, Any] = {
-        "type": "object",
-        "properties": properties,
-        "required": list(properties),
-        "additionalProperties": False,
-    }
-    return _registered_tool(tool.name, tool.description, schema, tool)
 
 
 def final_answer_tool() -> RegisteredTool:

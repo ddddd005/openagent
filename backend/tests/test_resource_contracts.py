@@ -1,20 +1,19 @@
 """Resource validation and current storage do not load legacy resource hosts."""
 
-from contextlib import closing
 from copy import deepcopy
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from jsonschema import SchemaError, ValidationError
 import pytest
 
 from phase1_agent import resource_contracts
 from phase1_agent.contract_errors import ContractValidationError
-from phase1_agent.contract_json import canonical_bytes, content_digest
+from phase1_agent.contract_json import canonical_bytes
 from phase1_agent.resource_contracts import (
     CORE_SESSION_NOTE, MAX_RESOURCE_BYTES, MAX_SESSION_VALUE_BYTES, require,
     resource_error, resource_id, resource_revision, session_data_entry,
@@ -25,24 +24,11 @@ from phase1_agent.resource_contracts import (
 from resource_fixtures import resource
 
 
-EXPORTS = (
-    "CORE_SESSION_NOTE", "MAX_RESOURCE_BYTES", "MAX_SESSION_VALUE_BYTES", "_KEY",
-    "resource_error", "require", "resource_id", "resource_revision", "workflow_identity",
-    "validate_global_content", "validate_data_definition", "validate_data_value",
-    "session_data_entry", "validate_session_data",
-)
 UID = "7be319b8-30bd-4674-b7bf-d1cf54a1a121"
 
 
 def definition(**changes):
     return {**deepcopy(CORE_SESSION_NOTE), "name": "Session value", **changes}
-
-
-@pytest.mark.parametrize("name", EXPORTS)
-def test_legacy_contract_reexports_are_the_same_objects(name):
-    from phase1_agent import workbench_resources
-
-    assert getattr(workbench_resources, name) is getattr(resource_contracts, name)
 
 
 def test_constants_keep_exact_limits_namespace_pattern_and_core_definition():
@@ -253,44 +239,7 @@ def test_session_data_preserves_key_shape_count_and_aggregate_capacity():
         validate_session_data({f"test:item{index}": {} for index in range(129)})
 
 
-def test_legacy_store_keeps_original_revisions_digest_receipts_and_cas(tmp_path):
-    from phase1_agent.storage import SqliteStore
-    from phase1_agent.workbench_resources import WorkbenchResourceStore
-
-    original = resource("Original archive body")
-    key = str(uuid4())
-    with closing(SqliteStore(tmp_path / "legacy-resource.sqlite")) as store:
-        catalog = WorkbenchResourceStore(store)
-        request = {"kind": "content", "record": original, "expected_revision": 0}
-        assert catalog.write("content", original, expected_revision=0, idempotency_key=key) == original
-        receipt = dict(store._connection.execute(
-            "SELECT digest,payload FROM workbench_resource_receipts WHERE operation_id=?", (key,),
-        ).fetchone())
-        assert receipt == {"digest": content_digest(request), "payload": canonical_bytes(original).decode("utf-8")}
-        changed = deepcopy(original)
-        changed.update(revision=2, name="Current archive head")
-        catalog.write("content", changed, expected_revision=1, idempotency_key=str(uuid4()))
-        assert catalog.write("content", original, expected_revision=0, idempotency_key=key) == original
-        assert catalog.get("content", original["resource_id"], 1) == original
-        assert catalog.get("content", original["resource_id"]) == changed
-        with pytest.raises(ContractValidationError) as stale:
-            catalog.write("content", original, expected_revision=0, idempotency_key=str(uuid4()))
-        assert stale.value.reason_code == "stale_revision" and stale.value.status_code == 409
-        with pytest.raises(ContractValidationError) as conflict:
-            catalog.write("content", {**original, "name": "Different request"},
-                          expected_revision=0, idempotency_key=key)
-        assert conflict.value.reason_code == "idempotency_conflict"
-        catalog.delete(original["resource_id"], expected_revision=2)
-        assert catalog.get("content", original["resource_id"]) is None
-        assert catalog.get("content", original["resource_id"], 1) == original
-    with closing(SqliteStore(tmp_path / "legacy-resource.sqlite")) as store:
-        catalog = WorkbenchResourceStore(store)
-        assert catalog.get("content", original["resource_id"], 1) == original
-        assert catalog.get("content", original["resource_id"], 2) == changed
-        assert catalog.write("content", original, expected_revision=0, idempotency_key=key) == original
-
-
-@pytest.mark.parametrize("type_id", ["workflow.global-content", "example.numeric"])
+@pytest.mark.parametrize("type_id", ["example.document", "example.numeric"])
 def test_fresh_process_current_operations_and_types_do_not_import_legacy_store_or_execution(tmp_path, type_id):
     program = r"""
 import importlib.abc
@@ -317,8 +266,7 @@ sys.meta_path.insert(0, NoLegacyImports())
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.contract_json import canonical_bytes
 from phase1_agent.global_resources import (
-    GLOBAL_CONTENT_TYPE, GlobalResourceStore, create_global_type_registry,
-    global_resource_reference, legacy_content_to_current,
+    GlobalResourceStore, create_global_type_registry, global_resource_reference,
 )
 from phase1_agent.host_sdk import DataTypeDefinition, TypeRegistry
 from phase1_agent.resource_contracts import (
@@ -341,8 +289,15 @@ state = {CORE_SESSION_NOTE["key"]: session_data_entry(CORE_SESSION_NOTE, "Stored
 assert validate_session_data(state) == state
 
 types = create_global_type_registry()
+DOCUMENT_TYPE = "example.document"
+types.register(DataTypeDefinition(DOCUMENT_TYPE, 1, {
+    "type": "object", "additionalProperties": False, "required": ["name", "body"],
+    "properties": {"name": {"type": "string"}, "body": {"type": "string"}},
+}, scope="global"))
 types.register(DataTypeDefinition("example.numeric", 1, {"type": "integer"}, scope="global"))
-original = legacy_content_to_current(source)
+original = {"envelope_version": 1, "scope": "workspace", "type_id": DOCUMENT_TYPE,
+            "resource_id": source["resource_id"], "data_schema_version": 1, "update_sequence": 1,
+            "value": {"name": "Current document", "body": source["members"][0]["text"]}}
 if sys.argv[2] == "example.numeric":
     original.update(type_id="example.numeric", value=42)
 reference = {field: original[field] for field in ("envelope_version", "scope", "type_id", "resource_id")}
@@ -358,8 +313,8 @@ with closing(SqliteStore(sys.argv[1])) as store:
     assert catalog.list(type_id=original["type_id"]) == [original]
     changed = deepcopy(original)
     changed["update_sequence"] = 2
-    if original["type_id"] == GLOBAL_CONTENT_TYPE:
-        changed["value"]["members"][0]["text"] = "Current replacement"
+    if original["type_id"] == DOCUMENT_TYPE:
+        changed["value"]["body"] = "Current replacement"
     else:
         changed["value"] = 7
     catalog.write(changed, expected_sequence=1, idempotency_key=update_key)
@@ -367,8 +322,8 @@ with closing(SqliteStore(sys.argv[1])) as store:
     assert catalog.read_many([reference]) == [changed]
     invalid = deepcopy(changed)
     invalid["update_sequence"] = 3
-    if original["type_id"] == GLOBAL_CONTENT_TYPE:
-        invalid["value"]["members"][0]["text"] = 3
+    if original["type_id"] == DOCUMENT_TYPE:
+        invalid["value"]["body"] = 3
     else:
         invalid["value"] = "not an integer"
     try:
@@ -391,7 +346,8 @@ with closing(SqliteStore(sys.argv[1])) as store:
             raise AssertionError("Conflicting request was accepted")
     evidence = TypeContractStore(store).get(original["type_id"], 1, "global")
     assert evidence is not None
-    assert store._connection.execute("SELECT COUNT(*) FROM workbench_resource_revisions").fetchone()[0] == 0
+    assert store._connection.execute(
+        "SELECT name FROM sqlite_master WHERE name LIKE 'workbench_resource_%'").fetchall() == []
 with closing(SqliteStore(sys.argv[1])) as store:
     catalog = GlobalResourceStore(store, types)
     assert catalog.get(reference) == changed
@@ -413,7 +369,7 @@ with closing(SqliteStore(sys.argv[1])) as store:
     assert store._connection.execute("SELECT payload FROM global_resource_current").fetchone()[0] is None
     receipts = [dict(row) for row in store._connection.execute("SELECT * FROM global_resource_receipts")]
     assert len(receipts) == 3 and len(canonical_bytes(receipts)) < 4096
-    if original["type_id"] == GLOBAL_CONTENT_TYPE:
+    if original["type_id"] == DOCUMENT_TYPE:
         assert source["members"][0]["text"] not in canonical_bytes(receipts).decode("utf-8")
 assert not any(name == entry or name.startswith(entry + ".") for name in sys.modules for entry in blocked)
 print("pure current resource operations, type evidence and original receipts preserved")

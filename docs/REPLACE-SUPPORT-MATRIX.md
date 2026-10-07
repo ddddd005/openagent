@@ -1,5 +1,7 @@
 # REPLACE-01/02 联合支持与处置矩阵
 
+**2026-10-07 最新裁决覆盖说明：旧会话、旧工作流和专用测试数据，连同关联的当前对象、manifest、共享旧 revision 及所属工作流/会话、事实和回执整组删除，不要求保留。**下文冻结、旧回执/原文保全、纯档案、passthrough 和正常关联回滚保全是此前盘点及准备切片的历史方案，不再是删除前置。无关联当前图、独立资源/配置、原请求保护、可信扩展及共用对象/事务/类型/事实/算法继续保留；缺包/未知声明不一律判旧。旧路由、固定客户端、兼容节点工厂、旧宿主/私有执行器和专属测试直接退役；Git 标签及仓库外源码归档不变。实际状态见 [合并移除记录](REPLACE-REMOVAL.md)。
+
 承接 [固定基线](BASELINE-2026-10-06.md)、[1.0 规划](PLAN-1.0.md)及 [历史校验与原型退役](REPLACE-HISTORY-RETIREMENT.md)。本轮按用户同意的合并方式，以三个并发子代理分别审计后端、前端、存储与测试，主代理交叉核对后合并旧节点、旧入口、旧数据的去向。
 
 盘点时的代码依据是 `00970f75fb52d741b694499a05f702600529fcdd` 之上的未提交工作区，而不是已发布的新版本。本页是下一步实施的支持范围与约束，**盘点本轮没有实现冻结、替换正式客户端或删除旧宿主**；首轮记录和固定基线不倒改。下述实现状态、缺口事实及本轮验证均对应盘点快照，后续实现另记。
@@ -47,7 +49,7 @@
 | `workflow.agent@2` | `agents.execute@1/2/3`；基线串行为 `@3` | 旧私有 head、额度、TEXT/output_json/context_delta 不等于新 result/context 和对象写回；退出旧执行，保留纯历史校验 |
 | `workflow.context@1`、`workflow.prompt-assembly@1` | 基线 `context.output@2`、`context.assembly@3`、`context.merge@2` | 旧冻结 turn/host 与新每 Agent 对象、精确视图不同；`prompts.assembly@1` 不是完整上下文历史的等价替代 |
 
-旧声明依据：[graph_nodes](../backend/src/phase1_agent/graph_nodes.py)、[graph_prompt_nodes](../backend/src/phase1_agent/graph_prompt_nodes.py)、[graph_agent_nodes](../backend/src/phase1_agent/graph_agent_nodes.py)、[graph_object_nodes](../backend/src/phase1_agent/graph_object_nodes.py)。独立声明依据：[tool_package](../backend/src/phase1_agent/tool_package.py)、[prompt_package](../backend/src/phase1_agent/prompt_package.py)、[agent_package](../backend/src/phase1_agent/agent_package.py)、[context_package](../backend/src/phase1_agent/context_package.py)。
+旧声明依据为退役标签内的 `graph_nodes.py`、`graph_prompt_nodes.py`、`graph_agent_nodes.py`、`graph_object_nodes.py`，这些文件已删除，不再链接当前工作树。独立声明依据：[tool_package](../backend/src/phase1_agent/tool_package.py)、[prompt_package](../backend/src/phase1_agent/prompt_package.py)、[agent_package](../backend/src/phase1_agent/agent_package.py)、[context_package](../backend/src/phase1_agent/context_package.py)。
 
 ### 类型与目录
 
@@ -99,7 +101,7 @@ registry 的 TEXT/PROMPT/JSON/MODEL_RESOURCE schema1 四个基底传输类型被
 | `/api/exposure-configurations...`、`S/exposures/...`、`S/outputs/public` | 当前公开展示/可信 consumer 已有；旧 exposure、结果端口和投递证据保留作用域受限的档案读取 |
 | `/api/graph` 中 `legacy.migrate`、`resource.import` | 虽在当前命令边界中，语义仍是旧目标；关闭新写入，原 outbox 与回执不删 |
 
-调用依据：[workbenchRuntime](../frontend/src/stores/workbenchRuntime.ts)、[workbenchContext](../frontend/src/adapters/workbenchContext.ts)、[旧静态客户端](../backend/src/phase1_agent/static/app.js)、[应用操作声明](../backend/src/phase1_agent/graph_application_contracts.py)。共享 [workbenchApi](../frontend/src/adapters/workbenchApi.ts) transport/error 分类和 [workflowApplicationApi](../frontend/src/adapters/workflowApplicationApi.ts) 当前命令边界保留。
+历史调用依据：退役标签内的 `workbenchRuntime.ts`、`workbenchContext.ts`、旧静态 `app.js` 及当时的应用操作声明，前三者已删除。共享 [workbenchApi](../frontend/src/adapters/workbenchApi.ts) transport/error 分类和 [workflowApplicationApi](../frontend/src/adapters/workflowApplicationApi.ts) 当前命令边界保留。
 
 ## 4. 数据与未决请求
 
@@ -115,7 +117,7 @@ registry 的 TEXT/PROMPT/JSON/MODEL_RESOURCE schema1 四个基底传输类型被
 | 原型/内容草稿/静态聊天键 | 保留 `workflow-workbench:local-draft:v1`、`workflow-workbench:content-drafts:v1`、`workflow-user-ui:v1:{sid}` schema1/2、`workflow-user-exposure:v1:{sid}` | 只读记录桥；不自动覆盖、转换或删除。静态 control/budget/branch 的内存 pending 不冒称重载可恢复 |
 | 已退役操作的 pending 和 migration_request | 保留完整原 path/body/key/action、CAS/owner/目标及模型/exposure pending；原 key 可为有界 opaque string | 原请求 receipt-only 查询；缺回执、不匹配、404/410、CAS 或身份冲突均保持 unresolved，不重发 POST、不清原请求 |
 
-数据依据：[storage](../backend/src/phase1_agent/storage.py)、[GraphRecordStore](../backend/src/phase1_agent/graph_store.py)、[旧 context view](../backend/src/phase1_agent/workflow_context_view.py)、[SessionObjectStore/manifest](../backend/src/phase1_agent/session_objects.py)、[TypeContractStore](../backend/src/phase1_agent/type_contract_store.py)、[浏览器持久化 adapter](../frontend/src/adapters/workbenchPersistence.ts)。
+数据依据：[storage](../backend/src/phase1_agent/storage.py)、[GraphRecordStore](../backend/src/phase1_agent/graph_store.py)、退役标签内已删除的 `workflow_context_view.py`、[SessionObjectStore/manifest](../backend/src/phase1_agent/session_objects.py)、[TypeContractStore](../backend/src/phase1_agent/type_contract_store.py)、[浏览器持久化 adapter](../frontend/src/adapters/workbenchPersistence.ts)。当前链接指向删除批后的实现，历史实现以退役标签为准。
 
 ### 回执核实边界
 
@@ -129,7 +131,7 @@ registry 的 TEXT/PROMPT/JSON/MODEL_RESOURCE schema1 四个基底传输类型被
 
 ### 迁移与窄导入
 
-现有 [legacyGraphMigration](../frontend/src/domain/legacyGraphMigration.ts)/[GraphAgentHost](../backend/src/phase1_agent/graph_agent_host.py)生成 `workflow.agent@2`、`workflow.model-provider@2`，不是迁到独立 Agent/model 包。停止新迁移，已生成结果和冻结引用照旧读取。
+当时的 `legacyGraphMigration.ts`/`GraphAgentHost` 生成 `workflow.agent@2`、`workflow.model-provider@2`，不是迁到独立 Agent/model 包。原裁决为停止新迁移并保留读取；最新授权后这些实现及明确旧测试结果一起删除，旧代码只在退役标签可查。
 
 现有 [import_legacy_current](../backend/src/phase1_agent/global_resources.py)只显式导入一个旧 content 当前 head，写到 `workflow.global-content`，不会生成 `workflow.prompt-resource`。因此本期不把它保留为独立提示词迁移入口；新 `resource.import` 写入退出，已导入资源与回执保留。这不删除通用 current resource 管理，也不开发 COND-03 通用转换。
 
@@ -143,7 +145,7 @@ registry 的 TEXT/PROMPT/JSON/MODEL_RESOURCE schema1 四个基底传输类型被
 | 历史读取仍借旧执行实现 | GraphAgentHost._legacy_archive 导入 workflow、PreparedPromptContext、BasicContext；旧服务构造和 graph _recover 会写入 | 纯投影与精确 provenance/owner 门面；只读入口不 bootstrap、不补 facts、不恢复冻结日志 |
 | 未决请求核实与客户端保存 | 正式旧客户端仍可 POST；混合 schema6 仍恢复编辑型旧投影 | receipt-only 和 frozen passthrough 先行，再替换 App/侧栏/节点配置/静态聊天；通过定向保护后才退役旧代码 |
 
-依据：[graph_service](../backend/src/phase1_agent/graph_service.py)、[graph_platform](../backend/src/phase1_agent/graph_platform.py)、[GraphAgentHost](../backend/src/phase1_agent/graph_agent_host.py)、[GraphRuntimeHost](../backend/src/phase1_agent/graph_runtime_host.py)、[runtime](../backend/src/phase1_agent/runtime.py)、[prepared_context](../backend/src/phase1_agent/prepared_context.py)。
+依据：[graph_service](../backend/src/phase1_agent/graph_service.py)、[graph_platform](../backend/src/phase1_agent/graph_platform.py)、[GraphRuntimeHost](../backend/src/phase1_agent/graph_runtime_host.py)、[runtime](../backend/src/phase1_agent/runtime.py)。当时的 `GraphAgentHost` 和 `prepared_context.py` 已删除，历史依赖以退役标签为准。
 
 纯 prepared gate 不是重写算法或上下文维护：保留 projection2、冻结 S0/续接 observations、配置/parent/binding、变量事务/seed/rederivation、Lorebook 冻结验证、完整消息与 tools canonical 字符容量、消息上限和 dispatch 前拒绝。仅将 import 移进 runtime 调用点仍会让当前 Agent 加载旧链，不能据此宣称解耦。DEMO-05/06 继续后置。
 
@@ -165,7 +167,7 @@ registry 的 TEXT/PROMPT/JSON/MODEL_RESOURCE schema1 四个基底传输类型被
 | 未决请求全生命周期 | 初始化 raw/pending 保留、当前 provider/prompt 安全用例 | 旧 receipt-only 缺失/不匹配/404/410/CAS 不清除、不 POST；当前 graph 后续核实拒绝的安全检查 |
 | 安装、目录、受影响回归及正式交互 | 先前切片类型/构建与限定交互 | 目标代码的独立安装、目录及旧模块退出证明；常驻和完整浏览器联合验收仍归 REPLACE-06/VERIFY |
 
-已存在但本轮未运行的相关源码包括：[包选择](../backend/tests/test_graph_package_selection.py)、[混合 graph service](../backend/tests/test_graph_service.py)、[旧迁移](../backend/tests/test_graph_legacy_migration.py)、[对象](../backend/tests/test_graph_session_objects.py)、[类型契约](../backend/tests/test_type_contract_store.py)、[初始化](../frontend/src/stores/workbenchInitialization.test.ts)、[统一文档](../frontend/src/adapters/unifiedWorkbenchDocument.test.ts)、[当前 application](../frontend/src/stores/workflowApplication.test.ts)。
+盘点时存在但当轮未运行的相关源码包括：[包选择](../backend/tests/test_graph_package_selection.py)、[graph service 夹具](../backend/tests/test_graph_service.py)、[对象](../backend/tests/test_graph_session_objects.py)、[类型契约](../backend/tests/test_type_contract_store.py)、[初始化](../frontend/src/stores/workbenchInitialization.test.ts)、[当前 application](../frontend/src/stores/workflowApplication.test.ts)，以及已删除、仅退役标签可查的 `test_graph_legacy_migration.py`、`unifiedWorkbenchDocument.test.ts`。当前测试已迁入独立路径，不能把旧盘点源码描述当当前运行结论。
 
 首轮“未创建旧私有 runtime”、缺包只读、纯 Agent 历史校验和新默认包证据各自有效，但均不证明完整旧加载链已经退出。必要配置、编辑保存、当前串行/多轮、完成历史/复制/分叉及当前控制已有实现和相应限定证据；旧 authoring/专用控制差异已明确后置，不新增当前节点作为阶段 A 门槛。
 
@@ -208,3 +210,5 @@ DEMO-05/06、COND、LATER 继续在 1.0 后按需安排；节点打组、历史�
 上述四片已提交并建立仓库外退役前归档；后续 [上下文纯读取](REPLACE-ARCHIVE-READ.md)把 basic/prepared 的闭合 Turn 投影和完整 frozen 校验迁出旧执行类，GraphAgentHost 的档案读取不再导入旧工作流/Context。共享验证算法按裁决保留；调用者仍须授权，当前 archive 入口仍构造 RW store，旧宿主继承及迁移导入尚在。本片不等于完整纯档案、冻结/恢复或正式旧实现已移除。
 
 归档入口续记：[限定 Agent 只读接线](REPLACE-GRAPH-ARCHIVE-READ.md)已将现有 `archive.read` HTTP/直接服务入口退出 RW store，HTTP 不创建新旧协调器，读取原冻结 refs、accepted 包及旧闭合记录。补 owner、引用形状和相邻 parent 检查，不以当前包声明证明历史来源，也不扩展 consumer 权限。前段 RW 说明是纯投影片时的状态；完整旧会话只读门面、可信分类授权、冻结/恢复、浏览器 passthrough 和旧专用代码实际删除仍待完成，不改阶段 A 原证据或关闭阶段 B/1.0。
+
+推进节奏续记：上述入口已提交为 `7ff72af`。最新授权后按 [合并两批](PLAN-1.0.md#剩余工作合并为两批)执行，不把第 7 节的历史依赖分解当成六轮独立准备/验收：旧入口/实现/专属测试及明确旧内容一起删除；独立性与本期 VERIFY 一起验收。既有当前实现直接复用，每批统一一次受影响验证，失败按直接影响复测，不反复扩大已通过范围；旧保全裁决由最新授权替代，当前数据和未知请求安全边界不降低。

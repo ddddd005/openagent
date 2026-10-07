@@ -6,9 +6,10 @@ from uuid import uuid4
 
 import pytest
 
-from phase1_agent.capability_packages import CapabilityPackage, PackageManifest
+from phase1_agent.capability_packages import CapabilityPackage, PackageDependency, PackageManifest
+from phase1_agent.content_contracts import json_content, text_content
 from phase1_agent.contract_errors import ContractValidationError
-from phase1_agent.graph_contracts import NodeDefinition, NodePort, text_value
+from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import DataTypeDefinition, ObjectBinding, WriteIntent
 from phase1_agent.session_objects import SessionObjectStore
@@ -41,27 +42,39 @@ def task_package():
             context.object_write(config["key"], value, expected_revision=old["revision"])
             if config["fail"]:
                 raise ValueError("intentional post-write failure")
-            return {"output": text_value(str(value["count"]))}
+            return {"output": text_content(str(value["count"]))}
 
         host.register_node(NodeDefinition(
             "example.count", "1", "Task counter", "Example", {"key": "main", "fail": False},
             {"type": "object", "properties": {"key": {"type": "string"}, "fail": {"type": "boolean"}},
              "required": ["key", "fail"], "additionalProperties": False},
-            outputs=(NodePort("output", "TEXT"),), capabilities=("objects:read", "objects:write")),
+            outputs=(NodePort("output", "TEXT", data_schema_version=2),),
+            capabilities=("objects:read", "objects:write")),
             count)
-    return CapabilityPackage(PackageManifest("example.tasks", "1.0.0"), register)
+        host.register_node(NodeDefinition(
+            "example.object-read", "1", "Task read", "Example", {"object_key": "main"},
+            {"type": "object", "properties": {"object_key": {"type": "string"}},
+             "required": ["object_key"], "additionalProperties": False},
+            outputs=(NodePort("value", "JSON", data_schema_version=2),),
+            capabilities=("objects:read",),
+        ), lambda config, inputs, context: {
+            "value": json_content(context.object_read(config["object_key"])["value"]),
+        })
+    return CapabilityPackage(PackageManifest(
+        "example.tasks", "1.0.0", (PackageDependency("workflow.content", "1.0.0"),),
+    ), register)
 
 
 @pytest.fixture
 def service(tmp_path):
     with closing(GraphWorkflowService(tmp_path / "objects.sqlite", capability_packages=[task_package()],
-                                      enabled_packages={"workflow.compat": "1.0.0", "example.tasks": "1.0.0"})) as service:
+                                      enabled_packages={"workflow.tools": "1.0.0", "example.tasks": "1.0.0"})) as service:
         yield service
 
 
 def object_graph(service, *, fail=False):
     count = node(service.registry, "example.count", 1, fail=fail)
-    read = node(service.registry, "object-read", 2, object_key="main")
+    read = node(service.registry, "example.object-read", 2, object_key="main")
     convert = node(service.registry, "json-to-text", 3)
     output = node(service.registry, "output", 4)
     doc = document([count, read, convert, output], [
@@ -193,11 +206,11 @@ def test_failed_effect_is_rejected_and_has_no_success_candidate(service):
 def test_missing_package_read_export_keeps_objects_and_blocks_run(tmp_path):
     path = tmp_path / "missing.sqlite"
     with closing(GraphWorkflowService(path, capability_packages=[task_package()],
-                                      enabled_packages={"workflow.compat": "1.0.0", "example.tasks": "1.0.0"})) as service:
+                                      enabled_packages={"workflow.tools": "1.0.0", "example.tasks": "1.0.0"})) as service:
         doc = object_graph(service)
         final = run(service, create(service, doc))
         sid = final["workflow_session_id"]
-        service.configure_capability_packages({"workflow.compat": "1.0.0"})
+        service.configure_capability_packages({"workflow.tools": "1.0.0"})
         assert service.get_session_objects(sid)["objects"]["main"]["value"] == {"count": 1}
         assert service.read_public_output(sid, workflow_definition_id=doc["workflow_definition_id"],
             definition_revision=1, node_id=doc["nodes"][0]["node_binding_id"], port_id="output")["output"]["payload"]["text"] == "1"
@@ -288,34 +301,28 @@ def test_tombstone_restore_reopen_and_unrelated_manifest_access(service):
         assert reopened.get_session(sid)["objects"] == restored["objects"]
 
 
-def test_project_selection_survives_restart_and_missing_install_is_diagnosed(tmp_path, monkeypatch):
+def test_project_selection_survives_restart_and_missing_install_is_diagnosed(tmp_path):
     path = tmp_path / "project.sqlite"
     with closing(GraphWorkflowService(path, capability_packages=[task_package()],
-                                      enabled_packages={"workflow.compat": "1.0.0", "example.tasks": "1.0.0"})) as service:
+                                      enabled_packages={"workflow.tools": "1.0.0", "example.tasks": "1.0.0"})) as service:
         final = run(service, create(service, object_graph(service)))
     with closing(GraphWorkflowService(path, capability_packages=[task_package()])) as reopened:
         assert any(row["package_id"] == "example.tasks" for row in reopened.platform_capabilities()["package_lock"])
         assert run(reopened, reopened.get_session(final["workflow_session_id"]))["objects"]["main"]["value"] == {"count": 2}
         before = reopened.get_session(final["workflow_session_id"])
         historical = reopened.get_run(final["workflow_session_id"], before["selected_chain_run_id"])
-    from phase1_agent import graph_nodes
-
-    def no_compat_registry():
-        pytest.fail("A missing saved package constructed a compatibility registry")
-
-    monkeypatch.setattr(graph_nodes, "create_default_registry", no_compat_registry)
     with closing(GraphWorkflowService(path)) as missing:
         catalog = missing.platform_capabilities()
         assert catalog["package_diagnostics"][0]["reason_code"] == "package_missing_dependency"
         assert catalog["package_diagnostics"][0]["enabled_packages"] == {
-            "workflow.compat": "1.0.0", "example.tasks": "1.0.0"}
+            "workflow.tools": "1.0.0", "example.tasks": "1.0.0"}
         assert catalog["package_lock"] == [] and missing.registry.catalog() == []
         assert missing.get_session(final["workflow_session_id"])["objects"]["main"]["value"] == {"count": 2}
         assert missing.get_run(final["workflow_session_id"], before["selected_chain_run_id"]) == historical
         with pytest.raises(ContractValidationError) as denied:
             run(missing, missing.get_session(final["workflow_session_id"]))
         assert denied.value.reason_code == "package_missing_dependency"
-        assert missing._native_runtime is None
+        assert not hasattr(missing, "_native_runtime")
 
 
 def test_long_valid_object_identity_has_a_bounded_automatic_operation_key(service):

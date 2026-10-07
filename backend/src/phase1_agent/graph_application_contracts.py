@@ -37,16 +37,13 @@ def operation(name, method, required=(), optional=(), **options):
 COMMANDS = (
     operation("definition.save", "save_definition",
               ("document", "expected_revision", "idempotency_key"), status=201),
-    operation("legacy.migrate", "migrate_legacy",
-              ("document", "source_session_id", "expected_source_revision", "mappings", "idempotency_key"), status=201),
     operation("session.create", "create_session",
               ("workflow_definition_id", "definition_revision", "idempotency_key"), status=201),
     operation("run.start", "start", ("expected_revision", "idempotency_key"), ("inputs",), session=True, status=202),
     operation("event.submit", "submit_event",
               ("workflow_definition_id", "definition_revision", "event_id", "event_schema_version",
                "payload", "expected_revision", "idempotency_key"), session=True, status=202),
-    operation("run.control", "control", ("action", "expected_revision", "idempotency_key"),
-              ("add_model_requests", "add_model_attempts"), session=True),
+    operation("run.control", "control", ("action", "expected_revision", "idempotency_key"), session=True),
     operation("session.copy", "copy_session",
               ("document", "expected_session_revision", "expected_data_revision",
                "expected_definition_revision", "expected_head_revision", "idempotency_key"),
@@ -69,7 +66,6 @@ COMMANDS = (
               ("node_id", "view_output_id", "expected_revision", "idempotency_key"), session=True),
     operation("resource.save", "save_global_resource", ("record", "expected_sequence", "idempotency_key")),
     operation("resource.delete", "delete_global_resource", ("identity", "expected_sequence", "idempotency_key")),
-    operation("resource.import", "import_global_resource", ("legacy_id", "idempotency_key"), ("scope",)),
     operation("packages.configure", "configure_capability_packages", ("enabled_packages",)),
     operation("consumer.session.create", "create_consumer_session",
               ("workflow_definition_id", "definition_revision", "idempotency_key"), consumer=True, status=201),
@@ -79,7 +75,7 @@ COMMANDS = (
               ("workflow_definition_id", "definition_revision", "event_id", "event_schema_version",
                "payload", "expected_revision", "idempotency_key"), session=True, consumer=True, status=202),
     operation("consumer.run.control", "control_consumer",
-              ("action", "expected_revision", "idempotency_key"), ("add_model_requests", "add_model_attempts"),
+              ("action", "expected_revision", "idempotency_key"),
               session=True, consumer=True),
 )
 
@@ -95,7 +91,6 @@ QUERIES = (
     operation("event.bindings", "list_event_bindings",
               ("workflow_definition_id", "definition_revision"), session=True),
     operation("event.read", "read_event", ("chain_id",), session=True),
-    operation("archive.read", "get_agent_archive", ("archive_id",), session=True),
     operation("candidate.list", "list_graph_candidates", session=True),
     operation("object.list", "get_session_objects", session=True),
     operation("object.read", "read_session_object", ("object_key", "node_id"), ("revision_id",), session=True),
@@ -139,8 +134,6 @@ def validate_parameters(spec, parameters):
         require(uuid_value(parameters["session_id"]), "not_found", "Session not found", 404)
     for field, value in parameters.items():
         if field.endswith("revision"):
-            if spec.name == "legacy.migrate" and field == "expected_source_revision" and value is None:
-                continue
             if spec.name == "definition.read" and field == "revision" and value is None:
                 continue
             minimum = 0 if field == "expected_data_revision" or spec.name == "definition.save" else 1
@@ -149,13 +142,10 @@ def validate_parameters(spec, parameters):
         if field == "idempotency_key":
             require(type(value) is str and 1 <= len(value) <= 128 and bool(value.strip()),
                     "invalid_request", "An idempotency key is required")
-        if field in ("workflow_definition_id", "chain_id", "archive_id"):
+        if field in ("workflow_definition_id", "chain_id"):
             require(uuid_value(value), "invalid_request", "Invalid graph identity")
     if spec.name in ("definition.read", "consumer.definition", "consumer.sessions"):
         require(uuid_value(parameters["identity"]), "not_found", "Definition not found", 404)
-    if spec.name == "legacy.migrate":
-        require(parameters["source_session_id"] is None or uuid_value(parameters["source_session_id"]),
-                "invalid_request", "Invalid source session")
     if "mappings" in parameters:
         require(type(parameters["mappings"]) is list, "invalid_request", "Mappings must be an array")
     if "inputs" in parameters:
@@ -178,6 +168,6 @@ def validate_parameters(spec, parameters):
                 "invalid_request", "Invalid node protocol version")
     if "action" in parameters:
         require(type(parameters["action"]) is str
-                and parameters["action"] in ("pause", "resume", "close", "extend_budget", "retry_archive", "retry_acceptance", "retry_failed_node"),
+                and parameters["action"] in ("pause", "resume", "close", "retry_archive", "retry_acceptance", "retry_failed_node"),
                 "invalid_request", "Unknown graph control")
     return parameters

@@ -15,8 +15,7 @@
   function entryKind() {
     if (!location.search) return null;
     const raw = location.search.slice(1);
-    const allowed = new Set(["session", "prompt_a", "prompt_a_revision", "prompt_b", "prompt_b_revision",
-      "model_config", "model_revision", "exposure_config", "exposure_revision", "graph_workflow", "graph_session"]);
+    const allowed = new Set(["graph_workflow", "graph_session"]);
     const fields = raw.split("&"), values = new Map();
     if (!raw || raw.length > 1024 || fields.length > allowed.size) throw new Error("聊天入口身份无效");
     // URLSearchParams alone accepts empty fields and replaces malformed UTF-8.
@@ -30,22 +29,9 @@
     }
     const uuid = value => typeof value === "string" && value.length === 36
       && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
-    if (values.has("graph_workflow") || values.has("graph_session")) {
-      if ([...values.keys()].some(key => !["graph_workflow", "graph_session"].includes(key))
-        || !uuid(values.get("graph_workflow"))
-        || values.has("graph_session") && !uuid(values.get("graph_session"))) throw new Error("聊天入口身份无效");
-      return "graph";
-    }
-    if (!uuid(values.get("session"))) throw new Error("聊天入口身份无效");
-    for (const [config, revision] of [["prompt_a", "prompt_a_revision"], ["prompt_b", "prompt_b_revision"],
-      ["model_config", "model_revision"], ["exposure_config", "exposure_revision"]]) {
-      if (values.has(config) !== values.has(revision)) throw new Error("聊天入口身份无效");
-      if (!values.has(config)) continue;
-      const number = Number(values.get(revision));
-      if (!uuid(values.get(config)) || !/^[1-9][0-9]{0,15}$/.test(values.get(revision))
-        || !Number.isSafeInteger(number) || String(number) !== values.get(revision)) throw new Error("聊天入口身份无效");
-    }
-    return "legacy";
+    if (!uuid(values.get("graph_workflow"))
+      || values.has("graph_session") && !uuid(values.get("graph_session"))) throw new Error("聊天入口身份无效");
+    return "graph";
   }
   let kind;
   try { kind = entryKind(); }
@@ -53,13 +39,8 @@
   if (!kind) { unavailable("未指定工作流或会话", "入口未绑定"); return; }
   const mode = document.getElementById("mode");
   if (mode) mode.textContent = "正在连接";
-  if (kind === "legacy") {
-    const client = document.getElementById("chat-client");
-    if (client) client.hidden = false;
-  }
-  const paths = kind === "graph"
-    ? ["/static/graph-chat-core.js", "/static/frontend-package-host.js", "/static/frontend-package.js",
-      "/static/graph-chat.js"] : ["/static/app.js"];
+  const paths = ["/static/graph-chat-core.js", "/static/frontend-package-host.js", "/static/frontend-package.js",
+    "/static/graph-chat.js"];
   try {
     for (const path of paths) {
       try {

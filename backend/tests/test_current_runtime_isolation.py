@@ -7,7 +7,15 @@ import sys
 
 
 _BLOCKED = (
+    "phase1_agent.graph_agent_host",
     "phase1_agent.graph_agent_runtime",
+    "phase1_agent.graph_agent_nodes",
+    "phase1_agent.graph_agent_contracts",
+    "phase1_agent.graph_nodes",
+    "phase1_agent.graph_prompt",
+    "phase1_agent.graph_prompt_nodes",
+    "phase1_agent.graph_archives",
+    "phase1_agent.graph_archive_http",
     "phase1_agent.workbench_resources",
     "phase1_agent.workflow",
     "phase1_agent.prepared_context",
@@ -25,19 +33,10 @@ def _run_current_scenario(database):
 
     from phase1_agent.content_contracts import default_presentation
     from phase1_agent.contracts import ModelResponse, ModelToolCall
-    from phase1_agent.graph_agent_host import GraphAgentHost
     from phase1_agent.graph_service import GraphWorkflowService
     from phase1_agent.host_sdk import ObjectBinding, ResourceIdentity
+    from phase1_agent.model_host_service import MODEL_SERVICE_REF
     from phase1_agent.prompt_package import PROMPT_RESOURCE_TYPE
-
-    def no_legacy_calls(*args, **kwargs):
-        raise AssertionError("Current execution called the legacy Agent host")
-
-    for name in (
-        "_preflight_capabilities", "_host_call", "_agent_runtime",
-        "_preflight_legacy_model", "_preflight_legacy_content",
-    ):
-        setattr(GraphAgentHost, name, no_legacy_calls)
 
     calls = []
 
@@ -62,6 +61,7 @@ def _run_current_scenario(database):
         return Transport()
 
     with closing(GraphWorkflowService(database, public_model_factory=factory)) as service:
+        assert service._service_options[MODEL_SERVICE_REF]["transport_factory"] is factory
         assert not any(row["package_id"] == "workflow.compat" for row in service.registry.package_lock)
         nodes, edges = [], []
 
@@ -144,7 +144,7 @@ def _run_current_scenario(database):
             service.wait(started["active_chain_run_id"])
             final = service.get_session(view["workflow_session_id"])
             assert final["status"] == "succeeded", final["chains"]
-            assert service._native_runtime is None
+            assert not hasattr(service, "_native_runtime")
             assert not service._resource_frames and not service._service_runs
             return final
 
@@ -171,7 +171,7 @@ def _run_current_scenario(database):
     with closing(GraphWorkflowService(database, public_model_factory=factory)) as service:
         assert service.get_run(sid, chain_id) == history
         assert service.get_session(sid)["objects"] == second["objects"]
-        assert service._native_runtime is None
+        assert not hasattr(service, "_native_runtime")
         assert len(calls) == 3
     assert not any(name == blocked or name.startswith(blocked + ".")
                    for name in sys.modules for blocked in _BLOCKED)

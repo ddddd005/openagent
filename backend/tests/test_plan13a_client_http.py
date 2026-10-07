@@ -13,7 +13,7 @@ from phase1_agent.host_sdk import ObjectBinding
 from phase1_agent.graph_service import GraphWorkflowService
 from test_graph_server import host_server, request
 from test_graph_service import create, edge, node
-from test_tools_integration import run
+from graph_test_plugin import run_current_graph as run
 
 
 def display_document(service):
@@ -59,7 +59,7 @@ def test_shipped_consumer_reads_two_rounds_and_reopens_reference_only_display(tm
     if node_binary is None:
         pytest.skip("Node.js is required for the shipped JavaScript consumer integration")
     core_path = Path(__file__).resolve().parents[1] / "src" / "phase1_agent" / "static" / "graph-chat-core.js"
-    with host_server(tmp_path, monkeypatch) as (host, port):
+    with host_server(tmp_path) as (host, port):
         document = display_document(host.graph_service)
         status, saved = request(port, "POST", "/api/graph/commands", {
             "operation": "definition.save", "parameters": {
@@ -162,7 +162,7 @@ async function textEntries(client, output) {
         retained = final["objects"]["frontend"]["value"]["entries"]
         assert len(retained) == 4
         assert all(set(entry) == {"entry_id", "role", "source_ref"} for entry in retained)
-        assert host._legacy is None and host.graph_service._native_runtime is None
+        assert not hasattr(host, "_legacy") and not hasattr(host.graph_service, "_native_runtime")
 
 
 def test_actual_workbench_wiring_generates_a_runnable_shared_display(tmp_path):

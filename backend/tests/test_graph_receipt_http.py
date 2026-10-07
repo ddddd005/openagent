@@ -1,4 +1,4 @@
-"""Receipt HTTP routes leave both lazy coordinators and all saved rows untouched."""
+"""Receipt HTTP routes leave the lazy coordinator and all saved rows untouched."""
 
 from contextlib import closing, contextmanager
 import http.client
@@ -18,17 +18,17 @@ from test_graph_application_receipt_custody import (
 
 @contextmanager
 def serve_receipts(path, monkeypatch):
-    host = WorkflowHost(path, mode="offline")
+    host = WorkflowHost(path)
     prohibit_coordinators(monkeypatch)
     monkeypatch.setattr(WorkflowHost, "graph_service", property(forbidden))
-    monkeypatch.setattr(WorkflowHost, "__getattr__", forbidden)
-    server = create_server(host, port=0, mode="offline")
+    assert not hasattr(WorkflowHost, "__getattr__")
+    server = create_server(host, port=0)
     worker = Thread(target=server.serve_forever, daemon=True)
     worker.start()
     try:
-        assert host._graph is None and host._legacy is None
+        assert host._graph is None and not hasattr(host, "_legacy")
         yield host, server.server_address[1]
-        assert host._graph is None and host._legacy is None
+        assert host._graph is None and not hasattr(host, "_legacy")
     finally:
         server.shutdown()
         worker.join(5)
@@ -108,7 +108,7 @@ def test_http_failed_resolution_never_dispatches_or_writes(tmp_path, monkeypatch
         else:
             assert 400 <= status < 500
             assert "receipt" not in result and "result" not in result
-        assert host._graph is None and host._legacy is None
+        assert host._graph is None and not hasattr(host, "_legacy")
     assert raw_database(database) == before
 
 

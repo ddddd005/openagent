@@ -1,4 +1,4 @@
-"""Public resource preflight without legacy model or resource execution."""
+"""Public resource preflight and current-value execution boundaries."""
 
 from contextlib import closing
 from copy import deepcopy
@@ -16,7 +16,6 @@ from phase1_agent.capability_packages import CapabilityPackageLoader
 from phase1_agent.content_contracts import create_content_package, default_presentation
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.contract_json import canonical_bytes
-from phase1_agent.graph_agent_host import GraphAgentHost
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_resource_host import GraphResourceHost
 from phase1_agent.graph_service import GraphWorkflowService
@@ -87,20 +86,7 @@ def run(service, session):
     return service.get_session(session["workflow_session_id"])
 
 
-def no_legacy(*args, **kwargs):
-    pytest.fail("An independent resource graph entered a legacy host path")
-
-
-def fence_legacy_host(monkeypatch):
-    for name in (
-        "_preflight_capabilities", "_content_dependencies", "_preflight_legacy_model",
-        "_preflight_legacy_content", "_selected_history_heads", "_context_archives", "_host_call",
-    ):
-        monkeypatch.setattr(GraphAgentHost, name, no_legacy)
-
-
-def test_current_start_reopen_and_next_head_bypass_legacy_host(tmp_path, monkeypatch):
-    fence_legacy_host(monkeypatch)
+def test_current_start_reopen_and_next_head_use_current_resource_host(tmp_path):
     installed, record = independent_registry(), prompt_record()
     path = tmp_path / "current-resources.sqlite"
     document = current_graph(installed, record)
@@ -113,12 +99,10 @@ def test_current_start_reopen_and_next_head_bypass_legacy_host(tmp_path, monkeyp
         chain_id = completed["chains"][-1]["chain_run_id"]
         historical = service.get_run(completed["workflow_session_id"], chain_id)
         assert historical["chain"]["inputs"]["_workflow_frozen_resources"] == {
-            "models": {}, "content": {uid(10): {}, uid(11): {}},
             "global_resource_ids": {uid(10): [identity(record)], uid(11): [identity(record)]},
-            "history_heads": {},
         }
         assert "frozen prompt" not in canonical_bytes(historical["chain"]).decode()
-        assert service._native_runtime is None and service._resource_frames == {}
+        assert not hasattr(service, "_native_runtime") and service._resource_frames == {}
 
     with closing(GraphWorkflowService(path, registry=installed)) as reopened:
         assert reopened.get_run(completed["workflow_session_id"], chain_id) == historical
@@ -132,8 +116,7 @@ def test_current_start_reopen_and_next_head_bypass_legacy_host(tmp_path, monkeyp
         assert reopened._resource_frames == {}
 
 
-def test_current_pause_resume_keeps_start_frame_and_next_run_uses_current_head(tmp_path, monkeypatch):
-    fence_legacy_host(monkeypatch)
+def test_current_pause_resume_keeps_start_frame_and_next_run_uses_current_head(tmp_path):
     installed, record = independent_registry().detached(), prompt_record()
     entered, release = Event(), Event()
 
@@ -181,14 +164,13 @@ def test_current_pause_resume_keeps_start_frame_and_next_run_uses_current_head(t
         assert service._resource_frames == {}
         next_round = run(service, completed)
         assert next_round["nodes"][-1]["outputs"]["output"]["items"][0]["text"] == "updated while paused"
-        assert service._resource_frames == {} and service._native_runtime is None
+        assert service._resource_frames == {} and not hasattr(service, "_native_runtime")
 
 
 @pytest.mark.parametrize("problem,reason", [
     ("missing", "global_resource_missing"), ("disabled", "global_content_disabled"),
 ])
-def test_current_preflight_rejects_before_earlier_effects(tmp_path, monkeypatch, problem, reason):
-    fence_legacy_host(monkeypatch)
+def test_current_preflight_rejects_before_earlier_effects(tmp_path, problem, reason):
     installed, record, effects = independent_registry().detached(), prompt_record(), []
 
     def effect(config, inputs, context):
@@ -270,7 +252,6 @@ def test_dependency_callback_failure_and_detached_deduplication():
     result[0]["reference"]["scope"] = "project:changed"
     assert reference["reference"]["scope"] == "project:resources"
     assert node["config"]["nested"]["original"] is True
-    assert GraphAgentHost._content_dependencies(host, node) == [reference]
     assert GraphResourceHost._content_dependencies(dependency_host(None), node, allow_inputs=True) == []
 
 
@@ -279,7 +260,6 @@ class PreflightHost(GraphResourceHost):
         self.registry = SimpleNamespace(get=lambda component, version: entries[component])
         self.records = records
         self.reads = []
-        self.legacy_calls = []
 
     def _global_store(self, store):
         def read_many(references):
@@ -287,22 +267,6 @@ class PreflightHost(GraphResourceHost):
             return [deepcopy(record) for reference in references for record in self.records
                     if identity(record) == reference]
         return SimpleNamespace(read_many=read_many)
-
-    def _selected_history_heads(self, repo, sid, document):
-        self.legacy_calls.append(("heads", sid))
-        return {uid(10): uid(90)}
-
-    def _preflight_legacy_model(self, repo, node):
-        self.legacy_calls.append(("model", node["node_binding_id"]))
-        return {"binding": "frozen model"}
-
-    def _preflight_legacy_content(self, repo, identities):
-        self.legacy_calls.append(("content", deepcopy(identities)))
-        return [{"resource_id": identity, "revision": 3} for identity in identities]
-
-    def _context_archives(self, repo, sid, source_node_id, *, heads):
-        self.legacy_calls.append(("history", source_node_id, deepcopy(heads)))
-
 
 def inherited_plan(source_dependencies, *, input_type="GLOBAL_RESOURCE_REF"):
     source = {"node_binding_id": uid(10), "component_id": "test.source",
@@ -335,8 +299,6 @@ def inherited_plan(source_dependencies, *, input_type="GLOBAL_RESOURCE_REF"):
     ([{"kind": "global-resource", "reference": identity(prompt_record())},
       {"kind": "global-resource", "reference": identity(prompt_record(scope="workspace"))}],
      "GLOBAL_RESOURCE_REF", "graph_resource_dependency_undeclared"),
-    ([{"kind": "global-content", "resource_id": uid(1)}],
-     "GLOBAL_RESOURCE_REF", "graph_resource_dependency_undeclared"),
     ([{"kind": "global-resource", "reference": identity(prompt_record())}],
      "TEXT", "graph_resource_dependency_invalid"),
 ])
@@ -351,37 +313,33 @@ def test_reference_inheritance_requires_one_declared_current_identity(
     assert failure.value.diagnostics[0]["node_id"] == uid(11)
 
 
-def test_legacy_hooks_remain_conditional_and_compatibility_entry_delegates():
+def test_current_preflight_validator_receives_detached_current_records():
     current = prompt_record()
-    node = {"node_binding_id": uid(10), "component_id": "workflow.agent",
-            "component_version": "2", "config": {"source_node_id": uid(10)}}
+    node = {"node_binding_id": uid(10), "component_id": "test.reader",
+            "component_version": "1", "config": {"source_node_id": uid(10)}}
     calls = []
 
     def validate(config, records):
         calls.append(deepcopy(records))
         config["source_node_id"] = uid(999)
-        records[0]["revision"] = 999
-        records[1]["value"]["enabled"] = False
+        records[0]["value"]["enabled"] = False
 
-    entries = {"workflow.agent": SimpleNamespace(
+    entries = {"test.reader": SimpleNamespace(
         resource_dependencies_declaration=lambda config: [
-            {"kind": "global-content", "resource_id": uid(3)},
             {"kind": "global-resource", "reference": identity(current)},
         ], resource_input_ports=(), resource_preflight_validator=validate)}
-    definition = NodeDefinition("workflow.agent", "2", "Legacy", "Test", {}, {"type": "object"},
-                                capabilities=("model:resolve", "resources:read", "history:read"))
+    definition = NodeDefinition("test.reader", "1", "Reader", "Test", {}, {"type": "object"},
+                                capabilities=("resources:read",))
     plan = SimpleNamespace(document={"nodes": [node]}, ordered_node_ids=[uid(10)],
                            definitions={uid(10): definition}, input_edges={uid(10): {}})
     host, repo = PreflightHost(entries, [current]), SimpleNamespace(store=object())
-    frozen = GraphAgentHost._preflight_capabilities(host, repo, uid(50), plan)
-    assert host.legacy_calls == [
-        ("heads", uid(50)), ("model", uid(10)), ("content", [uid(3)]),
-        ("history", uid(10), {uid(10): uid(90)}),
-    ]
-    assert frozen["models"] == {uid(10): {"binding": "frozen model"}}
-    assert frozen["content"] == {uid(10): {uid(3): {"resource_id": uid(3), "revision": 3}}}
-    assert frozen["current_global_resources"] == {uid(10): [current]}
-    assert calls == [[{"resource_id": uid(3), "revision": 3}, current]]
+    frozen = host._preflight_capabilities(repo, uid(50), plan)
+    assert frozen == {
+        "global_resource_ids": {uid(10): [identity(current)]},
+        "current_global_resources": {uid(10): [current]},
+    }
+    assert calls == [[current]]
+    assert current["value"]["enabled"] is True
     assert node["config"] == {"source_node_id": uid(10)}
 
 
@@ -416,15 +374,21 @@ def test_declared_resource_never_falls_back_when_exact_frame_is_missing(frames):
     assert failure.value.reason_code == "recovery_unavailable"
 
 
-def test_current_frame_returns_detached_frozen_record_and_old_entry_delegates():
+def test_current_frame_returns_detached_frozen_record_through_current_host():
     record = prompt_record()
-    host = SimpleNamespace(_resource_frames={uid(60): {uid(10): [record]}})
+    host = GraphResourceHost()
+    host._resource_frames = {uid(60): {uid(10): [record]}}
     context = resource_context(identity(record))
     returned = GraphResourceHost._read_current_resource(host, context, identity(record))
     returned["value"]["members"][0]["text"] = "caller edit"
     assert record["value"]["members"][0]["text"] == "frozen prompt"
-    assert GraphAgentHost._host_call(host, context, "resources:read", "current-global-resource",
-                                    identity(record)) == record
+    assert host._host_call(context, "resources:read", "current-global-resource", identity(record)) == record
+
+
+def test_current_resource_host_refuses_unregistered_operations():
+    with pytest.raises(ContractValidationError) as failure:
+        GraphResourceHost()._host_call(None, "resources:read", "global-content", {})
+    assert failure.value.reason_code == "graph_capability_unknown"
 
 
 def test_fresh_process_current_start_blocks_legacy_resolver_modules(tmp_path):
@@ -434,7 +398,9 @@ import sys
 from contextlib import closing
 
 blocked = {
+    "phase1_agent.graph_agent_host",
     "phase1_agent.graph_agent_runtime",
+    "phase1_agent.graph_nodes",
     "phase1_agent.model_configuration_store",
     "phase1_agent.workbench_resources",
     "phase1_agent.workflow",
@@ -447,16 +413,9 @@ class NoLegacyResolvers(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, NoLegacyResolvers())
 sys.path.insert(0, sys.argv[2])
 from test_graph_resource_host import (
-    GraphAgentHost, GraphResourceHost, GraphWorkflowService, create_session,
+    GraphResourceHost, GraphWorkflowService, create_session,
     current_graph, independent_registry, prompt_record, run, uid, uuid4,
 )
-def forbidden(*args, **kwargs):
-    raise AssertionError("Current resources called a legacy host path")
-for name in (
-    "_preflight_capabilities", "_content_dependencies", "_preflight_legacy_model",
-    "_preflight_legacy_content", "_selected_history_heads", "_context_archives", "_host_call",
-):
-    setattr(GraphAgentHost, name, forbidden)
 record = prompt_record("fresh isolated prompt")
 registry = independent_registry()
 with closing(GraphWorkflowService(sys.argv[1], registry=registry)) as service:
@@ -465,7 +424,7 @@ with closing(GraphWorkflowService(sys.argv[1], registry=registry)) as service:
     result = run(service, create_session(service, current_graph(registry, record)))
     assert result["status"] == "succeeded"
     assert result["nodes"][-1]["outputs"]["output"]["items"][0]["text"] == "fresh isolated prompt"
-    assert service._resource_frames == {} and service._native_runtime is None
+    assert service._resource_frames == {} and not hasattr(service, "_native_runtime")
 with closing(GraphWorkflowService(sys.argv[1], registry=registry)) as reopened:
     result = run(reopened, reopened.get_session(result["workflow_session_id"]))
     assert result["status"] == "succeeded"

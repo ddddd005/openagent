@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readGraphArchive, readGraphCatalog, readGraphCatalogDetails, readGraphRun, readGraphSessions } from "./workflowGraphApi";
+import { readGraphCatalog, readGraphCatalogDetails, readGraphRun, readGraphSessions } from "./workflowGraphApi";
 import { workflowFrontendExtensions } from "../plugins/workflowFrontendManifest";
 afterEach(() => vi.unstubAllGlobals());
 describe("generic node run history decoding", () => {
@@ -93,17 +93,5 @@ describe("generic node run history decoding", () => {
     expect((await readGraphRun(session, chain)).node_runs[0].input_values).toEqual({});
     Object.assign(row.input_values, { input: response.outputs[0].payload });
     await expect(readGraphRun(session, chain)).rejects.toThrow("不匹配");
-  });
-  it("reads a frozen legacy archive without replacing its original ownership", async () => {
-    const session = crypto.randomUUID(); const turn = crypto.randomUUID(); const source = crypto.randomUUID();
-    const record = { turn: { turn_id: turn, workflow_session_id: source },
-      root: [{ message_id: crypto.randomUUID(), role: "user", blocks: [{ type: "text", text: "root" }] }], snapshot: { workflow_session_id: source } };
-    const fetcher = vi.fn(async (_path: string) => new Response(JSON.stringify(record))); vi.stubGlobal("fetch", fetcher);
-    expect((await readGraphArchive(session, turn)).turn.workflow_session_id).toBe(source);
-    expect(fetcher).toHaveBeenCalledWith("/api/graph/queries", expect.objectContaining({
-      method: "POST", body: JSON.stringify({ operation: "archive.read", parameters: { session_id: session, archive_id: turn } }),
-    }));
-    record.turn.turn_id = crypto.randomUUID();
-    await expect(readGraphArchive(session, turn)).rejects.toThrow("不匹配");
   });
 });

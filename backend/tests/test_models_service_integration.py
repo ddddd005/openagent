@@ -133,7 +133,7 @@ def test_default_loaded_model_graph_persists_secret_free_facts_and_releases_fram
         assert len(fixture.calls) == 1
         assert fixture.closes == 1
         assert not service._service_runs
-        assert service._native_runtime is None
+        assert not hasattr(service, "_native_runtime")
         encoded = canonical_bytes(history).decode("utf-8")
         assert "private-api-secret" not in encoded
         assert "credential_evidence" not in encoded

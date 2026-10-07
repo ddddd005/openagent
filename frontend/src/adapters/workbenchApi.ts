@@ -1,44 +1,3 @@
-import type { WorkflowObservation } from "../domain/observation";
-
-export const AGENT_BINDINGS = {
-  A: "7be319b8-30bd-4674-b7bf-d1cf54a1a108",
-  B: "7be319b8-30bd-4674-b7bf-d1cf54a1a109",
-} as const;
-
-export interface PublicNodeState {
-  node_binding_id: string;
-  label: string;
-  status: string;
-  run_id: string | null;
-  revision: number | null;
-  budget?: {
-    max_model_requests: number;
-    max_model_attempts: number;
-    model_requests: number;
-    attempts: number;
-  };
-}
-
-export interface PublicSession {
-  observation?: WorkflowObservation;
-  workflow_session_id: string;
-  revision: number;
-  mode: string;
-  can_submit: boolean;
-  ref_revision?: number;
-  head_commit_id?: string | null;
-  available_actions: string[];
-  nodes: PublicNodeState[];
-  chains: { chain_run_id: string; status: string }[];
-  messages: {
-    visible_message_id: string;
-    role: string;
-    payload: unknown;
-    sequence: number;
-    chain_run_id: string | null;
-  }[];
-}
-
 export type FailureKind = "unavailable" | "rejected" | "unknown";
 
 export class WorkbenchApiError extends Error {
@@ -66,7 +25,6 @@ const publicReasons: Record<string, string> = {
   storage_error: "存储服务暂不可用",
   storage_contract_violation: "存储契约校验失败",
   not_found: "目标不存在",
-  model_dependency_missing: "A/B 模型依赖缺失",
   provider_missing: "确切供应商配置不存在",
   provider_unavailable: "供应商已停用",
   credential_reference_missing: "供应商凭据引用缺失或已撤销",
@@ -152,36 +110,4 @@ export async function workbenchRequest<T>(
     throw failure;
   }
   return data as T;
-}
-
-export function isPublicSession(value: unknown, sessionId: string): value is PublicSession {
-  const view = value as Partial<PublicSession> | null;
-  const uuid = (input: unknown) => typeof input === "string"
-    && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input);
-  const nonnegative = (input: unknown) => Number.isSafeInteger(input) && (input as number) >= 0;
-  const statuses = [
-    "idle", "pending", "prepared", "queued", "running", "pausing", "paused",
-    "final_ready", "succeeded", "failed", "superseded", "closed", "recovery_unavailable",
-  ];
-  const bindings: string[] = [...Object.values(AGENT_BINDINGS), "7be319b8-30bd-4674-b7bf-d1cf54a1a10a"];
-  return !!view && view.workflow_session_id === sessionId
-    && uuid(view.workflow_session_id) && nonnegative(view.revision) && typeof view.can_submit === "boolean"
-    && (view.ref_revision === undefined || nonnegative(view.ref_revision))
-    && (view.head_commit_id === undefined || view.head_commit_id === null || uuid(view.head_commit_id))
-    && ["offline", "deepseek"].includes(view.mode ?? "")
-    && Array.isArray(view.available_actions) && view.available_actions.every((a) => typeof a === "string")
-    && Array.isArray(view.nodes) && view.nodes.length === 3
-    && new Set(view.nodes.map((node) => node?.node_binding_id)).size === 3
-    && view.nodes.every((node) => node && bindings.includes(node.node_binding_id)
-      && typeof node.label === "string" && statuses.includes(node.status)
-      && (node.run_id === null ? node.revision === null : uuid(node.run_id) && nonnegative(node.revision))
-      && (!node.budget || ["max_model_requests", "max_model_attempts", "model_requests", "attempts"]
-        .every((key) => nonnegative(node.budget![key as keyof NonNullable<PublicNodeState["budget"]>]))
-        && Object.keys(node.budget).length === 4))
-    && Array.isArray(view.chains) && view.chains.every((chain) =>
-      chain && uuid(chain.chain_run_id) && statuses.includes(chain.status))
-    && Array.isArray(view.messages) && view.messages.every((message) =>
-      message && uuid(message.visible_message_id) && ["user", "assistant"].includes(message.role)
-      && nonnegative(message.sequence)
-      && (message.chain_run_id === null || uuid(message.chain_run_id)));
 }

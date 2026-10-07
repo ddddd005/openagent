@@ -11,13 +11,12 @@ from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_application_contracts import COMMANDS, QUERIES
 from phase1_agent.graph_http import dispatch_graph
 from phase1_agent.graph_service import GraphWorkflowService
-from phase1_agent.global_resources import legacy_content_to_current
 from phase1_agent.host_sdk import WriteIntent
 
 from test_graph_service import create, gate_graph, service, text_graph
 from test_graph_session_objects import object_graph, task_package
 from test_graph_server import host_server, request
-from resource_fixtures import resource
+from test_graph_resource_host import prompt_record
 
 
 def public_document(service):
@@ -53,7 +52,7 @@ def test_named_commands_and_queries_preserve_original_receipts(service):
     with pytest.raises(ContractValidationError) as conflict:
         app.command("run.start", {**original, "inputs": {"text": "different"}})
     assert conflict.value.reason_code == "idempotency_conflict"
-    assert service._native_runtime is None
+    assert not hasattr(service, "_native_runtime")
 
 
 def test_consumer_receipt_remains_stable_after_fresh_observation_changes(service):
@@ -82,7 +81,7 @@ def test_consumer_receipt_remains_stable_after_fresh_observation_changes(service
 
 @pytest.mark.parametrize("name,parameters", [
     ("session.read", {}), ("object.list", {}), ("object.read", {}),
-    ("manifest.read", {}), ("run.read", {}), ("archive.read", {}),
+    ("manifest.read", {}), ("run.read", {}),
     ("candidate.list", {}), ("resource.read", {}), ("catalog.node-types", {}),
 ])
 def test_consumer_scope_cannot_dispatch_management_queries(service, name, parameters):
@@ -164,7 +163,7 @@ def test_actions_and_control_remain_callable_while_graph_is_paused(service):
 
 def test_object_commands_use_original_service_permissions_and_receipts(tmp_path):
     with closing(GraphWorkflowService(tmp_path / "application-objects.sqlite", capability_packages=[task_package()],
-                                      enabled_packages={"workflow.compat": "1.0.0", "example.tasks": "1.0.0"})) as service:
+                                      enabled_packages={"workflow.tools": "1.0.0", "example.tasks": "1.0.0"})) as service:
         app = GraphApplication(service)
         doc = object_graph(service)
         view = create(service, doc)
@@ -183,7 +182,7 @@ def test_object_commands_use_original_service_permissions_and_receipts(tmp_path)
 
 def test_resource_receipts_are_identity_only_and_fresh_queries_read_current_head(service):
     app = GraphApplication(service)
-    record = legacy_content_to_current(resource("application-original"))
+    record = prompt_record("application-original", scope="workspace")
     original = {"record": record, "expected_sequence": 0, "idempotency_key": str(uuid4())}
     first = app.command("resource.save", original)
     reference = first["result"]["reference"]
@@ -203,7 +202,7 @@ def test_resource_receipts_are_identity_only_and_fresh_queries_read_current_head
     assert dispatch_graph(service, "POST", "/api/graph/resources/list", {}) == (200, [])
 
 
-def test_legacy_http_routes_really_use_application_command_and_query(service, monkeypatch):
+def test_rest_http_routes_use_application_command_and_query(service, monkeypatch):
     calls = []
     command, query = GraphApplication.command, GraphApplication.query
 
@@ -219,18 +218,18 @@ def test_legacy_http_routes_really_use_application_command_and_query(service, mo
     monkeypatch.setattr(GraphApplication, "query", query_spy)
     doc = public_document(service)
     assert dispatch_graph(service, "POST", "/api/graph/definitions", {
-        "document": doc, "expected_revision": 0, "idempotency_key": "legacy-http-save"}) == (201, doc)
+        "document": doc, "expected_revision": 0, "idempotency_key": "rest-http-save"}) == (201, doc)
     assert dispatch_graph(service, "GET", "/api/graph/definitions/" + doc["workflow_definition_id"]) == (200, doc)
     _, session = dispatch_graph(service, "POST", "/api/graph/sessions", {
-        "workflow_definition_id": doc["workflow_definition_id"], "definition_revision": 1, "idempotency_key": "legacy-http-create"})
+        "workflow_definition_id": doc["workflow_definition_id"], "definition_revision": 1, "idempotency_key": "rest-http-create"})
     sid = session["workflow_session_id"]
     assert dispatch_graph(service, "GET", "/api/graph/sessions/" + sid + "/consumer")[1]["kind"] == "workflow.consumer"
     assert calls == [("command", "definition.save"), ("query", "definition.read"),
                      ("command", "session.create"), ("query", "consumer.read")]
 
 
-def test_http_envelopes_preserve_original_identity_and_consumer_scope(tmp_path, monkeypatch):
-    with host_server(tmp_path, monkeypatch) as (host, port):
+def test_http_envelopes_preserve_original_identity_and_consumer_scope(tmp_path):
+    with host_server(tmp_path) as (host, port):
         discovery = request(port, "GET", "/api/graph/application")[1]
         assert discovery["scope"] == "management"
         assert request(port, "GET", "/api/graph/consumer/application")[1]["scope"] == "consumer"
@@ -251,7 +250,7 @@ def test_http_envelopes_preserve_original_identity_and_consumer_scope(tmp_path, 
         assert request(port, "POST", "/api/graph/commands", {"operation": "not.registered", "parameters": {}})[0] == 404
         assert request(port, "POST", "/api/graph/queries", {"operation": "definition.read", "parameters": {
             "identity": doc["workflow_definition_id"], "revision": True}})[0] == 400
-        assert host._legacy is None and host.graph_service._native_runtime is None
+        assert not hasattr(host, "_legacy") and not hasattr(host.graph_service, "_native_runtime")
 
 
 @pytest.mark.parametrize("path", ["/api/graph/resources/list", "/api/graph/resources/read"])

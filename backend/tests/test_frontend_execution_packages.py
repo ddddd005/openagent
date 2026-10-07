@@ -13,7 +13,7 @@ from phase1_agent.host_sdk import DataTypeDefinition
 
 from test_graph_service import create
 from test_plan13a_frontend_public import frontend_graph
-from test_tools_integration import run
+from graph_test_plugin import run_current_graph as run
 
 
 def package(identity, *, dependencies=(), ui=False, business=False):

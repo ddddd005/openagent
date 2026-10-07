@@ -19,7 +19,7 @@ from phase1_agent.host_sdk import DataTypeDefinition, HostContractError, ObjectB
 
 from test_graph_public import rebind
 from test_graph_service import create, edge, node, uid
-from test_tools_integration import document, run
+from graph_test_plugin import current_document as document, run_current_graph as run
 
 
 @pytest.fixture
@@ -28,7 +28,7 @@ def service(tmp_path):
         pytest.fail("Frontend presentation attempted to construct a model")
 
     with closing(GraphWorkflowService(
-        tmp_path / "frontend-public.sqlite", model_factory=no_model, public_model_factory=no_model,
+        tmp_path / "frontend-public.sqlite", public_model_factory=no_model,
     )) as instance:
         yield instance
 
@@ -110,7 +110,7 @@ def test_public_presentation_returns_only_entries_and_artifact_payload_type_prod
     assert management["producer"]["node_binding_id"] == source["node_binding_id"]
     assert management["producer"]["workflow_session_id"] == final["workflow_session_id"]
     assert management["reference"] == entry["source_ref"]
-    assert service._native_runtime is None
+    assert not hasattr(service, "_native_runtime")
     history = service.get_run(final["workflow_session_id"], final["selected_chain_run_id"])
     private_view = next(row for row in history["node_runs"] if row["node_binding_id"] == append["node_binding_id"])
     for ref in (

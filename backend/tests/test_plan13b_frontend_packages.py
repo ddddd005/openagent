@@ -17,7 +17,7 @@ from phase1_agent.prompt_package import PROMPT_FRONTEND_EXTENSIONS
 
 from test_graph_service import create
 from test_plan13a_frontend_public import frontend_graph
-from test_tools_integration import run
+from graph_test_plugin import run_current_graph as run
 
 
 def loader():
@@ -271,12 +271,6 @@ def test_missing_ui_package_on_reopen_does_not_activate_fallback_or_delete_saved
     original = builtin_packages.builtin_capability_packages
     monkeypatch.setattr(builtin_packages, "builtin_capability_packages", lambda **kwargs: tuple(
         item for item in original(**kwargs) if item.manifest.package_id != "workflow.frontend"))
-    from phase1_agent import graph_nodes
-
-    def no_compat_registry():
-        pytest.fail("A missing saved UI package constructed a compatibility registry")
-
-    monkeypatch.setattr(graph_nodes, "create_default_registry", no_compat_registry)
     with closing(GraphWorkflowService(database)) as service:
         catalog = service.platform_capabilities()
         assert catalog["package_diagnostics"][0]["reason_code"] == "package_missing_dependency"
@@ -290,4 +284,4 @@ def test_missing_ui_package_on_reopen_does_not_activate_fallback_or_delete_saved
         with pytest.raises(ContractValidationError) as denied:
             run(service, service.get_session(sid), inputs={"text": "must not execute"})
         assert denied.value.reason_code == "package_missing_dependency"
-        assert service._native_runtime is None
+        assert not hasattr(service, "_native_runtime")

@@ -5,10 +5,11 @@ import pytest
 
 from phase1_agent.capability_packages import (
     CapabilityPackage, CapabilityPackageLoader, PackageDependency, PackageManifest,
-    create_compatibility_package, discover_trusted_packages,
+    discover_trusted_packages,
 )
-from phase1_agent.graph_contracts import GraphCompiler, NodeDefinition, NodePort, NodeRegistry, text_value
-from phase1_agent.graph_nodes import create_default_registry, create_package_registry
+from phase1_agent.content_contracts import create_content_package, text_content
+from phase1_agent.graph_contracts import NodeDefinition, NodePort, NodeRegistry
+from phase1_agent.capability_registry import create_package_registry
 from phase1_agent.host_sdk import DataTypeDefinition, HostContractError
 
 from test_graph_execution import document, edge, node, run_graph
@@ -23,20 +24,23 @@ def test_independent_package_declares_types_node_and_optional_frontend_without_c
         host.register_data_type(DataTypeDefinition("sample.counter", 1, {"type": "integer"}, 0))
         host.register_node(NodeDefinition(
             "sample.upper", "1", "Upper", "Sample", {}, {"type": "object", "additionalProperties": False},
-            inputs=(NodePort("input", "TEXT"),), outputs=(NodePort("output", "TEXT"),),
-        ), lambda config, inputs, context: {"output": text_value(inputs["input"]["text"].upper())})
+            inputs=(NodePort("input", "TEXT", data_schema_version=2),),
+            outputs=(NodePort("output", "TEXT", data_schema_version=2),),
+        ), lambda config, inputs, context: {"output": text_content(inputs["input"]["text"].upper())})
         host.register_frontend_extension("sample.upper.editor", "field-editor", "sample/frontend:Upper",
                                          component_id="sample.upper", component_version="1")
 
-    loaded = create_package_registry(packages=(package("sample", register),),
-                                    enabled={"sample": "1.0.0", "workflow.compat": "1.0.0"})
+    loaded = create_package_registry(packages=(package("sample", register,
+                                    dependencies=(PackageDependency("workflow.content", "1.0.0"),)),),
+                                    enabled={"sample": "1.0.0", "workflow.tools": "1.0.0"})
     graph = document([node(1, config={"text": "ready"}), node(2, "sample.upper", registry=loaded.registry),
-                      node(3, "workflow.output")], [edge(10, 1, 2), edge(11, 2, 3)])
+                      node(3, "tools.output")], [edge(10, 1, 2), edge(11, 2, 3)])
     assert run_graph(graph, loaded.registry).outputs[node(3)["node_binding_id"]]["output"]["text"] == "READY"
     assert loaded.registry.data_types.default("sample.counter", 1) == 0
     assert loaded.frontend_extensions[0]["package_id"] == "sample"
     assert loaded.package_lock == ({"package_id": "sample", "version": "1.0.0"},
-                                   {"package_id": "workflow.compat", "version": "1.0.0"})
+                                   {"package_id": "workflow.content", "version": "1.0.0"},
+                                   {"package_id": "workflow.tools", "version": "1.0.0"})
     with pytest.raises(Exception, match="frozen"):
         loaded.registry.register(NodeDefinition("other", "1", "Other", "Other", {}, {}), None)
 
@@ -53,8 +57,7 @@ def test_dependencies_register_in_topological_order_and_lock_every_resolved_vers
     assert [manifest["package_id"] for manifest in loaded.package_manifests] == ["z", "a"]
 
 
-def test_compatibility_shared_transport_contract_is_independent_of_dependency_loading_order():
-    from phase1_agent.content_contracts import create_content_package
+def test_current_shared_transport_contract_is_independent_of_dependency_loading_order():
     from phase1_agent.prompt_package import create_prompt_package
 
     synthetic = package(
@@ -62,12 +65,11 @@ def test_compatibility_shared_transport_contract_is_independent_of_dependency_lo
         dependencies=(PackageDependency("workflow.content", "1.0.0"),
                       PackageDependency("workflow.prompts", "1.0.0")))
     loaded = CapabilityPackageLoader((
-        create_compatibility_package(create_default_registry()),
         create_content_package(), create_prompt_package(), synthetic,
-    )).load({"workflow.compat": "1.0.0", "context-test.synthetic": "1.0.0"})
+    )).load({"context-test.synthetic": "1.0.0"})
     assert loaded.registry.data_types.get("GLOBAL_RESOURCE_REF", 1, scope="content") is not None
     assert [item["package_id"] for item in loaded.package_manifests].index("workflow.content") < [
-        item["package_id"] for item in loaded.package_manifests].index("workflow.compat")
+        item["package_id"] for item in loaded.package_manifests].index("workflow.prompts")
 
 
 @pytest.mark.parametrize("packages,enabled,reason", [
@@ -111,11 +113,13 @@ def test_upgrade_and_disable_return_new_registries_and_preserve_old_frozen_execu
     def register(text):
         return lambda host: host.register_node(NodeDefinition(
             "sample.source", "1", "Source", "Sample", {}, {"type": "object"},
-            outputs=(NodePort("output", "TEXT"),), is_output=True,
-        ), lambda config, inputs, context: {"output": text_value(text)})
+            outputs=(NodePort("output", "TEXT", data_schema_version=2),), is_output=True,
+        ), lambda config, inputs, context: {"output": text_content(text)})
 
-    loader = CapabilityPackageLoader((package("sample", register("old")),
-                                     package("sample", register("new"), version="2.0.0")))
+    dependencies = (PackageDependency("workflow.content", "1.0.0"),)
+    loader = CapabilityPackageLoader((create_content_package(),
+                                     package("sample", register("old"), dependencies=dependencies),
+                                     package("sample", register("new"), version="2.0.0", dependencies=dependencies)))
     old = loader.load({"sample": "1.0.0"})
     new = loader.load({"sample": "2.0.0"})
     disabled = loader.load({})
@@ -159,24 +163,13 @@ def test_package_upgrade_cannot_reinterpret_a_stored_schema_version():
     assert loader.load({"sample": "1.0.0"}).registry.data_types.default("sample.value", 1) == ""
 
 
-def test_compatibility_package_keeps_existing_node_declarations_and_versioned_global_types():
-    registry = create_default_registry()
-    loaded = CapabilityPackageLoader((create_compatibility_package(registry),)).load({"workflow.compat": "1.0.0"})
-    assert loaded.registry.catalog() == registry.catalog()
-    assert loaded.registry.data_types.catalog() == registry.data_types.catalog()
-    graph = {**document([node(1, config={"text": "compat"}), node(2, "workflow.output")], [edge(10, 1, 2)]),
-             "schema_version": 2, "object_bindings": [],
-             "package_lock": [{"package_id": "workflow.compat", "version": "1.0.0"}]}
-    assert GraphCompiler(loaded.registry).compile(graph).document == graph
-
-
-def test_registered_resource_preflight_hook_survives_compatibility_loading_and_detach():
+def test_registered_resource_preflight_hook_survives_package_loading_and_detach():
     calls = []
-    registry = NodeRegistry()
     validator = lambda config, records: calls.append((config, records))
-    registry.register(NodeDefinition("sample.resource", "1", "Resource", "Sample", {}, {}),
-                      None, resource_preflight_validator=validator)
-    loaded = CapabilityPackageLoader((create_compatibility_package(registry),)).load({"workflow.compat": "1.0.0"})
+    def register(host):
+        host.register_node(NodeDefinition("sample.resource", "1", "Resource", "Sample", {}, {}),
+                           None, resource_preflight_validator=validator)
+    loaded = CapabilityPackageLoader((package("sample", register),)).load({"sample": "1.0.0"})
     frozen = loaded.registry.detached(frozen=True)
     entry = frozen.get("sample.resource", "1")
     entry.resource_preflight_validator({"resource_id": "chosen"}, [{"resource_id": "chosen", "enabled": True}])

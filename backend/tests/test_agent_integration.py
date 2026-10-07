@@ -134,7 +134,7 @@ def test_agent_two_rounds_preserve_tool_order_use_exact_view_and_explicitly_save
         assert wire[3]["tool_call_id"] == wire[1]["calls"][1]["id"]
         assert wire[5]["tool_call_id"] == wire[4]["calls"][0]["id"]
         assert len(fixture.calls) == 4 and fixture.closes == 2
-        assert service._native_runtime is None
+        assert not hasattr(service, "_native_runtime")
         assert service._runtime_hosts == {} and not service._service_runs
         history = service.get_run(second["workflow_session_id"], second["selected_chain_run_id"])
         executor_facts = [fact for fact in history["runtime_facts"] if "executor_ref" in fact]
@@ -281,5 +281,5 @@ def test_context_save_failure_keeps_accepted_agent_artifacts_and_does_not_repeat
         assert adopted["session"]["objects"]["context"]["value"]["view_ref"]["output_id"] == (
             advance_record["output_refs"]["output"])
         assert len(fixture.calls) == 1 and fixture.closes == 1
-        assert service._native_runtime is None and service._runtime_hosts == {}
+        assert not hasattr(service, "_native_runtime") and service._runtime_hosts == {}
         assert not service._service_runs

@@ -39,11 +39,11 @@ assert.deepEqual(sort(exports.workflowFrontendExtensions), sort(JSON.parse(proce
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_consumer_package_mount_disable_headless_run_and_reenable(tmp_path, monkeypatch):
+def test_consumer_package_mount_disable_headless_run_and_reenable(tmp_path):
     node_binary = shutil.which("node")
     if node_binary is None:
         pytest.skip("Node.js is required for the shipped consumer package integration")
-    with host_server(tmp_path, monkeypatch) as (host, port):
+    with host_server(tmp_path) as (host, port):
         document = display_document(host.graph_service)
         status, saved = request(port, "POST", "/api/graph/commands", {
             "operation": "definition.save", "parameters": {
@@ -164,4 +164,4 @@ async function body(container, index) {
         assert session["status"] == "succeeded"
         assert len(session["objects"]["frontend"]["value"]["entries"]) == 4
         assert len(host.graph_service.list_graph_candidates(evidence["sessionId"])["candidates"]) == 2
-        assert host._legacy is None and host.graph_service._native_runtime is None
+        assert not hasattr(host, "_legacy") and not hasattr(host.graph_service, "_native_runtime")

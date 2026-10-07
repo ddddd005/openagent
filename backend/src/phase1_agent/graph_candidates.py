@@ -203,8 +203,7 @@ class GraphCandidateHost:
                       "workflow_definition_id": document["workflow_definition_id"],
                       "definition_revision": document["revision"],
                       "head_commit_id": commit["commit_id"],
-                      "candidate_commit_id": commit["commit_id"], "state_mappings": [],
-                      "legacy_archives": deepcopy(self._legacy_refs(repo, sid))}
+                      "candidate_commit_id": commit["commit_id"], "state_mappings": []}
             manifest = self._manifests(repo).get("state_snapshot", snapshot["state_snapshot_id"])
             objects = self._objects(repo).at_manifest(manifest["objects"]) if manifest else None
             return self._new_session(repo, document, state=state, private=private, source=source,

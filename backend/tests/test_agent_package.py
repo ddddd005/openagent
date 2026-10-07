@@ -13,7 +13,7 @@ from phase1_agent.context_contract import read_context_view
 from phase1_agent.context_prompt import assemble_context_prompt
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.graph_execution import NodeExecutionContext
-from phase1_agent.graph_nodes import create_package_registry
+from phase1_agent.capability_registry import create_package_registry
 from phase1_agent.runtime import KernelContractError
 from phase1_agent.runtime_hosting import InvocationOwner, RuntimeHost
 from phase1_agent.tools import final_answer_tool, register_callable

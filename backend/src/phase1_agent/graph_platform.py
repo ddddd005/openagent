@@ -37,13 +37,6 @@ class GraphPlatform:
                         identity = ResourceIdentity.from_dict(dependency["reference"]).to_dict()
                     except Exception:
                         continue
-                elif dependency.get("kind") == "global-content":
-                    from .host_sdk import ResourceIdentity
-                    try:
-                        identity = ResourceIdentity("workspace", "workflow.legacy-global-content",
-                                                    dependency["resource_id"]).to_dict()
-                    except Exception:
-                        continue
                 else:
                     continue
                 if identity not in resources:
@@ -79,11 +72,17 @@ class GraphPlatform:
                 "This service was constructed with a custom registry", 409)
         with self._lock, closing(self._store()) as store:
             self._check_open()
-            active = [row for row in GraphRecordStore(store).rows("workflow_session")
+            repo = GraphRecordStore(store)
+            active = [row for row in repo.rows("workflow_session")
                       if row["active_chain_run_id"] is not None]
-            require(not active, "package_change_during_execution",
+            retained = (any(not future.done() for future in self._futures.values())
+                        or self._pauses or self._resuming or self._resource_frames
+                        or self._execution_registries or self._runtime_hosts or self._service_runs
+                        or self._acceptance_candidates or self._failed_retry_candidates
+                        or self._information_routers)
+            require(not active and not retained, "package_change_during_execution",
                     "Settle active executions before changing project packages", 409)
-            loaded = self._package_loader.load(enabled_packages)
+            loaded = self._load_current_capabilities(enabled_packages)
             from .graph_package_selection import GraphPackageSelectionStore
             from .type_contract_store import TypeContractStore
             try:
@@ -264,9 +263,3 @@ class GraphPlatform:
             self._check_open()
             return self._global_store(store).delete(identity, expected_sequence=expected_sequence,
                                                     idempotency_key=idempotency_key)
-
-    def import_global_resource(self, legacy_id, *, idempotency_key, scope="workspace"):
-        with self._lock, closing(self._store()) as store:
-            self._check_open()
-            return self._global_store(store).import_legacy_current(
-                legacy_id, scope=scope, idempotency_key=idempotency_key)

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import inspect
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
@@ -69,7 +68,7 @@ class FrozenConfiguredAdapter:
         self.verify_settings()
 
     def verify_settings(self) -> None:
-        target = getattr(self.implementation, "legacy_adapter", self.implementation)
+        target = self.implementation
         undeclared = object()
         declared = getattr(target, "model_parameters", undeclared)
         if declared is not undeclared and FrozenModelParameters.from_mapping(declared) != self._parameters:
@@ -90,31 +89,3 @@ class FrozenConfiguredAdapter:
         close = getattr(self.implementation, "close", None)
         if callable(close):
             close()
-
-
-def create_configured_adapter(
-    factory: Callable[..., Any], stage: str, parameters: FrozenModelParameters,
-    *, legacy_defaults: FrozenModelParameters, provider=None,
-) -> Any:
-    """Adapt the old fixed-default test hook without ignoring nondefault settings."""
-    try:
-        signature = inspect.signature(factory)
-    except (TypeError, ValueError) as exc:
-        raise ContractValidationError("Model factory must expose its configuration signature") from exc
-    arguments = ((stage, parameters.as_mapping(), MappingProxyType(dict(provider)))
-                 if provider is not None else (stage, parameters.as_mapping()))
-    try:
-        signature.bind(*arguments)
-    except TypeError:
-        if provider is not None:
-            raise ContractValidationError("Selected provider requires a provider-aware model factory") from None
-        try:
-            signature.bind(stage)
-        except TypeError as exc:
-            raise ContractValidationError("Model factory must accept stage and frozen settings") from exc
-        if parameters != legacy_defaults:
-            raise ContractValidationError(
-                "Legacy model_factory(stage) supports only fixed default model settings"
-            )
-        return factory(stage)
-    return factory(*arguments)

@@ -1,4 +1,4 @@
-"""Current execution selection without rewriting the historical project row."""
+"""Exact package selection for current graph execution."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from .graph_records import require
 
 
 CURRENT_EXECUTION_CONFIGURATION = "current-execution"
-HISTORICAL_PROJECT_CONFIGURATION = "project"
 
 
 @dataclass(frozen=True)
@@ -35,16 +34,10 @@ class GraphPackageSelectionStore:
     def current_payload(self) -> str | None:
         return self._payload(CURRENT_EXECUTION_CONFIGURATION)
 
-    def historical_payload(self) -> str | None:
-        return self._payload(HISTORICAL_PROJECT_CONFIGURATION)
-
     def read_effective(self, default_selection) -> GraphPackageSelection:
-        for configuration_id in (
-            CURRENT_EXECUTION_CONFIGURATION, HISTORICAL_PROJECT_CONFIGURATION,
-        ):
-            payload = self._payload(configuration_id)
-            if payload is not None:
-                return GraphPackageSelection(configuration_id, loads_strict(payload), payload)
+        payload = self.current_payload()
+        if payload is not None:
+            return GraphPackageSelection(CURRENT_EXECUTION_CONFIGURATION, loads_strict(payload), payload)
         return GraphPackageSelection(None, deepcopy(default_selection), None)
 
     def write_current(self, enabled_packages) -> None:

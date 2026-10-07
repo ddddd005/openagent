@@ -131,7 +131,7 @@ def _session_result(result):
 
 def _resource_result(operation, parameters, result):
     required = {"reference", "update_sequence", "deleted"}
-    _check(set(result) == required | ({"legacy_source"} if operation == "resource.import" else set()))
+    _check(set(result) == required)
     reference = ResourceIdentity.from_dict(result["reference"]).to_dict()
     if operation == "resource.save":
         record = parameters["record"]
@@ -146,12 +146,7 @@ def _resource_result(operation, parameters, result):
         _check(_integer(parameters["expected_sequence"], 1))
         sequence = parameters["expected_sequence"] + 1
     else:
-        expected = {"envelope_version": 1, "scope": parameters.get("scope", "workspace"),
-                    "type_id": "workflow.global-content", "resource_id": parameters["legacy_id"]}
-        sequence = 1
-        legacy = result["legacy_source"]
-        _check(type(legacy) is dict and set(legacy) == {"resource_id", "revision"}
-               and legacy["resource_id"] == parameters["legacy_id"] and _integer(legacy["revision"], 1))
+        raise _ReceiptEvidenceError("unsupported_operation")
     _check(_same(reference, expected) and _integer(result["update_sequence"], 1)
            and result["update_sequence"] == sequence
            and type(result["deleted"]) is bool and result["deleted"] == (operation == "resource.delete"))
@@ -192,7 +187,7 @@ def _validate_result(operation, parameters, result):
     source = _session_result(result)
     name = operation.removeprefix("consumer.")
     sid = parameters.get("session_id")
-    if name in ("session.create", "session.copy", "candidate.fork") or operation == "legacy.migrate":
+    if name in ("session.create", "session.copy", "candidate.fork"):
         _check(source["revision"] == 1 and source["active_chain_run_id"] is None)
         if sid is not None:
             _check(source["workflow_session_id"] != sid)
@@ -208,17 +203,10 @@ def _validate_result(operation, parameters, result):
             document = parameters["document"]
             _check(source["workflow_definition_id"] == document["workflow_definition_id"]
                    and source["definition_revision"] == document["revision"])
-            if name == "session.copy":
-                _check(source["source"].get("kind") == "copy_current"
-                       and source["source"].get("workflow_session_id") == sid
-                       and source["source"].get("definition_revision")
-                       == parameters["expected_definition_revision"])
-            else:
-                _check(set(result) == {"document", "session", "provenance"}
-                       and _same(result["document"], document)
-                       and _same(result["provenance"], source["source"])
-                       and source["source"].get("kind") == "legacy_migration"
-                       and source["source"].get("source_session_id") == parameters["source_session_id"])
+            _check(source["source"].get("kind") == "copy_current"
+                   and source["source"].get("workflow_session_id") == sid
+                   and source["source"].get("definition_revision")
+                   == parameters["expected_definition_revision"])
         return
     _check(source["workflow_session_id"] == sid
            and source["revision"] == parameters["expected_revision"] + 1)

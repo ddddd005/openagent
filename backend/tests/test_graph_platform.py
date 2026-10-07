@@ -1,29 +1,30 @@
 from contextlib import closing
 from threading import Event
-from uuid import uuid4
 
 import pytest
 
-from phase1_agent.capability_packages import CapabilityPackage, PackageManifest
+from phase1_agent.capability_packages import CapabilityPackage, PackageDependency, PackageManifest
 from phase1_agent.contract_errors import ContractValidationError
-from phase1_agent.graph_contracts import NodeDefinition, NodePort, text_value
+from phase1_agent.content_contracts import text_content
+from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_http import dispatch_graph
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import WriteIntent
 
-from test_graph_service import create, document, edge, node, run
+from test_graph_service import create, edge, node
 from test_graph_session_objects import task_package, object_graph
 
 
-def test_public_v2_catalog_object_http_and_strict_old_catalog(tmp_path):
+def test_public_v2_catalog_object_http_and_version_one_filter(tmp_path):
     with closing(GraphWorkflowService(tmp_path / "http.sqlite", capability_packages=[task_package()],
-                                      enabled_packages={"workflow.compat": "1.0.0", "example.tasks": "1.0.0"})) as service:
+                                      enabled_packages={"workflow.tools": "1.0.0", "example.tasks": "1.0.0"})) as service:
         v1 = dispatch_graph(service, "GET", "/api/graph/node-types")[1]
         v2 = dispatch_graph(service, "GET", "/api/graph/node-types/v2")[1]
         assert v1["schema_version"] == 1 and v2["schema_version"] == 2
-        assert not any(row["component_id"] == "workflow.global-content" and row["component_version"] == "2"
+        assert not any(row["component_id"] == "tools.text"
                        for row in v1["node_types"])
-        assert any(row["component_id"] == "workflow.object-read" for row in v2["node_types"])
+        assert any(row["component_id"] == "example.count" for row in v2["node_types"])
+        assert any(row["component_id"] == "tools.output" for row in v2["node_types"])
         assert dispatch_graph(service, "GET", "/api/graph/platform")[1]["host_protocol_version"] == 1
         view = create(service, object_graph(service))
         sid, writer = view["workflow_session_id"], view["nodes"][0]["node_binding_id"]
@@ -45,13 +46,16 @@ def test_package_changes_and_object_edit_refuse_active_run_and_paused_manifests_
         def wait(config, inputs, context):
             entered.set()
             assert release.wait(10)
-            return {"output": text_value("gate")}
+            return {"output": text_content("gate")}
         host.register_node(NodeDefinition("example.gate", "1", "Gate", "Test", {},
-            {"type": "object", "additionalProperties": False}, outputs=(NodePort("output", "TEXT"),)), wait)
+            {"type": "object", "additionalProperties": False},
+            outputs=(NodePort("output", "TEXT", data_schema_version=2),)), wait)
 
-    gate_package = CapabilityPackage(PackageManifest("example.gate", "1"), register)
+    gate_package = CapabilityPackage(PackageManifest(
+        "example.gate", "1", dependencies=(PackageDependency("workflow.content", "1.0.0"),),
+    ), register)
     with closing(GraphWorkflowService(tmp_path / "active.sqlite", capability_packages=[task_package(), gate_package],
-        enabled_packages={"workflow.compat": "1.0.0", "example.tasks": "1.0.0", "example.gate": "1"})) as service:
+        enabled_packages={"workflow.tools": "1.0.0", "example.tasks": "1.0.0", "example.gate": "1"})) as service:
         doc = object_graph(service)
         gate = node(service.registry, "example.gate", 0)
         output = node(service.registry, "output", 10)
@@ -63,7 +67,7 @@ def test_package_changes_and_object_edit_refuse_active_run_and_paused_manifests_
         assert entered.wait(5)
         try:
             with pytest.raises(ContractValidationError) as failure:
-                service.configure_capability_packages({"workflow.compat": "1.0.0"})
+                service.configure_capability_packages({"workflow.tools": "1.0.0"})
             assert failure.value.reason_code == "package_change_during_execution"
             current = service.get_session(initial["workflow_session_id"])
             with pytest.raises(ContractValidationError):

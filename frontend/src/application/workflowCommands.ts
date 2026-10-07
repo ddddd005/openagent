@@ -1,13 +1,12 @@
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import {
-  graphClone, graphObject, graphSignature, isGraphDocument, isGraphSession,
+  graphClone, graphSignature, isGraphDocument, isGraphSession,
   type GraphCommand, type GraphDocument, type GraphEntry, type GraphSession,
 } from "../domain/workflowGraph";
 import { newerGraphObservation } from "../domain/graphObservation";
 
 export type GraphReceipt =
   | { kind: "definition"; document: GraphDocument }
-  | { kind: "migration"; document: GraphDocument; session: GraphSession; provenance: Record<string, unknown> }
   | { kind: "session"; session: GraphSession; observation?: GraphSession; historicalDocument?: GraphDocument };
 export interface GraphCommandPorts {
   persist(): boolean;
@@ -35,14 +34,6 @@ async function readReceipt(value: unknown, request: GraphCommand,
       || graphSignature(value) !== graphSignature(request.body.document as GraphDocument))
       unknown("定义保存回执不匹配");
     return { kind: "definition", document: value };
-  }
-  if (request.action === "migrate") {
-    if (!graphObject(value) || !isGraphDocument(value.document) || value.document.revision !== 1
-      || graphSignature(value.document) !== graphSignature(request.body.document as GraphDocument)
-      || !isGraphSession(value.session, basis.definitionId)
-      || value.session.definition_revision !== value.document.revision || !graphObject(value.provenance))
-      unknown("迁移回执身份或定义不匹配");
-    return { kind: "migration", document: value.document, session: value.session, provenance: value.provenance };
   }
   const candidate = ["candidate-select", "candidate-fork"].includes(request.action);
   const definitionId = candidate ? request.expected_definition_id : basis.definitionId;
@@ -81,14 +72,11 @@ export async function dispatchGraphCommand(entry: GraphEntry, command: GraphComm
   const request = graphClone(command);
   const basis = { definitionId: entry.document.workflow_definition_id,
     savedRevision: entry.saved_revision, sessionId: entry.session_id };
-  const pendingRequired = !reconcile || entry.pending !== null;
   const samePending = () => entry.pending !== null && JSON.stringify(entry.pending) === JSON.stringify(request);
-  const current = () => ports.current() && (pendingRequired ? samePending() : entry.pending === null);
+  const current = () => ports.current() && samePending();
   const persist = () => { try { return ports.persist(); } catch { return false; } };
   if (reconcile) {
-    if (entry.pending === null && (request.action !== "migrate"
-      || JSON.stringify(entry.migration_request) !== JSON.stringify(request)))
-      unknown("未保留原工作流请求");
+    if (entry.pending === null) unknown("未保留原工作流请求");
     if (entry.pending !== null && !samePending()) unknown("待核实请求已变化");
     if (!current()) unknown("工作流已关闭或恢复");
   } else {

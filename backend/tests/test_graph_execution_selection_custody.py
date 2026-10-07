@@ -8,7 +8,7 @@ from uuid import UUID
 
 import pytest
 
-from phase1_agent import builtin_packages, graph_nodes
+from phase1_agent import builtin_packages
 from phase1_agent.builtin_packages import DEFAULT_PACKAGES
 from phase1_agent.capability_packages import (
     CapabilityPackage, PackageDependency, PackageManifest,
@@ -18,7 +18,7 @@ from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.contract_json import canonical_bytes
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_package_selection import (
-    CURRENT_EXECUTION_CONFIGURATION, HISTORICAL_PROJECT_CONFIGURATION,
+    CURRENT_EXECUTION_CONFIGURATION,
 )
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import DataTypeDefinition, TypeRegistry
@@ -28,7 +28,6 @@ from phase1_agent.type_contract_store import TypeContractStore
 
 TOOLS = {"workflow.tools": "1.0.0"}
 PROMPTS = {"workflow.prompts": "1.0.0"}
-HISTORICAL_RAW = ' \n{ "workflow.tools" : "1.0.0" }\n '
 CURRENT_RAW = ' \n{ "workflow.tools" : "1.0.0" }\n '
 
 
@@ -44,31 +43,19 @@ def no_model(*args, **kwargs):
     pytest.fail("Configuration custody attempted to construct a model")
 
 
-@pytest.fixture(autouse=True)
-def no_compatibility_registration(monkeypatch):
-    def reject():
-        pytest.fail("Configuration custody constructed the compatibility registry")
-
-    monkeypatch.setattr(graph_nodes, "create_default_registry", reject)
-
-
 def service(path, **options):
     return GraphWorkflowService(
-        path, model_factory=no_model, public_model_factory=no_model, **options,
+        path, public_model_factory=no_model, **options,
     )
 
 
-def seed_selection(path, *, historical=None, current=None):
+def seed_selection(path, *, current=None):
     with closing(SqliteStore(path)) as store:
-        for identity, payload in (
-            (HISTORICAL_PROJECT_CONFIGURATION, historical),
-            (CURRENT_EXECUTION_CONFIGURATION, current),
-        ):
-            if payload is not None:
-                store._connection.execute(
-                    "INSERT INTO graph_project_packages VALUES(?,?)",
-                    (identity, payload),
-                )
+        if current is not None:
+            store._connection.execute(
+                "INSERT INTO graph_project_packages VALUES(?,?)",
+                (CURRENT_EXECUTION_CONFIGURATION, current),
+            )
 
 
 def raw_selections(path):
@@ -113,99 +100,69 @@ def test_fresh_service_writes_only_current_and_reopen_keeps_exact_selection(
     selected = deepcopy(DEFAULT_PACKAGES if selection is None else selection)
     with closing(service(path, enabled_packages=selection)) as instance:
         assert lock(instance) == expected_lock(selected)
-        assert instance._native_runtime is None
         assert raw_selections(path) == {CURRENT_EXECUTION_CONFIGURATION: encoded(selected)}
     before = raw_selections(path)
     monkeypatch.setattr(builtin_packages, "DEFAULT_PACKAGES", {"unavailable.new-default": "9"})
     with closing(service(path)) as reopened:
         assert lock(reopened) == expected_lock(selected)
         assert reopened.platform_capabilities()["package_diagnostics"] == []
-        assert reopened._native_runtime is None
     assert raw_selections(path) == before
 
 
 @pytest.mark.parametrize("raw,selected", [
-    (HISTORICAL_RAW, TOOLS),
-    (" \n{}\n ", {}),
-], ids=["tools", "explicit-empty"])
-def test_historical_fallback_is_exact_and_is_not_rewritten_or_promoted(
-    tmp_path, monkeypatch, raw, selected,
-):
-    path = tmp_path / "historical-only.sqlite"
-    seed_selection(path, historical=raw)
-    monkeypatch.setattr(builtin_packages, "DEFAULT_PACKAGES", {"unavailable.new-default": "9"})
-    with closing(service(path)) as instance:
-        assert lock(instance) == expected_lock(selected)
-        assert instance.platform_capabilities()["package_diagnostics"] == []
-        assert raw_selections(path) == {HISTORICAL_PROJECT_CONFIGURATION: raw}
-    assert raw_selections(path) == {HISTORICAL_PROJECT_CONFIGURATION: raw}
-
-
-@pytest.mark.parametrize("historical", [
-    "{",
-    '["not-a-selection"]',
-    '{"workflow.compat":"1.0.0"}',
-    '{ "missing.historical-package" : "9" }\n',
-], ids=["invalid-json", "wrong-shape", "compatibility", "missing-package"])
-@pytest.mark.parametrize("current,selected", [
     (CURRENT_RAW, TOOLS),
     (" \n{}\n ", {}),
 ], ids=["tools", "explicit-empty"])
-def test_current_precedes_unused_historical_data_without_parsing_or_rewriting_it(
-    tmp_path, monkeypatch, historical, current, selected,
+def test_saved_current_selection_is_exact_and_is_not_rewritten(
+    tmp_path, monkeypatch, raw, selected,
 ):
-    path = tmp_path / "priority.sqlite"
-    seed_selection(path, historical=historical, current=current)
-    before = raw_selections(path)
+    path = tmp_path / "exact-current.sqlite"
+    seed_selection(path, current=raw)
     monkeypatch.setattr(builtin_packages, "DEFAULT_PACKAGES", {"unavailable.new-default": "9"})
     with closing(service(path)) as instance:
         assert lock(instance) == expected_lock(selected)
         assert instance.platform_capabilities()["package_diagnostics"] == []
-        assert instance._native_runtime is None
-        assert raw_selections(path) == before
-    assert raw_selections(path) == before
+        assert raw_selections(path) == {CURRENT_EXECUTION_CONFIGURATION: raw}
+    assert raw_selections(path) == {CURRENT_EXECUTION_CONFIGURATION: raw}
 
 
-@pytest.mark.parametrize("historical", ["{", HISTORICAL_RAW], ids=["malformed", "valid"])
 @pytest.mark.parametrize("selected", [{}, PROMPTS], ids=["explicit-empty", "prompts"])
-def test_explicit_constructor_updates_only_current_and_skips_malformed_saved_data(
-    tmp_path, historical, selected,
+def test_explicit_constructor_updates_current_and_skips_malformed_saved_current(
+    tmp_path, selected,
 ):
     path = tmp_path / "explicit.sqlite"
-    seed_selection(path, historical=historical, current="{")
+    seed_selection(path, current="{")
     with closing(service(path, enabled_packages=selected)) as instance:
         assert lock(instance) == expected_lock(selected)
         assert instance.platform_capabilities()["package_diagnostics"] == []
         assert raw_selections(path) == {
-            HISTORICAL_PROJECT_CONFIGURATION: historical,
             CURRENT_EXECUTION_CONFIGURATION: encoded(selected),
         }
     with closing(service(path)) as reopened:
         assert lock(reopened) == expected_lock(selected)
-    assert raw_selections(path)[HISTORICAL_PROJECT_CONFIGURATION] == historical
+    assert raw_selections(path) == {CURRENT_EXECUTION_CONFIGURATION: encoded(selected)}
 
 
 @pytest.mark.parametrize("selected", [{}, PROMPTS], ids=["explicit-empty", "prompts"])
 def test_configure_updates_only_current_and_reopen_uses_its_exact_value(tmp_path, selected):
     path = tmp_path / "configure.sqlite"
-    seed_selection(path, historical="{", current=CURRENT_RAW)
+    seed_selection(path, current=CURRENT_RAW)
     with closing(service(path)) as instance:
         configured = instance.configure_capability_packages(selected)
         assert configured["package_diagnostics"] == []
         assert lock(instance) == expected_lock(selected)
         assert raw_selections(path) == {
-            HISTORICAL_PROJECT_CONFIGURATION: "{",
             CURRENT_EXECUTION_CONFIGURATION: encoded(selected),
         }
     with closing(service(path)) as reopened:
         assert lock(reopened) == expected_lock(selected)
         assert reopened.platform_capabilities()["package_diagnostics"] == []
-    assert raw_selections(path)[HISTORICAL_PROJECT_CONFIGURATION] == "{"
+    assert raw_selections(path) == {CURRENT_EXECUTION_CONFIGURATION: encoded(selected)}
 
 
 def test_explicit_missing_constructor_does_not_replace_any_original_rows(tmp_path):
     path = tmp_path / "missing-constructor.sqlite"
-    seed_selection(path, historical="{", current=CURRENT_RAW)
+    seed_selection(path, current=CURRENT_RAW)
     with closing(service(path)):
         pass
     before = raw_database(path)
@@ -217,10 +174,10 @@ def test_explicit_missing_constructor_does_not_replace_any_original_rows(tmp_pat
         assert lock(reopened) == expected_lock(TOOLS)
 
 
-def test_missing_saved_current_never_falls_back_to_valid_historical_selection(tmp_path):
+def test_missing_saved_current_never_falls_back_to_defaults(tmp_path):
     path = tmp_path / "missing-current.sqlite"
     unavailable = '{"missing.current-package":"9"}'
-    seed_selection(path, historical=HISTORICAL_RAW, current=unavailable)
+    seed_selection(path, current=unavailable)
     before = raw_selections(path)
     with closing(service(path)) as instance:
         diagnostics = instance.platform_capabilities()["package_diagnostics"]
@@ -228,7 +185,7 @@ def test_missing_saved_current_never_falls_back_to_valid_historical_selection(tm
         assert diagnostics[0]["enabled_packages"] == {"missing.current-package": "9"}
         assert instance.registry.catalog() == []
         assert lock(instance) == {}
-        assert instance._native_runtime is None and instance._futures == {}
+        assert instance._futures == {}
         assert raw_selections(path) == before
     assert raw_selections(path) == before
 
@@ -272,7 +229,7 @@ def test_failed_configure_preserves_raw_configuration_evidence_and_published_reg
     tmp_path, selected, reason,
 ):
     path = tmp_path / "failed-configure.sqlite"
-    seed_selection(path, historical=HISTORICAL_RAW, current=CURRENT_RAW)
+    seed_selection(path, current=CURRENT_RAW)
     with closing(service(path, capability_packages=(failing_package(),))) as instance:
         before, published = raw_database(path), deepcopy(instance.platform_capabilities())
         with pytest.raises(ContractValidationError) as caught:
@@ -280,7 +237,7 @@ def test_failed_configure_preserves_raw_configuration_evidence_and_published_reg
         assert caught.value.reason_code == reason
         assert raw_database(path) == before
         assert instance.platform_capabilities() == published
-        assert instance._native_runtime is None and instance._futures == {}
+        assert instance._futures == {}
 
 
 @pytest.mark.parametrize("operation", ["constructor", "configure"])
@@ -288,7 +245,7 @@ def test_configuration_write_failure_rolls_back_new_type_evidence_as_well_as_cur
     tmp_path, operation,
 ):
     path = tmp_path / "write-rollback.sqlite"
-    seed_selection(path, historical=HISTORICAL_RAW, current=CURRENT_RAW)
+    seed_selection(path, current=CURRENT_RAW)
     package = data_package()
     with closing(service(path, capability_packages=(package,))) as instance:
         with closing(SqliteStore(path)) as store:
@@ -319,7 +276,7 @@ def test_persistent_type_conflict_rolls_back_preceding_new_declarations_and_conf
     tmp_path, operation,
 ):
     path = tmp_path / "type-rollback.sqlite"
-    seed_selection(path, historical=HISTORICAL_RAW, current=CURRENT_RAW)
+    seed_selection(path, current=CURRENT_RAW)
     package = data_package(conflict=True)
     with closing(service(path, capability_packages=(package,))) as instance:
         types = TypeRegistry()
@@ -365,7 +322,7 @@ def gate_package(entered, release):
 
 def test_running_and_paused_current_execution_still_block_package_changes_without_writes(tmp_path):
     path = tmp_path / "active.sqlite"
-    seed_selection(path, historical=HISTORICAL_RAW)
+    seed_selection(path, current=CURRENT_RAW)
     entered, release = Event(), Event()
     selected = {**TOOLS, "custody.active": "1"}
     with closing(service(
@@ -411,7 +368,5 @@ def test_running_and_paused_current_execution_still_block_package_changes_withou
         assert raw_database(path) == before
         assert instance.get_session(initial["workflow_session_id"]) == paused
         assert raw_selections(path) == {
-            HISTORICAL_PROJECT_CONFIGURATION: HISTORICAL_RAW,
             CURRENT_EXECUTION_CONFIGURATION: encoded(selected),
         }
-        assert instance._native_runtime is None

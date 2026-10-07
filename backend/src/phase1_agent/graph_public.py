@@ -147,7 +147,10 @@ class GraphPublic:
         session, document = self._consumer_scope(repo, sid)
         private_view = self._view(repo, sid)
         chain = self._selected_chain(repo, sid)
-        inputs, input_diagnostics = self._consumer_inputs(document)
+        if private_view.get("readonly"):
+            inputs, input_diagnostics = [], []
+        else:
+            inputs, input_diagnostics = self._consumer_inputs(document)
         diagnostics = deepcopy(input_diagnostics)
         outputs = []
         for node in document["nodes"]:

@@ -10,12 +10,31 @@ from phase1_agent.preparation_program import (
 )
 from phase1_agent.prompt_errors import PromptProcessingError
 from phase1_agent.prompt_regex import RegexLimits
-from phase1_agent.prompt_values import make_context_view
-
-from test_workflow_prepared_context import A_BINDING, collection, uid
+from phase1_agent.prompt_values import collection_from_config, make_context_view
 
 
 COUNTDOWN = "\u5012\u8ba1\u65f6"
+
+
+def uid(number):
+    return f"00000000-0000-4000-8000-{number:012x}"
+
+
+def collection(text="Instructions"):
+    definition = {
+        "schema_version": 1, "kind": "item", "item_id": uid(1001), "revision": 1,
+        "name": "Prompt source", "text": text, "role": "system", "enabled": True,
+        "placement": "before", "depth": None, "order": 0, "interpolation": "variables",
+        "source": {"kind": "configuration"},
+    }
+    configuration = {
+        "schema_version": 1, "kind": "config", "config_id": uid(1002), "revision": 1,
+        "name": "Program inputs", "inputs": [{
+            "name": "instructions", "kind": "item", "item_instance_id": uid(1003),
+            "item_id": uid(1001), "revision": 1, "overrides": {},
+        }],
+    }
+    return collection_from_config(configuration, lambda *_: definition, lambda *_: None)
 
 
 def node(identity, kind, config, **inputs):
@@ -30,7 +49,7 @@ def program(nodes, prompt=None, context=None):
 def view(messages=None, protected=None):
     return make_context_view(
         [] if messages is None else messages, workflow_session_id=uid(9100),
-        node_binding_id=A_BINDING, parent_turn_id=None, projection_version=1,
+        node_binding_id=uid(9103), parent_turn_id=None, projection_version=1,
         purpose="send", protected_blocks=[] if protected is None else protected,
     )
 

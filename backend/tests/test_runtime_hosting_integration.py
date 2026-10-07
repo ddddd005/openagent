@@ -283,12 +283,12 @@ def test_pending_pause_on_last_node_does_not_invent_resumable_work(tmp_path):
 
 
 def test_service_shutdown_routes_pause_to_a_cooperative_active_handle_and_releases_it(tmp_path):
-    from phase1_agent.graph_nodes import create_default_registry
+    from phase1_agent.capability_registry import create_package_registry
 
     entered, finished, tick = Event(), Event(), Event()
     handles = []
     reference = ExecutorReference("sample.shutdown", "1")
-    registry = create_default_registry()
+    registry = create_package_registry().registry.detached()
 
     class ShutdownHandle:
         def __init__(self):
@@ -315,7 +315,8 @@ def test_service_shutdown_routes_pause_to_a_cooperative_active_handle_and_releas
     registry.executors.register_pause_support(PauseSupport(reference), lambda handle, token: handle is token)
     registry.register(NodeDefinition(
         "sample.shutdown.node", "1", "Shutdown", "Sample", {}, {"type": "object"},
-        outputs=(NodePort("output", "TEXT"),), is_output=True), None, executor_ref=reference)
+        outputs=(NodePort("output", "TEXT", data_schema_version=2),), is_output=True),
+        None, executor_ref=reference)
     service = GraphWorkflowService(tmp_path / "shutdown.sqlite", registry=registry)
     initial = create(service, document([node(service.registry, "sample.shutdown.node", 801)], []))
     chain_id = start(service, initial)

@@ -4,8 +4,9 @@ import { createPinia, setActivePinia } from "pinia";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkspaceStore } from "./workspace";
 import { useWorkbenchPersistenceStore } from "./workbenchPersistence";
+import { useWorkbenchNoticesStore } from "./workbenchNotices";
 import { graphClone, newGraph, type GraphDocument, type GraphNodeType, type GraphSession } from "../domain/workflowGraph";
-import { legacyWorkbenchStorage } from "../testUtils/legacyWorkbenchStorage";
+import { graphWorkbenchStorage } from "../testUtils/graphWorkbenchStorage";
 
 const textType: GraphNodeType = { component_id: "workflow.text", component_version: "1", display_name: "text",
   category: "content", config_schema: { type: "object" }, default_config: {}, inputs: [], outputs: [],
@@ -25,7 +26,7 @@ function canonical(value: unknown): unknown {
 }
 function memory() {
   const workspace = useWorkspaceStore();
-  return legacyWorkbenchStorage({ graph: useWorkflowGraphStore().storeSnapshot(), catalog: workspace.workflows,
+  return graphWorkbenchStorage({ graph: useWorkflowGraphStore().storeSnapshot(), catalog: workspace.workflows,
     activeWorkflowId: workspace.activeWorkflowId, selectedWorkflowId: workspace.selectedWorkflowId });
 }
 function view(document: GraphDocument, status = "idle"): GraphSession {
@@ -135,7 +136,7 @@ describe("reviewed graph receipt and operation races", () => {
       return Promise.resolve(response(current));
     }));
     const selecting = graph.selectSession(next.workflow_session_id);
-    workspace.openWorkflow("frontend:main-test"); await graph.activate("frontend:main-test");
+    const other = graph.createWorkflow(); await graph.activate(other);
     workspace.openWorkflow(id); await graph.activate(id);
     choice.resolve(response(next)); await selecting;
     expect(graph.entries[id].session_id).toBe(current.workflow_session_id); expect(graph.locked).toBe(false);
@@ -204,6 +205,67 @@ describe("reviewed graph receipt and operation races", () => {
     await vi.advanceTimersByTimeAsync(350);
     expect(paths).toEqual([`/api/graph/definitions/${b}/sessions`, `/api/graph/sessions/${bView.workflow_session_id}`]);
   });
+
+  it("keeps session rows current when the detail read settles after the directory read", async () => {
+    const { graph, id, current } = setup("running");
+    const other = view(graph.document!);
+    graph.sessions[id] = [current, other];
+    const completed = { ...current, status: "succeeded", revision: 2, can_submit: true };
+    stubGraphApplicationFetch(vi.fn(async path => response(path.endsWith("/sessions")
+      ? [current, other] : completed)));
+    await graph.refresh(id);
+    expect(graph.session).toEqual(completed);
+    expect(graph.sessions[id]).toEqual([completed, other]);
+    expect(graph.sessions[id][0]).toBe(graph.session);
+    stubGraphApplicationFetch(vi.fn(async path => response(path.endsWith("/sessions")
+      ? [current, other] : current)));
+    await graph.refresh(id);
+    expect(graph.sessions[id][0]).toEqual(completed);
+    expect(graph.sessions[id][0]).toBe(graph.session);
+  });
+
+  it("reads final run permissions once after the active poll reaches a settled status", async () => {
+    const { graph, id, current } = setup("running");
+    let terminating = false, detailReads = 0;
+    const paths: string[] = [];
+    const early = { ...current, status: "failed", revision: 2, available_actions: ["close"] };
+    const settled = { ...early, revision: 3, available_actions: ["retry_failed_node", "close"] };
+    stubGraphApplicationFetch(vi.fn(async path => {
+      paths.push(path);
+      if (path.endsWith("/sessions")) return response([current]);
+      return response(terminating ? ++detailReads === 1 ? early : settled : current);
+    }));
+    await graph.activate(id);
+    paths.length = 0; terminating = true;
+    await vi.advanceTimersByTimeAsync(350);
+    expect(paths).toEqual([
+      `/api/graph/definitions/${id}/sessions`, `/api/graph/sessions/${current.workflow_session_id}`,
+      `/api/graph/definitions/${id}/sessions`, `/api/graph/sessions/${current.workflow_session_id}`,
+    ]);
+    expect(graph.session).toEqual(settled);
+    expect(graph.sessions[id][0]).toBe(graph.session);
+    expect(graph.session?.available_actions).toContain("retry_failed_node");
+    await vi.advanceTimersByTimeAsync(1050);
+    expect(detailReads).toBe(2);
+    expect(paths).toHaveLength(4);
+  });
+
+  it("explains a stale prepared pause without resending the rejected control", async () => {
+    const { graph } = setup("prepared");
+    const fetcher = vi.fn(async (_path: string, _init: { body: string }) => new Response(JSON.stringify({ error: {
+      reason_code: "stale_revision", diagnostic: { reason_code: "stale_revision", message: "Session changed" },
+    } }), { status: 409 }));
+    stubGraphApplicationFetch(fetcher);
+    await graph.submitPrimary();
+    const message = "会话状态已变化，暂停未提交；请刷新运行后重试 [stale_revision]";
+    expect(graph.primaryAction).toBe("pause");
+    expect(graph.pending).toBeNull();
+    expect(graph.active?.diagnostics).toEqual([{ reason_code: "stale_revision", message }]);
+    expect(useWorkbenchNoticesStore().error?.reason).toBe(message);
+    await vi.advanceTimersByTimeAsync(1050);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetcher.mock.calls[0][1].body).action).toBe("pause");
+  });
 });
 
 describe("duplicated graph context references", () => {
@@ -232,7 +294,7 @@ describe("duplicated graph context references", () => {
     graph.undo(); expect(graph.document).toEqual(original);
   });
 
-  it("remaps selected built-in sources and edges as one undoable transaction", () => {
+  it("remaps declared plugin sources and edges as one undoable transaction", () => {
     const { graph, id } = setup(); graph.entries[id].session_id = null;
     const doc = newGraph("references");
     const agent = crypto.randomUUID(), external = crypto.randomUUID();
@@ -240,10 +302,12 @@ describe("duplicated graph context references", () => {
       node_binding_id: crypto.randomUUID(), component_id, component_version: "1", title: component_id,
       position: { x: 1, y: 2 }, config: source_node_id ? { source_node_id } : {},
     });
-    const context = node("workflow.context", agent), outside = node("workflow.context", external);
+    graph.catalog.push({ ...textType, component_id: "plugin.context",
+      config_node_references: [{ config_field: "source_node_id", multiple: false, target_types: [] }] });
+    const context = node("plugin.context", agent), outside = node("plugin.context", external);
     const plugin = node("external.plugin", agent);
     doc.workflow_definition_id = id;
-    doc.nodes = [{ ...node("workflow.agent"), component_version: "2", node_binding_id: agent }, context, outside, plugin];
+    doc.nodes = [{ ...node("plugin.agent"), component_version: "2", node_binding_id: agent }, context, outside, plugin];
     doc.edges = [{ edge_id: crypto.randomUUID(), source_node_id: agent, source_port_id: "context",
       target_node_id: context.node_binding_id, target_port_id: "context", order: 0 }];
     graph.entries[id].document = doc;

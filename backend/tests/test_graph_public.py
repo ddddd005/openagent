@@ -1,5 +1,6 @@
 """Public graph consumers use declared ports and frozen session history."""
 
+from contextlib import closing
 from copy import deepcopy
 from dataclasses import replace
 from threading import Event
@@ -8,11 +9,14 @@ from uuid import uuid4
 import pytest
 
 from phase1_agent.contract_errors import ContractValidationError
-from phase1_agent.graph_contracts import NodeDefinition, NodePort, prompt_value, text_value
+from phase1_agent.content_contracts import json_content, prompt_content, text_content
+from phase1_agent.graph_contracts import NodeDefinition, NodePort
+from phase1_agent.graph_service import GraphWorkflowService
+from test_agent_integration import AgentTransportFixture, graph as agent_graph
+from test_agent_integration import run as run_agent
 from test_graph_service import copy_current, create, document, edge, node, run, service, text_graph, uid
 from test_graph_server import host_server, request
-from test_graph_agent_service import graph, harness
-from test_graph_agent_runtime import final, response
+from test_models_service_integration import ModelDatabaseFixture
 
 
 def expose(document, *node_ids):
@@ -45,9 +49,9 @@ def test_declarations_zero_agent_no_output_and_no_private_state(service):
     assert all("outputs" not in row for row in consumer["nodes"])
     final = run(service, session)
     result = service.read_public_output(final["workflow_session_id"], **query(doc, uid(3)))["output"]
-    assert result["payload"] == text_value("pear pear")
+    assert result["payload"] == text_content("pear pear")
     assert result["source"]["workflow_definition_id"] == doc["workflow_definition_id"]
-    assert service._native_runtime is None
+    assert not hasattr(service, "_native_runtime")
     empty = create(service, document([], []))
     view = service.get_consumer(empty["workflow_session_id"])
     assert not view["can_submit"] and view["diagnostics"][0]["code"] == "graph_no_outputs"
@@ -61,9 +65,9 @@ def test_relevant_external_inputs_are_discovered_by_registration(service):
     session = create(service, doc)
     assert service.get_consumer(session["workflow_session_id"])["inputs"] == [
         {"name": "question", "data_type": "TEXT", "required": True, "node_ids": [uid(1)]}]
-    original = service.registry.get("workflow.current-input", "1").definition
+    original = service.registry.get("tools.current-input", "1").definition
     custom = replace(original, component_id="plugin.external-input", display_name="External probe")
-    entry = service.registry.get("workflow.current-input", "1")
+    entry = service.registry.get("tools.current-input", "1")
     service.registry.register(custom, entry.executor, external_inputs_validator=entry.external_inputs_validator,
         external_inputs_declaration=entry.external_inputs_declaration)
     source["component_id"] = custom.component_id
@@ -74,19 +78,22 @@ def test_relevant_external_inputs_are_discovered_by_registration(service):
 
 def test_same_type_multiple_ports_and_prompt_content(service):
     definition = NodeDefinition("plugin.public-ports", "1", "Two ports", "test", {},
-        {"type": "object", "additionalProperties": False}, outputs=(NodePort("left", "TEXT"), NodePort("right", "TEXT")),
+        {"type": "object", "additionalProperties": False},
+        outputs=(NodePort("left", "TEXT", data_schema_version=2),
+                 NodePort("right", "TEXT", data_schema_version=2)),
         is_output=True)
-    service.registry.register(definition, lambda config, inputs, context: {"left": text_value("left"), "right": text_value("right")})
+    service.registry.register(definition, lambda config, inputs, context: {
+        "left": text_content("left"), "right": text_content("right")})
     probe = node(service.registry, definition.component_id, 1)
     probe["public_outputs"] = ["right"]
-    prompt = node(service.registry, "prompt-source", 2, value=prompt_value([]))
+    prompt = node(service.registry, "prompts.source", 2, value=prompt_content([]))
     target = node(service.registry, "output", 3, mode="prompt")
     target["public_outputs"] = ["output"]
     doc = document([probe, prompt, target], [edge(prompt, target, 1)])
     final = run(service, create(service, doc))
     sid = final["workflow_session_id"]
-    assert service.read_public_output(sid, **query(doc, uid(1), "right"))["output"]["payload"] == text_value("right")
-    assert service.read_public_output(sid, **query(doc, uid(3)))["output"]["payload"] == prompt_value([])
+    assert service.read_public_output(sid, **query(doc, uid(1), "right"))["output"]["payload"] == text_content("right")
+    assert service.read_public_output(sid, **query(doc, uid(3)))["output"]["payload"] == prompt_content([])
     with pytest.raises(ContractValidationError) as error:
         service.read_public_output(sid, **query(doc, uid(1), "left"))
     assert error.value.reason_code == "output_not_public"
@@ -99,9 +106,10 @@ def test_pending_chain_never_exposes_previous_round(service):
         if block:
             entered.set()
             assert release.wait(10)
-        return {"output": text_value("fresh")}
+        return {"output": text_content("fresh")}
     service.registry.register(NodeDefinition("plugin.block", "1", "Block", "test", {},
-        {"type": "object", "additionalProperties": False}, outputs=(NodePort("output", "TEXT"),)), execute)
+        {"type": "object", "additionalProperties": False},
+        outputs=(NodePort("output", "TEXT", data_schema_version=2),)), execute)
     source, target = node(service.registry, "plugin.block", 1), node(service.registry, "output", 2)
     target["public_outputs"] = ["output"]
     doc = document([source, target], [edge(source, target, 1)])
@@ -138,6 +146,7 @@ def test_scope_revocation_and_original_declaration_both_apply(service):
         service.read_public_output(changed["workflow_session_id"], **query(doc, uid(3)))
     assert mismatch.value.reason_code == "consumer_definition_mismatch"
     private_doc = text_graph(service.registry)
+    private_doc["nodes"][-1]["public_outputs"] = []
     private = run(service, create(service, private_doc))
     public_doc = expose(deepcopy(private_doc), uid(3))
     public_doc["revision"] = 2
@@ -198,7 +207,7 @@ def test_multi_generation_copy_keeps_history_for_every_cloned_target(service):
     for target_id in (uid(300), uid(310)):
         result = service.read_public_output(grand["workflow_session_id"],
             **query(grand_document, target_id), run_id=original_run)["output"]
-        assert result["payload"] == text_value("pear pear")
+        assert result["payload"] == text_content("pear pear")
         assert result["source"]["node_binding_id"] == uid(3)
         assert result["source"]["workflow_session_id"] == parent["workflow_session_id"]
     reset_document = deepcopy(grand_document)
@@ -213,8 +222,24 @@ def test_multi_generation_copy_keeps_history_for_every_cloned_target(service):
 
 
 def test_private_shared_data_cannot_be_exposed_directly_or_from_frozen_history(service):
-    writer = node(service.registry, "session-data-write", 1, value="private value")
-    writer["config"]["definition"]["public"] = False
+    declaration = {
+        "schema_version": 1, "definition_id": str(uuid4()), "revision": 1,
+        "key": "example:private", "name": "Private sample",
+        "schema": {"type": "string"}, "writable": True, "public": False,
+    }
+
+    def write(config, inputs, context):
+        context.write_shared(config["definition"], config["value"])
+        return {"json": json_content(config["value"])}
+
+    service.registry.register(NodeDefinition(
+        "sample.private-shared", "1", "Private shared data", "Sample",
+        {"definition": declaration, "value": "private value"},
+        {"type": "object", "required": ["definition", "value"], "additionalProperties": False,
+         "properties": {"definition": {"type": "object"}, "value": {"type": "string"}}},
+        outputs=(NodePort("json", "JSON", data_schema_version=2),), capabilities=("shared:write",),
+    ), write)
+    writer = node(service.registry, "sample.private-shared", 1)
     writer["public_outputs"] = ["json"]
     projection, output = node(service.registry, "json-to-text", 2), node(service.registry, "output", 3)
     output["public_outputs"] = ["output"]
@@ -249,12 +274,12 @@ def test_public_observation_follows_selected_candidate_instead_of_latest_chain(s
         expected_revision=session["revision"], expected_data_revision=session["data_revision"],
         expected_head_revision=session["head_revision"], idempotency_key="select-first")
     consumer = service.get_consumer(selected["workflow_session_id"])
-    assert consumer["outputs"][0]["payload"] == text_value("first")
+    assert consumer["outputs"][0]["payload"] == text_content("first")
     assert consumer["outputs"][0]["chain_run_id"] == first["chain_run_id"]
 
 
 def test_consumer_http_receipts_and_history_do_not_return_private_records(tmp_path, monkeypatch):
-    with host_server(tmp_path, monkeypatch) as (host, port):
+    with host_server(tmp_path) as (host, port):
         doc = expose(text_graph(host.graph_service.registry), uid(3))
         host.graph_service.save_definition(doc, expected_revision=0, idempotency_key="save")
         definition_path = "/api/graph/definitions/" + doc["workflow_definition_id"]
@@ -277,50 +302,67 @@ def test_consumer_http_receipts_and_history_do_not_return_private_records(tmp_pa
         _, summaries = request(port, "GET", definition_path + "/consumer-sessions")
         assert set(summaries[0]) == {"workflow_definition_id", "definition_revision", "workflow_session_id", "session_revision", "status"}
         assert "private_states" not in created["consumer"] and "data" not in started["consumer"]
-        assert host._legacy is None and host.graph_service._native_runtime is None
+        assert not hasattr(host, "_legacy") and not hasattr(host.graph_service, "_native_runtime")
 
 
-def test_native_agent_uses_same_public_ports_and_separate_delivery(harness):
-    instance, scripts, requests, _ = harness
-    scripts.append([final("declared answer")])
-    doc = graph(instance)
-    doc["nodes"][3]["public_outputs"] = ["output", "context_delta"]
-    doc["nodes"][-1]["public_outputs"] = ["output"]
-    view = run(instance, create(instance, doc))
-    consumer = instance.get_consumer(view["workflow_session_id"])
-    assert [row["data_type"] for row in consumer["outputs"]] == ["TEXT", "PROMPT", "TEXT"]
-    assert consumer["outputs"][0]["payload"] == text_value("declared answer")
-    assert consumer["outputs"][1]["payload"]["items"]
-    assert consumer["nodes"][3]["budget"]["model_requests"] == 1
-    assert "agent" not in consumer["nodes"][3] and "snapshot" not in consumer
-    assert view["messages"] == [] and view["status"] == "succeeded" and len(requests) == 1
+def test_current_agent_uses_same_public_ports_and_separate_delivery(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-public-agent")
+    transport = AgentTransportFixture()
+    with closing(GraphWorkflowService(
+        tmp_path / "public-agent.sqlite", public_model_factory=transport.factory,
+    )) as instance:
+        ModelDatabaseFixture.write(instance, 1)
+        doc = agent_graph(instance)
+        execute = next(row for row in doc["nodes"] if row["component_id"] == "agents.execute")
+        execute["public_outputs"] = ["result", "unit"]
+        doc["nodes"][-1]["public_outputs"] = ["output"]
+        view = run_agent(instance, create(instance, doc), "public question")
+        consumer = instance.get_consumer(view["workflow_session_id"])
+        assert [row["data_type"] for row in consumer["outputs"]] == ["TEXT", "CONTEXT_UNIT", "TEXT"]
+        assert consumer["outputs"][0]["payload"] == text_content("accepted answer")
+        assert consumer["outputs"][1]["payload"]["messages"]
+        observed = next(row for row in consumer["nodes"] if row["node_binding_id"] == execute["node_binding_id"])
+        assert observed["budget"] is None and "agent" not in observed and "snapshot" not in consumer
+        assert view["messages"] == [] and view["status"] == "succeeded" and len(transport.calls) == 1
 
 
-def test_public_control_receipts_preserve_native_pause_resume_identity(harness):
-    instance, scripts, _, hooks = harness
-    entered, release = Event(), Event()
-    def block():
-        entered.set()
-        assert release.wait(10)
-    scripts.extend([[response("inspect_text", {"text": "once"}, "call1")], [final()]])
-    hooks.append(block)
-    doc = expose(graph(instance), uid(6))
-    session = create(instance, doc)
-    started = instance.start_consumer(session["workflow_session_id"], expected_revision=session["revision"], idempotency_key="consumer-start")
-    try:
-        assert entered.wait(5)
+def test_public_control_receipts_preserve_current_pause_resume_identity(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-public-agent")
+    transport = AgentTransportFixture(gate=True)
+    with closing(GraphWorkflowService(
+        tmp_path / "public-pause.sqlite", public_model_factory=transport.factory,
+    )) as instance:
+        ModelDatabaseFixture.write(instance, 1)
+        doc = agent_graph(instance)
+        execute = next(row for row in doc["nodes"] if row["component_id"] == "agents.execute")
+        doc["nodes"][-1]["public_outputs"] = ["output"]
+        session = create(instance, doc)
+        started = instance.start_consumer(
+            session["workflow_session_id"], expected_revision=session["revision"],
+            idempotency_key="consumer-start", inputs={"text": "pause question"},
+        )
+        try:
+            assert transport.entered.wait(5)
+            current = instance.get_consumer(session["workflow_session_id"])
+            paused = instance.control_consumer(
+                session["workflow_session_id"], action="pause",
+                expected_revision=current["session_revision"], idempotency_key="consumer-pause",
+            )
+            assert paused["receipt"]["operation"] == "control"
+        finally:
+            transport.proceed.set()
+            instance.wait(started["receipt"]["chain_run_id"])
         current = instance.get_consumer(session["workflow_session_id"])
-        paused = instance.control_consumer(session["workflow_session_id"], action="pause",
-            expected_revision=current["session_revision"], idempotency_key="consumer-pause")
-        assert paused["receipt"]["operation"] == "control"
-    finally:
-        release.set()
-        instance.wait(started["receipt"]["chain_run_id"])
-    current = instance.get_consumer(session["workflow_session_id"])
-    assert current["status"] == "paused" and "resume" in current["available_actions"]
-    active_run = current["nodes"][3]["run_id"]
-    resumed = instance.control_consumer(session["workflow_session_id"], action="resume",
-        expected_revision=current["session_revision"], idempotency_key="consumer-resume")
-    instance.wait(resumed["receipt"]["chain_run_id"])
-    final_view = instance.get_consumer(session["workflow_session_id"])
-    assert final_view["status"] == "succeeded" and final_view["nodes"][3]["run_id"] == active_run
+        assert current["status"] == "paused" and "resume" in current["available_actions"]
+        active_run = next(row for row in current["nodes"]
+                          if row["node_binding_id"] == execute["node_binding_id"])["run_id"]
+        resumed = instance.control_consumer(
+            session["workflow_session_id"], action="resume",
+            expected_revision=current["session_revision"], idempotency_key="consumer-resume",
+        )
+        instance.wait(resumed["receipt"]["chain_run_id"])
+        final_view = instance.get_consumer(session["workflow_session_id"])
+        final_run = next(row for row in final_view["nodes"]
+                         if row["node_binding_id"] == execute["node_binding_id"])["run_id"]
+        assert final_view["status"] == "succeeded" and final_run == active_run
+        assert len(transport.calls) == 1

@@ -110,11 +110,11 @@ def test_prompt_current_named_save_read_replay_and_reopen_without_compat(tmp_pat
         save(app, changed)
         assert app.command("resource.save", request) == accepted
         assert app.query("resource.read", {"identity": identity(original)}) == changed
-        assert service._native_runtime is None
+        assert not hasattr(service, "_native_runtime")
 
     with closing(GraphWorkflowService(path, registry=installed)) as service:
         assert GraphApplication(service).query("resource.read", {"identity": identity(original)}) == changed
-        assert service._native_runtime is None
+        assert not hasattr(service, "_native_runtime")
 
 
 def test_prompt_current_reference_resolve_graph_executes_without_compat(tmp_path):
@@ -131,7 +131,7 @@ def test_prompt_current_reference_resolve_graph_executes_without_compat(tmp_path
         assert completed["status"] == "succeeded"
         assert completed["nodes"][0]["outputs"]["output"] == global_resource_reference(identity(record))
         assert completed["nodes"][-1]["outputs"]["output"]["items"][0]["text"] == "independent current body"
-        assert service._native_runtime is None and service._resource_frames == {}
+        assert not hasattr(service, "_native_runtime") and service._resource_frames == {}
 
 
 @pytest.mark.parametrize("problem,reason", [
@@ -150,7 +150,7 @@ def test_prompt_current_run_preflight_rejects_before_start_and_preserves_session
                           idempotency_key=str(uuid4()))
         assert failure.value.reason_code == reason
         assert service.get_session(initial["workflow_session_id"]) == initial
-        assert service._native_runtime is None and service._resource_frames == {}
+        assert not hasattr(service, "_native_runtime") and service._resource_frames == {}
 
 
 def test_prompt_current_same_uuid_scope_and_type_are_isolated(tmp_path):

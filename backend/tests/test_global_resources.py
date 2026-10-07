@@ -2,7 +2,6 @@
 
 from contextlib import closing
 from copy import deepcopy
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -10,17 +9,27 @@ import pytest
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.contract_json import canonical_bytes
 from phase1_agent.global_resources import (
-    GLOBAL_CONTENT_TYPE, GlobalResourceStore, create_global_type_registry,
-    global_resource_reference, legacy_content_to_current, validate_global_resource_reference,
+    GlobalResourceStore, create_global_type_registry,
+    global_resource_reference, validate_global_resource_reference,
 )
 from phase1_agent.host_sdk import DataTypeDefinition, ResourceIdentity, TypeRegistry
 from phase1_agent.storage import SqliteStore
-from phase1_agent.workbench_resources import WorkbenchResourceStore
-from resource_fixtures import resource
+RESOURCE_TYPE = "example.document"
+
+
+def resource_types():
+    types = create_global_type_registry()
+    types.register(DataTypeDefinition(RESOURCE_TYPE, 1, {
+        "type": "object", "additionalProperties": False, "required": ["name", "body"],
+        "properties": {"name": {"type": "string"}, "body": {"type": "string"}},
+    }, scope="global"))
+    return types
 
 
 def current(text="current-only-original"):
-    return legacy_content_to_current(resource(text))
+    return {"envelope_version": 1, "scope": "workspace", "type_id": RESOURCE_TYPE,
+            "resource_id": str(uuid4()), "data_schema_version": 1, "update_sequence": 1,
+            "value": {"name": "Current document", "body": text}}
 
 
 def reference(record):
@@ -33,11 +42,11 @@ def test_updates_keep_one_current_body_and_identity_only_receipts_after_reopen(t
     key = str(uuid4())
     command = dict(expected_sequence=0, idempotency_key=key)
     with closing(SqliteStore(path)) as store:
-        catalog = GlobalResourceStore(store)
+        catalog = GlobalResourceStore(store, resource_types())
         first_receipt = catalog.write(original, **command)
         changed = deepcopy(original)
         changed["update_sequence"] = 2
-        changed["value"]["members"][0]["text"] = "current-only-replacement"
+        changed["value"]["body"] = "current-only-replacement"
         catalog.write(changed, expected_sequence=1, idempotency_key=str(uuid4()))
         assert catalog.write(original, **command) == first_receipt
         assert first_receipt == {"reference": reference(original), "update_sequence": 1, "deleted": False}
@@ -47,16 +56,17 @@ def test_updates_keep_one_current_body_and_identity_only_receipts_after_reopen(t
         assert len(rows) == 1 and len(receipts) == 2
         assert "current-only-original" not in canonical_bytes(rows + receipts).decode("utf-8")
         assert "current-only-replacement" not in canonical_bytes(receipts).decode("utf-8")
-        assert store._connection.execute("SELECT COUNT(*) FROM workbench_resource_revisions").fetchone()[0] == 0
+        assert store._connection.execute(
+            "SELECT name FROM sqlite_master WHERE name LIKE 'workbench_resource_%'").fetchall() == []
     with closing(SqliteStore(path)) as store:
-        catalog = GlobalResourceStore(store)
+        catalog = GlobalResourceStore(store, resource_types())
         assert catalog.get(reference(original)) == changed
-        assert catalog.list(scope="workspace", type_id=GLOBAL_CONTENT_TYPE) == [changed]
+        assert catalog.list(scope="workspace", type_id=RESOURCE_TYPE) == [changed]
 
 
 def test_cas_idempotency_conflicts_and_invalid_schema_do_not_change_current(tmp_path):
     with closing(SqliteStore(tmp_path / "cas.sqlite")) as store:
-        catalog = GlobalResourceStore(store)
+        catalog = GlobalResourceStore(store, resource_types())
         original = current()
         key = str(uuid4())
         catalog.write(original, expected_sequence=0, idempotency_key=key)
@@ -69,7 +79,7 @@ def test_cas_idempotency_conflicts_and_invalid_schema_do_not_change_current(tmp_
             catalog.write(changed, expected_sequence=0, idempotency_key=str(uuid4()))
         assert stale.value.reason_code == "stale_revision"
         changed["update_sequence"] = 2
-        changed["value"]["members"][0]["text"] = 3
+        changed["value"]["body"] = 3
         with pytest.raises(ContractValidationError):
             catalog.write(changed, expected_sequence=1, idempotency_key=str(uuid4()))
         assert catalog.get(reference(original)) == original
@@ -78,7 +88,7 @@ def test_cas_idempotency_conflicts_and_invalid_schema_do_not_change_current(tmp_
 
 def test_delete_purges_body_and_keeps_monotonic_identity_tombstone(tmp_path):
     with closing(SqliteStore(tmp_path / "delete.sqlite")) as store:
-        catalog = GlobalResourceStore(store)
+        catalog = GlobalResourceStore(store, resource_types())
         original = current("delete-current-body")
         catalog.write(original, expected_sequence=0, idempotency_key=str(uuid4()))
         command = dict(expected_sequence=1, idempotency_key=str(uuid4()))
@@ -98,7 +108,7 @@ def test_delete_purges_body_and_keeps_monotonic_identity_tombstone(tmp_path):
         assert stale.value.reason_code == "stale_revision"
         recreated = deepcopy(original)
         recreated["update_sequence"] = 3
-        recreated["value"]["members"][0]["text"] = "recreated"
+        recreated["value"]["body"] = "recreated"
         catalog.write(recreated, expected_sequence=2, idempotency_key=str(uuid4()))
         assert catalog.get(reference(original)) == recreated
 
@@ -154,65 +164,11 @@ def test_multiple_resource_reads_share_one_view_despite_concurrent_management_up
         assert writer.get(reference(records[1]))["value"] == 2
 
 
-def test_explicit_legacy_import_keeps_old_archive_and_does_not_replay_newer_body_on_retry(tmp_path):
-    with closing(SqliteStore(tmp_path / "legacy.sqlite")) as store:
-        legacy = WorkbenchResourceStore(store)
-        original = resource("legacy-archived-body")
-        legacy.write("content", original, expected_revision=0, idempotency_key=str(uuid4()))
-        old_current = deepcopy(original)
-        old_current["revision"] = 2
-        old_current["members"][0]["text"] = "legacy-current-body"
-        legacy.write("content", old_current, expected_revision=1, idempotency_key=str(uuid4()))
-        catalog = GlobalResourceStore(store)
-        assert catalog.list() == []
-        key = str(uuid4())
-        receipt = catalog.import_legacy_current(original["resource_id"], idempotency_key=key)
-        assert receipt["legacy_source"] == {"resource_id": original["resource_id"], "revision": 2}
-        adopted = legacy_content_to_current(old_current)
-        assert catalog.get(reference(adopted)) == adopted
-        changed = {**adopted, "update_sequence": 2,
-                   "value": {**adopted["value"], "name": "current-only admin"}}
-        catalog.write(changed, expected_sequence=1, idempotency_key=str(uuid4()))
-        assert catalog.import_legacy_current(original["resource_id"], idempotency_key=key) == receipt
-        assert catalog.get(reference(adopted)) == changed
-        assert legacy.get("content", original["resource_id"], 1) == original
-        assert legacy.get("content", original["resource_id"]) == old_current
-
-
 def test_identity_content_rejects_body_version_pins_and_extra_fields():
-    identity = ResourceIdentity("workspace", GLOBAL_CONTENT_TYPE, str(uuid4())).to_dict()
+    identity = ResourceIdentity("workspace", RESOURCE_TYPE, str(uuid4())).to_dict()
     output = global_resource_reference(identity)
     assert validate_global_resource_reference(output) == output
     assert create_global_type_registry().references("GLOBAL_RESOURCE_REF", 1, output, scope="content") == [identity]
     for changed in ({**output, "text": "body"}, {**output, "reference": {**identity, "revision": 7}}):
         with pytest.raises(ContractValidationError):
             validate_global_resource_reference(changed)
-
-
-def test_version_two_global_node_emits_only_identity_and_preserves_legacy_version():
-    from phase1_agent.graph_contracts import NodeRegistry
-    from phase1_agent.graph_prompt_nodes import register_prompt_nodes
-
-    registry = NodeRegistry(create_global_type_registry())
-    register_prompt_nodes(registry)
-    record = current("ephemeral-current-resource")
-    reads, calls = [], []
-
-    def host_call(capability, operation, payload):
-        calls.append((capability, operation, payload))
-        return deepcopy(record)
-
-    context = SimpleNamespace(host_call=host_call, reads=reads)
-    installed = registry.get("workflow.global-content", "2")
-    config = {"resource_id": record["resource_id"]}
-    output = installed.executor(config, {}, context)["output"]
-    assert registry.validate_content(output, "GLOBAL_RESOURCE_REF") == global_resource_reference(reference(record))
-    assert reads == [{"kind": "global_resource_read", "reference": reference(record)}]
-    assert calls == [("resources:read", "current-global-resource", reference(record))]
-    assert installed.resource_dependencies_declaration(config) == [
-        {"kind": "global-resource", "reference": reference(record)},
-    ]
-    assert "ephemeral-current-resource" not in canonical_bytes(output).decode("utf-8")
-    legacy = registry.get("workflow.global-content", "1")
-    assert legacy.definition.outputs[0].data_type == "PROMPT"
-    assert "legacy v1" in legacy.definition.display_name

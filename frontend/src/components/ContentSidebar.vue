@@ -4,12 +4,7 @@ import { createWorkbenchFrontendHost } from "../application/workflowFrontendPack
 import { frontendExtensionIdentity } from "../domain/frontendExtensions";
 import { promptFrontendExtensions } from "../plugins/promptFrontendManifest";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
-import { useWorkspaceStore } from "../stores/workspace";
-import ContentLibrary from "./ContentLibrary.vue";
-
-const workspace = useWorkspaceStore();
 const graph = useWorkflowGraphStore();
-const generic = computed(() => graph.isGeneric(workspace.activeWorkflowId));
 const host = createWorkbenchFrontendHost(() => graph.frontendExtensions, () => graph.packageLock);
 const promptPanelIdentity = frontendExtensionIdentity(promptFrontendExtensions[0]!);
 const promptPanel = computed(() => host.extensions.value.find(row =>
@@ -17,8 +12,7 @@ const promptPanel = computed(() => host.extensions.value.find(row =>
 </script>
 
 <template>
-  <ContentLibrary v-if="!generic" view="sidebar" />
-  <section v-else class="current-content-sidebar" aria-label="普通图提示词">
+  <section class="current-content-sidebar" aria-label="普通图提示词">
     <header class="workbench-panel-heading"><h1>内容</h1></header>
     <div class="current-content-sidebar-body">
       <component v-if="promptPanel" :is="promptPanel.component"

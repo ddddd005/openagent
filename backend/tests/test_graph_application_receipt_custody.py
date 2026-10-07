@@ -1,4 +1,4 @@
-"""Real current command origins, checked without entering either coordinator."""
+"""Real current command origins, checked without entering the coordinator."""
 
 from contextlib import closing
 from copy import deepcopy
@@ -8,7 +8,6 @@ from uuid import UUID
 
 import pytest
 
-from phase1_agent import graph_nodes
 from phase1_agent.capability_packages import (
     CapabilityPackage, CapabilityPackageLoader, PackageManifest,
 )
@@ -42,14 +41,9 @@ def forbidden(*args, **kwargs):
     pytest.fail("Receipt custody entered storage initialization or execution")
 
 
-@pytest.fixture(autouse=True)
-def no_compatibility_registration(monkeypatch):
-    monkeypatch.setattr(graph_nodes, "create_default_registry", forbidden)
-
-
 def new_service(path, **options):
     return GraphWorkflowService(
-        path, model_factory=forbidden, public_model_factory=forbidden, **options,
+        path, public_model_factory=forbidden, **options,
     )
 
 

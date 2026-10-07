@@ -4,12 +4,7 @@ import { createWorkbenchFrontendHost } from "../application/workflowFrontendPack
 import { frontendExtensionIdentity } from "../domain/frontendExtensions";
 import { modelFrontendExtensions } from "../plugins/modelFrontendManifest";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
-import { useWorkspaceStore } from "../stores/workspace";
-import ProviderPanel from "./ProviderPanel.vue";
-
-const workspace = useWorkspaceStore();
 const graph = useWorkflowGraphStore();
-const generic = computed(() => graph.isGeneric(workspace.activeWorkflowId));
 const host = createWorkbenchFrontendHost(() => graph.frontendExtensions, () => graph.packageLock);
 const providerPanelIdentity = frontendExtensionIdentity(modelFrontendExtensions[0]!);
 const providerPanel = computed(() => host.extensions.value.find(row =>
@@ -17,8 +12,7 @@ const providerPanel = computed(() => host.extensions.value.find(row =>
 </script>
 
 <template>
-  <ProviderPanel v-if="!generic" />
-  <section v-else class="provider-sidebar" aria-label="普通图供应商">
+  <section class="provider-sidebar" aria-label="普通图供应商">
     <header class="workbench-panel-heading"><h1>供应商</h1></header>
     <div class="provider-sidebar-content">
       <component v-if="providerPanel" :is="providerPanel.component"

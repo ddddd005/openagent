@@ -2,6 +2,7 @@
 
 from contextlib import closing, contextmanager
 import http.client
+from importlib.util import find_spec
 import json
 from threading import Thread
 from uuid import uuid4
@@ -13,8 +14,8 @@ from phase1_agent.workflow_host import WorkflowHost
 
 @contextmanager
 def serve(database):
-    host = WorkflowHost(database, mode="offline")
-    server = create_server(host, port=0, mode="offline")
+    host = WorkflowHost(database)
+    server = create_server(host, port=0)
     worker = Thread(target=server.serve_forever, daemon=True)
     worker.start()
     try:
@@ -48,11 +49,8 @@ def query(port, operation, **parameters):
     return value
 
 
-def test_fresh_http_current_graph_runs_and_reopens_without_compat(tmp_path, monkeypatch):
-    def forbidden(*args, **kwargs):
-        raise AssertionError("Current HTTP defaults must not construct the compatibility registry")
-
-    monkeypatch.setattr("phase1_agent.graph_nodes.create_default_registry", forbidden)
+def test_fresh_http_current_graph_runs_and_reopens_without_compat(tmp_path):
+    assert find_spec("phase1_agent.graph_nodes") is None
     database = tmp_path / "fresh-http.sqlite"
     source, output = str(uuid4()), str(uuid4())
     document = {
@@ -70,7 +68,7 @@ def test_fresh_http_current_graph_runs_and_reopens_without_compat(tmp_path, monk
         ],
     }
     with serve(database) as (host, port):
-        assert host._graph is None and host._legacy is None
+        assert host._graph is None and not hasattr(host, "_legacy")
         platform = query(port, "platform")
         assert "workflow.compat" not in {row["package_id"] for row in platform["package_lock"]}
         assert platform["package_diagnostics"] == []
@@ -99,7 +97,7 @@ def test_fresh_http_current_graph_runs_and_reopens_without_compat(tmp_path, monk
         history = query(port, "run.read", session_id=session["workflow_session_id"], chain_id=chain_id)
         frozen = next(row for row in history["outputs"] if row["node_binding_id"] == output)
         assert frozen["payload"]["text"] == "current HTTP"
-        assert host._legacy is None and host.graph_service._native_runtime is None
+        assert not hasattr(host, "_legacy") and not hasattr(host.graph_service, "_native_runtime")
 
     with serve(database) as (host, port):
         assert query(port, "platform")["package_diagnostics"] == []
@@ -113,4 +111,4 @@ def test_fresh_http_current_graph_runs_and_reopens_without_compat(tmp_path, monk
                 "SELECT payload FROM graph_project_packages WHERE configuration_id='project'",
             ).fetchone() is None
         assert selected == DEFAULT_PACKAGES
-        assert host._legacy is None and host.graph_service._native_runtime is None
+        assert not hasattr(host, "_legacy") and not hasattr(host.graph_service, "_native_runtime")

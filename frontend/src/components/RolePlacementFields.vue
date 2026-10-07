@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { RolePlacement } from "../domain/preparation";
+import type { RolePlacement } from "../domain/promptPresentation";
 
 const props = defineProps<{
   modelValue: RolePlacement;

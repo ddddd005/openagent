@@ -1,6 +1,5 @@
 """Application composition for the installed trusted packages."""
 
-from .capability_packages import create_builtin_compatibility_package
 from .content_contracts import create_content_package
 from .prompt_package import create_prompt_package
 from .tool_package import create_tool_package
@@ -23,7 +22,7 @@ DEFAULT_PACKAGES = {
 
 
 def builtin_capability_packages(*, runtime_fact_reader=None):
-    return (create_builtin_compatibility_package(), create_content_package(), create_tool_package(),
+    return (create_content_package(), create_tool_package(),
             create_prompt_package(tool_catalog=builtin_prompt_tool_catalog()),
             create_model_package(), create_context_package(),
             create_agent_package(information_reader=runtime_fact_reader),

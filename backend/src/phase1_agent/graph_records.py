@@ -10,9 +10,13 @@ from .contract_errors import ContractValidationError
 from .contract_json import canonical_bytes, validate_json_value
 
 
+GRAPH_ACCEPTANCE_RECORD_KINDS = frozenset({
+    "graph_definition_acceptance", "graph_run_acceptance",
+})
+
 GRAPH_VERSIONS = {
     "node_definition": 2, "node_binding": 2, "workflow_definition_revision": 2,
-    "workflow_session": 2, "node_session": 2, "node_run": 4,
+    "workflow_session": 2, "node_session": 2, "node_run": 5,
     "chain_run": 5, "workflow_output": 2, "state_snapshot": 2,
     "workflow_commit": 2, "workflow_ref": 2,
 }
@@ -68,7 +72,6 @@ def uuid_value(value: Any) -> bool:
 
 def graph_record(record_type: str, **fields: Any) -> dict:
     if record_type == "node_run":
-        fields.setdefault("agent", None)
         fields.setdefault("input_storage", "inline")
         fields.setdefault("control_refs", [])
     if record_type == "chain_run":
@@ -83,9 +86,7 @@ def validate_graph_record(record_type: str, value: Any) -> dict:
     validate_json_value(value)
     require(record_type in _FIELDS and type(value) is dict, "storage_contract_violation", "Unknown graph record", 500)
     required = _FIELDS[record_type] | {"schema_version", "execution_model"}
-    if record_type == "node_run" and value.get("schema_version") in (3, 4):
-        required = required | {"agent"}
-    if record_type == "node_run" and value.get("schema_version") == 4:
+    if record_type == "node_run":
         required |= {"input_storage", "control_refs"}
     if record_type == "chain_run" and value.get("schema_version") in (4, 5):
         required |= {"execution_kind", "event", "base_commit_id"}
@@ -94,7 +95,6 @@ def validate_graph_record(record_type: str, value: Any) -> dict:
     require(set(value) in (required, required | {"created_at"})
             and type(value["schema_version"]) is int
             and (value["schema_version"] == GRAPH_VERSIONS[record_type]
-                 or record_type == "node_run" and value["schema_version"] in (2, 3)
                  or record_type == "chain_run" and value["schema_version"] in (3, 4))
             and value["execution_model"] == "graph", "storage_contract_violation", "Graph record fields differ", 500)
     for key in ("workflow_definition_id", "workflow_session_id", "node_binding_id", "run_id",
@@ -127,14 +127,13 @@ def validate_graph_record(record_type: str, value: Any) -> dict:
                 and value["private_data"]["schema_version"] == 1,
                 "storage_contract_violation", "Invalid private state envelope", 500)
     if record_type == "node_run":
-        if value["schema_version"] == 4:
-            require(value["input_storage"] in ("inline", "references")
-                    and (value["input_storage"] != "references" or value["input_values"] == {})
-                    and type(value["control_refs"]) is list
-                    and all(type(ref) is dict and set(ref) == {"edge_id", "run_id"}
-                            and uuid_value(ref["edge_id"]) and uuid_value(ref["run_id"])
-                            for ref in value["control_refs"]),
-                    "storage_contract_violation", "Invalid node input or control storage", 500)
+        require(value["input_storage"] in ("inline", "references")
+                and (value["input_storage"] != "references" or value["input_values"] == {})
+                and type(value["control_refs"]) is list
+                and all(type(ref) is dict and set(ref) == {"edge_id", "run_id"}
+                        and uuid_value(ref["edge_id"]) and uuid_value(ref["run_id"])
+                        for ref in value["control_refs"]),
+                "storage_contract_violation", "Invalid node input or control storage", 500)
         require(value["profile"] == "node" and type(value["input_refs"]) is dict
                 and type(value["output_refs"]) is dict, "storage_contract_violation", "Invalid generic run", 500)
         require(all(uuid_value(identity) for identity in value["output_refs"].values()),
@@ -162,32 +161,6 @@ def validate_graph_record(record_type: str, value: Any) -> dict:
                     and any(item["edge_id"] == diagnostic.get("edge_id")
                             and item["target_port_id"] == diagnostic.get("port_id") for item in unresolved),
                     "storage_contract_violation", "Missing input diagnostic differs from unresolved sources", 500)
-        if value.get("agent") is not None:
-            agent = value["agent"]
-            require(type(agent) is dict and set(agent) == {"snapshot", "facts", "progress", "limits", "accepted"},
-                    "storage_contract_violation", "Agent evidence fields differ", 500)
-            from .contracts_v2 import validate_record
-            snapshot = validate_record("input_snapshot", agent["snapshot"])
-            require(snapshot["workflow_session_id"] == value["workflow_session_id"]
-                    and snapshot["node_binding_id"] == value["node_binding_id"],
-                    "storage_contract_violation", "Agent snapshot owner differs", 500)
-            from .graph_agent_contracts import GraphAgentIdentity, _validated_facts, _validate_limits
-            identity = GraphAgentIdentity(**snapshot["config"]["payload"]["graph_identity"])
-            require((identity.workflow_session_id, identity.node_binding_id, identity.chain_run_id, identity.node_run_id)
-                    == (value["workflow_session_id"], value["node_binding_id"], value["chain_run_id"], value["run_id"]),
-                    "storage_contract_violation", "Agent fact identity differs", 500)
-            _validated_facts(agent["facts"], snapshot, identity)
-            _validate_limits(agent["limits"])
-            require(value["input_values"].get("prompt", {}).get("assembly") == snapshot["config"]["payload"]["graph_preparation"]
-                    and snapshot["config"]["payload"]["graph_agent"] == value["config"],
-                    "storage_contract_violation", "Agent snapshot differs from its graph inputs", 500)
-            if agent["accepted"] is not None:
-                from .graph_agent_contracts import validate_graph_agent_accepted
-                accepted = validate_graph_agent_accepted(agent["accepted"])
-                require(accepted["snapshot"] == snapshot and accepted["facts"] == agent["facts"]
-                        and accepted["identity"]["node_run_id"] == value["run_id"]
-                        and accepted["identity"]["chain_run_id"] == value["chain_run_id"],
-                        "storage_contract_violation", "Agent accepted evidence differs", 500)
     if record_type == "workflow_definition_revision":
         from .graph_contracts import validate_graph_document
         doc = validate_graph_document(value["document"])
@@ -248,7 +221,7 @@ def validate_graph_record(record_type: str, value: Any) -> dict:
 
 
 def validate_graph_bundle(bundle: dict[str, list[dict]]) -> None:
-    """Validate new references without relaxing the legacy Agent history rules."""
+    """Validate the complete ownership and execution evidence of graph records."""
     rows = {kind: [validate_graph_record(kind, row) for row in values]
             for kind, values in bundle.items() if values}
     sessions = {row["workflow_session_id"]: row for row in rows.get("workflow_session", [])}
@@ -299,13 +272,9 @@ def validate_graph_bundle(bundle: dict[str, list[dict]]) -> None:
                 binding = bindings.get((chain["workflow_definition_id"], chain["definition_revision"], row["node_binding_id"]))
                 require(binding is not None and binding["config"] == row["config"],
                         "storage_contract_violation", "Node run configuration differs from its frozen definition", 500)
-                if row.get("agent"):
-                    base = row["agent"]["snapshot"]["config"]["payload"]["graph_identity"]["base_commit_id"]
-                    require(base in commits and commits[base]["workflow_session_id"] == sid,
-                            "storage_contract_violation", "Agent baseline commit has another owner", 500)
                 document = definitions[(chain["workflow_definition_id"], chain["definition_revision"])]["document"]
                 edges = {edge["edge_id"]: edge for edge in document["edges"]}
-                if row["schema_version"] == 4:
+                if row["schema_version"] >= 4:
                     controls = {edge["edge_id"]: edge for edge in document.get("control_edges", [])
                                 if edge["target_node_id"] == row["node_binding_id"]}
                     refs = row["control_refs"]
@@ -337,7 +306,7 @@ def validate_graph_bundle(bundle: dict[str, list[dict]]) -> None:
                                 and chain["ordered_nodes"].index(upstream["node_binding_id"])
                                     < chain["ordered_nodes"].index(row["node_binding_id"]),
                                 "storage_contract_violation", "Input reference escaped this execution", 500)
-                if row["schema_version"] == 4:
+                if row["schema_version"] >= 4:
                     resolved = [ref["edge_id"] for refs in row["input_refs"].values() for ref in refs]
                     require(len(resolved) == len(set(resolved)),
                             "storage_contract_violation", "Input binding evidence repeats an edge", 500)
@@ -446,7 +415,7 @@ def validate_graph_transition(kind: str, previous: dict | None, value: dict) -> 
         "workflow_session": {"revision", "active_chain_run_id", "workflow_definition_id", "definition_revision"},
         "node_session": {"data_version", "private_data"},
         "node_run": {"status", "revision", "input_refs", "input_values", "output_refs", "reads", "effects", "diagnostic",
-                     "agent", "control_refs"},
+                     "control_refs"},
         "chain_run": {"status", "revision", "completed_nodes", "next_node_index", "outputs", "diagnostic"},
         "workflow_ref": {"head_commit_id", "revision"},
     }.get(kind)
@@ -485,9 +454,3 @@ def validate_graph_transition(kind: str, previous: dict | None, value: dict) -> 
         if kind == "chain_run":
             require(value["completed_nodes"][:len(previous["completed_nodes"])] == previous["completed_nodes"],
                     "storage_contract_violation", "Execution progress cannot rewind", 500)
-        if kind == "node_run" and previous.get("agent") is not None:
-            old, new = previous["agent"], value.get("agent")
-            require(new is not None and new["snapshot"] == old["snapshot"]
-                    and new["facts"][:len(old["facts"])] == old["facts"]
-                    and (old["accepted"] is None or new["accepted"] == old["accepted"]),
-                    "storage_contract_violation", "Frozen Agent evidence changed", 500)

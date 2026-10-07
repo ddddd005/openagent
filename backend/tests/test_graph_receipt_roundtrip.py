@@ -9,19 +9,14 @@ from uuid import uuid4
 import pytest
 
 from phase1_agent.contract_json import canonical_bytes, loads_strict
-from phase1_agent.global_resources import legacy_content_to_current
 from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_receipts import read_graph_application_receipt
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import WriteIntent
-from phase1_agent.storage import SqliteStore
-from phase1_agent.workbench_resources import WorkbenchResourceStore
-
-from resource_fixtures import resource
 from test_context_failure_audit import _candidate_id
 from test_context_integration import context_graph, synthetic_package
-from test_graph_event_contracts import event_graph
+from test_graph_resource_host import prompt_record
 from test_graph_service import create, document, edge, node, run, service, text_graph
 from test_graph_session_objects import object_graph, task_package
 
@@ -64,7 +59,8 @@ def gate_document(service, entered, release):
         return {"output": inputs["input"]}
     service.registry.register(NodeDefinition(
         "test.receipt-gate", "1", "Receipt Gate", "Test", {}, {"type": "object"},
-        inputs=(NodePort("input", "TEXT"),), outputs=(NodePort("output", "TEXT"),),
+        inputs=(NodePort("input", "TEXT", data_schema_version=2),),
+        outputs=(NodePort("output", "TEXT", data_schema_version=2),),
     ), execute)
     first, gate, output = [node(service.registry, kind, index) for kind, index in (
         ("text", 1), ("test.receipt-gate", 2), ("output", 3),
@@ -72,7 +68,27 @@ def gate_document(service, entered, release):
     return document([first, gate, output], [edge(first, gate, 1), edge(gate, output, 2)])
 
 
-def test_definition_create_rebind_data_copy_and_source_free_legacy_migration_roundtrip(service):
+def event_document(service):
+    source = node(service.registry, "tools.current-input", 1, input_name="text")
+    output = node(service.registry, "tools.output", 2)
+    output["public_outputs"] = ["output"]
+    doc = document([source, output], [edge(source, output, 1)])
+    doc.update(
+        package_lock=deepcopy(list(service.registry.execution_package_lock)),
+        execution_roots=[],
+        event_bindings=[{
+            "event_id": "frontend.append", "schema_version": 1, "display_name": "Append",
+            "audience": "consumer", "target_node_ids": [output["node_binding_id"]],
+            "payload_schema": {
+                "type": "object", "properties": {"text": {"type": "string"}},
+                "required": ["text"], "additionalProperties": False,
+            },
+        }],
+    )
+    return doc
+
+
+def test_definition_create_rebind_data_and_copy_roundtrip(service):
     app = GraphApplication(service)
     doc = text_graph(service.registry)
     view = initial(app, doc)
@@ -98,13 +114,6 @@ def test_definition_create_rebind_data_copy_and_source_free_legacy_migration_rou
         "expected_head_revision": view["head_revision"], "idempotency_key": str(uuid4()),
     })
     assert copied["workflow_session_id"] != sid
-    migration_document = deepcopy(doc)
-    migration_document["workflow_definition_id"] = str(uuid4())
-    migrated = roundtrip(app, "legacy.migrate", {
-        "document": migration_document, "source_session_id": None,
-        "expected_source_revision": None, "mappings": [], "idempotency_key": str(uuid4()),
-    })
-    assert migrated["session"]["source"]["kind"] == "legacy_migration"
 
 
 def test_completed_start_and_both_candidate_commands_read_the_original_frozen_results(service):
@@ -130,9 +139,7 @@ def test_completed_start_and_both_candidate_commands_read_the_original_frozen_re
 @pytest.mark.parametrize("consumer", [False, True])
 def test_management_and_consumer_events_have_distinct_durable_origins(service, consumer):
     app = GraphApplication(service)
-    doc = event_graph()
-    doc["nodes"] = doc["nodes"][:4]
-    doc["nodes"][1]["public_outputs"] = ["output"]
+    doc = event_document(service)
     created = initial(app, doc, consumer=consumer)
     view = created["receipt"] if consumer else created
     owner = app.for_consumer() if consumer else app
@@ -189,7 +196,7 @@ def test_management_and_consumer_start_pause_resume_and_close_roundtrip(service,
 def test_object_write_roundtrip_uses_the_outer_application_identity(tmp_path):
     with closing(GraphWorkflowService(tmp_path / "object-roundtrip.sqlite",
         capability_packages=[task_package()],
-        enabled_packages={"workflow.compat": "1.0.0", "example.tasks": "1.0.0"},
+        enabled_packages={"workflow.tools": "1.0.0", "example.tasks": "1.0.0"},
     )) as service:
         app = GraphApplication(service)
         view = initial(app, object_graph(service))
@@ -200,27 +207,22 @@ def test_object_write_roundtrip_uses_the_outer_application_identity(tmp_path):
         })
 
 
-@pytest.mark.parametrize("explicit_scope", [False, True])
-def test_resource_import_roundtrip_uses_the_original_omitted_or_explicit_scope(service, explicit_scope):
-    record = resource("legacy roundtrip body")
-    with closing(SqliteStore(service.database)) as store:
-        WorkbenchResourceStore(store).write("content", record, expected_revision=0, idempotency_key=str(uuid4()))
+def test_current_resource_save_replace_and_delete_roundtrip(service):
+    record = prompt_record("current roundtrip body", scope="workspace")
     app = GraphApplication(service)
-    parameters = {"legacy_id": record["resource_id"], "idempotency_key": str(uuid4())}
-    if explicit_scope:
-        parameters["scope"] = "workspace"
-    imported = roundtrip(app, "resource.import", parameters)
-    assert imported["reference"]["scope"] == "workspace"
-    changed = legacy_content_to_current(record)
+    parameters = {"record": record, "expected_sequence": 0, "idempotency_key": str(uuid4())}
+    saved = roundtrip(app, "resource.save", parameters)
+    assert saved["reference"]["scope"] == "workspace"
+    changed = deepcopy(record)
     changed["update_sequence"] = 2
     changed["value"]["members"][0]["text"] = "replacement"
     roundtrip(app, "resource.save", {
         "record": changed, "expected_sequence": 1, "idempotency_key": str(uuid4()),
     })
     roundtrip(app, "resource.delete", {
-        "identity": imported["reference"], "expected_sequence": 2, "idempotency_key": str(uuid4()),
+        "identity": saved["reference"], "expected_sequence": 2, "idempotency_key": str(uuid4()),
     })
-    assert read_graph_application_receipt(service.database, "resource.import", parameters)["result"] == imported
+    assert read_graph_application_receipt(service.database, "resource.save", parameters)["result"] == saved
 
 
 def test_context_adoption_roundtrip_and_malformed_object_receipts_stay_unresolved(tmp_path, monkeypatch):

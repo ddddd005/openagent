@@ -1,162 +1,95 @@
-"""Only user UI page GETs accept strict, non-executing workbench handoffs."""
+"""Only strict current graph identities can bind the static consumer page."""
 
-import sqlite3
 from contextlib import closing
-from pathlib import Path
-from tempfile import TemporaryDirectory
+import threading
 
 import pytest
 
-from phase1_agent.workflow import WorkflowService
+from phase1_agent.server import create_server
 from phase1_agent.workflow_host import WorkflowHost
-from test_server import call, running_server as fake_server
-from test_server_prompt_configs import running_server
+from test_server import call, running_server
 
 
-SESSION = "00000000-0000-4000-8000-000000000921"
-CONFIG_A = "00000000-0000-4000-8000-000000000922"
-CONFIG_B = "00000000-0000-4000-8000-000000000923"
+WORKFLOW = "00000000-0000-4000-8000-000000000921"
+SESSION = "00000000-0000-4000-8000-000000000922"
 PAGE_PATHS = ("/", "/static/index.html")
-SESSION_QUERY = "?session=" + SESSION
-A_QUERY = f"{SESSION_QUERY}&prompt_a={CONFIG_A}&prompt_a_revision=1"
-B_QUERY = f"{SESSION_QUERY}&prompt_b={CONFIG_B}&prompt_b_revision=2"
-FULL_QUERY = f"{A_QUERY}&prompt_b={CONFIG_B}&prompt_b_revision=2"
 
 
-def test_valid_handoff_page_queries_serve_html_without_service_calls():
-    with fake_server() as (service, port):
+def test_current_handoff_page_queries_do_not_dispatch_or_create_sessions():
+    with running_server() as (service, port):
         for path in PAGE_PATHS:
             for query in (
-                SESSION_QUERY, A_QUERY, B_QUERY, FULL_QUERY,
-                f"{FULL_QUERY}&model_config={CONFIG_A}&model_revision=3",
-                f"{FULL_QUERY}&exposure_config={CONFIG_A}&exposure_revision=3",
-                A_QUERY.replace("revision=1", "revision=9007199254740991"),
-                SESSION_QUERY.replace("session=", "%73ession="),
-                f"?graph_workflow={CONFIG_A}",
-                f"?graph_workflow={CONFIG_A}&graph_session={SESSION}",
-                f"?graph_workflow={CONFIG_A.replace('-', '%2D')}",
+                "", f"?graph_workflow={WORKFLOW}",
+                f"?graph_workflow={WORKFLOW}&graph_session={SESSION}",
+                f"?graph_workflow={WORKFLOW.replace('-', '%2D')}",
             ):
                 status, headers, body = call(port, "GET", path + query)
                 assert status == 200 and b"<!doctype html>" in body
-                assert headers["Content-Type"] == "text/html; charset=utf-8"
                 assert headers["Cache-Control"] == "no-store"
+                assert b"A \xe8\x8d\x89\xe7\xa8\xbf" not in body
+                assert b'src="/static/app.js"' not in body
         assert service.calls == []
 
 
-def test_invalid_handoffs_and_non_page_queries_stay_not_found_without_service_calls():
-    invalid = [
-        "?", "?session=", "?session=invalid",
-        "?session=" + SESSION.replace("-4000-", "-1000-"),
-        "?session=" + SESSION.replace("-8000-", "-0000-"),
-        f"?prompt_a={CONFIG_A}&prompt_a_revision=1",
-        f"{SESSION_QUERY}&prompt_a={CONFIG_A}",
-        f"{SESSION_QUERY}&prompt_a_revision=1",
-        f"{SESSION_QUERY}&prompt_b={CONFIG_B}",
-        f"{SESSION_QUERY}&model_config={CONFIG_A}",
-        f"{SESSION_QUERY}&model_revision=1",
-        f"{SESSION_QUERY}&exposure_config={CONFIG_A}",
-        f"{SESSION_QUERY}&exposure_revision=1",
-        f"{SESSION_QUERY}&exposure_config={CONFIG_A}&exposure_revision=0",
-        f"{SESSION_QUERY}&model_config={CONFIG_A}&model_revision=0",
-        f"{SESSION_QUERY}&model_config={CONFIG_A}&model_revision=9007199254740992",
-        f"{SESSION_QUERY}&prompt_a=invalid&prompt_a_revision=1",
-        f"{SESSION_QUERY}&session={SESSION}",
-        f"{A_QUERY}&prompt_a_revision=1",
-        f"{SESSION_QUERY}&config=https%3A%2F%2Funtrusted.invalid",
-        SESSION_QUERY + "&", SESSION_QUERY + "#fragment",
-        "?session=%FF", SESSION_QUERY + "&unknown",
-        f"?graph_session={SESSION}", f"?graph_workflow=bad&graph_session={SESSION}",
-        "?graph_workflow=", "?graph_workflow=%FF",
-        "?graph_workflow=" + CONFIG_A.replace("-4000-", "-1000-"),
-        "?graph_workflow=" + CONFIG_A.replace("-8000-", "-0000-"),
-        f"?graph_workflow={CONFIG_A}&graph_session=bad",
-        f"?graph_workflow={CONFIG_A}&graph_session=",
-        f"?graph_workflow={CONFIG_A}&graph_session",
-        f"?graph_workflow={CONFIG_A}&graph_session={SESSION}&graph_session={SESSION}",
-        f"?graph_workflow={CONFIG_A}&session={SESSION}",
-        f"?graph_workflow={CONFIG_A}&prompt_a={CONFIG_A}&prompt_a_revision=1",
-        f"?graph_workflow={CONFIG_A}&graph_workflow={CONFIG_A}",
-        f"?graph_workflow={CONFIG_A}&unknown=value",
-        f"?graph_workflow={CONFIG_A}&",
-        f"?graph_workflow={CONFIG_A}&&graph_session={SESSION}",
-        f"?graph_workflow={CONFIG_A}#fragment",
-        f"{SESSION_QUERY}&&prompt_a={CONFIG_A}&prompt_a_revision=1",
-        f"{SESSION_QUERY}&prompt_a={CONFIG_A}&prompt_a_revision=%FF",
-        SESSION_QUERY.replace("session=", "%FF="),
-        f"{SESSION_QUERY}&{'unknown=' + 'x' * 1024}",
-    ]
-    invalid.extend(
-        f"{SESSION_QUERY}&prompt_a={CONFIG_A}&prompt_a_revision={revision}"
-        for revision in ("", "0", "-1", "01", "+1", "1.0", "1e1", "latest", "9007199254740992")
-    )
-    with fake_server() as (service, port):
+@pytest.mark.parametrize("query", [
+    "?", "?graph_workflow=", "?graph_workflow=bad", "?graph_workflow=%FF",
+    f"?graph_session={SESSION}", f"?session={SESSION}",
+    f"?graph_workflow={WORKFLOW}&session={SESSION}",
+    f"?graph_workflow={WORKFLOW}&graph_session=bad",
+    f"?graph_workflow={WORKFLOW}&graph_session=",
+    f"?graph_workflow={WORKFLOW}&graph_session",
+    f"?graph_workflow={WORKFLOW}&graph_session={SESSION}&graph_session={SESSION}",
+    f"?graph_workflow={WORKFLOW}&graph_workflow={WORKFLOW}",
+    f"?graph_workflow={WORKFLOW}&unknown=value",
+    f"?graph_workflow={WORKFLOW}&", f"?graph_workflow={WORKFLOW}&&graph_session={SESSION}",
+    f"?graph_workflow={WORKFLOW}#fragment",
+    "?graph_workflow=" + WORKFLOW.replace("-4000-", "-1000-"),
+    "?graph_workflow=" + WORKFLOW.replace("-8000-", "-0000-"),
+    f"?session={SESSION}&prompt_a={WORKFLOW}&prompt_a_revision=1",
+])
+def test_invalid_or_retired_page_handoffs_have_no_fallback(query):
+    with running_server() as (service, port):
         for path in PAGE_PATHS:
-            for query in invalid:
-                assert call(port, "GET", path + query)[0] == 404
-            for query in (FULL_QUERY, f"?graph_workflow={CONFIG_A}"):
-                assert call(port, "POST", path + query, b"{}", {
-                    "Content-Type": "application/json",
-                })[0] == 404
-        for path in (
-            "/static/app.js", "/static/chat-entry.js", "/static/graph-chat-core.js",
-            "/static/graph-chat.js", "/static/frontend-package-host.js",
-            "/static/frontend-package.js", "/static/style.css", "/static/other",
-            "/api/health", "/api/sessions", "/api/active-session",
-            "/api/prompt-configs/config", f"/api/sessions/{SESSION}",
-        ):
-            for query in (FULL_QUERY, f"?graph_workflow={CONFIG_A}"):
-                assert call(port, "GET", path + query)[0] == 404
-        assert call(port, "POST", "/api/sessions" + FULL_QUERY, b"{}", {
-            "Content-Type": "application/json",
-        })[0] == 404
+            assert call(port, "GET", path + query)[0] == 404
         assert service.calls == []
 
 
-def test_anonymous_and_explicit_identity_pages_and_static_files_do_not_initialize_lazy_host(
-    tmp_path, monkeypatch,
-):
-    def forbidden(*args, **kwargs):
-        raise AssertionError("Page and static GETs cannot construct either workflow service")
+def test_non_page_queries_remain_not_found():
+    with running_server() as (service, port):
+        query = f"?graph_workflow={WORKFLOW}"
+        for path in ("/api/health", "/static/chat-entry.js", "/static/graph-chat.js", "/api/graph/node-types"):
+            assert call(port, "GET", path + query)[0] == 404
+        for path in PAGE_PATHS:
+            assert call(port, "POST", path + query, b"{}", {"Content-Type": "application/json"})[0] == 404
+        assert service.calls == []
 
-    monkeypatch.setattr("phase1_agent.workflow.WorkflowService", forbidden)
+
+def test_pages_static_and_health_do_not_initialize_lazy_graph_host(tmp_path, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Static page GET cannot construct a graph runtime")
+
     monkeypatch.setattr("phase1_agent.graph_service.GraphWorkflowService", forbidden)
     database = tmp_path / "page-only.sqlite"
     with closing(WorkflowHost(database)) as host:
-        with running_server(host) as port:
+        server = create_server(host, port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
             for path in PAGE_PATHS:
-                for query in (
-                    "", SESSION_QUERY, FULL_QUERY,
-                    f"?graph_workflow={CONFIG_A}",
-                    f"?graph_workflow={CONFIG_A}&graph_session={SESSION}",
-                ):
-                    status, headers, body = call(port, "GET", path + query)
-                    assert status == 200 and b'src="/static/chat-entry.js"' in body
-                    assert b'src="/static/app.js"' not in body
-                    assert headers["Cache-Control"] == "no-store"
-                    assert host._graph is None and host._legacy is None
-                    assert not database.exists()
-            for path in (
-                "/static/app.js", "/static/chat-entry.js", "/static/graph-chat-core.js",
-                "/static/graph-chat.js", "/static/frontend-package-host.js",
-                "/static/frontend-package.js", "/static/style.css", "/api/health",
-            ):
+                for query in ("", f"?graph_workflow={WORKFLOW}&graph_session={SESSION}"):
+                    assert call(port, "GET", path + query)[0] == 200
+            for path in ("/api/health", "/static/chat-entry.js", "/static/graph-chat-core.js",
+                         "/static/graph-chat.js", "/static/frontend-package-host.js",
+                         "/static/frontend-package.js", "/static/style.css"):
                 assert call(port, "GET", path)[0] == 200
-                assert host._graph is None and host._legacy is None
-                assert not database.exists()
+            assert host._graph is None and not hasattr(host, "_legacy")
+            assert not database.exists()
+            with pytest.raises(AttributeError):
+                host.create_session()
+            assert host._graph is None
+        finally:
+            server.shutdown()
+            thread.join(timeout=3)
+            server.server_close()
     assert not database.exists()
-    assert not database.with_name(database.name + ".graph.lock").exists()
-
-
-def test_real_database_page_handoff_does_not_create_switch_or_execute():
-    with TemporaryDirectory(prefix="ui-handoff-", dir=Path(__file__).parent) as folder:
-        database = Path(folder) / "workflow.sqlite"
-        with closing(WorkflowService(
-            database, model_factory=lambda _stage: pytest.fail("A page GET cannot construct a model"),
-        )) as service:
-            with closing(sqlite3.connect(database)) as raw:
-                before = tuple(raw.iterdump())
-            with running_server(service) as port:
-                for path in PAGE_PATHS:
-                    assert call(port, "GET", path + FULL_QUERY)[0] == 200
-            with closing(sqlite3.connect(database)) as raw:
-                assert tuple(raw.iterdump()) == before

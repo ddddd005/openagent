@@ -7,9 +7,10 @@ from uuid import uuid4
 
 import pytest
 
-from phase1_agent.capability_packages import CapabilityPackage, PackageManifest
+from phase1_agent.capability_packages import CapabilityPackage, PackageDependency, PackageManifest
+from phase1_agent.content_contracts import text_content
 from phase1_agent.contract_errors import ContractValidationError
-from phase1_agent.graph_contracts import NodeDefinition, NodePort, text_value
+from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_records import graph_record, validate_graph_bundle, validate_graph_record, validate_graph_transition
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import DataTypeDefinition, ObjectBinding
@@ -30,7 +31,7 @@ class EventHarness:
         if self.gated:
             self.entered.set()
             assert self.release.wait(10)
-        return {"output": text_value(str(context.external_input("delta")))}
+        return {"output": text_content(str(context.external_input("delta")))}
 
     def apply(self, config, inputs, context):
         self.calls.append(("apply", context.node_run_id))
@@ -39,7 +40,7 @@ class EventHarness:
         context.object_write(config["object_key"], {"count": count}, expected_revision=current["revision"])
         if config["fail"]:
             raise ValueError("private event payload must not escape")
-        return {"output": text_value(str(count))}
+        return {"output": text_content(str(count))}
 
     def unrelated(self, config, inputs, context):
         pytest.fail("Event traversed an unrelated ordinary output")
@@ -50,24 +51,27 @@ class EventHarness:
                                 "required": ["count"], "additionalProperties": False}, {"count": 0}))
         host.register_node(NodeDefinition(
             "event.source", "1", "Event input", "Events", {}, {"type": "object", "additionalProperties": False},
-            outputs=(NodePort("output", "TEXT"),), capabilities=("external:read",)),
+            outputs=(NodePort("output", "TEXT", data_schema_version=2),), capabilities=("external:read",)),
             lambda config, inputs, context: self.source(config, inputs, context))
         host.register_node(NodeDefinition(
             "event.apply", "1", "Apply event", "Events", {"object_key": "main", "fail": False},
             {"type": "object", "properties": {"object_key": {"type": "string"}, "fail": {"type": "boolean"}},
              "required": ["object_key", "fail"], "additionalProperties": False},
-            inputs=(NodePort("input", "TEXT"),), outputs=(NodePort("output", "TEXT"),),
+            inputs=(NodePort("input", "TEXT", data_schema_version=2),),
+            outputs=(NodePort("output", "TEXT", data_schema_version=2),),
             capabilities=("objects:read", "objects:write"),
             object_accesses=({"config_field": "object_key", "type_id": "event.counter", "schema_version": 1,
                               "multiple": False, "access": "read_write"},)),
             lambda config, inputs, context: self.apply(config, inputs, context))
         host.register_node(NodeDefinition(
             "event.unrelated", "1", "Unrelated output", "Events", {}, {"type": "object"},
-            outputs=(NodePort("output", "TEXT"),), is_output=True),
+            outputs=(NodePort("output", "TEXT", data_schema_version=2),), is_output=True),
             lambda config, inputs, context: self.unrelated(config, inputs, context))
 
     def package(self):
-        return CapabilityPackage(PackageManifest("test.events", "1"), self.register)
+        return CapabilityPackage(PackageManifest(
+            "test.events", "1", (PackageDependency("workflow.content", "1.0.0"),),
+        ), self.register)
 
 
 @pytest.fixture
@@ -78,8 +82,8 @@ def event_service(tmp_path):
         pytest.fail("Event attempted to construct a model")
 
     with closing(GraphWorkflowService(tmp_path / "events.sqlite", capability_packages=(harness.package(),),
-        enabled_packages={"workflow.compat": "1.0.0", "test.events": "1"},
-        model_factory=no_model, public_model_factory=no_model)) as service:
+        enabled_packages={"workflow.tools": "1.0.0", "test.events": "1"},
+        public_model_factory=no_model)) as service:
         yield service, harness
         harness.release.set()
 
@@ -604,14 +608,14 @@ def test_event_public_history_applies_resets_only_after_its_starting_head(event_
     query = {"workflow_definition_id": doc["workflow_definition_id"], "definition_revision": 2,
              "node_id": event_output["node_binding_id"], "port_id": "output", "run_id": event_run_id}
     public = service.read_public_output(first["workflow_session_id"], **query)["output"]
-    assert public["payload"] == text_value("2")
+    assert public["payload"] == text_content("2")
     copied_doc = deepcopy(revised)
     copied_doc.update(workflow_definition_id=str(uuid4()), revision=1)
     copied = copy_current(service, service.get_session(first["workflow_session_id"]), copied_doc)
     inherited = service.read_public_output(copied["workflow_session_id"], **{
         **query, "workflow_definition_id": copied_doc["workflow_definition_id"], "definition_revision": 1,
     })["output"]
-    assert inherited["payload"] == text_value("2")
+    assert inherited["payload"] == text_content("2")
     assert inherited["source"]["workflow_session_id"] == first["workflow_session_id"]
     later = deepcopy(revised)
     later["revision"] = 3
@@ -621,7 +625,7 @@ def test_event_public_history_applies_resets_only_after_its_starting_head(event_
     assert denied.value.reason_code == "not_found"
     assert service.read_public_output(copied["workflow_session_id"], **{
         **query, "workflow_definition_id": copied_doc["workflow_definition_id"], "definition_revision": 1,
-    })["output"]["payload"] == text_value("2")
+    })["output"]["payload"] == text_content("2")
 
 
 def test_event_baseline_cannot_be_replaced_with_another_sessions_head(event_service):

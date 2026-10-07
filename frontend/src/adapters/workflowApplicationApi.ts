@@ -19,7 +19,7 @@ export function graphCommandOperation(path: string, body: Record<string, unknown
   if (Object.prototype.hasOwnProperty.call(body, "session_id"))
     throw new WorkbenchApiError("unknown", "原请求包含与路径重复的会话目标，保留原请求");
   const roots: Record<string, string> = {
-    "/api/graph/definitions": "definition.save", "/api/graph/migrations": "legacy.migrate",
+    "/api/graph/definitions": "definition.save",
     "/api/graph/sessions": "session.create",
     "/api/graph/resources/save": "resource.save",
   };

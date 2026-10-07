@@ -4,7 +4,7 @@ import { graphClone, newGraph, type GraphDocument, type GraphNodeType } from "..
 import type { WorkflowNodeConfigurationRequest } from "../plugins/workflowFrontendSdk";
 import type { FrontendExtension } from "../domain/frontendExtensions";
 import { frontendSession } from "../testUtils/frontendFixture";
-import { stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
+import { graphReceiptReadResponse, stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkspaceStore } from "./workspace";
 
@@ -98,13 +98,21 @@ describe("package configuration edits and serial example drafts", () => {
     const original = graphClone(graph.pending)!;
     expect(original.body.action).toBe("retry_failed_node");
     expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(true);
-    const fetcher = vi.fn(async (_path, init) => {
-      if (init.method === "POST") expect(JSON.parse(init.body)).toEqual(original.body);
-      return new Response(JSON.stringify({ ...view, revision: 2, status: "succeeded", can_submit: true, available_actions: [] }));
+    const accepted = { ...view, revision: 2, status: "succeeded", can_submit: true, available_actions: [] };
+    const fetcher = vi.fn(async (path, init) => {
+      if (path === "/api/graph/receipts/read") {
+        const envelope = JSON.parse(init.body);
+        expect(envelope).toEqual({ operation: "run.control",
+          parameters: { ...original.body, session_id: view.workflow_session_id } });
+        return graphReceiptReadResponse(envelope.operation, envelope.parameters, accepted);
+      }
+      expect(path).not.toBe(original.path);
+      return new Response(JSON.stringify(path.endsWith("/sessions") ? [accepted] : accepted));
     });
     stubGraphApplicationFetch(fetcher);
     await graph.reconcile();
-    expect(fetcher.mock.calls.filter(([, init]) => init.method === "POST")).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([path]) => path === "/api/graph/receipts/read")).toHaveLength(1);
+    expect(fetcher.mock.calls.some(([path]) => path === original.path)).toBe(false);
     expect(graph.pending).toBeNull();
   });
 });

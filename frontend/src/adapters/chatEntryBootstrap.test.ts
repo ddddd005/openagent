@@ -88,24 +88,22 @@ describe("passive chat entry HTML", () => {
     expect(attribute(scripts[0]!, "defer")).toBeDefined();
     expect(scripts[0]!.children).toEqual([]);
   });
-  it("initially hides all legacy controls while keeping entry status and error outside the client", () => {
+  it("starts with an empty current-client mount and no fixed-flow controls", () => {
     const elements = htmlElements(parse(entryHtml).children);
     const byId = (id: string) => elements.find(node => attributeValue(node, "id") === id);
     const client = byId("chat-client");
     expect(client).toBeDefined();
     expect(attribute(client!, "hidden")).toBeDefined();
     const descendants = htmlElements(client!.children);
+    expect(descendants).toEqual([]);
     for (const id of ["sessions", "new-session", "stage-a", "stage-b", "stage-output", "budget-a", "budget-b",
       "run-status", "run-control", "reroll-interrupted", "close-execution", "continue-workflow", "retry-closeout",
       "start-pending", "budget-controls", "additional-model-requests", "additional-model-attempts", "extend-budget",
       "public-exposures", "public-node-outputs", "messages", "empty", "composer", "prompt-config-a", "prompt-config-b",
       "prompt-revision-a", "prompt-revision-b", "prompt-state", "reset-prompt-state", "input", "progress", "submit"]) {
-      expect(byId(id), id).toBeDefined();
-      expect(descendants, id).toContain(byId(id));
+      expect(byId(id), id).toBeUndefined();
     }
-    for (const control of elements.filter(node => ["button", "form", "input", "select", "textarea"].includes(node.tag))) {
-      expect(descendants).toContain(control);
-    }
+    expect(elements.filter(node => ["button", "form", "input", "select", "textarea"].includes(node.tag))).toEqual([]);
     for (const id of ["mode", "error"]) {
       expect(byId(id), id).toBeDefined();
       expect(descendants, id).not.toContain(byId(id));
@@ -215,14 +213,12 @@ describe("strict passive chat bootstrap dispatch", () => {
       + `&prompt_b=${config}&prompt_b_revision=9007199254740991`
       + `&model_config=${config}&model_revision=9007199254740991`
       + `&exposure_config=${config}&exposure_revision=9007199254740991`,
-  ])("retains an explicit exact legacy handoff without altering it: %s", async search => {
+  ])("rejects even an exact old fixed-flow handoff without scripts or storage access: %s", async search => {
     const result = await bootstrap(search);
-    expect(result.scripts).toEqual(["/static/app.js"]);
-    expect(result.elements["chat-client"]!.hidden).toBe(false);
-    expect(result.elements.error!.hidden).toBe(true);
-    expect(result.fetcher).not.toHaveBeenCalled(); expect(result.storageAccess).not.toHaveBeenCalled();
-    expect(result.sessionStorageAccess).not.toHaveBeenCalled();
-    expect(result.preserved()).toEqual(result.original); expect(result.replaceState).not.toHaveBeenCalled();
+    expectNoSideEffects(result);
+    expect(result.elements.mode!.textContent).toBe("\u5165\u53e3\u4e0d\u53ef\u7528");
+    expect(result.elements.error!.hidden).toBe(false);
+    expect(result.elements.error!.textContent).toBe("\u804a\u5929\u5165\u53e3\u8eab\u4efd\u65e0\u6548");
     expect((result.scope.location as { search: string }).search).toBe(search);
   });
   it.each([
@@ -246,12 +242,10 @@ describe("strict passive chat bootstrap dispatch", () => {
     expect(result.fetcher).not.toHaveBeenCalled(); expect(result.storageAccess).not.toHaveBeenCalled();
     expect(result.sessionStorageAccess).not.toHaveBeenCalled(); expect(result.preserved()).toEqual(result.original);
   });
-  it("keeps a failed explicit legacy load terminal without loading graph scripts or touching storage", async () => {
+  it("does not attempt an old client load even when its unavailable script is supplied as a failure fixture", async () => {
     const result = await bootstrap(`?session=${session}`, ["/static/app.js"]);
-    expect(result.scripts).toEqual(["/static/app.js"]);
-    expect(result.elements.mode!.textContent).toBe("\u52a0\u8f7d\u5931\u8d25");
-    expect(result.elements.error!.hidden).toBe(false); expect(result.elements["chat-client"]!.hidden).toBe(true);
-    expect(result.fetcher).not.toHaveBeenCalled(); expect(result.storageAccess).not.toHaveBeenCalled();
-    expect(result.sessionStorageAccess).not.toHaveBeenCalled(); expect(result.preserved()).toEqual(result.original);
+    expectNoSideEffects(result);
+    expect(result.elements.mode!.textContent).toBe("\u5165\u53e3\u4e0d\u53ef\u7528");
+    expect(result.elements.error!.hidden).toBe(false);
   });
 });

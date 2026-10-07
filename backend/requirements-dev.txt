@@ -1,3 +1,2 @@
-# Run from backend; use the bundled, fixed upstream compatibility source.
--e ../vendor/smolagents
--e .[test,smolagents-compat]
+# Run from backend; current graph tests do not require the retired tool adapter.
+-e .[test]

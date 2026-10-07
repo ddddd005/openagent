@@ -13,7 +13,6 @@ from phase1_agent.lorebook import (
     LorebookLimits, activate_lorebook, validate_lorebook, validate_lorebook_request,
 )
 from phase1_agent.prompt_errors import PromptProcessingError
-from phase1_agent.prompt_ports import diagnose_regex_ports, require_regex_port_schema
 from phase1_agent.prompt_processing import process_prompt_collection, process_prompt_item
 from phase1_agent.prompt_values import (
     collect_prompt_inputs, context_view_messages, make_context_view, render_prompt_text,
@@ -449,24 +448,3 @@ def test_repeated_books_keep_distinct_explicit_instances_and_same_text():
     assert merged["items"][0]["text"] == merged["items"][1]["text"]
     with pytest.raises(ContractValidationError, match="Duplicate scoped"):
         collect_prompt_inputs(["first", "again"], {"first": first, "again": first})
-
-
-@pytest.mark.parametrize("schema_id", ["prompt_item", "prompt_collection"])
-@pytest.mark.parametrize("explicit_mode", [False, True])
-def test_regex_ports_keep_exact_v2_type_and_refuse_implicit_version_conversion(schema_id, explicit_mode):
-    edges = [{
-        "connection_id": uid(910 + index), "direction": direction, "port_id": direction,
-        "schema_ref": {"schema_id": schema_id, "version": 2},
-    } for index, direction in enumerate(("input", "output"))]
-    assert require_regex_port_schema(uid(900), None, edges) == {"schema_id": schema_id, "version": 2}
-    edges[1]["schema_ref"]["version"] = 1
-    original = copy.deepcopy(edges)
-    mode = schema_id if explicit_mode else None
-    result = diagnose_regex_ports(uid(900), mode, edges)
-    assert not result["executable"]
-    assert result["mode"] == mode
-    assert result["resolved_schema_ref"] is None
-    assert {item["code"] for item in result["diagnostics"]} == {"regex_port_version_conflict"}
-    assert edges == original
-    with pytest.raises(PromptProcessingError):
-        require_regex_port_schema(uid(900), mode, edges)

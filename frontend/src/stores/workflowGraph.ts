@@ -13,7 +13,6 @@ import { graphClone, graphObject, graphUuid, isGraphDocument, newGraph,
   type GraphNodeType, type GraphSession, type GraphCandidates, type GraphDataType } from "../domain/workflowGraph";
 import { useWorkspaceStore } from "./workspace";
 import { useWorkbenchNoticesStore } from "./workbenchNotices";
-import { migrateLegacyGraph } from "../domain/legacyGraphMigration";
 import type { FrontendExtension } from "../domain/frontendExtensions";
 import type { WorkflowNodeConfigurationRequest, WorkflowNodeConfigurationResult } from "../plugins/workflowFrontendSdk";
 import { createSerialAgentDemo, type SerialAgentModelConfig } from "../domain/serialAgentDemo";
@@ -66,7 +65,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   onScopeDispose(() => { alive = false; frontendExtensions.value = []; viewGeneration++; sessionSelectionGeneration++; if (pollTimer) clearTimeout(pollTimer); });
   const isGeneric = (id: string) => !!entries.value[id];
   function setPersistenceGuard(guard: () => boolean) { persistence = guard; }
-  function storeSnapshot() {
+  function storeSnapshot(): { schema_version: 1; entries: Record<string, GraphEntry> } {
     return graphClone({ schema_version: 1, entries: entries.value });
   }
   function restoreSnapshot(value: unknown) {
@@ -79,21 +78,13 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
         || entry.saved_document !== undefined && !isGraphDocument(entry.saved_document)
         || entry.external_inputs !== undefined && !graphObject(entry.external_inputs)
         || entry.pending !== null && (!graphObject(entry.pending) || typeof entry.pending.path !== "string"
-          || !/^\/api\/graph\/(definitions|migrations$|sessions(?:\/|$))/.test(entry.pending.path)
+          || !/^\/api\/graph\/(definitions|sessions(?:\/|$))/.test(entry.pending.path)
           || !graphObject(entry.pending.body) || !graphUuid(entry.pending.body.idempotency_key))) return false;
       if (entry.saved_document && (entry.saved_document as GraphDocument).workflow_definition_id !== entry.document.workflow_definition_id) return false;
       if (entry.pending !== null) {
         const request = entry.pending as unknown as GraphCommand;
         const body = request.body; const root = entry.document.workflow_definition_id;
-        if (request.action === "migrate") {
-          if (request.path !== "/api/graph/migrations" || !isGraphDocument(body.document)
-            || body.document.workflow_definition_id !== root
-            || !(body.source_session_id === null || graphUuid(body.source_session_id))
-            || !(body.source_session_id === null ? body.expected_source_revision === null
-              : Number.isSafeInteger(body.expected_source_revision) && Number(body.expected_source_revision) > 0)
-            || !Array.isArray(body.mappings) || !body.mappings.every(mapping => graphObject(mapping)
-              && graphUuid(mapping.source_node_id) && graphUuid(mapping.target_node_id))) return false;
-        } else if (request.action === "save") {
+        if (request.action === "save") {
           if (request.path !== "/api/graph/definitions" || !isGraphDocument(body.document)
             || body.document.workflow_definition_id !== root) return false;
         } else if (request.action === "create") {
@@ -128,21 +119,10 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
             || !graphObject(body.payload) || !isGraphJsonValue(body.payload) || Object.hasOwn(body.payload, "_workflow_frozen_resources"))) return false;
         }
       }
-      if (entry.migration_request !== undefined && (!graphObject(entry.migration_request)
-        || entry.migration_request.action !== "migrate" || entry.migration_request.path !== "/api/graph/migrations"
-        || !graphObject(entry.migration_request.body) || !isGraphDocument(entry.migration_request.body.document)
-        || entry.migration_request.body.document.workflow_definition_id !== entry.document.workflow_definition_id
-        || !graphUuid(entry.migration_request.body.idempotency_key))) return false;
     }
     entries.value = graphClone(value.entries) as unknown as Record<string, GraphEntry>;
     for (const id of Object.keys(entries.value)) history.value[id] = { past: [], future: [] };
     return true;
-  }
-  function ensureEmpty(id: string) {
-    if (entries.value[id]) return;
-    const workflow = workspace.workflows.find(row => row.id === id);
-    if (workflow?.nodeCount === 0) entries.value[id] = { document: newGraph(workflow.title), saved_revision: 0,
-      session_id: null, pending: null };
   }
   function createWorkflow() {
     const doc = newGraph("新工作流");
@@ -198,7 +178,13 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   }
   function observe(view: GraphSession) {
     const accepted = newerGraphObservation(views.value[view.workflow_session_id], view);
-    if (alive) views.value[view.workflow_session_id] = accepted;
+    if (alive) {
+      views.value[view.workflow_session_id] = accepted;
+      for (const [workflowId, rows] of Object.entries(sessions.value)) {
+        if (rows.some(row => row.workflow_session_id === accepted.workflow_session_id && row !== accepted))
+          sessions.value[workflowId] = rows.map(row => row.workflow_session_id === accepted.workflow_session_id ? accepted : row);
+      }
+    }
     return accepted;
   }
   async function dispatch(id: string, command: GraphCommand, reconcile = false): Promise<unknown> {
@@ -206,8 +192,6 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     const entry = entries.value[id];
     const eventSessionId = entry.session_id, eventDefinitionId = entry.document.workflow_definition_id,
       eventDefinitionRevision = entry.document.revision;
-    const migrationOnly = reconcile && entry.pending === null;
-    let acceptedReceipt = false;
     return dispatchGraphCommand(entry, command, {
       persist: () => persistence?.() ?? false,
       request: sendGraphCommand,
@@ -215,24 +199,11 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       readDefinition: workflowManagementQueries.definition,
       observedSession: sessionId => views.value[sessionId],
       current: () => alive && entries.value[id] === entry && mutationGeneration === generation
-        && (!migrationOnly || acceptedReceipt || JSON.stringify(entry.migration_request) === JSON.stringify(command))
         && (command.action !== "event"
         || entry.session_id === eventSessionId && entry.document.workflow_definition_id === eventDefinitionId
           && entry.document.revision === eventDefinitionRevision),
       accept(receipt, request) {
-        acceptedReceipt = true;
-        if (receipt.kind === "migration") {
-          entry.document = graphClone(receipt.document);
-          entry.saved_document = graphClone(receipt.document);
-          entry.saved_revision = receipt.document.revision;
-          entry.session_id = receipt.session.workflow_session_id;
-          entry.migration_provenance = graphClone(receipt.provenance);
-          delete entry.migration_request;
-          sessions.value[id] = [observe(receipt.session)];
-          workspace.setCopyPending(id, false);
-          workspace.markWorkflowSaved(id);
-          workspace.openWorkflow(id);
-        } else if (receipt.kind === "definition") {
+        if (receipt.kind === "definition") {
           entry.saved_revision = receipt.document.revision;
           entry.saved_document = graphClone(receipt.document);
           entry.document.revision = receipt.document.revision;
@@ -260,31 +231,6 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
         }
       },
     }, reconcile);
-  }
-  async function migrateLegacy(sourceId: string, sourceDocument: GraphDocument,
-    sourceSessionId: string | null, sourceRevision: number | null) {
-    if (locked.value || isGeneric(sourceId)) return false;
-    busy.value = "migrate";
-    try {
-      if (!catalog.value.length) await loadCatalog();
-      const converted = migrateLegacyGraph(sourceDocument, catalog.value, sourceSessionId);
-      if (converted.diagnostics.length) {
-        notices.notify("rejected", converted.diagnostics.map(row => `${row.message} [${row.reason_code}] · ${row.node_id ?? row.edge_id ?? ""}`).join("；"), "迁移普通图");
-        return false;
-      }
-      const id = converted.document.workflow_definition_id;
-      const request = command("/api/graph/migrations", { document: converted.document,
-        source_session_id: sourceSessionId, expected_source_revision: sourceRevision,
-        mappings: converted.mappings }, "migrate");
-      entries.value[id] = { document: converted.document, saved_revision: 0, session_id: null,
-        pending: null, migration_request: graphClone(request) };
-      workspace.registerGraphWorkflow({ id, title: converted.document.name, description: "", state: "draft",
-        sourceId, nodeCount: converted.document.nodes.length, copyPending: true });
-      history.value[id] = { past: [], future: [] };
-      await dispatch(id, request);
-      return true;
-    } catch (failure) { report(failure, "迁移普通图"); return false; }
-    finally { busy.value = null; }
   }
   const management = createWorkflowManagement({
     entry: id => entries.value[id], observedSession: id => views.value[id], observe, dispatch,
@@ -473,9 +419,6 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
         copy.position.x += 35; copy.position.y += 35; return copy;
       });
       for (const node of nodes) {
-        if (node.component_id === "workflow.context"
-          && typeof node.config.source_node_id === "string" && mapping.has(node.config.source_node_id))
-          node.config.source_node_id = mapping.get(node.config.source_node_id)!;
         for (const reference of typeFor(node)?.config_node_references ?? []) {
           const value = node.config[reference.config_field];
           if (reference.multiple && Array.isArray(value))
@@ -592,7 +535,16 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     if (!["running", "prepared", "pausing"].includes(view?.status ?? "")) return;
     pollTimer = setTimeout(async () => {
       if (!alive || generation !== viewGeneration || workspace.activeWorkflowId !== id) return;
-      await refresh(id); schedulePoll(id, generation);
+      const sessionId = entries.value[id]?.session_id, mutationVersion = mutationGeneration;
+      await refresh(id);
+      const settled = sessionId ? views.value[sessionId] : null;
+      if (alive && generation === viewGeneration && workspace.activeWorkflowId === id
+        && entries.value[id]?.session_id === sessionId && mutationGeneration === mutationVersion
+        && settled && !["running", "prepared", "pausing"].includes(settled.status)) {
+        // Node termination can become visible before the run's final permissions.
+        await refresh(id);
+      }
+      schedulePoll(id, generation);
     }, 350);
   }
   async function activate(id: string) {
@@ -600,7 +552,6 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     sessionSelectionGeneration++; selectingSessionFor.value = null;
     selectedNodeIds.value = []; selectedEdgeId.value = null;
     if (pollTimer) clearTimeout(pollTimer);
-    ensureEmpty(id);
     if (!entries.value[id]) return;
     if (!catalog.value.length) await loadCatalog();
     await refresh(id);
@@ -641,7 +592,16 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       if (action === "start") await management.commands.start({ workflowId: id });
       else await management.commands.control({ workflowId: id }, action);
       schedulePoll(id, viewGeneration);
-    } catch (failure) { report(failure, "运行工作流"); }
+    } catch (failure) {
+      if (action === "pause" && failure instanceof WorkbenchApiError
+        && failure.kind === "rejected" && failure.code === "stale_revision") {
+        const message = "会话状态已变化，暂停未提交；请刷新运行后重试 [stale_revision]";
+        const entry = entries.value[id];
+        if (entry?.diagnostics) entry.diagnostics = entry.diagnostics.map(diagnostic =>
+          diagnostic.reason_code === "stale_revision" ? { ...diagnostic, message } : diagnostic);
+        notices.notify(failure.kind, message, "暂停工作流");
+      } else report(failure, "运行工作流");
+    }
     finally { busy.value = null; }
   }
   function setEventBindings(value: unknown) {
@@ -662,13 +622,6 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   async function reconcile(id = workspace.activeWorkflowId) {
     const entry = entries.value[id]; if (!entry || busy.value) return;
     const workflow = workspace.workflows.find(row => row.id === id);
-    if (!entry.pending && workflow?.copyPending && entry.migration_request) {
-      busy.value = "migrate";
-      try { await dispatch(id, graphClone(entry.migration_request), true); await refresh(id); }
-      catch (failure) { report(failure, "核实原迁移请求"); }
-      finally { busy.value = null; }
-      return;
-    }
     if (!entry.pending && workflow?.copyPending && workflow.sourceId) {
       const source = entries.value[workflow.sourceId]; if (!source?.session_id) return;
       busy.value = "copy";
@@ -781,9 +734,9 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   }
   return { entries, catalog, frontendExtensions, packageLock, executionPackageLock, dataTypes, catalogLoading, catalogError, sessions, views, candidates, history, busy, active, document,
     session, pending, locked, primaryAction, statusLabel, selectedNodeIds, selectedEdgeId, canUndo, canRedo, setEventBindings, submitEvent,
-    isGeneric, ensureEmpty, createWorkflow, createSerialAgentExample, typeFor, loadCatalog, setPersistenceGuard, storeSnapshot, restoreSnapshot,
+    isGeneric, createWorkflow, createSerialAgentExample, typeFor, loadCatalog, setPersistenceGuard, storeSnapshot, restoreSnapshot,
     saveWorkflow, addNode, patchNode, patchNodeConfiguration, moveNodes, connect, removeSelection, reorderEdge, undo, duplicateSelection,
     replaceNode, setExecutionRoot, setControlDependencies, setObjectBindings, attachFrontendDisplay, patchFrontendSource,
-    activate, refresh, createSession, selectSession, submitPrimary, reconcile, discardDraft, discardRejectedCopy, writeData, closeRun, setInputs, resetPrivateState, migrateLegacy, submitAgentAction, loadCandidates, changeCandidate,
+    activate, refresh, createSession, selectSession, submitPrimary, reconcile, discardDraft, discardRejectedCopy, writeData, closeRun, setInputs, resetPrivateState, submitAgentAction, loadCandidates, changeCandidate,
     management, editing };
 });

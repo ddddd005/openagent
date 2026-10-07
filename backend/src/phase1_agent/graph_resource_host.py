@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 
-from .graph_records import graph_error, require, uuid_value
+from .graph_records import graph_error, require
 
 
 class GraphResourceHost:
@@ -27,11 +27,7 @@ class GraphResourceHost:
         for dependency in dependencies:
             require(type(dependency) is dict, "graph_resource_dependency_invalid",
                     "Resource dependency must be an identity", 409, node_id=node["node_binding_id"])
-            if dependency.get("kind") == "global-content":
-                require(set(dependency) == {"kind", "resource_id"} and uuid_value(dependency["resource_id"]),
-                        "graph_resource_dependency_invalid", "Resource identity is invalid", 409,
-                        node_id=node["node_binding_id"])
-            elif dependency.get("kind") == "global-resource":
+            if dependency.get("kind") == "global-resource":
                 from .host_sdk import ResourceIdentity
                 require(set(dependency) == {"kind", "reference"}, "graph_resource_dependency_invalid",
                         "Current resources require a reference", 409, node_id=node["node_binding_id"])
@@ -44,17 +40,11 @@ class GraphResourceHost:
         return identities
 
     def _preflight_capabilities(self, repo, sid, plan):
-        frozen = {"models": {}, "content": {}, "global_resource_ids": {}, "current_global_resources": {},
-                  "history_heads": {}}
-        if any((node["component_id"], node["component_version"]) == ("workflow.agent", "2")
-               for node in plan.document["nodes"]):
-            frozen["history_heads"] = self._selected_history_heads(repo, sid, plan.document)
+        frozen = {"global_resource_ids": {}, "current_global_resources": {}}
         nodes = {node["node_binding_id"]: node for node in plan.document["nodes"]}
         declared_by_node = {}
         for node_id in plan.ordered_node_ids:
             node, definition = nodes[node_id], plan.definitions[node_id]
-            if "model:resolve" in definition.capabilities:
-                frozen["models"][node_id] = self._preflight_legacy_model(repo, node)
             if "resources:read" in definition.capabilities:
                 entry = self.registry.get(node["component_id"], node["component_version"])
                 dependencies = self._content_dependencies(node, allow_inputs=bool(entry.resource_input_ports))
@@ -73,25 +63,24 @@ class GraphResourceHost:
                             if dependency not in dependencies:
                                 dependencies.append(deepcopy(dependency))
                 declared_by_node[node_id] = deepcopy(dependencies)
-                identities = [dependency["resource_id"] for dependency in dependencies
-                              if dependency["kind"] == "global-content"]
                 current_ids = [dependency["reference"] for dependency in dependencies
                                if dependency["kind"] == "global-resource"]
                 try:
-                    records = self._preflight_legacy_content(repo, identities) if identities else []
                     current = self._global_store(repo.store).read_many(current_ids)
                     entry = self.registry.get(node["component_id"], node["component_version"])
                     if entry.resource_preflight_validator is not None:
-                        entry.resource_preflight_validator(deepcopy(node["config"]), deepcopy([*records, *current]))
+                        entry.resource_preflight_validator(deepcopy(node["config"]), deepcopy(current))
                 except Exception as error:
                     raise graph_error(getattr(error, "reason_code", "graph_resource_dependency_invalid"), str(error),
                                       getattr(error, "status_code", 409), node_id=node_id) from error
-                frozen["content"][node_id] = {record["resource_id"]: record for record in records}
                 frozen["global_resource_ids"][node_id] = deepcopy(current_ids)
                 frozen["current_global_resources"][node_id] = [deepcopy(record) for record in current]
-            if "history:read" in definition.capabilities and "source_node_id" in node["config"]:
-                self._context_archives(repo, sid, node["config"]["source_node_id"], heads=frozen["history_heads"])
         return frozen
+
+    def _host_call(self, context, capability, operation, payload):
+        if capability == "resources:read" and operation == "current-global-resource":
+            return self._read_current_resource(context, payload)
+        raise graph_error("graph_capability_unknown", "Host operation is not registered")
 
     def _read_current_resource(self, context, payload):
         from .host_sdk import ResourceIdentity

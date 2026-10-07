@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import { graphEnumLabel, graphObject } from "../domain/workflowGraph";
 import RolePlacementFields from "./RolePlacementFields.vue";
-import type { RolePlacement } from "../domain/preparation";
+import type { RolePlacement } from "../domain/promptPresentation";
 const props = defineProps<{ schema: Record<string, unknown>; value: Record<string, unknown>; disabled?: boolean }>();
 const emit = defineEmits<{ change: [value: Record<string, unknown>] }>();
 const fields = computed(() => Object.entries(graphObject(props.schema.properties) ? props.schema.properties : {})

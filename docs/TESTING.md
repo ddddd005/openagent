@@ -10,13 +10,13 @@
 .\.venv\Scripts\python.exe -m pip install -e "./backend[test]"
 ```
 
-旧兼容测试需要本仓库保留的上游包。在 `backend/` 内可执行：
+在 `backend/` 内也可执行：
 
 ```powershell
 ..\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 ```
 
-该文件通过 `../vendor/smolagents` 安装兼容依赖。普通新版运行不依赖它；不要把上游兼容测试结果称为新版工作流完整通过。
+该文件仅安装当前 `.[test]`。旧架构专属测试与 smolagents 适配已退役，保留的第三方源码不进入当前测试依赖。
 
 ## 后端定向测试
 
@@ -32,10 +32,10 @@
 最小无模型用例：
 
 ```powershell
-..\.venv\Scripts\python.exe -m pytest tests/test_graph_execution.py::test_zero_agent_text_regex_output_ignores_unreachable_unknown_and_agent -q
+..\.venv\Scripts\python.exe -m pytest tests/test_graph_execution.py::test_zero_agent_text_regex_output_ignores_unreachable_unknown_nodes -q
 ```
 
-它执行文本 -> 正则 -> 输出，确认不可达 Agent 不被激活，不联网也不持有真实模型凭据。
+它执行文本 -> 正则 -> 输出，确认不可达未知节点不被激活，不联网也不持有真实模型凭据。
 
 ## 前端定向测试
 
@@ -81,7 +81,7 @@ npm run build
 
 原开发阶段有受影响测试与六回合真实串行证据，但不存在本发布快照的全量绿灯承诺。六回合业务及只读恢复通过，原包装因 `WinError 5` 退出 1；没有覆盖浏览器人工操作、常驻部署、1M token 极限或无限长会话。新改动必须有自己的验证记录，不能沿用历史通过结论。
 
-## 本次发布检查
+## 2026-10-06 发布检查
 
 2026-10-06 的发布目录验证使用 Python 3.12.8 和 Node.js 24.19.0：
 
@@ -94,3 +94,17 @@ npm run build
 - 文档中的最小无模型文本处理用例在全新环境执行，1 项通过；与其他定向范围可能重叠，不累加。
 
 首次后端测试因验证临时目录的父目录不存在出现 fixture 错误，修正验证环境后复测通过。安装保留现有 `lucide-vue-next` 弃用提示；本次不为发布升级依赖或改写图标实现。上述结果不是后端全量、浏览器人工或真实模型验收；本次没有真实模型请求，没有操作原运行数据库或常驻服务。
+
+## 2026-10-07 阶段性整合
+
+旧架构实际移除及受影响定向验证完成，阶段 C 部分通过。本次整合复用下列已有结果，不因提交或文档整理重跑全量；详细版本、命令、初轮失败、修复和空缺见 [实际移除记录](REPLACE-REMOVAL.md)。
+
+| 范围 | 已有结果与边界 |
+| --- | --- |
+| 后端移除后定向 | 8 文件 55 项、最终补测 4 文件 64 项通过；范围有重叠，不相加 |
+| 前端移除后定向 | 最终持久化/API 2 文件 26 项及类型/构建通过 |
+| 独立安装 | 非 editable wheel、独立 venv 最终 33/33 通过，104 包文件匹配源码、38 退役路径不入包 |
+| 限定 Mock 浏览器 | 两轮/首轮分叉后续聊、暂停/继续、B=503 后只重试 B、GraphChat 和完成历史重开；只读联合核对 74/74 通过，20 请求含 2 次受控 503 |
+| 状态同步窄修 | 1 文件 13 项及类型/构建通过；JS 431.16 kB / gzip 137.41 kB，浏览器补验菜单自动同步 |
+
+原始证据保留在本地 `.local/retirement-validation/` 和 `.local/release-acceptance-20261007/`，不提交数据库、凭据、日志或原始私有输出。当前结果不代表全新前端安装/生产联合部署、常驻收口、完整 PC 操作、真实供应商或全面故障专项通过，不能据此发布 1.0。

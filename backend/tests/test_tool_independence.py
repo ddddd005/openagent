@@ -122,11 +122,13 @@ def test_register_callable_rejects_reserved_control_name():
     assert final_answer_tool().execute({"answer": {"ok": True}}) == {"ok": True}
 
 
-def test_core_runs_without_importing_smolagents_in_isolated_process():
+def test_snapshot_kernel_runs_without_importing_smolagents_in_isolated_process():
     source = Path(__file__).resolve().parents[1] / "src"
     script = """
 import builtins
+from copy import deepcopy
 import json
+from pathlib import Path
 import sys
 sys.path.insert(0, sys.argv[1])
 original_import = builtins.__import__
@@ -136,9 +138,8 @@ def blocked_import(name, *args, **kwargs):
     return original_import(name, *args, **kwargs)
 builtins.__import__ = blocked_import
 
-from phase1_agent.context import PromptContext
-from phase1_agent.contracts import ModelResponse, ModelToolCall, RunInput, RunLimits
-from phase1_agent.kernel import AgentKernel
+from phase1_agent.contracts import ModelResponse, ModelToolCall
+from phase1_agent.runtime import SnapshotKernel
 from phase1_agent.tools import register_callable, final_answer_tool
 
 effects = []
@@ -153,6 +154,20 @@ schema = {
     "additionalProperties": False,
 }
 tool = register_callable("record", "Record", schema, record)
+registered = (tool, final_answer_tool())
+example = Path(sys.argv[1]).parent / "examples" / "contracts_v2" / "success.json"
+snapshot = json.loads(example.read_text(encoding="utf-8"))["input_snapshot"][0]
+snapshot["tool_definitions"] = [
+    {"name": entry.name, "version": "1",
+     "description": entry.definition["function"]["description"],
+     "parameters_schema": deepcopy(entry.schema)}
+    for entry in registered
+]
+snapshot["output_schema"] = {
+    "type": "object", "properties": {"result": {"type": "string"}},
+    "required": ["result"], "additionalProperties": False,
+}
+original = deepcopy(snapshot)
 class FakeModel:
     def __init__(self):
         self.requests = 0
@@ -162,28 +177,20 @@ class FakeModel:
             return ModelResponse("tool_calls", tool_calls=(
                 ModelToolCall("call-1", "record", '{"value":"offline"}'),
             ))
-        assert messages[-1]["tool_call_id"] == "call-1"
+        assert messages[-1]["role"] == "tool"
+        assert messages[-1]["blocks"][0]["content"] == "recorded:offline"
+        assert messages[-1]["blocks"][0]["tool_call_id"] == messages[-2]["blocks"][0]["tool_call_id"]
         return ModelResponse("tool_calls", tool_calls=(
             ModelToolCall("call-2", "final_answer", '{"answer":{"result":"done"}}'),
         ))
 
-context = PromptContext("System")
 model = FakeModel()
-result = AgentKernel().run(RunInput(
-    run_id="offline-1",
-    s0=context.build("offline-1", "Record"),
-    tools=(tool, final_answer_tool()),
-    adapter=model,
-    output_spec={"type": "object", "properties": {"result": {"type": "string"}},
-                 "required": ["result"], "additionalProperties": False},
-    correction_message="Call final_answer with a valid JSON object.",
-    limits=RunLimits(max_model_requests=2),
-))
-assert result.status == "success", result
-assert json.loads(result.output) == {"result": "done"}
+result = SnapshotKernel().run(snapshot, registered, model, max_model_requests=2)
+assert result.final["value"] == {"result": "done"}
 assert effects == ["offline"] and model.requests == 2
-context.commit("offline-1", result)
-assert len(context.history) == 5
+assert len(result.messages) == 4
+assert (result.model_requests, result.attempts) == (2, 2)
+assert snapshot == original
 assert not any(name == "smolagents" or name.startswith("smolagents.") for name in sys.modules)
 """
     completed = subprocess.run(
@@ -191,5 +198,6 @@ assert not any(name == "smolagents" or name.startswith("smolagents.") for name i
         capture_output=True,
         text=True,
         check=False,
+        timeout=60,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr

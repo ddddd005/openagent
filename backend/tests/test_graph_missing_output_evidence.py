@@ -7,8 +7,9 @@ from uuid import UUID, uuid4
 import pytest
 
 from phase1_agent.contract_errors import ContractValidationError
-from phase1_agent.graph_contracts import NodeDefinition, NodePort, text_value
-from phase1_agent.graph_nodes import create_default_registry
+from phase1_agent.capability_registry import create_package_registry
+from phase1_agent.content_contracts import text_content
+from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_records import is_graph_record, validate_graph_bundle
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.storage import SqliteStore
@@ -32,8 +33,9 @@ def edge(source, target, number, source_port="output", target_port="input", orde
 
 
 def create(service, nodes, edges):
-    document = {"schema_version": 1, "workflow_definition_id": str(uuid4()), "revision": 1,
-                "name": "Missing optional output", "nodes": nodes, "edges": edges}
+    document = {"schema_version": 2, "workflow_definition_id": str(uuid4()), "revision": 1,
+                "name": "Missing optional output", "nodes": nodes, "edges": edges,
+                "object_bindings": [], "package_lock": list(service.registry.execution_package_lock)}
     service.save_definition(document, expected_revision=0, idempotency_key=str(uuid4()))
     return service.create_session(document["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
 
@@ -52,14 +54,31 @@ def unresolved(edge):
 def service(tmp_path):
     def no_model(*args, **kwargs):
         raise AssertionError("Zero-Agent regression must not request a model")
-    with closing(GraphWorkflowService(tmp_path / "evidence.sqlite", registry=create_default_registry(),
-                                      model_factory=no_model)) as instance:
+    registry = create_package_registry().registry.detached()
+
+    def optional_output(config, inputs, context):
+        state = context.private_read()
+        context.private_write({"count": state["count"] + 1})
+        return {}
+
+    registry.register(NodeDefinition(
+        "sample.optional-output", "1", "Optional output", "Sample", {"name": "pending"},
+        {"type": "object", "required": ["name"], "additionalProperties": False,
+         "properties": {"name": {"type": "string"}}},
+        outputs=(NodePort("text", "TEXT", required=False, data_schema_version=2),),
+        capabilities=("private:read", "private:write"),
+        private_state_schema={"type": "object", "required": ["count"], "additionalProperties": False,
+                              "properties": {"count": {"type": "integer", "minimum": 0}}},
+        private_state_default={"count": 0},
+    ), optional_output)
+    with closing(GraphWorkflowService(tmp_path / "evidence.sqlite", registry=registry,
+                                      public_model_factory=no_model)) as instance:
         yield instance
 
 
 def simple_graph(service):
-    producer = node(service.registry, "workflow.variable-register", 1, name="pending", hasInitialValue=False)
-    consumer = node(service.registry, "workflow.output", 2)
+    producer = node(service.registry, "sample.optional-output", 1, name="pending")
+    consumer = node(service.registry, "tools.output", 2)
     link = edge(producer, consumer, 1, source_port="text")
     return create(service, [producer, consumer], [link]), link
 
@@ -74,7 +93,7 @@ def test_optional_output_failure_retains_diagnostic_effect_and_replay(service):
     producer, failed = history["node_runs"]
     assert view["status"] == history["chain"]["status"] == failed["status"] == "failed"
     assert producer["status"] == "succeeded" and producer["output_refs"] == {}
-    assert producer["effects"] and view["data"]["values"]["pending"] == {"type": "string", "source": "unassigned"}
+    assert producer["effects"] and view["private_states"][uid(1)] == {"count": 1}
     assert failed["input_values"] == failed["input_refs"] == {}
     assert failed["effects"] == failed["reads"] == []
     for diagnostic in (failed["diagnostic"], history["chain"]["diagnostic"]):
@@ -108,20 +127,21 @@ def test_multiple_edges_keep_available_refs_without_claiming_partial_input(servi
     calls = []
     definition = NodeDefinition("test.multiple-input", "1", "Multiple input", "Test", {},
                                 {"type": "object", "additionalProperties": False},
-                                inputs=(NodePort("head", "TEXT"), NodePort("items", "TEXT", multiple=True),
-                                        NodePort("later", "TEXT")),
-                                outputs=(NodePort("output", "TEXT"),))
+                                inputs=(NodePort("head", "TEXT", data_schema_version=2),
+                                        NodePort("items", "TEXT", multiple=True, data_schema_version=2),
+                                        NodePort("later", "TEXT", data_schema_version=2)),
+                                outputs=(NodePort("output", "TEXT", data_schema_version=2),))
     def execute(config, inputs, context):
         calls.append(inputs)
-        return {"output": text_value("must not run")}
+        return {"output": text_content("must not run")}
     service.registry.register(definition, execute)
-    text = node(service.registry, "workflow.text", 1, text="available")
-    left = node(service.registry, "workflow.variable-register", 2, name="left", hasInitialValue=False)
-    right = node(service.registry, "workflow.variable-register", 3, name="right", hasInitialValue=False)
+    text = node(service.registry, "tools.text", 1, text="available")
+    left = node(service.registry, "sample.optional-output", 2, name="left")
+    right = node(service.registry, "sample.optional-output", 3, name="right")
     consumer = node(service.registry, definition.component_id, 4)
-    output = node(service.registry, "workflow.output", 5)
-    other = node(service.registry, "workflow.text", 6, text="other")
-    other_output = node(service.registry, "workflow.output", 7)
+    output = node(service.registry, "tools.output", 5)
+    other = node(service.registry, "tools.text", 6, text="other")
+    other_output = node(service.registry, "tools.output", 7)
     available = [edge(text, consumer, 1, target_port="head"),
                  edge(text, consumer, 2, target_port="items", order=0)]
     missing = [edge(left, consumer, 3, "text", "items", 1),
@@ -136,7 +156,7 @@ def test_multiple_edges_keep_available_refs_without_claiming_partial_input(servi
     assert [run["status"] for run in runs] == ["succeeded"] * 3 + ["failed"] + ["prepared"] * 3
     assert calls == []
     failed = runs[3]
-    assert failed["input_values"] == {"head": text_value("available")}
+    assert failed["input_values"] == {"head": text_content("available")}
     for link in available:
         assert failed["input_refs"][link["target_port_id"]] == [{
             "edge_id": link["edge_id"], "order": link["order"], "output_id": runs[0]["output_refs"]["output"]}]
@@ -144,8 +164,8 @@ def test_multiple_edges_keep_available_refs_without_claiming_partial_input(servi
     assert failed["diagnostic"]["unresolved_inputs"] == [unresolved(link) for link in missing]
     assert history["chain"]["next_node_index"] == 3
     assert all(run["effects"] for run in runs[1:3])
-    values = service.get_session(initial["workflow_session_id"])["data"]["values"]
-    assert values["left"] == values["right"] == {"type": "string", "source": "unassigned"}
+    states = service.get_session(initial["workflow_session_id"])["private_states"]
+    assert states[uid(2)] == states[uid(3)] == {"count": 1}
     with closing(SqliteStore(service.database)) as store:
         bundle = {kind: [row for row in rows if is_graph_record(kind, row)]
                   for kind, rows in store.read_bundle(include_graph=True).items()}
@@ -183,7 +203,7 @@ def test_unresolved_evidence_cannot_escape_failed_dependency(service, forgery):
     elif forgery == "duplicate":
         diagnostic["unresolved_inputs"].append(deepcopy(item))
     elif forgery == "input_value":
-        failed["input_values"]["input"] = text_value("not received")
+        failed["input_values"]["input"] = text_content("not received")
     elif forgery == "phantom_output":
         failed["input_refs"]["input"] = [{"edge_id": link["edge_id"], "output_id": uid(999), "order": 0}]
     elif forgery == "source_run":

@@ -2,7 +2,7 @@ import { WorkbenchApiError } from "./workbenchApi";
 import { graphApplicationQuery } from "./workflowApplicationApi";
 import { isFrontendExtension } from "../domain/frontendExtensions";
 import { graphObject, isGraphCatalog, isGraphDocument, isGraphSession, isGraphPackageLock, type GraphDocument,
-  graphUuid, type GraphNodeType, type GraphDataType, type GraphSession, type GraphRunDetail, type GraphArchiveDetail, type GraphCandidates } from "../domain/workflowGraph";
+  graphUuid, type GraphNodeType, type GraphDataType, type GraphSession, type GraphRunDetail, type GraphCandidates } from "../domain/workflowGraph";
 
 export async function readGraphCatalogDetails() {
   const response = await graphApplicationQuery("catalog.node-types", { protocol_version: 2 });
@@ -66,14 +66,6 @@ export async function readGraphRun(sessionId: string, chainId: string): Promise<
     const { agent: _privateAgent, ...record } = run as typeof run & { agent?: unknown };
     return record;
   }) };
-}
-export async function readGraphArchive(sessionId: string, turnId: string): Promise<GraphArchiveDetail> {
-  const value = await graphApplicationQuery("archive.read", { session_id: sessionId, archive_id: turnId });
-  if (!graphObject(value) || !graphObject(value.turn) || value.turn.turn_id !== turnId
-    || !Array.isArray(value.root) || !value.root.every(message => graphObject(message)
-      && graphUuid(message.message_id) && Array.isArray(message.blocks)) || !graphObject(value.snapshot))
-    throw new WorkbenchApiError("unavailable", "归档身份或规范消息契约不匹配");
-  return value as unknown as GraphArchiveDetail;
 }
 export async function readGraphCandidates(sessionId: string, definitionId: string): Promise<GraphCandidates> {
   const value = await graphApplicationQuery("candidate.list", { session_id: sessionId });

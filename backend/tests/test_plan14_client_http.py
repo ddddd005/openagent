@@ -45,8 +45,8 @@ def event_document(service):
     return document
 
 
-def test_http_event_scope_schema_and_exact_target_rejection(tmp_path, monkeypatch):
-    with host_server(tmp_path, monkeypatch) as (host, port):
+def test_http_event_scope_schema_and_exact_target_rejection(tmp_path):
+    with host_server(tmp_path) as (host, port):
         service = host.graph_service
         document = event_document(service)
         service.save_definition(document, expected_revision=0, idempotency_key="event-scope-save")
@@ -98,12 +98,12 @@ def test_http_event_scope_schema_and_exact_target_rejection(tmp_path, monkeypatc
         assert service.list_graph_candidates(sid)["candidates"] == []
 
 
-def test_shipped_client_event_unknown_replay_and_following_round_checkpoint(tmp_path, monkeypatch):
+def test_shipped_client_event_unknown_replay_and_following_round_checkpoint(tmp_path):
     node_binary = shutil.which("node")
     if node_binary is None:
         pytest.skip("Node.js is required for shipped consumer integration")
     core = Path(__file__).resolve().parents[1] / "src" / "phase1_agent" / "static" / "graph-chat-core.js"
-    with host_server(tmp_path, monkeypatch) as (host, port):
+    with host_server(tmp_path) as (host, port):
         document = event_document(host.graph_service)
         status, saved = request(port, "POST", "/api/graph/commands", {
             "operation": "definition.save", "parameters": {
@@ -120,12 +120,15 @@ const base = process.argv[2], workflowId = process.argv[3];
 let discardEventResponse = false, lastEventRequest = null;
 async function transport(path, options = {}) {
   const packet = options.body ? JSON.parse(options.body) : null;
-  calls.push({ path, operation: packet?.operation });
+  const call = { path, method: options.method ?? "GET", operation: packet?.operation,
+    packet, rawBody: options.body };
+  calls.push(call);
   const response = await fetch(base + path, { ...options, headers: {
     "Content-Type": "application/json", Origin: base }, cache: "no-store" });
   const value = await response.json();
   if (!response.ok) throw scope.GraphChat.httpFailure(value, response.status);
-  if (packet?.operation === "consumer.event.submit") {
+  call.response = value;
+  if (path === "/api/graph/consumer/commands" && packet?.operation === "consumer.event.submit") {
     lastEventRequest = packet;
     if (discardEventResponse) { discardEventResponse = false; throw new Error("response lost after acceptance"); }
   }
@@ -162,20 +165,40 @@ async function finished(client) {
   assert.ok(client.pending, "unknown accepted event lost the original request");
   const original = JSON.parse(JSON.stringify(client.pending));
   const eventKey = lastEventRequest.parameters.idempotency_key;
+  const submittedEvent = calls.find(item => item.path === "/api/graph/consumer/commands"
+    && item.operation === "consumer.event.submit");
+  assert.equal(calls.filter(item => item.path === "/api/graph/consumer/commands"
+    && item.operation === "consumer.event.submit").length, 1);
+  const mutationCount = calls.filter(item => item.path === "/api/graph/consumer/commands").length;
   const recovered = new scope.GraphChat.GraphChatClient(options);
   await recovered.discover();
   assert.deepEqual(JSON.parse(JSON.stringify(recovered.pending)), original);
-  await recovered.command(); await recovered.refresh(); await finished(recovered);
+  const reconciled = await recovered.command();
+  assert.equal(reconciled.receipt.idempotency_key, eventKey);
+  assert.equal(reconciled.receipt.workflow_session_id, recovered.sessionId);
+  assert.deepEqual(reconciled.receipt, submittedEvent.response.result.receipt);
   assert.equal(recovered.pending, null);
-  const eventPacket = calls.filter(item => item.operation === "consumer.event.submit");
-  assert.equal(eventPacket.length, 2);
+  assert.equal(calls.filter(item => item.path === "/api/graph/consumer/commands").length, mutationCount);
+  const eventPacket = calls.filter(item => item.path === "/api/graph/consumer/commands"
+    && item.operation === "consumer.event.submit");
+  assert.equal(eventPacket.length, 1, "receipt recovery resent the event mutation");
+  const receiptReads = calls.filter(item => item.path === "/api/graph/consumer/receipts/read");
+  assert.equal(receiptReads.length, 1);
+  assert.equal(receiptReads[0].response.kind, "workflow.application-receipt-read");
+  assert.equal(receiptReads[0].response.outcome, "matched");
+  assert.equal(receiptReads[0].method, "POST");
+  assert.equal(receiptReads[0].operation, "consumer.event.submit");
+  assert.equal(receiptReads[0].rawBody, submittedEvent.rawBody, "receipt recovery changed the original event envelope");
+  assert.deepEqual(receiptReads[0].packet.parameters, {
+    session_id: original.workflow_session_id, ...original.body });
   assert.equal(lastEventRequest.parameters.idempotency_key, eventKey);
+  await recovered.refresh(); await finished(recovered);
   const unchanged = recovered.consumer.outputs.find(item => item.data_type === "FRONTEND_DISPLAY");
   assert.equal(unchanged.payload.entries.length, 2, "event implicitly executed the round display chain");
   await recovered.command("start", { inputs: { text: "second" } }); await finished(recovered);
   assert.equal(recovered.consumer.outputs.find(item => item.data_type === "FRONTEND_DISPLAY").payload.entries.length, 4);
   assert.ok(calls.every(item => ["/api/graph/consumer/application", "/api/graph/consumer/queries",
-    "/api/graph/consumer/commands"].includes(item.path)));
+    "/api/graph/consumer/commands", "/api/graph/consumer/receipts/read"].includes(item.path)));
   console.log(JSON.stringify({ sessionId: recovered.sessionId, eventKey }));
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
@@ -206,4 +229,4 @@ async function finished(client) {
             assert objects["variable/value"]["value"]["value"] == "updated"
             assert not any(row["source"].get("chain_run_id") == event["chain_run_id"]
                            for row in repo.rows("workflow_commit"))
-        assert host._legacy is None and service._native_runtime is None
+        assert not hasattr(host, "_legacy") and not hasattr(service, "_native_runtime")

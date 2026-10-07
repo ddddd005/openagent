@@ -241,7 +241,7 @@ def json_value(value: Any) -> dict:
 
 def validate_content_value(value: Any, data_type: str, schema_version: int = 1,
                            *, registry: TypeRegistry | None = None) -> dict:
-    """Standalone legacy helpers use built-ins; runtime uses its frozen registry."""
+    """Standalone content helpers use built-ins; runtime uses its frozen registry."""
     if registry is not None:
         try:
             return registry.validate(data_type, schema_version, value, scope="content")
@@ -299,8 +299,7 @@ def _validate_builtin_content_value(value: Any, data_type: str) -> dict:
                 and len(canonical_bytes(value)) <= MAX_GRAPH_BYTES,
                 "graph_invalid_output", "PROMPT output exceeds its resource limit")
         if value["stage"] == "assembled":
-            from .graph_prompt import validate_ready_prompt
-            validate_ready_prompt(value)
+            raise GraphDiagnosticError("graph_legacy_prompt_retired", "PROMPT@1 assembly is no longer supported")
     elif data_type == "MODEL_RESOURCE":
         require(set(value) == {"schema_version", "kind", "binding"}
                 and value["kind"] == "workflow.model-resource",
