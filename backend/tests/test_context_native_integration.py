@@ -327,6 +327,47 @@ def test_native_graph_without_compaction_stores_current_and_final_text_not_fixed
         assert len(fixture.calls) == 1
 
 
+@pytest.mark.parametrize("depth", [0, 2, 20])
+def test_native_graph_middle_depth_reaches_model_and_does_not_persist_material(
+    tmp_path, monkeypatch, depth,
+):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-depth")
+    fixture = NativeTransport()
+    database = tmp_path / "depth.sqlite"
+    with closing(GraphWorkflowService(database, public_model_factory=fixture.factory)) as service:
+        ModelDatabaseFixture.write(service, 1)
+        doc, entries = native_graph(service, policy=False, once=False)
+        first = run(service, create(service, doc), "First input.")
+        assert first["status"] == "succeeded", first["chains"]
+        second = run(service, first, "Second input.")
+        assert second["status"] == "succeeded", second["chains"]
+        entries["a"]["fixed"]["config"]["presentation"].update(placement="middle", depth=depth)
+        rebound, doc = rebind(service, second, doc)
+        third = run(service, rebound, "Current input.")
+        assert third["status"] == "succeeded", third["chains"]
+        prompt = node_output(third, entries["a"]["assembly"])
+        expected = ["First input.", "Native accepted answer", "Second input.",
+                    "Native accepted answer", "Current input."]
+        expected.insert(max(0, len(expected) - depth), "FIXED_RULE_a")
+        assert [message["blocks"][0]["text"] for message in prompt["messages"]] == expected
+        visible = [message.get("content") for message in fixture.calls[-1]["messages"]
+                   if message.get("content") in expected]
+        assert visible == expected
+        effective = node_output(third, entries["a"]["merge"])
+        assert [message["blocks"][0]["text"] for message in effective["messages"]] == [
+            "First input.", "Native accepted answer", "Second input.",
+            "Native accepted answer", "Current input.", "Native accepted answer"]
+        assert not effective["once_injected_item_ids"]
+        sid, chain = third["workflow_session_id"], third["selected_chain_run_id"]
+    with closing(GraphWorkflowService(database, public_model_factory=fixture.factory)) as reopened:
+        archived = reopened.get_run(sid, chain)
+        frozen = next(output["payload"] for output in archived["outputs"]
+                      if output["node_binding_id"] == entries["a"]["assembly"]["node_binding_id"])
+        assert frozen == prompt
+        assert reopened.get_session(sid)["status"] == "succeeded"
+        assert len(fixture.calls) == 3
+
+
 def test_native_context_adoption_is_idempotent_and_rejects_stale_compacted_candidate(tmp_path, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-context")
     fixture = NativeTransport()

@@ -14,8 +14,10 @@ from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import HostContractError
 from phase1_agent.model_package import MODEL_FRONTEND_EXTENSIONS
 from phase1_agent.prompt_package import PROMPT_FRONTEND_EXTENSIONS
+from phase1_agent.tavern_package import TAVERN_FRONTEND_EXTENSIONS
 
 from test_graph_service import create
+from test_graph_package_selection import saved_selection
 from test_plan13a_frontend_public import frontend_graph
 from graph_test_plugin import run_current_graph as run
 
@@ -24,8 +26,10 @@ def loader():
     return CapabilityPackageLoader(builtin_capability_packages())
 
 
-def expected_workbench_extensions(*, frontend):
+def expected_workbench_extensions(*, frontend, tavern=True):
     declarations = [*MODEL_FRONTEND_EXTENSIONS, *PROMPT_FRONTEND_EXTENSIONS]
+    if tavern:
+        declarations.extend(TAVERN_FRONTEND_EXTENSIONS)
     if frontend:
         declarations.extend(FRONTEND_EXTENSIONS)
     return {row["extension_id"] for row in declarations}
@@ -85,7 +89,7 @@ def test_business_only_service_executes_frontend_graph_without_ui(tmp_path):
     selected = {key: value for key, value in DEFAULT_PACKAGES.items() if key != "workflow.frontend"}
     with closing(GraphWorkflowService(tmp_path / "business-only.sqlite", enabled_packages=selected)) as service:
         assert {row["package_id"] for row in service.platform_capabilities()["frontend_extensions"]} == {
-            "workflow.models", "workflow.prompts"}
+            "workflow.models", "workflow.prompts", "workflow.tavern"}
         assert service_extension_ids(service) == expected_workbench_extensions(frontend=False)
         doc, _, _, _, presentation = frontend_graph(service)
         completed = run(service, create(service, doc), inputs={"text": "business-only"})
@@ -211,6 +215,27 @@ def test_new_project_defaults_complete_package_and_old_saved_selection_is_not_up
         assert service_extension_ids(service) == expected_workbench_extensions(frontend=True)
     with closing(GraphWorkflowService(tmp_path / "new.sqlite")) as service:
         assert service_extension_ids(service) == expected_workbench_extensions(frontend=True)
+
+
+def test_saved_selection_without_tavern_does_not_gain_its_nodes_or_extensions_on_reopen(tmp_path):
+    database = tmp_path / "pre-tavern-selection.sqlite"
+    selected = {key: value for key, value in DEFAULT_PACKAGES.items() if key != "workflow.tavern"}
+    expected_extensions = expected_workbench_extensions(frontend=True, tavern=False)
+    with closing(GraphWorkflowService(database, enabled_packages=selected)) as service:
+        assert service_extension_ids(service) == expected_extensions
+        assert service.registry.get("lorebook.item", "1") is None
+        assert service.registry.get("lorebook.group", "1") is None
+        lock, catalog = service.registry.package_lock, service.registry.catalog()
+        assert all(row["package_id"] != "workflow.tavern" for row in lock)
+    persisted = saved_selection(database)
+    with closing(GraphWorkflowService(database)) as reopened:
+        assert reopened.registry.package_lock == lock
+        assert reopened.registry.catalog() == catalog
+        assert service_extension_ids(reopened) == expected_extensions
+        assert reopened.platform_capabilities()["package_diagnostics"] == []
+        assert reopened.registry.get("lorebook.item", "1") is None
+        assert reopened.registry.get("lorebook.group", "1") is None
+    assert saved_selection(database) == persisted
 
 
 def test_ui_disable_reopen_and_reenable_preserve_state_and_public_history(tmp_path):

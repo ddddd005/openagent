@@ -185,7 +185,7 @@ def test_advance_rejects_old_unwindowed_basis_and_duplicate_consumption():
         advance_context(view(), ref(60), other, ref(71))
 
 
-def test_history_assembly_preserves_roles_protocol_order_and_middle_unit_boundaries():
+def test_history_assembly_preserves_protocol_and_places_depth_one_before_current_root():
     history = view()
     history["units"] = [{"unit_ref": ref(84), "unit": unit(10, tool=True)}]
     presentation = {**default_presentation(), "placement": "middle", "depth": 1}
@@ -194,8 +194,8 @@ def test_history_assembly_preserves_roles_protocol_order_and_middle_unit_boundar
     ready = assemble_context_prompt([prompt_content([item])], history, text_content("new root"),
                                     context_ref=ref(60), current_input_ref=ref(83))
     assert [message["role"] for message in ready["messages"]] == [
-        "system", "user", "assistant", "tool", "tool", "assistant", "user"]
-    assert ready["messages"][2]["tool_calls"][0]["function"]["name"] == "inspect"
+        "user", "assistant", "tool", "tool", "assistant", "system", "user"]
+    assert ready["messages"][1]["tool_calls"][0]["function"]["name"] == "inspect"
     assert ready["current_input"] == {"role": "user", "content": "new root"}
     assert validate_context_ready_prompt(ready) == ready
     tampered = deepcopy(ready)
@@ -206,13 +206,12 @@ def test_history_assembly_preserves_roles_protocol_order_and_middle_unit_boundar
         validate_ready_prompt(ready)
 
 
-def test_role_cards_and_missing_history_anchor_do_not_enter_ready_v3():
-    for changes in ({"purpose": "role-card"}, {"placement": "middle", "depth": 1}):
-        item = make_prompt_item(uid(3), uid(4), "text", default_presentation(), source={"kind": "fixture"})
-        item.update(changes)
-        with pytest.raises(ContractValidationError):
-            assemble_context_prompt([prompt_content([item])], view(), text_content("q"),
-                                    context_ref=ref(60), current_input_ref=ref(83))
+def test_role_cards_do_not_enter_ready_v3():
+    item = make_prompt_item(uid(3), uid(4), "text", default_presentation(), source={"kind": "fixture"})
+    item["purpose"] = "role-card"
+    with pytest.raises(ContractValidationError):
+        assemble_context_prompt([prompt_content([item])], view(), text_content("q"),
+                                context_ref=ref(60), current_input_ref=ref(83))
 
 
 def test_artifact_validation_checks_exact_unit_and_frozen_input_evidence():

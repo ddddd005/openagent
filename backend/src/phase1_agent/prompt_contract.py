@@ -14,6 +14,9 @@ from jsonschema import Draft202012Validator, ValidationError
 from .content_contracts import presentation_schema, prompt_content
 from .contract_json import canonical_bytes, validate_json_value
 from .graph_contracts import require, uuid4_string
+from .prompt_depth import (
+    LOGICAL_FLOOR_PLACEMENT, logical_floor_materials, uses_logical_floor_placement,
+)
 
 
 _BUSINESS_FIELDS = (
@@ -117,7 +120,8 @@ def _artifact_refs(refs: list[dict]) -> list[dict]:
 
 
 def _build_assembly(items: list[dict], current_input: dict | None, *,
-                    source_output_refs: list[dict], current_input_refs: list[dict]) -> dict:
+                    source_output_refs: list[dict], current_input_refs: list[dict],
+                    logical_floors=True) -> dict:
     active = [item for item in items if item["enabled"]]
     require(all(item["placement"] != "middle" or item["depth"] == 0 for item in active),
             "graph_prompt_history_anchor_required",
@@ -126,12 +130,22 @@ def _build_assembly(items: list[dict], current_input: dict | None, *,
             and set(current_input) == {"role", "content"} and current_input["role"] == "user"
             and type(current_input["content"]) is str,
             "graph_prompt_current_input_invalid", "Current input must be one explicit user text")
-    messages = [{"role": item["role"], "content": item["text"]}
-                for item in active if item["placement"] != "after"]
-    if current_input is not None:
-        messages.append(deepcopy(current_input))
-    messages.extend({"role": item["role"], "content": item["text"]}
-                    for item in active if item["placement"] == "after")
+    if logical_floors:
+        history = [deepcopy(current_input)] if current_input is not None else []
+        buckets = logical_floor_materials(active, [0] if history else [], len(history))
+        messages = []
+        for index in range(len(history) + 1):
+            messages.extend({"role": item["role"], "content": item["text"]}
+                            for item in buckets.get(index, []))
+            if index < len(history):
+                messages.append(history[index])
+    else:
+        messages = [{"role": item["role"], "content": item["text"]}
+                    for item in active if item["placement"] != "after"]
+        if current_input is not None:
+            messages.append(deepcopy(current_input))
+        messages.extend({"role": item["role"], "content": item["text"]}
+                        for item in active if item["placement"] == "after")
     require(bool(messages), "graph_prompt_empty", "An assembly requires effective materials or current input")
     source_refs = _artifact_refs(source_output_refs)
     current_refs = _artifact_refs(current_input_refs)
@@ -141,6 +155,7 @@ def _build_assembly(items: list[dict], current_input: dict | None, *,
             "graph_prompt_artifact_refs_invalid", "An edge cannot bind both materials and current input")
     return {
         "schema_version": 2, "kind": "workflow.prompt-assembly", "messages": messages,
+        **({"placement_profile": LOGICAL_FLOOR_PLACEMENT} if logical_floors else {}),
         "manifest": {"ordered_item_ids": [item["item_instance_id"] for item in active],
                      "source_output_refs": source_refs, "current_input_refs": current_refs},
         "current_input": deepcopy(current_input),
@@ -173,7 +188,7 @@ def validate_ready_prompt(value: dict) -> dict:
             and value["stage"] == "assembled" and type(value["items"]) is list,
             "graph_prompt_not_ready", "Ready prompt requires the explicit PROMPT@2 envelope")
     evidence = value["assembly"]
-    require(type(evidence) is dict and set(evidence) == {
+    require(type(evidence) is dict and set(evidence) - {"placement_profile"} == {
         "schema_version", "kind", "messages", "manifest", "current_input",
     } and evidence["schema_version"] == 2 and evidence["kind"] == "workflow.prompt-assembly",
             "graph_prompt_not_ready", "Prompt assembly evidence is invalid")
@@ -186,7 +201,8 @@ def validate_ready_prompt(value: dict) -> dict:
             "graph_prompt_not_ready", "Ready prompt materials are not canonical")
     expected = _build_assembly(items, evidence["current_input"],
                                source_output_refs=manifest["source_output_refs"],
-                               current_input_refs=manifest["current_input_refs"])
+                               current_input_refs=manifest["current_input_refs"],
+                               logical_floors=uses_logical_floor_placement(evidence))
     require(canonical_bytes(expected) == canonical_bytes(evidence), "graph_prompt_not_ready",
             "Frozen messages or assembly evidence differ from their materials")
     return deepcopy(value)

@@ -7,6 +7,9 @@ from .contract_json import canonical_bytes, validate_json_value
 from .context_contract import artifact_ref, validate_context_view
 from .graph_contracts import require
 from .prompt_contract import _artifact_refs, _source_origins, merge_prompt_materials
+from .prompt_depth import (
+    LOGICAL_FLOOR_PLACEMENT, logical_floor_materials, uses_logical_floor_placement,
+)
 
 
 def _message(message):
@@ -19,14 +22,14 @@ def _message(message):
     return result
 
 
-def _build(items, view, current_input):
+def _build(items, view, current_input, *, logical_floors=True):
     active = [item for item in items if item["enabled"]]
     for item in active:
         require(item["purpose"] not in ("role-card", "role_card", "rolecard")
                 and all(source.get("kind") not in ("role-card", "role_card", "rolecard")
                         for source in _source_origins(item["source"])),
                 "context_role_cards_excluded", "Role cards are outside this context package")
-        require(item["placement"] != "middle" or item["depth"] <= len(view["units"]),
+        require(logical_floors or item["placement"] != "middle" or item["depth"] <= len(view["units"]),
                 "context_history_anchor_missing", "Middle depth exceeds complete historical units")
     messages, provenance = [], []
 
@@ -34,6 +37,36 @@ def _build(items, view, current_input):
         messages.append({"role": item["role"], "content": item["text"]})
         provenance.append({"kind": "material", "item_instance_id": item["item_instance_id"],
                            "source": deepcopy(item["source"])})
+
+    if logical_floors:
+        history, origins, floor_starts = [], [], []
+        for entry in view["units"]:
+            if "summary" in entry:
+                summary = entry["summary"]
+                history.append({"role": summary["role"], "content": summary["text"]})
+                origins.append({"kind": "summary", "summary_ref": deepcopy(entry["summary_ref"]),
+                                "summary_id": summary["summary_id"],
+                                "covered_round_refs": deepcopy(summary["covered_round_refs"])})
+                continue
+            unit = entry["unit"]
+            floor_starts.append(len(history))
+            for index, message in enumerate([unit["root"], *unit["messages"]]):
+                if index == 1:
+                    floor_starts.append(len(history))
+                history.append(_message(message))
+                origins.append({"kind": "history", "unit_ref": deepcopy(entry["unit_ref"]),
+                                "unit_id": unit["unit_id"], "message_id": message.get("message_id")})
+        floor_starts.append(len(history))
+        history.append(deepcopy(current_input))
+        origins.append({"kind": "current_input"})
+        buckets = logical_floor_materials(active, floor_starts, len(history))
+        for index in range(len(history) + 1):
+            for item in buckets.get(index, []):
+                material(item)
+            if index < len(history):
+                messages.append(history[index])
+                provenance.append(origins[index])
+        return messages, provenance
 
     for item in active:
         if item["placement"] == "before":
@@ -77,6 +110,7 @@ def assemble_context_prompt(materials, view, current_input, *, context_ref, curr
     messages, provenance = _build(items, view, root)
     return {
         "schema_version": 3, "kind": "workflow.prompt", "stage": "assembled",
+        "placement_profile": LOGICAL_FLOOR_PLACEMENT,
         "items": items, "context": deepcopy(view), "context_ref": artifact_ref(context_ref),
         "current_input": root, "current_input_ref": artifact_ref(current_input_ref),
         "source_output_refs": _artifact_refs(source_output_refs or []),
@@ -86,7 +120,7 @@ def assemble_context_prompt(materials, view, current_input, *, context_ref, curr
 
 def validate_context_ready_prompt(value):
     validate_json_value(value)
-    require(type(value) is dict and set(value) == {
+    require(type(value) is dict and set(value) - {"placement_profile"} == {
         "schema_version", "kind", "stage", "items", "context", "context_ref",
         "current_input", "current_input_ref", "source_output_refs", "messages", "provenance",
     } and type(value["schema_version"]) is int and value["schema_version"] == 3
@@ -101,7 +135,7 @@ def validate_context_ready_prompt(value):
             and type(root["content"]) is str, "context_invalid_current_input",
             "Ready prompt requires the actual frozen user input")
     items = merge_prompt_materials([prompt_content(value["items"])])["items"]
-    messages, provenance = _build(items, view, root)
+    messages, provenance = _build(items, view, root, logical_floors=uses_logical_floor_placement(value))
     require(canonical_bytes(items) == canonical_bytes(value["items"])
             and canonical_bytes(messages) == canonical_bytes(value["messages"])
             and canonical_bytes(provenance) == canonical_bytes(value["provenance"]),
@@ -168,6 +202,7 @@ def assemble_summary_context_prompt(materials, view, current_input, *, context_r
     messages, provenance = _build(items, view, root)
     return validate_summary_context_prompt({
         "schema_version": 5, "kind": "workflow.prompt", "stage": "assembled", "items": items,
+        "placement_profile": LOGICAL_FLOOR_PLACEMENT,
         "context": view, "context_ref": artifact_ref(context_ref), "current_input": root,
         "current_input_ref": artifact_ref(current_input_ref),
         "source_output_refs": _artifact_refs(source_output_refs or []),
@@ -177,7 +212,7 @@ def assemble_summary_context_prompt(materials, view, current_input, *, context_r
 def validate_summary_context_prompt(value):
     from .context_v3 import validate_effective_view
     validate_json_value(value)
-    require(type(value) is dict and set(value) == {
+    require(type(value) is dict and set(value) - {"placement_profile"} == {
         "schema_version", "kind", "stage", "items", "context", "context_ref", "current_input",
         "current_input_ref", "source_output_refs", "messages", "provenance", "character_budget",
     } and type(value["schema_version"]) is int and value["schema_version"] == 5
@@ -192,7 +227,7 @@ def validate_summary_context_prompt(value):
             and type(root["content"]) is str, "context_invalid_current_input",
             "Assembly requires the exact frozen current input")
     items = merge_prompt_materials([prompt_content(value["items"])])["items"]
-    messages, provenance = _build(items, view, root)
+    messages, provenance = _build(items, view, root, logical_floors=uses_logical_floor_placement(value))
     require(items == value["items"] and messages == value["messages"] and provenance == value["provenance"],
             "context_prompt_not_ready", "Effective messages, ordering or replacement provenance were modified")
     budget = value["character_budget"]

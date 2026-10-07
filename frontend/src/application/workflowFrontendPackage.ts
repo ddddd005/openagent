@@ -3,10 +3,11 @@ import { createLocalWorkbenchFrontendHost, type WorkbenchFrontendPackageModule }
 import { builtinFrontendPackage } from "../plugins/workflowFrontendPackage";
 import { modelFrontendPackage } from "../plugins/modelFrontendPackage";
 import { promptFrontendPackage } from "../plugins/promptFrontendPackage";
+import { tavernFrontendPackage } from "../plugins/tavernFrontendPackage";
 export type { WorkbenchFrontendPackageModule } from "./workbenchFrontendHost";
 export function createWorkbenchFrontendHost(
   declarations: () => FrontendExtension[], packages: () => { package_id: string; version: string }[],
-  modules: readonly WorkbenchFrontendPackageModule[] = [builtinFrontendPackage, modelFrontendPackage, promptFrontendPackage],
+  modules: readonly WorkbenchFrontendPackageModule[] = [builtinFrontendPackage, modelFrontendPackage, promptFrontendPackage, tavernFrontendPackage],
 ) {
   return createLocalWorkbenchFrontendHost(declarations, packages, modules);
 }

@@ -11,6 +11,9 @@ from .contract_json import canonical_bytes, validate_json_value
 from .contracts_v2 import validate_record
 from .graph_contracts import require
 from .prompt_contract import _artifact_refs
+from .prompt_depth import (
+    LOGICAL_FLOOR_PLACEMENT, logical_floor_materials, uses_logical_floor_placement,
+)
 from .prompt_lifecycle import lifecycle_prompt_content, merge_lifecycle_prompt_materials
 
 
@@ -45,7 +48,25 @@ def _current_message(current_input, reference):
     })
 
 
-def _assemble(items, view, current):
+def native_history_floor_starts(view):
+    """Keep each root and its complete generated delta as separate floors."""
+    starts, previous = [], None
+    for index, (message, entry) in enumerate(zip(view["messages"], view["layout"])):
+        if entry["kind"] != "history":
+            continue
+        root = message["role"] == "user" and message["source"]["kind"] in (
+            "human", "upstream_node", "prompt")
+        key = (entry["round_id"], "root" if root else "delta")
+        if key != previous:
+            starts.append(index)
+            previous = key
+    starts.append(len(view["messages"]))
+    for start, end in zip(starts, starts[1:]):
+        validate_message_history(view["messages"][start:end])
+    return starts
+
+
+def _assemble(items, view, current, *, logical_floors=True):
     active = [item for item in items if item["enabled"]]
     consumed = set(view["once_injected_item_ids"])
     pending = sorted({
@@ -54,17 +75,18 @@ def _assemble(items, view, current):
     }, key=lambda identity: UUID(identity).int)
     inject = [item for item in active if item["lifecycle"] == "per_request"
               or not set(item["origin_item_ids"]) & consumed]
-    rounds = []
-    for entry in view["layout"]:
-        if entry["kind"] == "history" and entry["round_id"] is not None and entry["round_id"] not in rounds:
-            rounds.append(entry["round_id"])
-    boundaries = {0: len(view["messages"])}
-    for depth, round_id in enumerate(reversed(rounds), 1):
-        boundaries[depth] = next(index for index, entry in enumerate(view["layout"])
-                                 if entry["kind"] == "history" and entry["round_id"] == round_id)
-    for item in inject:
-        require(item["placement"] != "middle" or item["depth"] in boundaries,
-                "context_history_anchor_missing", "Middle placement exceeds complete historical rounds")
+    if not logical_floors:
+        rounds = []
+        for entry in view["layout"]:
+            if entry["kind"] == "history" and entry["round_id"] is not None and entry["round_id"] not in rounds:
+                rounds.append(entry["round_id"])
+        boundaries = {0: len(view["messages"])}
+        for depth, round_id in enumerate(reversed(rounds), 1):
+            boundaries[depth] = next(index for index, entry in enumerate(view["layout"])
+                                     if entry["kind"] == "history" and entry["round_id"] == round_id)
+        for item in inject:
+            require(item["placement"] != "middle" or item["depth"] in boundaries,
+                    "context_history_anchor_missing", "Middle placement exceeds complete historical rounds")
     messages, provenance, layout = [], [], []
 
     def material(item):
@@ -78,6 +100,23 @@ def _assemble(items, view, current):
             "kind": "once" if item["lifecycle"] == "context_once" else "fixed",
             "round_id": None, "compaction": item["compaction"],
         })
+
+    if logical_floors:
+        history = [*view["messages"], current]
+        buckets = logical_floor_materials(inject, native_history_floor_starts(view), len(history))
+        for index in range(len(history) + 1):
+            for item in buckets.get(index, []):
+                material(item)
+            if index < len(view["messages"]):
+                messages.append(deepcopy(history[index]))
+                provenance.append({"kind": "history", "message_id": history[index]["message_id"]})
+                layout.append(deepcopy(view["layout"][index]))
+            elif index == len(view["messages"]):
+                messages.append(deepcopy(current))
+                provenance.append({"kind": "current_input"})
+                layout.append({"kind": "current", "round_id": None, "compaction": "never"})
+        validate_message_history(messages)
+        return messages, provenance, layout, pending
 
     for item in inject:
         if item["placement"] == "before":
@@ -111,6 +150,7 @@ def assemble_native_context_prompt(materials, view, current_input, *, context_re
     messages, provenance, layout, pending = _assemble(items, view, current)
     return validate_native_context_prompt({
         "schema_version": 6, "kind": "workflow.prompt", "stage": "assembled", "items": items,
+        "placement_profile": LOGICAL_FLOOR_PLACEMENT,
         "context": view, "context_ref": artifact_ref(context_ref), "current_input": current,
         "current_input_ref": current_ref,
         "source_output_refs": _artifact_refs([] if source_output_refs is None else source_output_refs),
@@ -122,7 +162,7 @@ def assemble_native_context_prompt(materials, view, current_input, *, context_re
 def validate_native_context_prompt(value):
     from .context_v4 import validate_native_context_view
     validate_json_value(value)
-    require(type(value) is dict and set(value) == _FIELDS
+    require(type(value) is dict and set(value) - {"placement_profile"} == _FIELDS
             and type(value["schema_version"]) is int and value["schema_version"] == 6
             and value["kind"] == "workflow.prompt" and value["stage"] == "assembled",
             "context_prompt_not_ready", "Native assembly requires exact PROMPT@6")
@@ -137,7 +177,8 @@ def validate_native_context_prompt(value):
     require(current == expected_current, "context_invalid_current_input",
             "Current input identity and source must match its exact accepted artifact")
     items = merge_lifecycle_prompt_materials([lifecycle_prompt_content(value["items"])])["items"]
-    messages, provenance, layout, pending = _assemble(items, view, current)
+    messages, provenance, layout, pending = _assemble(
+        items, view, current, logical_floors=uses_logical_floor_placement(value))
     require(items == value["items"] and messages == value["messages"]
             and provenance == value["provenance"] and layout == value["layout"]
             and pending == value["once_pending_item_ids"] and refs == value["source_output_refs"],

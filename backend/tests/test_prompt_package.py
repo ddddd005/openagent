@@ -187,7 +187,7 @@ def test_context_or_protocol_facts_do_not_enter_ordinary_prompt_sorting(change):
         merge_prompt_materials([prompt_content([item(1, "protected", **change)])])
 
 
-def test_assembly_places_before_and_middle_then_current_input_then_after():
+def test_assembly_places_depth_zero_after_current_input_and_before_after_region():
     values = prompt_content([
         item(3, "after", placement="after"),
         item(2, "middle", placement="middle", depth=0),
@@ -199,8 +199,8 @@ def test_assembly_places_before_and_middle_then_current_input_then_after():
     result = assemble_prompt([values], text_content("question"), source_output_refs=sources,
                              current_input_refs=current_refs)
     assert result["assembly"]["messages"] == [
-        {"role": "system", "content": "before"}, {"role": "system", "content": "middle"},
-        {"role": "user", "content": "question"}, {"role": "system", "content": "after"},
+        {"role": "system", "content": "before"}, {"role": "user", "content": "question"},
+        {"role": "system", "content": "middle"}, {"role": "system", "content": "after"},
     ]
     assert result["assembly"]["manifest"] == {
         "ordered_item_ids": [uid(1), uid(2), uid(3)],

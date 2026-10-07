@@ -261,17 +261,17 @@ def history_text(number, role="user"):
             "blocks": [{"kind": "text", "text": str(number)}]}
 
 
-def test_middle_placement_anchors_complete_history_rounds_and_canonical_ids_are_stable():
+def test_middle_placement_anchors_logical_floors_and_canonical_ids_are_stable():
     messages = [history_text(10), history_text(11, "assistant"), history_text(12)]
     layout = [{"kind": "history", "round_id": uid(50), "compaction": "allowed"},
               {"kind": "history", "round_id": uid(50), "compaction": "allowed"},
               {"kind": "history", "round_id": uid(51), "compaction": "allowed"}]
     initial = view(messages, layout)
-    material = item(1, "between rounds", lifecycle="per_request", compaction="never",
-                    placement="middle", depth=1)
+    material = item(1, "between floors", lifecycle="per_request", compaction="never",
+                    placement="middle", depth=2)
     prompt = assemble([content(material)], initial)
     assert [message["blocks"][0]["text"] for message in prompt["messages"]] == [
-        "10", "11", "between rounds", "12", "Current task"]
+        "10", "11", "between floors", "12", "Current task"]
     assert [prompt["messages"][index]["message_id"] for index in (0, 1, 3)] == [
         message["message_id"] for message in messages]
     second = assemble_native_context_prompt(
@@ -293,7 +293,7 @@ def test_middle_material_never_splits_a_closed_tool_batch():
         {"kind": "history", "round_id": uid(50), "compaction": "never"},
         {"kind": "history", "round_id": uid(50), "compaction": "never"}])
     material = item(1, "before complete batch", lifecycle="per_request", compaction="never",
-                    placement="middle", depth=1)
+                    placement="middle", depth=2)
     prompt = assemble([content(material)], initial)
     assert prompt["messages"][1:3] == [call, result]
     validate_message_history(prompt["messages"])

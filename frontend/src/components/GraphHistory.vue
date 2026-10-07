@@ -5,6 +5,7 @@ import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { resolveGraphRunInputs, type GraphRunDetail } from "../domain/workflowGraph";
 import GraphInformation from "./GraphInformation.vue";
 import { contextMaintenanceDiagnosis } from "../domain/contextMaintenance";
+import LorebookEvaluationFacts from "./LorebookEvaluationFacts.vue";
 const graph = useWorkflowGraphStore();
 const selected = ref<string | null>(null);
 const detail = ref<GraphRunDetail | null>(null);
@@ -51,6 +52,7 @@ onUnmounted(() => { generation++; });
       <GraphInformation v-if="selected && graph.session" :session-id="graph.session.workflow_session_id" :chain-id="selected" initial-kind="information_binding" />
       <section v-for="run in detail?.node_runs ?? []" :key="run.run_id" class="node-history">
         <header>{{ run.node_binding_id.slice(0,8) }} · {{ run.status }}</header>
+        <LorebookEvaluationFacts :reads="run.reads" />
         <details><summary>输入与读取依据</summary><pre>{{ JSON.stringify(inputEvidence(run), null, 2) }}</pre></details>
         <details v-if="run.effects.length"><summary>会话写入</summary><pre>{{ JSON.stringify(run.effects, null, 2) }}</pre></details>
         <p v-if="contextMaintenanceDiagnosis(run.diagnostic)" class="error" role="status">{{ contextMaintenanceDiagnosis(run.diagnostic) }}</p>

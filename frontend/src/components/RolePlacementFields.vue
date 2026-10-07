@@ -5,6 +5,8 @@ const props = defineProps<{
   modelValue: RolePlacement;
   label?: string;
   errors?: string[];
+  labelPrefix?: string;
+  depthLabel?: string;
 }>();
 const emit = defineEmits<{
   "update:modelValue": [value: RolePlacement];
@@ -30,7 +32,7 @@ function changePlacement(placement: RolePlacement["placement"]) {
         <span>Role</span>
         <select
           :value="modelValue.role"
-          aria-label="消息 Role"
+          :aria-label="labelPrefix ? `${labelPrefix} Role` : '消息 Role'"
           @change="update({ role: ($event.target as HTMLSelectElement).value as RolePlacement['role'] })"
         >
           <option value="system">system</option>
@@ -41,6 +43,7 @@ function changePlacement(placement: RolePlacement["placement"]) {
       <label class="presentation-enabled">
         <input
           type="checkbox"
+          :aria-label="labelPrefix ? `${labelPrefix} 启用` : undefined"
           :checked="modelValue.enabled"
           @change="update({ enabled: ($event.target as HTMLInputElement).checked })"
         />
@@ -49,7 +52,7 @@ function changePlacement(placement: RolePlacement["placement"]) {
     </div>
     <div class="presentation-position">
       <span>位置</span>
-      <div class="presentation-segmented" role="group" aria-label="装配位置">
+      <div class="presentation-segmented" role="group" :aria-label="labelPrefix ? `${labelPrefix} 装配位置` : '装配位置'">
         <button
           v-for="option in ([['before', '上下文前'], ['middle', '上下文中'], ['after', '上下文后']] as const)"
           :key="option[0]"
@@ -62,13 +65,13 @@ function changePlacement(placement: RolePlacement["placement"]) {
     </div>
     <div class="presentation-number-row">
       <label v-if="modelValue.placement === 'middle'">
-        <span>深度</span>
+        <span>{{ depthLabel ?? '深度' }}</span>
         <input
           type="number"
           min="0"
           step="1"
           :value="modelValue.depth"
-          aria-label="中区深度"
+          :aria-label="labelPrefix ? `${labelPrefix} 插入深度` : '中区深度'"
           @input="update({ depth: ($event.target as HTMLInputElement).valueAsNumber })"
         />
       </label>
@@ -76,10 +79,9 @@ function changePlacement(placement: RolePlacement["placement"]) {
         <span>顺序</span>
         <input
           type="number"
-          min="0"
           step="1"
           :value="modelValue.order"
-          aria-label="装配顺序"
+          :aria-label="labelPrefix ? `${labelPrefix} 装配顺序` : '装配顺序'"
           @input="update({ order: ($event.target as HTMLInputElement).valueAsNumber })"
         />
       </label>
