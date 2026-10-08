@@ -60,9 +60,10 @@ def test_unavailable_history_fails_without_rebuilding_or_using_current_definitio
     if failure in ("missing", "invalid", "declaration_missing"):
         with closing(SqliteStore(service.database)) as store:
             if failure == "declaration_missing":
-                identity = _record_id("node_definition", {"component_id": "workflow.regex", "component_version": "1"})
-                store._connection.execute("DELETE FROM records WHERE record_type='node_definition' AND record_id=?",
-                                          (identity,))
+                identity = _record_id("node_definition", {"component_id": "tools.regex", "component_version": "1"})
+                removed = store._connection.execute(
+                    "DELETE FROM records WHERE record_type='node_definition' AND record_id=?", (identity,))
+                assert removed.rowcount == 1
             else:
                 identity = _record_id("workflow_definition_revision", {
                     "workflow_definition_id": first_doc["workflow_definition_id"], "revision": 1})
@@ -76,10 +77,10 @@ def test_unavailable_history_fails_without_rebuilding_or_using_current_definitio
                         "UPDATE records SET payload=? WHERE record_type='workflow_definition_revision' AND record_id=?",
                         (canonical_bytes(saved).decode("utf-8"), identity))
     elif failure == "implementation_missing":
-        service.registry._nodes.pop(("workflow.regex", "1"))
+        service.registry._nodes.pop(("tools.regex", "1"))
     else:
-        old = service.registry.get("workflow.regex", "1")
-        service.registry._nodes[("workflow.regex", "1")] = replace(
+        old = service.registry.get("tools.regex", "1")
+        service.registry._nodes[("tools.regex", "1")] = replace(
             old, definition=replace(old.definition, display_name="replacement"))
     before = records(service)
     with pytest.raises(ContractValidationError) as error:
@@ -120,14 +121,14 @@ def test_candidate_save_failure_retries_the_same_result_and_definition_without_n
 
 def test_checkpoint_uses_started_definition_when_new_revision_is_saved_during_execution(service):
     entered, release = Event(), Event()
-    original = service.registry.get("workflow.text", "1")
+    original = service.registry.get("tools.text", "1")
 
     def wait(config, inputs, context):
         entered.set()
         assert release.wait(5)
         return original.executor(config, inputs, context)
 
-    service.registry._nodes[("workflow.text", "1")] = replace(original, executor=wait)
+    service.registry._nodes[("tools.text", "1")] = replace(original, executor=wait)
     doc = text_graph(service.registry)
     initial = create(service, doc)
     started = service.start(initial["workflow_session_id"], expected_revision=initial["revision"],

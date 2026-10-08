@@ -30,10 +30,24 @@ describe("public current independent prompt resource API", () => {
     expect(JSON.parse(String(fetcher.mock.calls[1]![1].body))).toEqual({
       operation: "resource.read", parameters: { identity: promptIdentity(project) } });
   });
+  it.each([1, 2] as const)("reads and lists supported prompt schema %s without rewriting it", async version => {
+    const record = newPromptResource(version);
+    record.value.members = [newPromptMember("Supported prompt member", version)];
+    const fetcher = vi.fn(async (_path: string, options: RequestInit) => {
+      const request = JSON.parse(String(options.body));
+      return new Response(JSON.stringify(request.operation === "resource.list" ? [record] : record));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    expect(await readCurrentPromptResource(promptIdentity(record))).toEqual(record);
+    expect(await listCurrentPromptResources()).toEqual([record]);
+    expect(record.data_schema_version).toBe(version);
+    expect(fetcher.mock.calls.map(([, options]) => JSON.parse(String(options.body)).operation))
+      .toEqual(["resource.read", "resource.list"]);
+  });
   it.each(["scope", "type_id", "resource_id", "data_schema_version"])("rejects a read with mismatched %s", async field => {
     const record = newPromptResource();
     const values: Record<string, unknown> = { scope: "project", type_id: "workflow.chat-provider",
-      resource_id: crypto.randomUUID(), data_schema_version: 2 };
+      resource_id: crypto.randomUUID(), data_schema_version: 99 };
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ...record, [field]: values[field] }))));
     await expect(readCurrentPromptResource(promptIdentity(record))).rejects.toMatchObject({ kind: "unavailable" });
   });
@@ -49,7 +63,7 @@ describe("public current independent prompt resource API", () => {
   it.each([
     { label: "provider", value: () => [newProvider()] },
     { label: "mixed types", value: () => [newPromptResource(), newProvider()] },
-    { label: "schema", value: () => [{ ...newPromptResource(), data_schema_version: 2 }] },
+    { label: "schema", value: () => [{ ...newPromptResource(), data_schema_version: 99 }] },
     { label: "non-array", value: () => newPromptResource() },
   ])("rejects an invalid list: $label", async ({ value }) => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(value()))));
