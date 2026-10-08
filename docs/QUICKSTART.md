@@ -1,6 +1,6 @@
 # 快速启动
 
-以下命令从仓库根目录开始。Windows 开发验收推荐使用根目录 `start.bat`，它同时启动当前源码的后端与 Vite；手动开发模式使用两个 PowerShell 终端。生产构建模式只需一个运行中的 Python 服务。不要复用其他项目的数据库或虚拟环境。
+以下命令从仓库根目录开始。Windows 根目录 `start.bat` 固定启动 `main` 稳定源码；开发验收使用 `start-dev.bat` 启动当前 `develop`，手动开发模式使用两个 PowerShell 终端。生产构建模式只需一个运行中的 Python 服务。不要复用其他项目的数据库或虚拟环境。
 
 **启动前先核对端口占用。**源码 BAT 不接管或结束旧进程，端口被占用会明确拒绝启动。要与已有服务并行验收，给 BAT 指定另一组空闲端口，它会同步 `/api` 代理和聊天链接；手动启动时则需自行同步这些设置。下面“本机已建立的常驻入口”使用固定安装和构建快照，不会因源码编辑自动更新，不能作为新版酒馆功能的开发入口。只有确认原服务没有 active/in-flight 或待核实业务后，才能按它自己的停止流程释放端口。
 
@@ -33,9 +33,11 @@ New-Item -ItemType Directory -Force .local | Out-Null
 .\start.bat
 ```
 
-旧 `step1/docs/启动服务.bat` 已改为转发到同级 `openagent/start.bat`，不再启动 `step1` 的旧源码和虚拟环境。入口始终使用此 checkout 的 `backend/src` 和 `frontend`，不拉取 Git、不安装依赖，也不自动重配已有数据库或升级工作流的精确包锁。
+旧 `step1/docs/启动服务.bat` 已改为转发到同级 `openagent/start.bat`，不再启动 `step1` 的旧源码和虚拟环境。根入口解析本仓唯一检出的 `main` 工作区，要求与本地 `main` 提交一致且干净；缺失或有修改时拒绝，不回退到 `develop`。入口不切分支、不拉取 Git、不安装依赖，也不自动重配已有数据库或升级工作流的精确包锁。
 
-默认后端端口 `8765`、工作台端口 `5178`，数据库为 `.local/dev/workflow.sqlite`。优先选择本仓库 `.venv/Scripts/python.exe`，否则使用 PATH 中的 Python；可显式指定解释器。仅检查依赖、源码和节点注册，不启动服务或打开数据库：
+本机稳定工作区在 `.local/stable-main`；新机器需显式 `git worktree add .local/stable-main main`，并在该工作区按上文安装依赖。若主工作区本身干净地检出 `main`，直接使用它。
+
+稳定默认后端端口 `8765`、工作台端口 `5178`，数据库继续使用入口根工作区的 `.local/dev/workflow.sqlite`，保留原用户记录。优先选择目标工作区 `.venv/Scripts/python.exe`，否则使用 PATH 中的 Python；可显式指定解释器。只解析分支目标用 `-ResolveOnly`，进一步检查依赖、源码和节点注册用 `-CheckOnly`，均不启动服务或打开数据库：
 
 ```powershell
 .\start.bat -CheckOnly -NoBrowser
@@ -44,14 +46,23 @@ New-Item -ItemType Directory -Force .local | Out-Null
 端口已被其他服务使用时，显式选择空闲端口和独立数据库，例如：
 
 ```powershell
-.\start.bat -BackendPort 8766 -FrontendPort 5179 -DatabasePath .local/dev/acceptance.sqlite -NoBrowser
+.\start.bat -BackendPort 8876 -FrontendPort 5189 -DatabasePath .local/acceptance/stable.sqlite -NoBrowser
 ```
+
+开发入口要求根工作区位于 `develop`，默认端口为 `8766` / `5179`、数据库 `.local/develop/workflow.sqlite`；拒绝使用稳定默认端口和稳定默认数据库，避免浏览器存档或运行数据串用：
+
+```powershell
+.\start-dev.bat -CheckOnly -NoBrowser
+.\start-dev.bat
+```
+
+相对数据库路径以入口根工作区解析，不以选中的稳定工作区解析。`scripts/start-services.ps1` 是内部当前源码启动器，直接调用不提供分支隔离；日常只使用两个 BAT 入口。
 
 工作台为对应前端端口的 `/`，酒馆壳为后端端口的 `/tavern/`。启动器会核对当前源码的酒馆包与实际节点目录，并验证前端代理连到同一后端。原 `-Mode offline` 已退出，不支持用它阻止真实模型节点调用；单纯启动和浏览页面不会派发模型。
 
 若指定的已有数据库保存了不含当前酒馆版本的包选择，启动器会报错并停止本次新进程，不覆盖原选择。需另选新库验收，或在确认业务状态后显式管理该库的启用包。入口跟随当前源码与工作流继续保留精确版本锁，是两个不同约束。
 
-BAT 启动时会打开可见的前后端控制台，服务在各自窗口中运行并显示日志，不使用隐藏后台启动。每次启动会打印 `.local/service-starts/<launch>/services.json`。确认该次运行没有活动或待核实业务后，使用它打印的完整停止命令：
+BAT 启动时会打开可见的前后端控制台，服务在各自窗口中运行并显示日志，不使用隐藏后台启动。每次启动会打印目标工作区 `.local/service-starts/<launch>/services.json`。确认该次运行没有活动或待核实业务后，使用它打印的完整停止命令：
 
 ```powershell
 powershell.exe -NoProfile -File .\scripts\stop-services.ps1 -MetadataPath ".local/service-starts/<launch>/services.json"

@@ -1,13 +1,13 @@
 @echo off
 setlocal
-title OpenAgent main stable
-rem Keep this entry point ASCII so paths with spaces and Unicode remain intact.
+title OpenAgent develop
+rem This explicit entry never selects the stable main checkout.
 if not exist "%~dp0scripts\start-branch-services.ps1" (
     echo [ERROR] Missing scripts\start-branch-services.ps1 in this OpenAgent checkout.
     if not defined NO_PAUSE pause
     exit /b 1
 )
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-branch-services.ps1" -Branch main %*
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-branch-services.ps1" -Branch develop %*
 set "START_EXIT=%ERRORLEVEL%"
 if not defined NO_PAUSE pause
 exit /b %START_EXIT%

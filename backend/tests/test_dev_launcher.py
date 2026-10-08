@@ -113,11 +113,11 @@ def port_open(port):
         return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
-def assert_source_identity(result):
-    assert Path(result["repository_root"]).resolve() == WORKSPACE
-    assert Path(result["backend_source"]).resolve() == WORKSPACE / "backend" / "src"
-    assert Path(result["server_module"]).resolve() == WORKSPACE / "backend" / "src" / "phase1_agent" / "server.py"
-    assert Path(result["frontend_root"]).resolve() == WORKSPACE / "frontend"
+def assert_source_identity(result, workspace=WORKSPACE):
+    assert Path(result["repository_root"]).resolve() == workspace
+    assert Path(result["backend_source"]).resolve() == workspace / "backend" / "src"
+    assert Path(result["server_module"]).resolve() == workspace / "backend" / "src" / "phase1_agent" / "server.py"
+    assert Path(result["frontend_root"]).resolve() == workspace / "frontend"
     assert {"package_id": "workflow.tavern", "version": "1.2.0"} in result["package_lock"]
     assert EXPECTED_TAVERN_NODES <= {row["component_id"] for row in result["tavern_nodes"]}
 
@@ -144,17 +144,20 @@ def test_check_only_prefers_current_source_without_creating_database(tmp_path):
     assert not port_open(backend_port) and not port_open(frontend_port)
 
 
-@pytest.mark.parametrize("legacy", [False, True], ids=["current-bat", "legacy-bat"])
-def test_bat_entry_forwards_current_checkout_and_arguments(tmp_path, legacy):
+@pytest.mark.parametrize("entry", ["stable", "develop", "legacy"])
+def test_bat_entry_forwards_selected_checkout_and_arguments(tmp_path, entry):
     backend_port, frontend_port = free_ports()
     database = tmp_path / "not-created" / "workflow.sqlite"
-    script = WORKSPACE.parent / "step1" / "docs" / "\u542f\u52a8\u670d\u52a1.bat" if legacy else WORKSPACE / "start.bat"
-    if legacy and not script.is_file():
+    script = (WORKSPACE.parent / "step1" / "docs" / "\u542f\u52a8\u670d\u52a1.bat" if entry == "legacy"
+              else WORKSPACE / ("start-dev.bat" if entry == "develop" else "start.bat"))
+    if entry == "legacy" and not script.is_file():
         pytest.skip("The legacy sibling BAT is only available in the full local workspace")
-    assert script.is_file(), "The canonical current-checkout BAT must be present"
+    assert script.is_file(), "The selected BAT must be present"
+    target = json.loads(call_bat(script, "-ResolveOnly").stdout.strip())
     checked = machine_result(call_bat(
         script, *parameters(database, backend_port, frontend_port), "-CheckOnly"))
-    assert_source_identity(checked)
+    assert_source_identity(checked, Path(target["repository_root"]).resolve())
+    assert target["branch"] == ("develop" if entry == "develop" else "main")
     assert checked["check_only"] is True
     assert checked["backend_port"] == backend_port and checked["frontend_port"] == frontend_port
     assert Path(checked["database_path"]).resolve() == database
