@@ -134,7 +134,7 @@ def test_exact_frontend_extensions_match_manifest_and_component_targets(capabili
 
 
 def test_builtins_install_tavern_but_exact_selection_does_not_silently_add_it():
-    assert DEFAULT_PACKAGES["workflow.tavern"] == "1.0.0"
+    assert DEFAULT_PACKAGES["workflow.tavern"] == "1.2.0"
     loader = CapabilityPackageLoader(builtin_capability_packages())
     old_selection = {key: value for key, value in DEFAULT_PACKAGES.items() if key != "workflow.tavern"}
     selected = loader.load(old_selection)
@@ -142,6 +142,10 @@ def test_builtins_install_tavern_but_exact_selection_does_not_silently_add_it():
     assert all(row["package_id"] != "workflow.tavern" for row in selected.package_lock)
     installed = loader.load(DEFAULT_PACKAGES)
     assert installed.registry.get("lorebook.item", "1") is not None
+    assert installed.registry.get("lorebook.global-activate", "1") is not None
+    legacy = loader.load({**DEFAULT_PACKAGES, "workflow.tavern": "1.0.0"})
+    assert legacy.registry.get("lorebook.item", "1") is not None
+    assert legacy.registry.get("lorebook.global-activate", "1") is None
 
 
 @pytest.mark.parametrize("component", TAVERN_COMPONENTS)

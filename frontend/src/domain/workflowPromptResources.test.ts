@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clonePromptResource, isCurrentPromptResource, isPromptIdentity, newPromptMember, newPromptResource,
+import { clonePromptResource, duplicatePromptResource, isCurrentPromptResource, isPromptIdentity, movePromptMember, newPromptMember, newPromptResource,
   promptIdentity, promptResourceLabel, promptResourceType, samePromptIdentity } from "./workflowPromptResources";
 
 describe("current independent prompt resource contracts", () => {
@@ -139,4 +139,72 @@ describe("current independent prompt resource contracts", () => {
     record.value.members = [newPromptMember()];
     expect(isCurrentPromptResource(record)).toBe(false);
   });
+  it.each([1, 2] as const)("duplicates schema %i into an independent group without upgrading or mutating the source", version => {
+    const record = newPromptResource(version);
+    record.scope = "project:story"; record.update_sequence = 9; record.value.enabled = false;
+    const member = newPromptMember("Background", version);
+    member.metadata = { unknown: { labels: ["retain", null, true] } };
+    member.presentation = { role: "user", placement: "middle", depth: 2, order: -7, enabled: false };
+    if (version === 2) { member.lifecycle = "context_once"; member.compaction = "allowed"; }
+    record.value.members = [member, newPromptMember("Rule", version)];
+    const original = clonePromptResource(record), copy = duplicatePromptResource(record);
+    expect(isCurrentPromptResource(copy)).toBe(true);
+    expect(copy.resource_id).not.toBe(record.resource_id);
+    expect(copy.update_sequence).toBe(1);
+    expect(copy.scope).toBe("project:story");
+    expect(copy.data_schema_version).toBe(version);
+    expect(copy.value.enabled).toBe(false);
+    expect(copy.value.members.map(item => item.id)).not.toEqual(record.value.members.map(item => item.id));
+    for (const [index, copied] of copy.value.members.entries()) {
+      expect(record.value.members.some(item => item.id === copied.id)).toBe(false);
+      expect({ ...copied, id: member.id }).toEqual({ ...record.value.members[index], id: member.id });
+    }
+    copy.value.members[0]!.text = "Edited copy";
+    (copy.value.members[0]!.metadata.unknown as { labels: unknown[] }).labels.push(2);
+    expect(record).toEqual(original);
+  });
+  it("duplicates empty groups and rejects malformed contracts before generating a draft", () => {
+    const record = newPromptResource(2), copy = duplicatePromptResource(record);
+    expect(copy.value.members).toEqual([]);
+    expect(copy.resource_id).not.toBe(record.resource_id);
+    expect(() => duplicatePromptResource({ ...record, update_sequence: 0 })).toThrow("contract is invalid");
+    expect(() => duplicatePromptResource({ ...record, value: { ...record.value, name: "invalid" } } as typeof record))
+      .toThrow("contract is invalid");
+  });
+  it("moves members with strictly increasing ranks without changing identity or other semantics", () => {
+    const members = [newPromptMember("One", 2), newPromptMember("Two", 2), newPromptMember("Three", 2)];
+    members.forEach((member, index) => { member.presentation.order = [-7, 3, 19][index]!; });
+    members[1]!.presentation.role = "user";
+    members[1]!.presentation.placement = "middle"; members[1]!.presentation.depth = 4;
+    members[1]!.lifecycle = "context_once"; members[1]!.compaction = "allowed";
+    members[1]!.metadata = { custom: ["preserved"] };
+    const original = members.map(member => clonePromptResource({ ...newPromptResource(2), value: { enabled: true, members: [member] } }).value.members[0]!);
+    expect(movePromptMember(members, 1, -1)).toBe(true);
+    expect(members.map(member => member.id)).toEqual([original[1]!.id, original[0]!.id, original[2]!.id]);
+    expect(members.map(member => member.presentation.order)).toEqual([-7, 3, 19]);
+    for (const member of members) {
+      const source = original.find(item => item.id === member.id)!;
+      expect({ ...member, presentation: { ...member.presentation, order: source.presentation.order } }).toEqual(source);
+    }
+    expect(movePromptMember(members, 0, 1)).toBe(true);
+    expect(members).toEqual(original);
+  });
+  it.each([[0, 0, 0], [9, -5, 4], [0, 1, 1]])(
+    "normalizes ambiguous ranks %j only on an explicit move", (...ranks) => {
+      const members = ranks.map((rank, index) => {
+        const member = newPromptMember(String(index), 2); member.presentation.order = rank; return member;
+      });
+      const ids = members.map(member => member.id);
+      expect(movePromptMember(members, 0, 1)).toBe(true);
+      expect(members.map(member => member.id)).toEqual([ids[1], ids[0], ids[2]]);
+      expect(members.map(member => member.presentation.order)).toEqual([0, 1, 2]);
+    });
+  it.each([[-1, 1], [0, -1], [1, 1], [2, -1], [0, 0], [0.5, 1], [0, NaN], [0, Infinity]])(
+    "rejects an invalid move at %s with offset %s without changing members", (index, offset) => {
+      const members = [newPromptMember("One"), newPromptMember("Two")];
+      const original = structuredClone(members);
+      expect(movePromptMember(members, index, offset)).toBe(false);
+      expect(members).toEqual(original);
+      expect(movePromptMember([], index, offset)).toBe(false);
+    });
 });

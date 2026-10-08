@@ -3,12 +3,20 @@ import { computed } from "vue";
 import { createWorkbenchFrontendHost } from "../application/workflowFrontendPackage";
 import { frontendExtensionIdentity } from "../domain/frontendExtensions";
 import { promptFrontendExtensions } from "../plugins/promptFrontendManifest";
+import { tavernExtensionsFor } from "../plugins/tavernFrontendManifest";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 const graph = useWorkflowGraphStore();
 const host = createWorkbenchFrontendHost(() => graph.frontendExtensions, () => graph.packageLock);
 const promptPanelIdentity = frontendExtensionIdentity(promptFrontendExtensions[0]!);
 const promptPanel = computed(() => host.extensions.value.find(row =>
   frontendExtensionIdentity(row.declaration) === promptPanelIdentity));
+const lorebookPanel = computed(() => {
+  const declaration = tavernExtensionsFor(graph.packageLock)[2];
+  return declaration ? host.extensions.value.find(row =>
+    frontendExtensionIdentity(row.declaration) === frontendExtensionIdentity(declaration)) : undefined;
+});
+const tavernChatPanel = computed(() => host.extensions.value.find(row =>
+  row.declaration.extension_id === "workflow.tavern.chat-launch"));
 </script>
 
 <template>
@@ -22,6 +30,10 @@ const promptPanel = computed(() => host.extensions.value.find(row =>
         <p>提示词资源不可用</p>
         <p>{{ graph.catalogError ?? "当前节点目录未提供已启用的可信提示词面板" }}</p>
       </div>
+      <component v-if="lorebookPanel" :is="lorebookPanel.component"
+        :key="frontendExtensionIdentity(lorebookPanel.declaration)" />
+      <component v-if="tavernChatPanel" :is="tavernChatPanel.component"
+        :key="frontendExtensionIdentity(tavernChatPanel.declaration)" />
       <p v-for="issue in host.issues.value" :key="issue"
         class="content-sidebar-status content-sidebar-warning" role="status">{{ issue }}</p>
     </div>

@@ -77,6 +77,9 @@ COMMANDS = (
     operation("consumer.run.control", "control_consumer",
               ("action", "expected_revision", "idempotency_key"),
               session=True, consumer=True),
+    operation("consumer.candidate.fork", "fork_consumer_candidate",
+              ("candidate_id", "expected_revision", "expected_data_revision", "expected_head_revision",
+               "idempotency_key"), session=True, consumer=True, status=201),
 )
 
 QUERIES = (
@@ -110,6 +113,8 @@ QUERIES = (
               session=True, consumer=True),
     operation("consumer.sessions", "list_consumer_sessions", ("identity",), consumer=True),
     operation("consumer.read", "get_consumer", session=True, consumer=True),
+    operation("consumer.candidate.list", "list_consumer_candidates",
+              ("workflow_definition_id", "definition_revision"), session=True, consumer=True),
     operation("consumer.event.bindings", "list_consumer_event_bindings",
               ("workflow_definition_id", "definition_revision"), session=True, consumer=True),
     operation("consumer.event.read", "read_consumer_event", ("chain_id",), session=True, consumer=True),
@@ -142,7 +147,7 @@ def validate_parameters(spec, parameters):
         if field == "idempotency_key":
             require(type(value) is str and 1 <= len(value) <= 128 and bool(value.strip()),
                     "invalid_request", "An idempotency key is required")
-        if field in ("workflow_definition_id", "chain_id"):
+        if field in ("workflow_definition_id", "chain_id", "candidate_id"):
             require(uuid_value(value), "invalid_request", "Invalid graph identity")
     if spec.name in ("definition.read", "consumer.definition", "consumer.sessions"):
         require(uuid_value(parameters["identity"]), "not_found", "Definition not found", 404)

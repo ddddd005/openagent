@@ -1,0 +1,84 @@
+<!doctype html>
+<!--
+  Modified 2026-10-08. Chat shell/message template derived from SillyTavern
+  public/index.html at 06bde939fb1e9c4c8d8641d810f0a916b5bce127 (AGPL-3.0).
+  Source and modification notices: vendor/sillytavern/PROVENANCE.md.
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>酒馆 · OpenAgent</title>
+  <link rel="stylesheet" href="/tavern/styles/chat.css">
+  <script src="/static/graph-chat-core.js" defer></script>
+  <script src="/tavern/vendor/showdown/showdown.min.js" defer></script>
+  <script src="/tavern/vendor/dompurify/purify.min.js" defer></script>
+  <script src="/tavern/vendor/lucide/lucide.min.js" defer></script>
+  <script src="/tavern/adapter.js" defer></script>
+  <script src="/tavern/chat.js" defer></script>
+  <script src="/tavern/entry.js" defer></script>
+</head>
+<body>
+  <main id="sheld">
+    <header class="tavern-header">
+      <div class="brand"><img src="/tavern/assets/assistant.png" alt=""><div><h1>酒馆</h1><span id="workflow-name">OpenAgent</span></div></div>
+      <div class="session-bar">
+        <label for="sessions">会话</label>
+        <select id="sessions" disabled><option value="">选择会话</option></select>
+        <button id="new-session" class="icon-button" type="button" title="新建会话" aria-label="新建会话" disabled><i data-lucide="message-circle-plus"></i></button>
+        <button id="refresh" class="icon-button" type="button" title="刷新" aria-label="刷新" disabled><i data-lucide="refresh-cw"></i></button>
+      </div>
+    </header>
+    <div class="run-bar">
+      <span id="run-status" role="status">选择或新建会话</span>
+      <div id="run-actions"></div>
+    </div>
+    <div id="error" class="notice error" role="alert" hidden></div>
+    <div id="adaptation" class="notice" role="status" hidden></div>
+    <details id="run-detail" class="run-detail" hidden>
+      <summary>运行详情</summary>
+      <div id="nodes"></div>
+      <div id="budget" hidden>
+        <label>逻辑请求 +<input id="requests" type="number" min="0" max="64" step="1" value="1"></label>
+        <label>传输尝试 +<input id="attempts" type="number" min="0" max="256" step="1" value="4"></label>
+      </div>
+    </details>
+    <div id="chat" aria-label="聊天记录" aria-live="polite" aria-relevant="additions">
+      <p id="empty-chat" class="empty-chat">暂无聊天记录</p>
+    </div>
+    <div id="form_sheld">
+      <form id="send_form">
+        <div id="nonQRFormItems">
+          <textarea id="send_textarea" name="text" rows="2" maxlength="1000000" aria-label="消息" placeholder="发送消息" autocomplete="off" disabled></textarea>
+          <div id="rightSendForm">
+            <button id="send_but" class="icon-button send-button" type="submit" title="发送消息" aria-label="发送消息" disabled><i data-lucide="send"></i></button>
+          </div>
+        </div>
+        <div id="pending" role="status" hidden>
+          <span id="pending-text"></span>
+          <button id="reconcile" type="button" title="核实原请求" disabled><i data-lucide="search-check"></i><span>核实原请求</span></button>
+        </div>
+      </form>
+      <footer><span id="transcript-status" role="status"></span><a href="/tavern/legal.html" target="_blank" rel="noopener">来源与许可</a></footer>
+    </div>
+  </main>
+  <template id="message_template">
+    <article class="mes">
+      <div class="mesAvatarWrapper">
+        <div class="avatar"><img src="/tavern/assets/assistant.png" alt=""></div>
+        <div class="mesIDDisplay"></div>
+      </div>
+      <div class="mes_block">
+        <div class="ch_name">
+          <div class="name_group"><span class="name_text"></span><small class="timestamp"></small></div>
+          <div class="mes_buttons">
+            <button class="mes_button mes_create_branch icon-button" type="button" title="从完成回合分叉" aria-label="从完成回合分叉" hidden><i data-lucide="git-branch"></i></button>
+            <button class="mes_button mes_copy icon-button" type="button" title="复制原文" aria-label="复制原文"><i data-lucide="copy"></i></button>
+          </div>
+        </div>
+        <div class="mes_text"></div>
+      </div>
+    </article>
+  </template>
+</body>
+</html>

@@ -1,0 +1,4 @@
+# Keep delivered assets byte-identical to COPY-MANIFEST.json.
+* -text whitespace=cr-at-eol
+# Preserve the upstream license verbatim, including its original whitespace.
+vendor/dompurify/LICENSE-MPL whitespace=cr-at-eol,-blank-at-eol

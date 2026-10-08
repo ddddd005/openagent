@@ -21,6 +21,11 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 phase1_agent = ["static/*.html", "static/*.css", "static/*.js"]
+"phase1_agent.tavern" = [
+  "frontend/*.html", "frontend/*.js", "frontend/styles/*.css", "frontend/assets/*.png",
+  "frontend/vendor/showdown/*", "frontend/vendor/dompurify/*", "frontend/vendor/lucide/*",
+  "frontend/vendor/sillytavern/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

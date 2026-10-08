@@ -50,29 +50,33 @@ def validate_lorebook_node_config(config, *, grouped=False):
             "Lorebook configuration exceeds its transport budget")
 
 
+def register_inline_lorebook(host):
+    for name, title in (("item", "Lorebook 单条目"), ("group", "Lorebook 条目组")):
+        grouped = name == "group"
+        entry = default_lorebook_entry()
+        default = {"entries": [entry], "object_keys": []} if grouped else {
+            "entry": entry, "object_keys": []}
+        host.register_node(NodeDefinition(
+            "lorebook." + name, "1", title, "类酒馆", deepcopy(default),
+            lorebook_node_schema(grouped=grouped),
+            inputs=(NodePort("input", "PROMPT", data_schema_version=6),),
+            outputs=(NodePort("output", "PROMPT_MATERIALS"),),
+            capabilities=("objects:read", "artifacts:read"), input_storage="references",
+            object_accesses=({
+                "config_field": "object_keys", "multiple": True, "access": "read",
+                "type_id": VARIABLE_TYPE, "schema_version": VARIABLE_SCHEMA_VERSION,
+            },),
+        ), lambda config, inputs, context, grouped=grouped: execute_lorebook(
+            config, inputs, context, grouped=grouped),
+            config_validator=lambda config, grouped=grouped: validate_lorebook_node_config(
+                config, grouped=grouped))
+
+
 def create_tavern_package():
     def register(host):
         for extension in TAVERN_FRONTEND_EXTENSIONS:
             host.register_frontend_extension(**extension, host_protocol_version=1)
-        for name, title in (("item", "Lorebook 单条目"), ("group", "Lorebook 条目组")):
-            grouped = name == "group"
-            entry = default_lorebook_entry()
-            default = {"entries": [entry], "object_keys": []} if grouped else {
-                "entry": entry, "object_keys": []}
-            host.register_node(NodeDefinition(
-                "lorebook." + name, "1", title, "类酒馆", deepcopy(default),
-                lorebook_node_schema(grouped=grouped),
-                inputs=(NodePort("input", "PROMPT", data_schema_version=6),),
-                outputs=(NodePort("output", "PROMPT_MATERIALS"),),
-                capabilities=("objects:read", "artifacts:read"), input_storage="references",
-                object_accesses=({
-                    "config_field": "object_keys", "multiple": True, "access": "read",
-                    "type_id": VARIABLE_TYPE, "schema_version": VARIABLE_SCHEMA_VERSION,
-                },),
-            ), lambda config, inputs, context, grouped=grouped: execute_lorebook(
-                config, inputs, context, grouped=grouped),
-                config_validator=lambda config, grouped=grouped: validate_lorebook_node_config(
-                    config, grouped=grouped))
+        register_inline_lorebook(host)
 
     return CapabilityPackage(PackageManifest(
         TAVERN_PACKAGE_ID, TAVERN_PACKAGE_VERSION,

@@ -32,6 +32,26 @@ _STATIC_FILES = {
     "/static/frontend-package.js": ("frontend-package.js", "text/javascript; charset=utf-8"),
     "/static/style.css": ("style.css", "text/css; charset=utf-8"),
 }
+_TAVERN_STATIC_FILES = {
+    "/tavern/": ("index.html", "text/html; charset=utf-8"),
+    "/tavern/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/tavern/legal.html": ("legal.html", "text/html; charset=utf-8"),
+    **{f"/tavern/{name}": (name, "text/javascript; charset=utf-8") for name in (
+        "entry.js", "adapter.js", "chat.js", "vendor/showdown/showdown.min.js",
+        "vendor/dompurify/purify.min.js", "vendor/lucide/lucide.min.js",
+    )},
+    "/tavern/styles/chat.css": ("styles/chat.css", "text/css; charset=utf-8"),
+    **{f"/tavern/assets/{name}": (f"assets/{name}", "image/png")
+       for name in ("user-default.png", "assistant.png")},
+    **{f"/tavern/vendor/{name}/LICENSE": (f"vendor/{name}/LICENSE", "text/plain; charset=utf-8")
+       for name in ("showdown", "dompurify", "lucide", "sillytavern")},
+    "/tavern/vendor/dompurify/LICENSE-MPL": (
+        "vendor/dompurify/LICENSE-MPL", "text/plain; charset=utf-8"),
+    "/tavern/vendor/sillytavern/PROVENANCE.md": (
+        "vendor/sillytavern/PROVENANCE.md", "text/plain; charset=utf-8"),
+    "/tavern/vendor/sillytavern/COPY-MANIFEST.json": (
+        "vendor/sillytavern/COPY-MANIFEST.json", "application/json; charset=utf-8"),
+}
 _USER_UI_QUERY_FIELDS = frozenset({"graph_workflow", "graph_session"})
 _UUID4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 _WORKBENCH_CONTENT_TYPES = {
@@ -138,7 +158,8 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
             body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
             self._send(status, body, "application/json; charset=utf-8")
 
-        def _send(self, status: int, body: bytes, content_type: str, *, workbench: bool = False) -> None:
+        def _send(self, status: int, body: bytes, content_type: str, *,
+                  workbench: bool = False, tavern: bool = False) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
@@ -152,7 +173,7 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
                 "default-src 'none'; script-src 'self'; style-src 'self'; "
                 "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
                 + ("; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self'"
-                   if workbench else ""),
+                   if workbench else "; img-src 'self'; font-src 'self'" if tavern else ""),
             )
             self.end_headers()
             self.wfile.write(body)
@@ -253,7 +274,8 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
             if target.scheme or target.netloc or target.fragment:
                 raise _RequestError(404, "not_found", "未找到接口")
             if target.path != self.path and not (
-                self.command == "GET" and target.path in ("/", "/static/index.html")
+                self.command == "GET" and target.path in (
+                    "/", "/static/index.html", "/tavern/", "/tavern/index.html")
                 and _valid_user_ui_query(target.query)
             ):
                 raise _RequestError(404, "not_found", "未找到接口")
@@ -326,6 +348,11 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
                     self._json(status, result)
                     return
                 if method == "GET":
+                    if path in _TAVERN_STATIC_FILES:
+                        name, content_type = _TAVERN_STATIC_FILES[path]
+                        body = resources.files("phase1_agent.tavern").joinpath("frontend", name).read_bytes()
+                        self._send(200, body, content_type, tavern=True)
+                        return
                     if path in workbench_files:
                         body, content_type = workbench_files[path]
                         self._send(200, body, content_type, workbench=True)

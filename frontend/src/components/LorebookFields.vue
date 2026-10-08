@@ -7,7 +7,7 @@ import type { RolePlacement } from "../domain/promptPresentation";
 import { graphClone, type GraphDocument, type GraphNode } from "../domain/workflowGraph";
 import { isLorebookConfig, lorebookBindingErrors, lorebookLimits, lorebookVariableBindings,
   moveLorebookEntry, newLorebookEntry, type LorebookConfig, type LorebookEntry } from "../domain/lorebook";
-import { tavernFrontendExtensions } from "../plugins/tavernFrontendManifest";
+import { tavernExtensionsFor } from "../plugins/tavernFrontendManifest";
 import { useWorkflowFrontendSdk, type WorkflowNodeConfigurationRequest } from "../plugins/workflowFrontendSdk";
 
 const props = defineProps<{ node: GraphNode; document: GraphDocument; disabled?: boolean }>();
@@ -21,10 +21,11 @@ const bindings = computed(() => lorebookVariableBindings(props.document, props.n
 const missingBindings = computed(() => draft.value?.object_keys.filter(key =>
   !bindings.value.some(binding => binding.object_key === key)) ?? []);
 const bindingErrors = computed(() => lorebookBindingErrors(props.document, props.node.node_binding_id, draft.value?.object_keys ?? []));
-watch(() => [sdk.workflowId.value, sdk.lifecycle.value, props.node.node_binding_id,
+watch(() => [sdk.workflowId.value, sdk.lifecycle.value, sdk.packages.value, props.node.node_binding_id,
   props.node.component_id, props.node.component_version, props.node.config], () => {
   error.value = ""; status.value = "";
-  const extension = tavernFrontendExtensions.find(row => row.component_id === props.node.component_id
+  const declarations = tavernExtensionsFor(sdk.packages.value);
+  const extension = declarations.find(row => row.component_id === props.node.component_id
     && row.component_version === props.node.component_version);
   draft.value = extension && isLorebookConfig(props.node.config, props.node.component_id)
     ? graphClone(props.node.config) : null;

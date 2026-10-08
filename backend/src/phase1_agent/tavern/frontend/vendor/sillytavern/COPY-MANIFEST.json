@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "recorded_date": "2026-10-08",
+  "upstream": {
+    "project": "SillyTavern",
+    "repository": "https://github.com/SillyTavern/SillyTavern",
+    "local_checkout": "step1/SillyTavern",
+    "branch": "release",
+    "commit": "06bde939fb1e9c4c8d8641d810f0a916b5bce127",
+    "license": "AGPL-3.0"
+  },
+  "copies": [
+    {
+      "source": "public/index.html",
+      "source_ranges": [[7391, 7475], [8080, 8127]],
+      "source_sha256": "5b03c7ee0090eb171421bd3fcddef4c3a2de0a31277c0467620032d633a104e6",
+      "destination": "index.html",
+      "destination_sha256": "75ad72abdfe31e2963786e81b9e85f8d5ae6d950d968a1e6c34a90e41ec55d52",
+      "modifications": "Retain chat/message/form structure; native template and accessible buttons; delete excluded ST actions/scripts; local GraphChat adapter and legal notice. P4 restores only completed-round platform fork control, hidden unless its exact producer checkpoint is available.",
+      "dependencies": ["showdown@2.1.0", "dompurify@3.4.16", "lucide@0.577.0", "/static/graph-chat-core.js"]
+    },
+    {
+      "source": "public/style.css",
+      "source_ranges": [[772, 793], [861, 950], [1185, 1193], [1406, 1461], [1511, 1543], [1577, 1627]],
+      "source_sha256": "abcdcafe484d9b0948266d5a583b00d5ccecb6374147b2d7cf585904d32b9d5a",
+      "destination": "styles/chat.css",
+      "destination_sha256": "ff73e9deba60280ce5748eab940b04a76f7d833c34356a8cdc67fdb1f09c66a8",
+      "modifications": "Extract chat selectors and layout; local variables; remove imports/drag/blur/global ST rules; ordinary-flow responsive layout, narrow controls and Markdown styles.",
+      "dependencies": []
+    },
+    {
+      "source": "public/script.js",
+      "source_ranges": [[1800, 1803], [1935, 1935], [1967, 1967], [2551, 2607], [2621, 2705], [2773, 2807]],
+      "source_sha256": "d1e248efbae8a1df0a248410225cea76901f33533919fc32a28a172c1514600f",
+      "destination": "chat.js",
+      "destination_sha256": "13ce1e277436be67d394a2791634e1e85db0adfcf125d248dcd3215a4bf32de9",
+      "modifications": "Adapt message insertion/update/name/avatar/body/last_mes/scheduled-scroll to native DOM and public immutable facts. Strip ST globals, macros, regex, media, context/swipe/edit actions. Narrow sanitized Markdown allowlist. P4 dynamic fork action is based on actual TEXT producer session/chain, shared round targets and pending locks; it never slices message arrays.",
+      "dependencies": ["showdown@2.1.0", "dompurify@3.4.16", "lucide@0.577.0"]
+    },
+    {
+      "source": "LICENSE",
+      "source_ranges": "whole file",
+      "source_sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75",
+      "destination": "vendor/sillytavern/LICENSE",
+      "destination_sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75",
+      "modifications": null,
+      "dependencies": []
+    },
+    {
+      "source": "public/img/user-default.png",
+      "source_ranges": "whole binary",
+      "source_sha256": "ddf571f53289685b253d455a05f92b5ba1c11683314db2c1350a8542a5f83a0f",
+      "destination": "assets/user-default.png",
+      "destination_sha256": "ddf571f53289685b253d455a05f92b5ba1c11683314db2c1350a8542a5f83a0f",
+      "modifications": null,
+      "dependencies": []
+    },
+    {
+      "source": "public/img/ai4.png",
+      "source_ranges": "whole binary",
+      "source_sha256": "019003a4430866daa5834f00efb9abbb996cac4f0111feff1ef50f5db3d7ebae",
+      "destination": "assets/assistant.png",
+      "destination_sha256": "019003a4430866daa5834f00efb9abbb996cac4f0111feff1ef50f5db3d7ebae",
+      "modifications": "Filename only.",
+      "dependencies": []
+    },
+    {
+      "source": "npm:showdown@2.1.0/dist/showdown.min.js",
+      "source_ranges": "whole file",
+      "source_sha256": "88eb6fbbe0c270ddf3384aee0c9620d070e090a26e07c67421ae36c903b5d649",
+      "destination": "vendor/showdown/showdown.min.js",
+      "destination_sha256": "88eb6fbbe0c270ddf3384aee0c9620d070e090a26e07c67421ae36c903b5d649",
+      "modifications": null,
+      "dependencies": []
+    },
+    {
+      "source": "npm:showdown@2.1.0/LICENSE",
+      "source_ranges": "whole file",
+      "source_sha256": "56c14cb3c7835f93abce90f65b7ed58470981e2d768a8e60499ca34bae7764ad",
+      "destination": "vendor/showdown/LICENSE",
+      "destination_sha256": "56c14cb3c7835f93abce90f65b7ed58470981e2d768a8e60499ca34bae7764ad",
+      "modifications": null,
+      "dependencies": []
+    },
+    {
+      "source": "npm:dompurify@3.4.16/dist/purify.min.js",
+      "source_ranges": "whole file",
+      "source_sha256": "2c90a9b46d6463f26038a29b686e82bc91de01fdac9d5229e7cfe3b360134ea2",
+      "destination": "vendor/dompurify/purify.min.js",
+      "destination_sha256": "2c90a9b46d6463f26038a29b686e82bc91de01fdac9d5229e7cfe3b360134ea2",
+      "modifications": null,
+      "dependencies": []
+    },
+    {
+      "source": "npm:dompurify@3.4.16/LICENSE",
+      "source_ranges": "whole file",
+      "source_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "destination": "vendor/dompurify/LICENSE",
+      "destination_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "modifications": null,
+      "dependencies": []
+    },
+    {
+      "source": "npm:dompurify@3.4.16/LICENSE-MPL",
+      "source_ranges": "whole file",
+      "source_sha256": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85",
+      "destination": "vendor/dompurify/LICENSE-MPL",
+      "destination_sha256": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85",
+      "modifications": null,
+      "dependencies": []
+    },
+    {
+      "source": "npm:lucide@0.577.0/dist/umd/lucide.min.js",
+      "source_ranges": "whole file",
+      "source_sha256": "0d4402f4813c6ea9d57db2b1cd7af54864e1a49aea5f1873635ed5a819df904b",
+      "destination": "vendor/lucide/lucide.min.js",
+      "destination_sha256": "0d4402f4813c6ea9d57db2b1cd7af54864e1a49aea5f1873635ed5a819df904b",
+      "modifications": null,
+      "dependencies": []
+    },
+    {
+      "source": "npm:lucide@0.577.0/LICENSE",
+      "source_ranges": "whole file",
+      "source_sha256": "668dcc52803480e0a026b31140a4cae668772663cd764e5991d252eef03f98db",
+      "destination": "vendor/lucide/LICENSE",
+      "destination_sha256": "668dcc52803480e0a026b31140a4cae668772663cd764e5991d252eef03f98db",
+      "modifications": null,
+      "dependencies": []
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "showdown",
+      "version": "2.1.0",
+      "repository": "https://github.com/showdownjs/showdown",
+      "license": "MIT",
+      "tarball": "https://registry.npmjs.org/showdown/-/showdown-2.1.0.tgz",
+      "integrity": "sha512-/6NVYu4U819R2pUIk79n67SYgJHWCce0a5xTP979WbNp0FL9MN1I1QK662IDU1b6JzKTvmhgI7T7JYIxBi3kMQ=="
+    },
+    {
+      "name": "dompurify",
+      "version": "3.4.16",
+      "repository": "https://github.com/cure53/DOMPurify",
+      "license": "Apache-2.0 OR MPL-2.0",
+      "tarball": "https://registry.npmjs.org/dompurify/-/dompurify-3.4.16.tgz",
+      "integrity": "sha512-sqo+pNp3qRhCIpbgRi1y8Tgk27Bo2Ry7w0dC1NBeNTdZChWjz9Xb/KOoZbRP/R6pQZ80Qw8YhXw13hWWBbMRnQ=="
+    },
+    {
+      "name": "lucide",
+      "version": "0.577.0",
+      "repository": "https://github.com/lucide-icons/lucide",
+      "license": "ISC",
+      "tarball": "https://registry.npmjs.org/lucide/-/lucide-0.577.0.tgz",
+      "integrity": "sha512-PpC/m5eOItp/WU/GlQPFBXDOhq6HibL73KzYP37OX3LM7VmzWQF8voEj8QRWUFvy9FIKfeDQkWYoyS1D/MdWFA=="
+    }
+  ]
+}

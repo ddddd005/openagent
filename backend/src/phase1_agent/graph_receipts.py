@@ -14,6 +14,7 @@ from .graph_application_identity import (
 )
 from .graph_records import uuid_value, validate_graph_record
 from .host_sdk import ObjectBinding, ResourceIdentity, WriteIntent
+from .storage import _record_id
 
 
 _COMMANDS = {spec.name: spec for spec in COMMANDS}
@@ -268,18 +269,89 @@ def _validate_result(operation, parameters, result):
                         break
 
 
-def _consumer_result(operation, parameters, result):
+def _receipt_graph_record(connection, kind, **identity):
+    row = connection.execute(
+        "SELECT payload FROM records WHERE record_type=? AND record_id=?",
+        (kind, _record_id(kind, identity)),
+    ).fetchone()
+    _check(row is not None)
+    return validate_graph_record(kind, loads_strict(row["payload"]))
+
+
+def _consumer_fork_source(connection, parameters, source):
+    """Prove the frozen child seed against its immutable completed source."""
+    origin = source["source"]
+    _check(type(origin) is dict and set(origin) == {
+        "kind", "workflow_session_id", "object_source_session_id", "workflow_definition_id",
+        "definition_revision", "head_commit_id", "candidate_commit_id", "state_mappings",
+    })
+    candidate = _receipt_graph_record(
+        connection, "workflow_commit", commit_id=parameters["candidate_id"])
+    _check(candidate["source"].get("kind") == "completed_execution")
+    chain = _receipt_graph_record(
+        connection, "chain_run", chain_run_id=candidate["source"]["chain_run_id"])
+    snapshot = _receipt_graph_record(
+        connection, "state_snapshot", state_snapshot_id=candidate["state_snapshot_id"])
+    _check(chain["status"] == "succeeded" and chain.get("execution_kind", "round") == "round"
+           and candidate["workflow_session_id"] == chain["workflow_session_id"]
+           and snapshot["workflow_session_id"] == chain["workflow_session_id"]
+           and (snapshot["workflow_definition_id"], snapshot["definition_revision"])
+           == (chain["workflow_definition_id"], chain["definition_revision"])
+           and chain["chain_run_id"] in snapshot["history_refs"])
+    expected_origin = {
+        "kind": "fork_candidate", "workflow_session_id": parameters["session_id"],
+        "object_source_session_id": snapshot["workflow_session_id"],
+        "workflow_definition_id": snapshot["workflow_definition_id"],
+        "definition_revision": snapshot["definition_revision"],
+        "head_commit_id": parameters["candidate_id"], "candidate_commit_id": parameters["candidate_id"],
+        "state_mappings": [],
+    }
+    _check(_same(origin, expected_origin)
+           and (source["workflow_definition_id"], source["definition_revision"])
+           == (snapshot["workflow_definition_id"], snapshot["definition_revision"])
+           and source["head_revision"] == 1 and source["status"] == "succeeded"
+           and source["selected_chain_run_id"] == chain["chain_run_id"]
+           and _same(source.get("history_refs"), snapshot["history_refs"]))
+    child = _receipt_graph_record(
+        connection, "workflow_session", workflow_session_id=source["workflow_session_id"])
+    seed = _receipt_graph_record(
+        connection, "workflow_commit", commit_id=source["head_commit_id"])
+    child_snapshot = _receipt_graph_record(
+        connection, "state_snapshot", state_snapshot_id=seed["state_snapshot_id"])
+    _check(_same(child["source"], expected_origin)
+           and seed["workflow_session_id"] == child["workflow_session_id"]
+           and seed["parent_commit_id"] is None
+           and _same(seed["source"], {"kind": "session_seed", "source": expected_origin})
+           and child_snapshot["workflow_session_id"] == child["workflow_session_id"]
+           and (child_snapshot["workflow_definition_id"], child_snapshot["definition_revision"])
+           == (snapshot["workflow_definition_id"], snapshot["definition_revision"])
+           and child_snapshot["data_revision"] == source["data_revision"]
+           and _same(child_snapshot["node_states"], snapshot["node_states"])
+           and _same(child_snapshot["history_refs"], snapshot["history_refs"]))
+    return {
+        "workflow_session_id": parameters["session_id"], "candidate_id": parameters["candidate_id"],
+        "chain_run_id": chain["chain_run_id"],
+        "workflow_definition_id": chain["workflow_definition_id"],
+        "definition_revision": chain["definition_revision"],
+    }
+
+
+def _consumer_result(operation, parameters, result, connection=None):
     source = _session_result(result)
     verbs = {"consumer.session.create": "create", "consumer.run.start": "start",
-             "consumer.run.control": "control", "consumer.event.submit": "event"}
-    return {"receipt": {
+             "consumer.run.control": "control", "consumer.event.submit": "event",
+             "consumer.candidate.fork": "fork"}
+    receipt = {
         "workflow_definition_id": source["workflow_definition_id"],
         "definition_revision": source["definition_revision"],
         "workflow_session_id": source["workflow_session_id"],
         "session_revision": source["revision"], "status": source["status"],
         "chain_run_id": source["active_chain_run_id"],
         "operation": verbs[operation], "idempotency_key": parameters["idempotency_key"],
-    }}
+    }
+    if operation == "consumer.candidate.fork":
+        receipt["fork_source"] = _consumer_fork_source(connection, parameters, source)
+    return {"receipt": receipt}
 
 
 def read_graph_application_receipt(database_path, operation, parameters, scope="management"):
@@ -308,7 +380,7 @@ def read_graph_application_receipt(database_path, operation, parameters, scope="
             result = _read_native(connection, identity)
             _validate_result(operation, request, result)
             if spec.consumer:
-                result = _consumer_result(operation, request, result)
+                result = _consumer_result(operation, request, result, connection)
             receipt = application_command_receipt(operation, operation_scope, request, result,
                                                   authority="service_receipt")
             return {"schema_version": 1, "kind": "workflow.application-receipt-read",

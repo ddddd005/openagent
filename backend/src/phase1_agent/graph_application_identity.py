@@ -34,6 +34,7 @@ def native_command_request(operation, parameters):
         "consumer.session.create": "session.create",
         "consumer.run.start": "run.start",
         "consumer.run.control": "run.control",
+        "consumer.candidate.fork": "candidate.fork",
     }
     name = aliases.get(operation, operation)
     native_operations = {

@@ -212,6 +212,104 @@ class GraphPublic:
             return [{**self._consumer_identity(row), "status": self._view(repo, row["workflow_session_id"])["status"]}
                     for row in repo.rows("workflow_session") if row["workflow_definition_id"] == identity]
 
+    def list_consumer_candidates(self, sid, *, workflow_definition_id, definition_revision):
+        """Project only usable completed rounds inside the bound workflow identity."""
+        from .program_variable_store import ProgramVariableStore
+        with self._lock, closing(self._store()) as store:
+            self._check_open()
+            repo = GraphRecordStore(store)
+            session, _ = self._consumer_scope(repo, sid, workflow_definition_id, definition_revision)
+            view = self._view(repo, sid)
+            candidates = self.list_graph_candidates(sid)
+            available = session["active_chain_run_id"] is None and not view["readonly"]
+            pausing = (view["status"] in ("running", "prepared")
+                       and session["active_chain_run_id"] in self._pauses)
+            return {
+                "schema_version": 1, "kind": "workflow.consumer-candidates",
+                **self._consumer_identity(session),
+                "data_revision": ProgramVariableStore(store).current(sid)["revision"],
+                "head_revision": self._head(repo, sid)["revision"],
+                "status": "pausing" if pausing else view["status"],
+                "can_fork": available,
+                "candidates": [{key: deepcopy(row[key]) for key in (
+                    "candidate_id", "chain_run_id", "source_session_id",
+                    "source_workflow_definition_id", "source_definition_revision")}
+                    for row in candidates["candidates"]
+                    if available and row["can_select"] and row["diagnostic"] is None
+                    and row["source_workflow_definition_id"] == workflow_definition_id],
+            }
+
+    def _consumer_fork_receipt(self, result, sid, candidate_id, key):
+        source = result["source"]
+        with self._lock, closing(self._store()) as store:
+            repo = GraphRecordStore(store)
+            commit = repo.get("workflow_commit", commit_id=candidate_id)
+            chain = repo.get("chain_run", chain_run_id=commit["source"]["chain_run_id"])
+            require(source["kind"] == "fork_candidate" and source["workflow_session_id"] == sid
+                    and source["candidate_commit_id"] == candidate_id
+                    and commit["source"]["kind"] == "completed_execution" and chain["status"] == "succeeded"
+                    and chain.get("execution_kind", "round") == "round"
+                    and (result["workflow_definition_id"], result["definition_revision"])
+                    == (chain["workflow_definition_id"], chain["definition_revision"]),
+                    "storage_contract_violation", "Fork receipt must identify its actual completed source", 500)
+            fork_source = {
+                "workflow_session_id": sid, "candidate_id": candidate_id,
+                "chain_run_id": chain["chain_run_id"],
+                "workflow_definition_id": chain["workflow_definition_id"],
+                "definition_revision": chain["definition_revision"],
+            }
+        return {
+            "schema_version": 1, "kind": "workflow.consumer.receipt",
+            "receipt": {
+                **self._consumer_identity(result), "status": result["status"],
+                "chain_run_id": result["active_chain_run_id"], "operation": "fork",
+                "idempotency_key": key, "fork_source": fork_source,
+            },
+            "consumer": self.get_consumer(result["workflow_session_id"]),
+        }
+
+    def fork_consumer_candidate(self, sid, *, candidate_id, expected_revision,
+                                expected_data_revision, expected_head_revision, idempotency_key):
+        """The native fork owns CAS, inheritance and idempotent creation."""
+        from .graph_application_identity import (
+            APPLICATION_IDENTITY_OPERATION, application_command_identity, application_identity_key,
+        )
+        with self._lock, closing(self._store()) as store:
+            self._check_open()
+            repo = GraphRecordStore(store)
+            # A replay retains the original accepted target even after the parent changes.
+            prior = store.read_receipt_with_digest("graph.candidate.fork", idempotency_key)
+            if prior is not None:
+                request = {
+                    "session_id": sid, "candidate_id": candidate_id,
+                    "expected_revision": expected_revision, "expected_data_revision": expected_data_revision,
+                    "expected_head_revision": expected_head_revision, "idempotency_key": idempotency_key,
+                }
+                identity = application_command_identity("consumer.candidate.fork", "consumer", request)
+                require(prior[0] == identity["native_receipt"]["request_digest"],
+                        "idempotency_conflict", "The key has a different request", 409)
+                origin = store.read_receipt_with_digest(
+                    APPLICATION_IDENTITY_OPERATION,
+                    application_identity_key("consumer.candidate.fork", "consumer", idempotency_key))
+                require(origin is not None and origin[0] == "workflow-op-v1:" + identity["request_sha256"]
+                        and repo.equal(origin[1], [{"application_identity": identity}]),
+                        "consumer_candidate_receipt_origin_mismatch",
+                        "Consumer fork replay requires its own exact persisted request origin", 403)
+            else:
+                session = repo.get("workflow_session", workflow_session_id=sid)
+                require(self._document_available(repo, self._document(
+                    repo, session["workflow_definition_id"], session["definition_revision"])),
+                    "consumer_candidate_unavailable", "The bound consumer workflow is unavailable", 409)
+                _, chain, _ = self._candidate_record(repo, sid, candidate_id)
+                require(chain["workflow_definition_id"] == session["workflow_definition_id"],
+                        "consumer_candidate_scope_mismatch",
+                        "Consumer forks remain inside their bound workflow identity", 403)
+            result = self.fork_graph_candidate(
+                sid, candidate_id=candidate_id, expected_revision=expected_revision,
+                expected_data_revision=expected_data_revision,
+                expected_head_revision=expected_head_revision, idempotency_key=idempotency_key)
+            return self._consumer_fork_receipt(result, sid, candidate_id, idempotency_key)
+
     def public_outputs(self, sid):
         consumer = self.get_consumer(sid)
         return {"schema_version": 1, "kind": "workflow.public-outputs",

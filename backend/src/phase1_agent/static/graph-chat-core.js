@@ -17,7 +17,7 @@
   const actions = new Set(["pause", "resume", "close", "extend_budget", "retry_archive", "retry_acceptance", "retry_failed_node"]);
   const consumerQueries = new Set(["consumer.definition", "consumer.sessions", "consumer.read", "consumer.actions",
     "output.list", "output.read", "output.history", "output.artifact.read", "registration.list", "information.read",
-    "frontend.extensions.read", "consumer.event.bindings", "consumer.event.read", "receipt.read"]);
+    "frontend.extensions.read", "consumer.event.bindings", "consumer.event.read", "consumer.candidate.list", "receipt.read"]);
   const bounded = value => typeof value === "string" && value.length > 0 && value.length <= 128 && value.trim() === value;
   const cursor = value => value === null || typeof value === "string" && value.length > 0 && value.length <= 4096;
   const same = (left, right) => {
@@ -48,7 +48,7 @@
   function require(value, reason) { if (!value) throw new Error(reason); }
   function supportedContent(type, version) {
     return ["TEXT", "PROMPT", "JSON"].includes(type) && [1, 2].includes(version)
-      || ["MODEL_RESOURCE", "FRONTEND_DISPLAY"].includes(type) && version === 1;
+      || ["MODEL_RESOURCE", "FRONTEND_DISPLAY", "TAVERN_CHAT_DISPLAY"].includes(type) && version === 1;
   }
   function identity(value, workflow, session) {
     return value.workflow_definition_id === workflow && (!session || value.workflow_session_id === session)
@@ -92,9 +92,10 @@
       && uuid(value.binding.node_id) && object(value.binding.provider) && uuid(value.binding.provider.provider_id)
       && positive(value.binding.provider.revision) && typeof value.binding.provider.name === "string"
       && /^[0-9a-f]{64}$/.test(value.binding.credential_evidence) && object(value.binding.parameters), "模型资源引用无效");
-    else if (type === "FRONTEND_DISPLAY") {
+    else if (["FRONTEND_DISPLAY", "TAVERN_CHAT_DISPLAY"].includes(type)) {
       require(exact(value, ["schema_version", "kind", "entries"]) && value.schema_version === 1
-        && value.kind === "workflow.frontend-display" && Array.isArray(value.entries) && value.entries.length <= 4095,
+        && value.kind === (type === "FRONTEND_DISPLAY" ? "workflow.frontend-display" : "workflow.tavern-chat-display")
+        && Array.isArray(value.entries) && value.entries.length <= 4095,
       "前端展示声明无效");
       const ids = new Set();
       for (const entry of value.entries) {
@@ -176,7 +177,7 @@
       && (value.reason_code === null || typeof value.reason_code === "string"), "未产出端口不应携带结果");
     if (value.availability === "produced") {
       const version = value.data_schema_version ?? (object(value.payload) ? value.payload.schema_version : undefined);
-      if (["TEXT", "PROMPT", "JSON", "MODEL_RESOURCE", "FRONTEND_DISPLAY"].includes(value.data_type)
+      if (["TEXT", "PROMPT", "JSON", "MODEL_RESOURCE", "FRONTEND_DISPLAY", "TAVERN_CHAT_DISPLAY"].includes(value.data_type)
         && (version === undefined || supportedContent(value.data_type, version))) {
         validateContent(value.payload, value.data_type, value.data_schema_version);
       }
@@ -226,12 +227,28 @@
     return value;
   }
   function validateOperationReceipt(receipt, command, workflow) {
-    const operation = command.action === "create" ? "create" : command.action === "start" ? "start" : command.action === "event" ? "event" : "control";
+    const fork = command.action === "fork";
+    const operation = command.action === "create" ? "create" : command.action === "start" ? "start" : command.action === "event" ? "event" : fork ? "fork" : "control";
     require(exact(receipt, ["workflow_definition_id", "definition_revision", "workflow_session_id", "session_revision",
-      "chain_run_id", "status", "idempotency_key", "operation"])
-      && identity(receipt, workflow, command.workflow_session_id) && positive(receipt.session_revision)
+      "chain_run_id", "status", "idempotency_key", "operation", ...(fork ? ["fork_source"] : [])])
+      && identity(receipt, workflow, fork ? null : command.workflow_session_id) && positive(receipt.session_revision)
       && receipt.idempotency_key === command.body.idempotency_key && receipt.operation === operation
       && typeof receipt.status === "string" && (receipt.chain_run_id === null || uuid(receipt.chain_run_id)), "提交回执与原请求不匹配");
+    if (fork) {
+      const candidate = command.candidate;
+      require(exact(receipt.fork_source, ["workflow_session_id", "candidate_id", "chain_run_id",
+        "workflow_definition_id", "definition_revision"])
+        && receipt.fork_source.workflow_session_id === command.workflow_session_id
+        && receipt.fork_source.candidate_id === candidate.candidate_id
+        && receipt.fork_source.chain_run_id === candidate.chain_run_id
+        && receipt.fork_source.workflow_definition_id === candidate.source_workflow_definition_id
+        && receipt.fork_source.definition_revision === candidate.source_definition_revision
+        && receipt.workflow_session_id !== command.workflow_session_id
+        && receipt.workflow_definition_id === candidate.source_workflow_definition_id
+        && receipt.definition_revision === candidate.source_definition_revision
+        && receipt.chain_run_id === null && receipt.status === "succeeded" && receipt.session_revision === 1,
+      "分叉回执与原检查点不匹配");
+    }
     if (command.action === "create") require(receipt.definition_revision === command.body.definition_revision, "新会话定义版本不匹配");
     if (["start", "event"].includes(command.action)) require(uuid(receipt.chain_run_id), "启动回执缺少运行身份");
     if (command.action === "event") require(receipt.definition_revision === command.body.definition_revision, "事件回执定义版本不匹配");
@@ -243,15 +260,31 @@
     const receipt = validateOperationReceipt(value.receipt, command, workflow);
     validateConsumer(value.consumer, workflow, receipt.workflow_session_id);
     require(value.consumer.session_revision >= receipt.session_revision, "回执观察早于提交依据");
+    if (command.action === "fork") require(value.consumer.definition_revision === receipt.definition_revision
+      && value.consumer.history.some(chain => chain.chain_run_id === command.candidate.chain_run_id
+        && chain.workflow_session_id === command.candidate.source_session_id
+        && chain.workflow_definition_id === command.candidate.source_workflow_definition_id
+        && chain.definition_revision === command.candidate.source_definition_revision && chain.status === "succeeded"),
+    "分叉会话没有原完成回合依据");
     return value;
   }
   function validateCommand(command, workflow) {
-    require(exact(command, ["path", "body", "action", "workflow_session_id"]) && object(command.body)
+    require(exact(command, ["path", "body", "action", "workflow_session_id",
+      ...(command?.action === "fork" ? ["candidate"] : [])]) && object(command.body)
       && uuid(command.body.idempotency_key), "本机待核实请求无效");
     if (command.action === "create") require(command.path === "/api/graph/consumer/sessions"
       && command.workflow_session_id === null && exact(command.body, ["workflow_definition_id", "definition_revision", "idempotency_key"])
       && command.body.workflow_definition_id === workflow && positive(command.body.definition_revision), "本机新会话请求无效");
-    else {
+    else if (command.action === "fork") {
+      require(uuid(command.workflow_session_id)
+        && command.path === `/api/graph/sessions/${command.workflow_session_id}/consumer/candidates/fork`
+        && exact(command.body, ["candidate_id", "expected_revision", "expected_data_revision",
+          "expected_head_revision", "idempotency_key"])
+        && positive(command.body.expected_revision) && positive(command.body.expected_head_revision)
+        && Number.isSafeInteger(command.body.expected_data_revision) && command.body.expected_data_revision >= 0
+        && validateCandidate(command.candidate, workflow)
+        && command.body.candidate_id === command.candidate.candidate_id, "本机分叉请求或检查点归属无效");
+    } else {
       require(uuid(command.workflow_session_id) && command.path === `/api/graph/sessions/${command.workflow_session_id}/consumer/${command.action === "start" ? "runs" : command.action === "event" ? "events/submit" : "control"}`
         && positive(command.body.expected_revision), "本机执行请求归属无效");
       if (command.action === "start") {
@@ -274,7 +307,8 @@
   function commandEnvelope(command, workflow) {
     validateCommand(command, workflow);
     return { operation: command.action === "create" ? "consumer.session.create"
-      : command.action === "start" ? "consumer.run.start" : command.action === "event" ? "consumer.event.submit" : "consumer.run.control",
+      : command.action === "start" ? "consumer.run.start" : command.action === "event" ? "consumer.event.submit"
+        : command.action === "fork" ? "consumer.candidate.fork" : "consumer.run.control",
     parameters: { ...clone(command.body), ...(command.workflow_session_id ? { session_id: command.workflow_session_id } : {}) } };
   }
   function validateApplicationReceiptIdentity(receipt, command, workflow) {
@@ -312,6 +346,35 @@
     validateOperationReceipt(value.result.receipt, command, workflow);
     require(same(receipt.accepted, value.result.receipt), "应用接纳依据与原操作回执不匹配，保留原请求");
     return value.result;
+  }
+  function validateCandidate(value, workflow) {
+    return exact(value, ["candidate_id", "chain_run_id", "source_session_id",
+      "source_workflow_definition_id", "source_definition_revision"])
+      && ["candidate_id", "chain_run_id", "source_session_id", "source_workflow_definition_id"].every(key => uuid(value[key]))
+      && value.source_workflow_definition_id === workflow && positive(value.source_definition_revision);
+  }
+  function validateCandidates(value, consumer) {
+    require(exact(value, ["schema_version", "kind", "workflow_definition_id", "definition_revision",
+      "workflow_session_id", "session_revision", "data_revision", "head_revision", "status", "can_fork", "candidates"])
+      && value.schema_version === 1 && value.kind === "workflow.consumer-candidates"
+      && identity(value, consumer.workflow_definition_id, consumer.workflow_session_id)
+      && value.definition_revision === consumer.definition_revision && value.session_revision === consumer.session_revision
+      && Number.isSafeInteger(value.data_revision) && value.data_revision >= 0 && positive(value.head_revision)
+      && value.status === consumer.status && typeof value.can_fork === "boolean" && Array.isArray(value.candidates),
+    "分叉目录归属或依据无效");
+    require(!value.can_fork || !["prepared", "running", "pausing", "paused"].includes(consumer.status),
+      "活动会话不能分叉");
+    const ids = new Set(), chains = new Set();
+    for (const candidate of value.candidates) {
+      require(validateCandidate(candidate, consumer.workflow_definition_id) && !ids.has(candidate.candidate_id)
+        && !chains.has(candidate.chain_run_id) && consumer.history.some(chain =>
+        chain.chain_run_id === candidate.chain_run_id && chain.workflow_session_id === candidate.source_session_id
+        && chain.workflow_definition_id === candidate.source_workflow_definition_id
+        && chain.definition_revision === candidate.source_definition_revision && chain.status === "succeeded"),
+      "分叉检查点不在当前可用完成回合中");
+      ids.add(candidate.candidate_id); chains.add(candidate.chain_run_id);
+    }
+    return value;
   }
   function validateEventBinding(binding) {
     require(exact(binding, ["event_id", "schema_version", "display_name", "audience", "target_node_ids", "payload_schema"])
@@ -489,6 +552,7 @@
       this.publicHistory = []; this.historyRequests = new Map(); this.artifactRequests = new Map();
       this.frontendRequests = new Map();
       this.eventBindings = null; this.eventGeneration = 0;
+      this.forkCandidates = null; this.candidateContext = null; this.candidateGeneration = 0;
       this.storageKey = "workflow-chat:v1:" + workflowId;
       const raw = storage.getItem(this.storageKey);
       if (raw) {
@@ -517,6 +581,11 @@
           const incoming = value.nodes.find(row => row.node_binding_id === node.node_binding_id);
           return incoming?.run_id === node.run_id && node.revision !== null && incoming.revision !== null && incoming.revision < node.revision;
         }) || current.history.some(chain => value.history.some(row => row.chain_run_id === chain.chain_run_id && row.revision < chain.revision)))) return false;
+      if (!current || current.workflow_session_id !== value.workflow_session_id
+        || current.definition_revision !== value.definition_revision || current.session_revision !== value.session_revision
+        || current.status !== value.status || !same(current.history, value.history)) {
+        this.forkCandidates = null; this.candidateContext = null; this.candidateGeneration++;
+      }
       if (!current || current.workflow_session_id !== value.workflow_session_id
         || current.definition_revision !== value.definition_revision || current.session_revision !== value.session_revision
         || !same(current.outputs, value.outputs)
@@ -590,6 +659,34 @@
       return this.command("event", { workflow_definition_id: this.workflowId, definition_revision: available.definition_revision,
         event_id: fixed.event_id, event_schema_version: fixed.schema_version, payload: fixedPayload });
     }
+    candidatesCurrent() {
+      return this.forkCandidates !== null && same(this.candidateContext, this.informationContext())
+        && this.forkCandidates.status === this.consumer?.status;
+    }
+    async readCandidates() {
+      require(this.consumer && this.sessionId, "先选择并读取已有会话");
+      const view = this.consumer, context = clone(this.informationContext()), generation = ++this.candidateGeneration;
+      this.forkCandidates = null; this.candidateContext = null;
+      let value;
+      try {
+        value = await this.query("consumer.candidate.list", { session_id: context.session,
+          workflow_definition_id: this.workflowId, definition_revision: context.definition });
+      } catch (error) {
+        if (generation !== this.candidateGeneration || view !== this.consumer
+          || !same(context, this.informationContext())) return null;
+        throw error;
+      }
+      if (generation !== this.candidateGeneration || view !== this.consumer
+        || !same(context, this.informationContext())) return null;
+      validateCandidates(value, view);
+      this.forkCandidates = freeze(clone(value)); this.candidateContext = context;
+      return this.forkCandidates;
+    }
+    async forkCandidate(candidate) {
+      require(!this.busy && !this.pending, "待核实原请求完成后才能创建新分叉");
+      require(validateCandidate(candidate, this.workflowId), "检查点工作流身份不受支持");
+      return this.command("fork", { candidate: clone(candidate) });
+    }
     async readDefinition() {
       const value = await this.query("consumer.definition", { identity: this.workflowId });
       require(exact(value, ["schema_version", "kind", "workflow_definition_id", "definition_revision", "name"])
@@ -629,9 +726,9 @@
       require(view && this.sessionId === view.workflow_session_id && [...view.outputs, ...this.publicHistory].some(item => same(item, output)),
         "公开展示来源已变化，请刷新");
       const fixedOutput = clone(output), fixedEntry = clone(entry);
-      require(fixedOutput.availability === "produced" && fixedOutput.data_type === "FRONTEND_DISPLAY"
+      require(fixedOutput.availability === "produced" && ["FRONTEND_DISPLAY", "TAVERN_CHAT_DISPLAY"].includes(fixedOutput.data_type)
         && (fixedOutput.data_schema_version ?? fixedOutput.payload?.schema_version) === 1, "公开展示类型不受支持");
-      validateContent(fixedOutput.payload, "FRONTEND_DISPLAY", 1);
+      validateContent(fixedOutput.payload, fixedOutput.data_type, 1);
       require(fixedOutput.payload.entries.some(item => same(item, fixedEntry)), "条目不在公开展示声明中");
       return this.readOutputArtifact(fixedOutput, fixedEntry.source_ref);
     }
@@ -695,6 +792,7 @@
       this.registrationGeneration++; this.informationGeneration++;
       this.sessionGeneration++;
       this.eventBindings = null; this.eventGeneration++;
+      this.forkCandidates = null; this.candidateContext = null; this.candidateGeneration++;
       this.registrationContext = null; this.registrations = [];
       this.publicHistory = []; this.historyRequests.clear(); this.artifactRequests.clear(); this.frontendRequests.clear();
     }
@@ -750,8 +848,13 @@
       const reconciling = this.pending !== null;
       if (!this.pending) {
         const create = action === "create";
-        require(create || this.consumer && (action === "event" ? !!this.eventBindings?.can_submit
+        const fork = action === "fork";
+        require(create || this.consumer && (fork ? this.candidatesCurrent() && this.forkCandidates.can_fork
+          : action === "event" ? !!this.eventBindings?.can_submit
           : action === "start" ? this.consumer.can_submit : this.consumer.available_actions.includes(action)), "动作当前不可用");
+        if (fork) require(validateCandidate(fields.candidate, this.workflowId)
+          && this.forkCandidates.candidates.some(row => same(row, fields.candidate))
+          && !["prepared", "running", "pausing", "paused"].includes(this.consumer.status), "分叉需要当前可用的完成检查点");
         if (action === "event") require(!["prepared", "running", "pausing", "paused"].includes(this.consumer.status)
           && fields.workflow_definition_id === this.workflowId && fields.definition_revision === this.consumer.definition_revision
           && this.eventBindings?.session_revision === this.consumer.session_revision && this.eventBindings.can_submit
@@ -768,14 +871,18 @@
           }
         }
         const body = create ? { workflow_definition_id: this.workflowId, definition_revision: fields.definition_revision,
-          idempotency_key: this.keyFactory() } : action === "start" ? { expected_revision: this.consumer.session_revision,
+          idempotency_key: this.keyFactory() } : fork ? { candidate_id: fields.candidate.candidate_id,
+          expected_revision: this.forkCandidates.session_revision, expected_data_revision: this.forkCandidates.data_revision,
+          expected_head_revision: this.forkCandidates.head_revision, idempotency_key: this.keyFactory() }
+          : action === "start" ? { expected_revision: this.consumer.session_revision,
           idempotency_key: this.keyFactory(), inputs: clone(fields.inputs ?? {}) } : action === "event"
           ? { workflow_definition_id: fields.workflow_definition_id, definition_revision: fields.definition_revision,
             event_id: fields.event_id, event_schema_version: fields.event_schema_version, payload: clone(fields.payload),
             expected_revision: this.consumer.session_revision, idempotency_key: this.keyFactory() } : { action,
           expected_revision: this.consumer.session_revision, idempotency_key: this.keyFactory(), ...fields };
         this.pending = validateCommand({ action, workflow_session_id: create ? null : this.sessionId,
-          path: create ? "/api/graph/consumer/sessions" : `/api/graph/sessions/${this.sessionId}/consumer/${action === "start" ? "runs" : action === "event" ? "events/submit" : "control"}`, body }, this.workflowId);
+          path: create ? "/api/graph/consumer/sessions" : `/api/graph/sessions/${this.sessionId}/consumer/${fork ? "candidates/fork" : action === "start" ? "runs" : action === "event" ? "events/submit" : "control"}`, body,
+          ...(fork ? { candidate: clone(fields.candidate) } : {}) }, this.workflowId);
         try { this.persist(); } catch (error) { this.pending = null; throw error; }
       }
       const command = clone(this.pending); this.busy = true;
@@ -801,10 +908,17 @@
         const value = validateApplicationReceipt(await this.request("/api/graph/consumer/commands", {
           method: "POST", body: JSON.stringify(envelope) }), command, this.workflowId);
         require(current(), "提交依据已变化，迟到回执未覆盖当前会话；原请求待核实");
+        const parentView = this.consumer;
         this.generation++; this.sessionId = value.receipt.workflow_session_id;
         this.invalidateInformation();
         this.accept(value.consumer); this.pending = null;
-        try { this.persist(); } catch (error) { this.pending = command; throw error; }
+        try { this.persist(); } catch (error) {
+          this.pending = command;
+          if (command.action === "fork") {
+            this.sessionId = session; this.consumer = parentView; this.invalidateInformation();
+          }
+          throw error;
+        }
         return value;
       } catch (error) {
         if (!reconciling && error.definite && current()) {
@@ -818,5 +932,5 @@
   root.GraphChat = { uuid, exact, clone, supportedContent, validateContent, displayText, displayEntryText, httpFailure, parseExternalInput,
     validateConsumer, validateReceipt, validateCommand, commandEnvelope, validateApplicationReceipt, validateApplicationReceiptRead, validateApplication,
     validateHistory, validateRegistrations, validateInformationPage, validatePublicArtifact,
-    validateEventBinding, validateEventBindings, validateEventRun, strictJson, GraphChatClient };
+    validateEventBinding, validateEventBindings, validateEventRun, validateCandidate, validateCandidates, strictJson, GraphChatClient };
 })(globalThis);

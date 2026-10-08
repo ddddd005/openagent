@@ -144,6 +144,18 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     persistence?.();
     return id;
   }
+  function createWorkflowDraft(value: GraphDocument, description = "") {
+    if (locked.value || !isGraphDocument(value) || entries.value[value.workflow_definition_id]
+      || workspace.workflows.some(row => row.id === value.workflow_definition_id)) return null;
+    const doc = graphClone(value), id = doc.workflow_definition_id;
+    entries.value[id] = { document: doc, saved_revision: 0, session_id: null, pending: null };
+    history.value[id] = { past: [], future: [] };
+    workspace.registerGraphWorkflow({ id, title: doc.name, description, nodeCount: doc.nodes.length, state: "draft" });
+    workspace.openWorkflow(id);
+    selectedNodeIds.value = []; selectedEdgeId.value = null;
+    persistence?.();
+    return id;
+  }
   function createSerialAgentExample(modelConfig?: SerialAgentModelConfig, compacting = false) {
     if (catalogLoading.value || catalogError.value) return null;
     try {
@@ -768,7 +780,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   }
   return { entries, catalog, frontendExtensions, packageLock, executionPackageLock, dataTypes, catalogLoading, catalogError, sessions, views, candidates, history, busy, active, document,
     session, pending, locked, primaryAction, statusLabel, selectedNodeIds, selectedEdgeId, canUndo, canRedo, setEventBindings, submitEvent,
-    isGeneric, createWorkflow, createSerialAgentExample, createCompactingSerialAgentExample, typeFor, loadCatalog, setPersistenceGuard, storeSnapshot, restoreSnapshot,
+    isGeneric, createWorkflow, createWorkflowDraft, createSerialAgentExample, createCompactingSerialAgentExample, typeFor, loadCatalog, setPersistenceGuard, storeSnapshot, restoreSnapshot,
     saveWorkflow, addNode, patchNode, patchNodeConfiguration, moveNodes, connect, removeSelection, reorderEdge, undo, duplicateSelection,
     replaceNode, setExecutionRoot, setControlDependencies, setObjectBindings, attachFrontendDisplay, patchFrontendSource,
     activate, refresh, createSession, selectSession, submitPrimary, reconcile, canRetryRejectedCopy, retryRejectedCopy, discardDraft, discardRejectedCopy, writeData, closeRun, setInputs, resetPrivateState, submitAgentAction, loadCandidates, changeCandidate,

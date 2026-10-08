@@ -92,6 +92,28 @@ export function newPromptMember(text = "", version: 1 | 2 = 1): PromptMember {
     ...(version === 2 ? { lifecycle: "per_request", compaction: "never" } as const : {}) };
 }
 export function clonePromptResource(value: CurrentPromptResource) { return graphClone(value); }
+export function duplicatePromptResource(value: CurrentPromptResource): CurrentPromptResource {
+  if (!isCurrentPromptResource(value)) throw new Error("Prompt group contract is invalid");
+  const result = clonePromptResource(value);
+  result.resource_id = crypto.randomUUID();
+  result.update_sequence = 1;
+  // A separate preset owns separate once-consumption identities.
+  result.value.members.forEach(member => { member.id = crypto.randomUUID(); });
+  return result;
+}
+export function movePromptMember(members: PromptMember[], index: number, offset: number): boolean {
+  const next = index + offset;
+  if (!Number.isSafeInteger(index) || !Number.isSafeInteger(next)
+    || index < 0 || index >= members.length || next < 0 || next >= members.length || next === index) return false;
+  const ranked = members.every((member, at) => Number.isSafeInteger(member.presentation.order)
+    && (at === 0 || members[at - 1]!.presentation.order < member.presentation.order));
+  [members[index], members[next]] = [members[next]!, members[index]!];
+  const first = members[index]!, second = members[next]!;
+  if (ranked) [first.presentation.order, second.presentation.order] = [second.presentation.order, first.presentation.order];
+  // Explicit moves normalize ambiguous ranks; UUID tie-breaking must not undo the requested order.
+  else members.forEach((member, at) => { member.presentation.order = at; });
+  return true;
+}
 export function promptResourceLabel(value: CurrentPromptResource): string {
   const text = value.value.members.find(member => member.text.trim())?.text.trim();
   return text ? text.split(/\r\n?|\n/, 1)[0]! : value.resource_id;

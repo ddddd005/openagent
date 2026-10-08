@@ -191,6 +191,87 @@ describe("current prompt panel form interactions", () => {
       lifecycle: "context_once", compaction: "never", presentation: { role: "system" } });
   });
 
+  it.each([1, 2] as const)("copies a schema-%i group into an unsaved independent draft without rebinding the node", async version => {
+    const record = newPromptResource(version), member = newPromptMember("Original background", version);
+    record.scope = "project:story"; record.update_sequence = 7; record.value.enabled = false;
+    member.presentation = { role: "user", placement: "middle", depth: 2, order: -8, enabled: false };
+    member.metadata = { custom: { retained: ["yes", true] } };
+    if (version === 2) { member.lifecycle = "context_once"; member.compaction = "allowed"; }
+    record.value.members = [member];
+    const original = graphClone(record), f = fixture([record]), root = await mount(CurrentPromptPanel, f);
+    await trigger(label(root, `复制提示词组 ${record.scope} ${record.resource_id}`), "Click");
+    expect(f.save).not.toHaveBeenCalled(); expect(f.configureNode).not.toHaveBeenCalled();
+    expect(f.resources.records.value).toEqual([original]);
+    const form = label(root, "提示词当前资源表单");
+    const output = elements(form).filter(node => node.tag === "output");
+    expect(output[0]!.text).toBe(record.scope);
+    expect(output[1]!.text).not.toBe(record.resource_id);
+    await trigger(form, "Submit");
+    const submitted = f.save.mock.calls[0]![0];
+    expect(submitted.expected_sequence).toBe(0);
+    expect(submitted.record.resource_id).not.toBe(record.resource_id);
+    expect(submitted.record.update_sequence).toBe(1);
+    expect(submitted.record.data_schema_version).toBe(version);
+    expect(submitted.record.value.enabled).toBe(false);
+    expect(submitted.record.value.members[0]!.id).not.toBe(member.id);
+    expect({ ...submitted.record.value.members[0], id: member.id }).toEqual(member);
+    expect(f.resources.records.value).toContainEqual(original);
+    expect(f.resources.records.value).toHaveLength(2);
+    expect(f.configureNode).not.toHaveBeenCalled();
+    expect(f.node.config).toEqual({ reference: promptIdentity(original) });
+  });
+
+  it("moves member ranks while preserving UUIDs, lifecycle, metadata and placement", async () => {
+    const record = newPromptResource(2);
+    const first = newPromptMember("Rule", 2), second = newPromptMember("Background", 2);
+    first.presentation.order = -8; second.presentation.order = 4;
+    second.presentation.role = "user"; second.presentation.placement = "middle"; second.presentation.depth = 2;
+    second.lifecycle = "context_once"; second.compaction = "allowed"; second.metadata = { unknown: ["keep"] };
+    record.value.members = [first, second];
+    const f = fixture([record]), root = await mount(CurrentPromptPanel, f);
+    await trigger(find(root, node => node.props.class === "resource-edit"), "Click");
+    expect(label(root, "条目 1 上移").props.disabled).toBe(true);
+    expect(label(root, "条目 2 下移").props.disabled).toBe(true);
+    await trigger(label(root, "条目 2 上移"), "Click");
+    expect(label(root, "条目 1 正文").value).toBe(second.text);
+    expect(label(root, "条目 1 装配顺序").value).toBe(-8);
+    expect(label(root, "条目 2 装配顺序").value).toBe(4);
+    expect(f.resources.records.value).toEqual([record]);
+    await trigger(label(root, "提示词当前资源表单"), "Submit");
+    expect(f.save.mock.calls[0]![0].record.value.members).toEqual([
+      { ...second, presentation: { ...second.presentation, order: -8 } },
+      { ...first, presentation: { ...first.presentation, order: 4 } },
+    ]);
+  });
+
+  it("appends after the largest existing rank without normalizing negative or unsorted ranks", async () => {
+    const record = newPromptResource(2);
+    record.value.members = [newPromptMember("First", 2), newPromptMember("Second", 2)];
+    record.value.members[0]!.presentation.order = 9; record.value.members[1]!.presentation.order = -4;
+    const f = fixture([record]), root = await mount(CurrentPromptPanel, f);
+    await trigger(find(root, node => node.props.class === "resource-edit"), "Click");
+    await trigger(button(root, "新增条目"), "Click");
+    await trigger(label(root, "提示词当前资源表单"), "Submit");
+    const members = f.save.mock.calls[0]![0].record.value.members;
+    expect(members.map(member => member.presentation.order)).toEqual([9, -4, 10]);
+    expect(members.slice(0, 2)).toEqual(record.value.members);
+    expect(members[2]).toMatchObject({ lifecycle: "per_request", compaction: "never" });
+  });
+
+  it("blocks rank overflow and allows appending after an explicit rank adjustment", async () => {
+    const record = newPromptResource(2); record.value.members = [newPromptMember("At limit", 2)];
+    record.value.members[0]!.presentation.order = Number.MAX_SAFE_INTEGER;
+    const f = fixture([record]), root = await mount(CurrentPromptPanel, f);
+    await trigger(find(root, node => node.props.class === "resource-edit"), "Click");
+    await trigger(button(root, "新增条目"), "Click");
+    expect(elements(root).filter(node => node.tag === "textarea")).toHaveLength(1);
+    expect(elements(root).some(node => node.text.includes("条目顺序已达上限"))).toBe(true);
+    model(label(root, "条目 1 装配顺序"), -3);
+    await trigger(button(root, "新增条目"), "Click");
+    await trigger(label(root, "提示词当前资源表单"), "Submit");
+    expect(f.save.mock.calls[0]![0].record.value.members.map(member => member.presentation.order)).toEqual([-3, -2]);
+  });
+
   it("preserves unknown metadata and negative order while editing text, all presentation fields and resource enabled", async () => {
     const record = newPromptResource(), member = newPromptMember("Original prompt");
     member.presentation.order = -8;
@@ -280,6 +361,33 @@ describe("current prompt panel form interactions", () => {
     expect(f.resources.pending.value).toBeNull();
     expect(f.locked.value).toBe(true);
     expect(label(root, "新增提示词资源").props.disabled).toBe(false);
+    expect(elements(root).some(node => node.props["aria-label"] === "提示词当前资源表单")).toBe(false);
+    await trigger(label(root, "新增提示词资源"), "Click");
+    await trigger(label(root, "提示词当前资源表单"), "Submit");
+    expect(f.save.mock.calls[1]![0].expected_sequence).toBe(0);
+    expect(f.save.mock.calls[1]![0].record.resource_id).not.toBe(submitted.record.resource_id);
+  });
+
+  it("locks copy and move handlers during an unknown request and preserves the original submitted body", async () => {
+    const record = newPromptResource(2);
+    record.value.members = [newPromptMember("One", 2), newPromptMember("Two", 2)];
+    const f = fixture([record]), root = await mount(CurrentPromptPanel, f);
+    const copy = label(root, `复制提示词组 ${record.scope} ${record.resource_id}`);
+    await trigger(find(root, node => node.props.class === "resource-edit"), "Click");
+    f.state.failSave = true;
+    await trigger(label(root, "提示词当前资源表单"), "Submit");
+    const pending = graphClone(f.resources.pending.value);
+    expect(copy.props.disabled).toBe(true);
+    expect(label(root, "条目 1 下移").props.disabled).toBe(true);
+    await trigger(copy, "Click");
+    await trigger(label(root, "条目 1 下移"), "Click");
+    expect(label(root, "条目 1 正文").value).toBe("One");
+    expect(f.resources.pending.value).toEqual(pending);
+    expect(f.save).toHaveBeenCalledTimes(1);
+    await trigger(button(root, "核实原提示词请求"), "Click");
+    expect(f.readReceipt.mock.calls[0]![0]).toEqual(pending);
+    expect(f.save).toHaveBeenCalledTimes(1);
+    expect(elements(root).some(node => node.props["aria-label"] === "提示词当前资源表单")).toBe(false);
   });
 });
 

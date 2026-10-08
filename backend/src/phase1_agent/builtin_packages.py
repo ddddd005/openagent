@@ -11,6 +11,7 @@ from .agent_package import create_agent_package
 from .frontend_business import create_frontend_business_package
 from .frontend_package import create_frontend_package
 from .tavern_package import create_tavern_package
+from .tavern.package import create_chat_tavern_package, create_global_tavern_package
 
 
 DEFAULT_PACKAGES = {
@@ -19,7 +20,7 @@ DEFAULT_PACKAGES = {
     "workflow.agents": "1.0.0", "workflow.context-compression": "1.0.0",
     "workflow.frontend-business": "1.0.0",
     "workflow.frontend": "1.0.0",
-    "workflow.tavern": "1.0.0",
+    "workflow.tavern": "1.2.0",
 }
 
 
@@ -29,4 +30,4 @@ def builtin_capability_packages(*, runtime_fact_reader=None):
             create_model_package(), create_context_package(),
             create_agent_package(information_reader=runtime_fact_reader),
             create_context_compression_package(), create_frontend_business_package(), create_frontend_package(),
-            create_tavern_package())
+            create_tavern_package(), create_global_tavern_package(), create_chat_tavern_package())

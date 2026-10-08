@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { Plus, RefreshCw, Save, Trash2, X } from "lucide-vue-next";
+import { ArrowDown, ArrowUp, Copy, Plus, RefreshCw, Save, Trash2, X } from "lucide-vue-next";
 import { usePromptResources } from "../application/promptResources";
-import { clonePromptResource, isCurrentPromptResource, newPromptMember, newPromptResource,
+import { clonePromptResource, duplicatePromptResource, isCurrentPromptResource, movePromptMember, newPromptMember, newPromptResource,
   promptIdentity, promptResourceLabel, type CurrentPromptResource,
   type PromptMember, type PromptPresentation } from "../domain/workflowPromptResources";
 
@@ -17,10 +17,27 @@ function edit(record: CurrentPromptResource | null) {
   expectedSequence.value = record?.update_sequence ?? 0;
   formError.value = "";
 }
+function duplicate(record: CurrentPromptResource) {
+  if (locked.value) return;
+  formError.value = "";
+  try {
+    form.value = duplicatePromptResource(record);
+    expectedSequence.value = 0;
+  } catch { formError.value = "提示词组字段无效，未创建副本"; }
+}
 function addMember() {
   if (!form.value || locked.value || form.value.value.members.length >= 1024) return;
-  form.value.value.members.push(newPromptMember("", form.value.data_schema_version));
+  const members = form.value.value.members;
+  const order = members.length ? Math.max(...members.map(member => member.presentation.order)) + 1 : 0;
+  if (!Number.isSafeInteger(order)) { formError.value = "条目顺序已达上限，先调整顺序"; return; }
+  const member = newPromptMember("", form.value.data_schema_version);
+  member.presentation.order = order;
+  members.push(member);
   formError.value = "";
+}
+function moveMember(index: number, offset: number) {
+  if (!form.value || locked.value) return;
+  if (movePromptMember(form.value.value.members, index, offset)) formError.value = "";
 }
 function removeMember(index: number) {
   if (!form.value || locked.value) return;
@@ -51,13 +68,16 @@ async function save() {
   formError.value = "";
   if (await resources.save(clonePromptResource(form.value), expectedSequence.value)) form.value = null;
 }
+async function reconcile() {
+  if (await resources.reconcile()) form.value = null;
+}
 onMounted(() => { void resources.refresh(); });
 </script>
 
 <template>
   <section class="current-prompt-panel" aria-label="新版提示词当前资源">
     <header>
-      <strong>提示词 · 当前资源</strong>
+      <strong>提示词组 · 全局资源</strong>
       <button type="button" title="刷新提示词资源" aria-label="刷新提示词资源" :disabled="loading"
         @click="resources.refresh()"><RefreshCw :size="15" /></button>
       <button type="button" title="新增提示词资源" aria-label="新增提示词资源" :disabled="locked"
@@ -67,11 +87,14 @@ onMounted(() => { void resources.refresh(); });
     <p v-else-if="!records.length">暂无提示词当前资源</p>
     <ul>
       <li v-for="record in records" :key="identityKey(record)">
-        <button type="button" :disabled="locked" @click="edit(record)">
+        <button type="button" class="resource-edit" :disabled="locked" @click="edit(record)">
           <strong :title="promptResourceLabel(record)">{{ promptResourceLabel(record) }}</strong>
           <span>{{ record.value.enabled ? '启用' : '已停用' }} · v{{ record.data_schema_version }} · s{{ record.update_sequence }}</span>
           <small :title="record.resource_id">{{ record.scope }} · {{ record.resource_id.slice(0, 8) }} · {{ record.value.members.length }} 个条目</small>
         </button>
+        <button type="button" class="resource-copy" title="复制为新提示词组"
+          :aria-label="`复制提示词组 ${record.scope} ${record.resource_id}`" :disabled="locked"
+          @click="duplicate(record)"><Copy :size="15" /></button>
       </li>
     </ul>
     <form v-if="form" aria-label="提示词当前资源表单" @submit.prevent="save">
@@ -87,9 +110,14 @@ onMounted(() => { void resources.refresh(); });
         <section v-for="(member, index) in form.value.members" :key="member.id" class="prompt-member">
           <header>
             <strong>条目 {{ index + 1 }}</strong>
+            <button type="button" title="上移条目" :aria-label="`条目 ${index + 1} 上移`"
+              :disabled="locked || index === 0" @click="moveMember(index, -1)"><ArrowUp :size="15" /></button>
+            <button type="button" title="下移条目" :aria-label="`条目 ${index + 1} 下移`"
+              :disabled="locked || index === form.value.members.length - 1" @click="moveMember(index, 1)"><ArrowDown :size="15" /></button>
             <button type="button" title="移除草稿条目" aria-label="移除草稿条目"
               @click="removeMember(index)"><Trash2 :size="15" /></button>
           </header>
+          <small class="member-id">{{ member.id }}</small>
           <label>正文<textarea v-model="member.text" rows="5" :aria-label="`条目 ${index + 1} 正文`"></textarea></label>
           <div class="presentation-row">
             <label>Role<select v-model="member.presentation.role" :aria-label="`条目 ${index + 1} Role`"
@@ -143,7 +171,7 @@ onMounted(() => { void resources.refresh(); });
     </form>
     <div v-if="pending" class="warning" role="status">
       <p>提示词资源提交结果待核实</p>
-      <button type="button" :disabled="busy" @click="resources.reconcile()">
+      <button type="button" :disabled="busy" @click="reconcile">
         <RefreshCw :size="14" />核实原提示词请求
       </button>
     </div>
@@ -158,7 +186,9 @@ header strong, li strong { flex:1; min-width:0; overflow-wrap:anywhere; }
 button { display:flex; align-items:center; gap:6px; padding:6px; border-radius:3px; }
 header button { flex:0 0 28px; width:28px; height:28px; justify-content:center; }
 ul { list-style:none; padding:0; margin:0; min-width:0; }
-li>button { display:grid; width:100%; grid-template-columns:minmax(0,1fr) auto; text-align:left; border-bottom:1px solid #505059; }
+li { display:grid; grid-template-columns:minmax(0,1fr) 28px; gap:4px; min-width:0; border-bottom:1px solid #505059; }
+.resource-edit { display:grid; width:100%; min-width:0; grid-template-columns:minmax(0,1fr) auto; text-align:left; }
+.resource-copy { width:28px; height:28px; padding:0; justify-content:center; align-self:center; }
 li strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 small { grid-column:1/-1; overflow-wrap:anywhere; color:#b9bec6; }
 form { display:grid; gap:10px; min-width:0; border-top:1px solid #505059; padding-top:10px; }
@@ -170,6 +200,7 @@ input[type="number"], select { box-sizing:border-box; width:100%; min-width:0; h
 .enabled { display:flex; align-items:center; gap:6px; }
 .enabled input { width:16px; height:16px; margin:0; }
 .prompt-member { display:grid; gap:10px; min-width:0; border-top:1px solid #505059; padding-top:10px; }
+.member-id { font:10px/1.5 Consolas,monospace; color:#949ba1; overflow-wrap:anywhere; }
 .presentation-row { display:flex; align-items:end; gap:10px; min-width:0; }
 .presentation-row>label { flex:1; }
 .presentation-row>.enabled { flex:0 0 auto; height:30px; }
