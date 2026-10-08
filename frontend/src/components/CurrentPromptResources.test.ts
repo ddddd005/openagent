@@ -36,7 +36,7 @@ function fixture(initial = [newPromptResource()]) {
   resources.records.value = graphClone(initial);
   const record = initial[0] ?? newPromptResource();
   const node = reactive<GraphNode>({
-    node_binding_id: crypto.randomUUID(), component_id: "prompts.global-reference", component_version: "1",
+    node_binding_id: crypto.randomUUID(), component_id: "prompts.global-reference", component_version: "2",
     title: "Prompt reference", position: { x: 0, y: 0 }, config: { reference: promptIdentity(record) },
   });
   const document = { ...newGraph("Prompt reference fields"), nodes: [node],
@@ -401,7 +401,7 @@ describe("current prompt reference configuration", () => {
         .provide(workbenchFrontendHostKey, host).provide(workflowFrontendSdkKey, f.sdk)
         .provide(promptResourceControllerKey, f.resources));
       expect(host.extensions.value.map(row => row.declaration.extension_id))
-        .toEqual(["workflow.prompts.workbench-panel", "workflow.prompts.node-fields", "workflow.prompts.node-fields-v2"]);
+        .toEqual(["workflow.prompts.workbench-panel", "workflow.prompts.node-fields-v2"]);
       expect(host.extensions.value[1]!.configurationFields).toEqual(["reference"]);
       expect(html).toContain('aria-label="提示词引用配置"');
       expect(html).not.toContain("<textarea");
@@ -437,9 +437,9 @@ describe("current prompt reference configuration", () => {
     await trigger(label(root, "提示词引用配置"), "Submit");
     expect(f.configureNode).toHaveBeenCalledWith({
       workflowId: f.document.workflow_definition_id, nodeId: f.node.node_binding_id,
-      componentId: "prompts.global-reference", componentVersion: "1",
+      componentId: "prompts.global-reference", componentVersion: "2",
       expectedConfig: original, patch: { reference: promptIdentity(shared) },
-      extensionId: "workflow.prompts.node-fields", lifecycle: "original",
+      extensionId: "workflow.prompts.node-fields-v2", lifecycle: "original",
     });
     f.lifecycle.value = "replacement";
     f.node.config = { reference: promptIdentity(shared) };
@@ -459,7 +459,7 @@ describe("current prompt reference configuration", () => {
   });
 
   it("selects schema-2 resources only through the explicit version-2 prompt editor", async () => {
-    const old = newPromptResource(), current = newPromptResource(2);
+    const old = newPromptResource(1), current = newPromptResource(2);
     const f = fixture([old, current]);
     f.node.component_version = "2";
     f.node.config = { reference: promptIdentity(current) };

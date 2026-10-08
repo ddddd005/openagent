@@ -60,6 +60,7 @@ def fixture(handler):
     value = BoundaryFixture()
     value.service.release_run(uid(2), uid(3))
     value.config["parameters"] = deepcopy(PARAMETERS)
+    value.config["capacity"]["output_reserve_tokens"] = PARAMETERS["max_tokens"]
     value.record["value"].update(protocol="gemini",
                                  credential_ref="env:GEMINI_API_KEY",
                                  base_url="https://generativelanguage.googleapis.com/v1beta")
@@ -132,7 +133,7 @@ def test_http_wire_matches_all_accepted_facts_through_three_rounds():
     assert observed[2]["contents"][3]["parts"][0]["thoughtSignature"] == "fixture-next-round"
     assert all(fact["details"]["projection"] == "gemini-generate-content@1"
                for fact in value.facts if fact["stage"] == "request")
-    assert value.binding["schema_version"] == 3
+    assert value.binding["schema_version"] == 4
     assert "private-gemini-fixture-secret" not in json.dumps(value.facts)
     assert observed[0]["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"] == TOOLS[0]["function"]["parameters"]
     value.service.close()

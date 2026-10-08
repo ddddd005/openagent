@@ -3,8 +3,9 @@ import { computed } from "vue";
 import { Handle, Position } from "@vue-flow/core";
 import { AlertCircle, Box, Flag } from "lucide-vue-next";
 import { nodePorts, type GraphNode, type GraphNodeType, type GraphPort } from "../domain/workflowGraph";
+import { nodeDisplayTitle, nodeProfileLabel, nodeTypeLabel } from "../domain/nodeCatalog";
 const props = defineProps<{ selected?: boolean; data: { node: GraphNode; definition?: GraphNodeType;
-  status: string; inputs: string[]; outputs: string[]; error: boolean; executionRoot?: boolean } }>();
+  displayTitle?: string; status: string; inputs: string[]; outputs: string[]; error: boolean; executionRoot?: boolean } }>();
 function ports(direction: "inputs" | "outputs"): GraphPort[] {
   const known = nodePorts(props.data.definition, props.data.node, direction);
   return [...known, ...[...new Set(props.data[direction])].filter(id => !known.some(port => port.port_id === id))
@@ -13,15 +14,17 @@ function ports(direction: "inputs" | "outputs"): GraphPort[] {
 const inputs = computed(() => ports("inputs"));
 const outputs = computed(() => ports("outputs"));
 const summary = computed(() => typeof props.data.node.config.text === "string" ? props.data.node.config.text
-  : props.data.definition?.display_name ?? props.data.node.component_id);
+  : props.data.definition ? nodeTypeLabel(props.data.definition) : props.data.node.component_id);
+const profile = computed(() => props.data.definition ? nodeProfileLabel(props.data.definition) : "");
 </script>
 
 <template>
   <article class="graph-node" :class="{ selected, running: data.status === 'running', invalid: data.error, missing: !data.definition }">
     <Handle id="__control_in" type="target" :position="Position.Top" :connectable="false" class="control-anchor" />
     <Handle id="__control_out" type="source" :position="Position.Bottom" :connectable="false" class="control-anchor" />
-    <header><Flag v-if="data.definition?.is_output" :size="15" /><Box v-else :size="15" /><strong>{{ data.node.title }}</strong><AlertCircle v-if="data.error || !data.definition" :size="15" /></header>
+    <header><Flag v-if="data.definition?.is_output" :size="15" /><Box v-else :size="15" /><strong>{{ data.displayTitle ?? nodeDisplayTitle(data.node, data.definition) }}</strong><AlertCircle v-if="data.error || !data.definition" :size="15" /></header>
     <p>{{ summary || '—' }}</p>
+    <div v-if="profile && profile !== '标准'" class="node-profile" :title="`${data.node.component_id}@${data.node.component_version}`">{{ profile }}</div>
     <div class="ports">
       <div class="port-column">
         <div v-for="port in inputs" :key="port.port_id" class="port-row input">
@@ -49,6 +52,7 @@ const summary = computed(() => typeof props.data.node.config.text === "string" ?
 header { display:flex; align-items:center; gap:7px; min-height:34px; padding:0 11px; border-bottom:1px solid #45454d; background:#36363c; border-radius:4px 4px 0 0; }
 strong { flex:1; min-width:0; overflow-wrap:anywhere; font-weight:500; padding:6px 0; }
 p { margin:9px 11px; color:#aab4b0; height:32px; overflow:hidden; white-space:pre-line; overflow-wrap:anywhere; line-height:16px; }
+.node-profile { margin:0 11px 8px; font-size:10px; color:#b8b5a4; overflow-wrap:anywhere; line-height:15px; }
 .ports { display:flex; justify-content:space-between; min-height:28px; }
 .port-column { max-width:50%; }
 .port-row { display:flex; position:relative; align-items:center; gap:5px; min-height:27px; padding:0 11px; }

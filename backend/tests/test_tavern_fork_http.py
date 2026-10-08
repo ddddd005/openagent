@@ -15,7 +15,7 @@ import pytest
 from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.server import create_server
-from test_agent_integration import run
+from workflow_test_support import run
 from test_graph_application_receipt_custody import raw_database
 from test_graph_receipt_http import post, serve_receipts
 from test_graph_service import create

@@ -359,7 +359,7 @@ def test_global_activation_preserves_exact_prompt_and_resource_type_checks():
 
 
 def test_global_materials_assemble_once_without_entering_agent_history(tmp_path, monkeypatch):
-    from test_agent_integration import run as native_run
+    from workflow_test_support import run as native_run
     from test_context_native_integration import NativeTransport, node_output, versioned_node
     from test_graph_service import create as native_create, edge
     from test_models_service_integration import ModelDatabaseFixture

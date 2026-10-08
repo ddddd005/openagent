@@ -150,9 +150,9 @@ async function openWorkflow(id) {
   await canvas.click({ button: "right", position: { x: 80, y: 80 } });
   await page.getByRole("menuitem", { name: "添加节点", exact: true }).click();
   const menu = page.getByRole("menu", { name: "添加节点", exact: true });
-  const menuNames = await menu.getByRole("menuitem").allTextContents();
-  for (const expected of ["全局 Lorebook 引用", "全局 Lorebook 触发",
-    "Read tavern chat display state", "Append tavern chat display references", "Present tavern chat display references"])
+  await menu.getByRole("menuitem", { name: "酒馆", exact: true }).click();
+  const menuNames = await page.getByRole("menu", { name: "酒馆节点", exact: true }).getByRole("menuitem").allTextContents();
+  for (const expected of ["全局世界书引用", "世界书触发", "读取聊天记录", "追加聊天记录", "聊天展示"])
     assert.ok(menuNames.includes(expected), JSON.stringify(menuNames));
   report.node_menu = menuNames;
   await page.getByRole("button", { name: "新建工作流", exact: true }).click();

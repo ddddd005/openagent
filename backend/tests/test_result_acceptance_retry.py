@@ -17,7 +17,7 @@ from phase1_agent.host_sdk import ServiceDefinition, ServiceOperation, ServiceRe
 
 from test_model_package import uid
 from test_models_service_integration import ModelDatabaseFixture
-from test_agent_integration import AgentTransportFixture, graph
+from workflow_test_support import AgentTransportFixture, graph
 from test_graph_service import create
 from test_graph_service import document, node
 
@@ -142,7 +142,7 @@ def test_agent_completed_result_retry_does_not_repeat_model_or_tools(tmp_path, m
             original = service._node_event
 
             def fail(sid, chain, event):
-                if event["event"] == "succeeded" and "unit" in event["outputs"] and not failures:
+                if event["event"] == "succeeded" and "context" in event["outputs"] and not failures:
                     failures.append(True)
                     raise OSError("agent output commit unavailable")
                 return original(sid, chain, event)

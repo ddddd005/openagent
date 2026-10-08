@@ -10,8 +10,8 @@
 
 | 分支 | 职责 |
 | --- | --- |
-| `main` | 已按明确范围验收的稳定线；不等于后端全量绿色、发布版本或已部署 |
-| `develop` | 唯一产品开发线，新能力默认在这里实现、测试和分组提交；明确授权的并行工作按模块划分归属 |
+| `main` | 当前产品主干；2026-10-09 已用测试版替换旧正式源码，旧版本只归档参考；不等于后端全量绿色、发布版本或已部署 |
+| `develop` | 从当前主干延续的唯一串行开发与隔离验收工作区，不保留另一套产品路线；新能力在这里实现、测试和分组提交 |
 | 临时功能分支 | 仅用于明确授权的并行工作，从 `develop` 派生并合回 `develop`，不直接混入 `main` |
 
 - 开始新能力前先确认范围与验收标准；不再为每次开发另建分支。Gemini 本轮已按用户授权三并发在 `develop` 实现，随后分组提交并经用户授权快进纳入 `main`。
@@ -20,6 +20,8 @@
 - `v0.2.0` 继续固定 2026-10-07 的架构收口，不移动旧标签来冒充当前 HEAD。当前版本元数据仍为 `0.2.0`。
 
 Gemini 工具与思考按 [G1-G5 规划](PLAN-GEMINI-THINKING.md) 实施，具体版本、配置、离线验收证据、主干收口及剩余边界见 [本轮实现记录](GEMINI-ACCEPTANCE-2026-10-09.md)。根 `start.bat` 仍固定稳定 `main`，下次启动将使用已合入的 Gemini 实现；Git 合并不自动更新正在运行的服务。
+
+随后在 `develop` 收敛节点路线与二级菜单，按用户授权删除旧节点及旧测试图，不保留迁移或兼容选择器。用户进一步授权当前测试版成为主干，旧 `main` 建立独立归档标签、源码 ZIP 与默认稳定数据库只读快照，节点整理随之纳入 `main`。当前声明与存档清理边界见 [节点目录](NODE-DIRECTORY-2026-10-09.md)，归档与本机晋升记录见 [主干晋升](MAIN-PROMOTION-2026-10-09.md)。后续开发以这份新主干为基线，不恢复旧实现、重建历史版本菜单或从旧归档继续分叉开发。
 
 ## 代码入口
 
@@ -37,9 +39,9 @@ Gemini 工具与思考按 [G1-G5 规划](PLAN-GEMINI-THINKING.md) 实施，具�
 | 能力声明与注册 | `host_sdk.py`、`capability_packages.py`、`builtin_packages.py`、`capability_registry.py` |
 | 当前精确包选择与依赖解析 | `graph_package_selection.py`、`CapabilityPackageLoader.resolve`；无旧配置运行回退 |
 | 普通内容、提示词与模型节点 | `tool_package.py`、`prompt_package.py`、`model_package.py` |
-| Agent 执行与失败分类 | `agent_package.py`、`agent_executor.py`、`runtime.py`、`agent_failed_retry.py` |
+| Agent 执行与失败分类 | `agent_package.py`、`agent_executor.py`、`runtime.py` |
 | 模型调用与受控失败 | `model_service.py`、`model_host_service.py`、`adapter.py`、`contract_errors.py` |
-| 上下文读、装配、写回 | `context_package.py`、`context_v3_nodes.py`、`context_v3.py` |
+| 上下文读、装配、写回 | `context_package.py`、`context_v4_nodes.py`、`context_v4.py`、`context_receipt.py` |
 | 前端业务节点 | `frontend_package.py`、`frontend_business.py` |
 | 定义、会话、对象与运行存储 | `storage.py`、`graph_store.py`、`graph_records.py`、`session_objects.py`、`runtime_fact_store.py` |
 | 旧测试数据的一次性清理 | `storage_retirement.py`；仅版本升级事务使用，不提供旧读写 API |
@@ -51,7 +53,7 @@ Gemini 工具与思考按 [G1-G5 规划](PLAN-GEMINI-THINKING.md) 实施，具�
 | 修改范围 | 入口 |
 | --- | --- |
 | 应用与工作台 | `frontend/src/App.vue`、`components/GraphWorkbench.vue` |
-| 通用图、串行示例 | `domain/workflowGraph.ts`、`domain/serialAgentDemo.ts` |
+| 通用图、串行示例、节点目录 | `domain/workflowGraph.ts`、`domain/serialAgentDemo.ts`、`domain/nodeCatalog.ts` |
 | 图与会话状态 | `stores/workflowGraph.ts`、`stores/workspace.ts` |
 | 浏览器持久化接口与档案 | `adapters/browserStorage.ts`、`adapters/workbenchPersistence.ts`、`stores/workbenchPersistence.ts` |
 | 应用边界 | `application/workflowCommands.ts`、`workflowEditing.ts`、`workflowInformation.ts` |
@@ -98,7 +100,7 @@ Gemini 工具与思考按 [G1-G5 规划](PLAN-GEMINI-THINKING.md) 实施，具�
 - 命令沿统一应用边界提交，保持 request body、idempotency key、修订/CAS 依据和 owner 校验一致。当前应用结果未知时经 `/api/graph/receipts/read` 或 consumer 同作用域入口核实完整原 operation/parameters，不再重发 mutation；后续拒绝不自动证明原请求未发生。
 - 工作流编辑复制的核实仅读原回执；缺原坐标的旧副本继续保留，不生成新 key/body。仅初次明确拒绝复制后保存精确 `rejected_copy`，由独立用户重试命令在证据匹配、新读修订和并发门禁下提交，不能把核实与重试合并。
 - 节点声明类型、版本、配置 schema、端口和执行器；端口数据必须满足内容契约，不以普通字符串代替带版本的结构。
-- 新节点的专有逻辑留在能力包。Agent 的确定失败判断在 `agent_failed_retry.py`，公共 `graph_failed_retry.py` 只协调合法的新尝试。
+- 新节点的专有逻辑留在能力包。公共 `graph_failed_retry.py` 仅协调声明了失败策略的合法新尝试；现行原生 Agent 没有开放该重试策略，不把旧摘要路线的许可移植过来。成功结果接纳失败仍可在保留现场下使用 `retry_acceptance`，不重复模型或工具调用。
 - 单节点成功、HTTP 200、可读输出、正式交付和整图完成分别处理。不要让模型结果直接绕过接纳与检查点。
 - 未知外部效果不能凭空判成失败并重试；成功结果接纳失败不能重新调用模型。
 - 模型服务的受控失败经 `ModelRequestError` 保留 `model_provider_error`、`model_dispatch_unknown`、`model_not_dispatched`、`model_response_invalid`，不进入 kernel 的自动 transport retry。安全重试许可仍由原 service facts 和失败重试策略裁决，不能只凭表层错误码授权。
@@ -115,7 +117,7 @@ Gemini 工具与思考按 [G1-G5 规划](PLAN-GEMINI-THINKING.md) 实施，具�
 
 当前入口只使用普通 Graph、公共 Runtime 与独立能力包。旧固定宿主、私有 Agent 执行器、兼容节点工厂、旧客户端/store、旧 HTTP 路由、在线迁移和私有档案入口已从源码删除；不保留旧运行 fallback 或旧会话只读门面。当前包选择只读 `current-execution`。
 
-SQLite v14 在单笔升级事务中识别确切固定/compat 内容，沿明确归属/引用和共享对象 revision 形成关联闭包，包含 Runtime facts 的 payload 引用及 chain/node 归属；整组删除相关定义/会话、事实、对象、manifest、回执及旧专用表。引用旧历史的当前对象/manifest 和共享旧 revision 不再单独保留，正常关联不再作为升级回滚保全的理由；无关联当前记录、独立资源与配置保留，不因缺包或未知节点而猜旧。有效旧 `project` 选择仅在没有当前行时转入当前配置，移除兼容包，然后删除旧行。保留下来的当前 `node_run@4` 空 `agent` 字段迁为版本 5。升级不是旧接口，不能用来重新启动旧工作流。
+SQLite v15 在单笔升级事务中识别确切固定/compat 内容及本轮退役节点路线，沿明确归属/引用和共享对象 revision 形成关联闭包，包含 Runtime facts 的 payload 引用及 chain/node 归属；整组删除相关定义/会话、事实、对象、manifest、回执及旧专用表。引用旧历史的当前对象/manifest 和共享旧 revision 不再单独保留，正常关联不再作为升级回滚保全的理由；无关联当前记录、独立资源与配置保留，不因缺包或未知节点而猜旧。有效旧 `project` 选择仅在没有当前行时转入当前配置，移除 `workflow.compat` 和 `workflow.context-compression`，然后删除旧行。保留下来的当前 `node_run@4` 空 `agent` 字段迁为版本 5。升级不迁移旧图、不更换节点版本，也不能用来重新启动旧工作流；本轮未对稳定库执行该升级。
 
 当前回执仍通过 raw SQLite `mode=ro` 查询，缺原应用身份或证据不匹配返回 unresolved，不重发 mutation；当前 Vue/GraphChat 保留完整 pending，不为已删除的关联测试内容重建兼容证据。无关联当前数据、可信扩展及共用类型/事实/对象设施保留。旧源码留在 Git 标签及仓库外归档，不放回正式源码树。
 

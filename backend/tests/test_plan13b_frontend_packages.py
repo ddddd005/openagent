@@ -14,7 +14,7 @@ from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import HostContractError
 from phase1_agent.model_package import MODEL_FRONTEND_EXTENSIONS
 from phase1_agent.prompt_package import PROMPT_FRONTEND_EXTENSIONS
-from phase1_agent.tavern_package import TAVERN_FRONTEND_EXTENSIONS
+from phase1_agent.tavern.package import CHAT_TAVERN_FRONTEND_EXTENSIONS
 
 from test_graph_service import create
 from test_graph_package_selection import saved_selection
@@ -29,7 +29,7 @@ def loader():
 def expected_workbench_extensions(*, frontend, tavern=True):
     declarations = [*MODEL_FRONTEND_EXTENSIONS, *PROMPT_FRONTEND_EXTENSIONS]
     if tavern:
-        declarations.extend(TAVERN_FRONTEND_EXTENSIONS)
+        declarations.extend(CHAT_TAVERN_FRONTEND_EXTENSIONS)
     if frontend:
         declarations.extend(FRONTEND_EXTENSIONS)
     return {row["extension_id"] for row in declarations}

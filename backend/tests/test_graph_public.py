@@ -12,8 +12,8 @@ from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.content_contracts import json_content, prompt_content, text_content
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_service import GraphWorkflowService
-from test_agent_integration import AgentTransportFixture, graph as agent_graph
-from test_agent_integration import run as run_agent
+from workflow_test_support import AgentTransportFixture, graph as agent_graph
+from workflow_test_support import run as run_agent
 from test_graph_service import copy_current, create, document, edge, node, run, service, text_graph, uid
 from test_graph_server import host_server, request
 from test_models_service_integration import ModelDatabaseFixture
@@ -86,14 +86,16 @@ def test_same_type_multiple_ports_and_prompt_content(service):
         "left": text_content("left"), "right": text_content("right")})
     probe = node(service.registry, definition.component_id, 1)
     probe["public_outputs"] = ["right"]
-    prompt = node(service.registry, "prompts.source", 2, value=prompt_content([]))
+    prompt = node(service.registry, "tools.text-to-prompt", 2)
+    text = node(service.registry, "tools.text", 4, text="public prompt")
     target = node(service.registry, "output", 3, mode="prompt")
     target["public_outputs"] = ["output"]
-    doc = document([probe, prompt, target], [edge(prompt, target, 1)])
+    doc = document([probe, text, prompt, target], [edge(text, prompt, 2), edge(prompt, target, 1)])
     final = run(service, create(service, doc))
     sid = final["workflow_session_id"]
     assert service.read_public_output(sid, **query(doc, uid(1), "right"))["output"]["payload"] == text_content("right")
-    assert service.read_public_output(sid, **query(doc, uid(3)))["output"]["payload"] == prompt_content([])
+    payload = service.read_public_output(sid, **query(doc, uid(3)))["output"]["payload"]
+    assert payload["kind"] == "workflow.prompt" and payload["items"][0]["text"] == "public prompt"
     with pytest.raises(ContractValidationError) as error:
         service.read_public_output(sid, **query(doc, uid(1), "left"))
     assert error.value.reason_code == "output_not_public"
@@ -314,13 +316,13 @@ def test_current_agent_uses_same_public_ports_and_separate_delivery(tmp_path, mo
         ModelDatabaseFixture.write(instance, 1)
         doc = agent_graph(instance)
         execute = next(row for row in doc["nodes"] if row["component_id"] == "agents.execute")
-        execute["public_outputs"] = ["result", "unit"]
+        execute["public_outputs"] = ["result", "context"]
         doc["nodes"][-1]["public_outputs"] = ["output"]
         view = run_agent(instance, create(instance, doc), "public question")
         consumer = instance.get_consumer(view["workflow_session_id"])
-        assert [row["data_type"] for row in consumer["outputs"]] == ["TEXT", "CONTEXT_UNIT", "TEXT"]
+        assert [row["data_type"] for row in consumer["outputs"]] == ["TEXT", "AGENT_CONTEXT_UPDATE", "TEXT"]
         assert consumer["outputs"][0]["payload"] == text_content("accepted answer")
-        assert consumer["outputs"][1]["payload"]["messages"]
+        assert consumer["outputs"][1]["payload"]["operations"]
         observed = next(row for row in consumer["nodes"] if row["node_binding_id"] == execute["node_binding_id"])
         assert observed["budget"] is None and "agent" not in observed and "snapshot" not in consumer
         assert view["messages"] == [] and view["status"] == "succeeded" and len(transport.calls) == 1

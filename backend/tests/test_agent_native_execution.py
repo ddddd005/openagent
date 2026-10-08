@@ -21,7 +21,7 @@ from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.runtime_fact_store import RuntimeFactStore
 from phase1_agent.storage import SqliteStore
 
-from test_agent_integration import run
+from workflow_test_support import run
 from test_context_native_integration import NativeTransport, native_graph, node_output
 from test_graph_service import create
 from test_models_service_integration import ModelDatabaseFixture

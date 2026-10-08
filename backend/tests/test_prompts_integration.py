@@ -52,7 +52,7 @@ def output_texts(view, output):
 
 
 def write_resource(service, reference, text, sequence):
-    record = {**reference, "data_schema_version": 1, "update_sequence": sequence,
+    record = {**reference, "data_schema_version": 2, "update_sequence": sequence,
               "value": {"enabled": True, "members": [member(50, text)]}}
     with closing(SqliteStore(service.database)) as store:
         GlobalResourceStore(store, service.registry.data_types).write(
@@ -124,8 +124,10 @@ def test_global_edit_after_start_keeps_activity_frozen_and_next_run_reads_curren
     gate = graph_node(installed, "test.block-reference", 2)
     resolve = graph_node(installed, "prompts.global-resolve", 3)
     output = graph_node(installed, "test.prompt-sink", 4)
-    doc = graph_document([source, gate, resolve, output], [
-        graph_edge(20, source, gate), graph_edge(21, gate, resolve), graph_edge(22, resolve, output)])
+    assembly = graph_node(installed, "prompts.assembly", 5)
+    doc = graph_document([source, gate, resolve, assembly, output], [
+        graph_edge(20, source, gate), graph_edge(21, gate, resolve),
+        graph_edge(22, resolve, assembly), graph_edge(23, assembly, output)])
     with closing(GraphWorkflowService(tmp_path / "frozen.sqlite", registry=installed)) as service:
         write_resource(service, reference, "old-frame-body", 1)
         initial = create(service, doc)

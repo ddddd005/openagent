@@ -21,11 +21,9 @@ from test_model_package import source_config, uid
 from test_models_service_integration import ModelDatabaseFixture
 
 
-LEGACY_CONTRACT_DIGESTS = {
+CURRENT_CONTRACT_DIGESTS = {
     ("global", "workflow.chat-provider", 1):
         "json-v1:sha256:f34776baa4de4121f07669a828d71cac5bf01c228f44727e5e0516940c0e0bcb",
-    ("content", "MODEL_BINDING", 1):
-        "json-v1:sha256:6abfc3359c03f054fbe9ba6fb2a3f638efa78af947d730bd0d09ac6422969cf6",
     ("content", "MODEL_BINDING", 2):
         "json-v1:sha256:d19506a06bca810eab3450dc8103ed6b75fefde0dade03db63d3c9e505aefc96",
     ("content", "MODEL_RESULT", 1):
@@ -46,10 +44,11 @@ def document(service, **kwargs):
     doc = ModelDatabaseFixture.document(service, **kwargs)
     for node in doc["nodes"]:
         if node["component_id"] == "models.source":
-            node["component_version"] = "3"
+            node["component_version"] = "4"
             node["config"]["parameters"] = deepcopy(PARAMETERS)
+            node["config"]["capacity"]["output_reserve_tokens"] = PARAMETERS["max_tokens"]
         if node["component_id"] == "models.chat":
-            node["component_version"] = "2"
+            node["component_version"] = "4"
         if node["component_id"] == "prompts.group":
             node["config"]["members"][0]["presentation"]["role"] = "user"
     return doc
@@ -69,9 +68,9 @@ def test_registered_gemini_chat_thinking_result_and_facts_survive_sqlite_reopen(
             **kwargs, http_client=httpx.Client(transport=httpx.MockTransport(handler)))
     path = tmp_path / "gemini.sqlite"
     with closing(GraphWorkflowService(path, public_model_factory=factory)) as service:
-        assert service.registry.get("models.source", "3") is not None
+        assert service.registry.get("models.source", "3") is None
         assert service.registry.get("models.source", "4") is not None
-        assert service.registry.get("models.chat", "2") is not None
+        assert service.registry.get("models.chat", "4") is not None
         write_provider(service)
         final = ModelDatabaseFixture.execute(service, ModelDatabaseFixture.create(service, document(service)))
         assert final["status"] == "succeeded", final
@@ -92,14 +91,14 @@ def test_registered_gemini_chat_thinking_result_and_facts_survive_sqlite_reopen(
     assert len(observed) == 1
 
 
-def test_legacy_registered_type_declarations_are_unchanged_and_existing_evidence_reopens(tmp_path):
+def test_current_registered_type_declarations_are_unchanged_and_existing_evidence_reopens(tmp_path):
     # These digests are the stable fc225390 declarations, not newly computed expectations.
     definitions = {(value.scope, value.type_id, value.schema_version): value
                    for value in model_type_definitions()}
     path = tmp_path / "old-contracts.sqlite"
     with closing(sqlite3.connect(path)) as connection:
         initialize_type_contract_tables(connection)
-        for key, digest in LEGACY_CONTRACT_DIGESTS.items():
+        for key, digest in CURRENT_CONTRACT_DIGESTS.items():
             declaration = definitions[key].to_dict()
             assert content_digest(declaration) == digest
             connection.execute("INSERT INTO registered_type_contracts VALUES(?,?,?,?,?)",
@@ -112,7 +111,7 @@ def test_legacy_registered_type_declarations_are_unchanged_and_existing_evidence
     with closing(sqlite3.connect(path)) as connection:
         assert {(scope, type_id, version): digest for scope, type_id, version, digest
                 in connection.execute("SELECT scope,type_id,schema_version,digest FROM registered_type_contracts")
-                if (scope, type_id, version) in LEGACY_CONTRACT_DIGESTS} == LEGACY_CONTRACT_DIGESTS
+                if (scope, type_id, version) in CURRENT_CONTRACT_DIGESTS} == CURRENT_CONTRACT_DIGESTS
 
 
 def test_gemini_same_process_pause_before_dispatch_resumes_without_replay(tmp_path, monkeypatch):
@@ -154,11 +153,11 @@ def test_source_protocol_mismatch_preflight_prevents_all_effects(tmp_path, monke
     with closing(GraphWorkflowService(tmp_path / "wrong-source.sqlite")) as service:
         write_provider(service)
         doc = document(service, side_effect=effects)
-        doc["nodes"][0]["component_version"] = "1"
-        # A source-one/chat-one graph still compiles, but cannot dispatch Gemini under old schemas.
         for node in doc["nodes"]:
+            if node["component_id"] == "models.source":
+                node["component_version"] = "2"
             if node["component_id"] == "models.chat":
-                node["component_version"] = "1"
+                node["component_version"] = "3"
         initial = ModelDatabaseFixture.create(service, doc)
         with pytest.raises(ContractValidationError) as error:
             service.start(initial["workflow_session_id"], expected_revision=initial["revision"],

@@ -84,10 +84,12 @@ async function renderResources(resources: ResourceController, reference: Current
   graph.frontendExtensions = graphClone(modelFrontendExtensions);
   graph.packageLock = [{ package_id: "workflow.models", version: "1.0.0" }];
   const node: GraphNode = {
-    node_binding_id: crypto.randomUUID(), component_id: "models.source", component_version: "1",
+    node_binding_id: crypto.randomUUID(), component_id: "models.source", component_version: "2",
     title: "Model source", position: { x: 0, y: 0 },
     config: { reference: providerIdentity(reference),
-      parameters: { model: "offline-model", thinking: "disabled", stream: false } },
+      parameters: { model: "offline-model", thinking: "disabled", stream: false, max_tokens: 1024 },
+      capacity: { context_window_tokens: 128000, output_reserve_tokens: 1024,
+        summary_max_tokens: 128, max_cold_input_tokens: 128000 } },
   };
   const document = { ...newGraph("Current provider fields"), nodes: [node] };
   const configureNode = vi.fn();

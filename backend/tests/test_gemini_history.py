@@ -8,11 +8,8 @@ from uuid import uuid4
 
 import pytest
 
-from phase1_agent.agent_executor import _snapshot_messages, project_generated_messages
 from phase1_agent.agent_package import thinking_summary_page
 from phase1_agent.context_compaction import is_compactable_text
-from phase1_agent.context_contract import validate_context_unit, validate_context_unit_version
-from phase1_agent.context_prompt import _message
 from phase1_agent.context_regex import apply_context_regex
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.contracts import ModelResponse, ModelToolCall
@@ -238,18 +235,7 @@ def test_sqlite_new_reader_history_projection_and_snapshot_keep_original_parts(t
         reread = [fact["payload"]["payload"]["message"] for fact in facts["items"]
                   if fact["payload"]["kind"] == "message_accepted"]
     assert reread == result.messages
-    unit = validate_context_unit({
-        "schema_version": 2, "kind": "workflow.context-unit", "unit_id": str(uuid4()),
-        "source_kind": "accepted_execution", "root": {"role": "user", "content": "question"},
-        "messages": project_generated_messages(reread, result.final, snapshot["snapshot_id"]),
-        "source_refs": [{"scope": "artifact", "output_id": str(uuid4())}],
-    })
-    messages = [_message(message) for message in unit["messages"]]
-    prompt = {"messages": messages, "provenance": [
-        {"kind": "history", "unit_id": unit["unit_id"], "message_id": message["message_id"]}
-        for message in unit["messages"]], "context": {"units": [{"unit": unit}]}}
-    frozen, _ = _snapshot_messages(prompt, {"output_id": str(uuid4())})
-    projection = CanonicalModelAdapter._project(frozen)
+    projection = CanonicalModelAdapter._project(reread)
     assert projection[0]["provider_metadata"]["content"] == signed.provider_metadata["content"]
     assert projection[0]["thinking_summary"] == "Visible summary"
     assert [binding["tool_call_id"] for binding in projection[0]["provider_metadata"]["tool_call_bindings"]] == [
@@ -257,11 +243,6 @@ def test_sqlite_new_reader_history_projection_and_snapshot_keep_original_parts(t
     ]
     assert projection[1]["tool_call_id"] == projection[0]["calls"][0]["id"]
     assert projection[2]["tool_call_id"] == projection[0]["calls"][1]["id"]
-    with pytest.raises(ContractValidationError):
-        validate_context_unit({**unit, "schema_version": 1})
-    with pytest.raises(ContractValidationError):
-        validate_context_unit_version(unit, 1)
-    assert validate_context_unit_version(unit, 2) == unit
 
 
 def test_public_thinking_page_keeps_pagination_but_never_private_protocol_material():

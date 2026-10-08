@@ -16,8 +16,8 @@ from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import ObjectBinding
 
-from test_agent_integration import output, run
-from test_context_summary_integration import SummaryTransport, base_graph
+from workflow_test_support import output, run
+from workflow_test_support import SummaryTransport, base_graph
 from test_graph_service import create, edge, node
 from test_models_service_integration import ModelDatabaseFixture
 
@@ -97,14 +97,14 @@ def retry(service, pending, action):
 def test_agent_postprocessing_frontend_then_context_waits_for_whole_plan(frontend_service):
     service, transport = frontend_service
     entered, proceed = Event(), Event()
-    merge_entry = service.registry.get("context.merge", "2")
+    merge_entry = service.registry.get("context.merge", "4")
 
     def delayed_merge(config, inputs, context):
         entered.set()
         assert proceed.wait(10), "Test did not release the required context merge"
         return merge_entry.executor(config, inputs, context)
 
-    service.registry._nodes[("context.merge", "2")] = replace(merge_entry, executor=delayed_merge)
+    service.registry._nodes[("context.merge", "4")] = replace(merge_entry, executor=delayed_merge)
     doc, append, merge, processed, _ = frontend_graph(service)
     initial = create(service, doc)
     started = service.start(
@@ -313,7 +313,7 @@ def test_agent_registered_reader_projects_original_facts_without_model_dispatch(
     })["items"]
     route = next(item for item in directory
                  if item["declaration"]["component_id"] == "agents.execute"
-                 and item["declaration"]["component_version"] == "3")
+                 and item["declaration"]["component_version"] == "4")
     history = service.get_run(final["workflow_session_id"], final["selected_chain_run_id"])
     original = [item for item in history["runtime_facts"]
                 if item.get("owner") == route["owner"] and item.get("generation") == route["generation"]]

@@ -9,6 +9,8 @@ import pytest
 
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.contract_json import canonical_bytes
+from phase1_agent.builtin_packages import DEFAULT_PACKAGES
+from phase1_agent.host_sdk import ResourceIdentity
 from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.graph_store import GraphRecordStore
@@ -16,6 +18,8 @@ from phase1_agent.runtime_fact_store import RuntimeFactStore
 from phase1_agent.storage import SqliteStore, STORAGE_VERSION
 
 from test_graph_service import create, run, text_graph
+from test_graph_resource_host import prompt_record
+from phase1_agent.storage_retirement import _COMPAT_NODES, _RETIRED_NODES, _compat
 
 
 def seed_old(connection, *, lock=True):
@@ -45,6 +49,99 @@ def seed_old(connection, *, lock=True):
     connection.execute("INSERT INTO execution_facts VALUES('old-dispatch')")
     connection.execute("PRAGMA user_version=13")
     return sid, chain, document
+
+
+@pytest.mark.parametrize("component,version", sorted(_RETIRED_NODES - _COMPAT_NODES))
+def test_retirement_classifies_only_explicit_old_node_declarations(component, version):
+    assert _compat({"nodes": [{"component_id": component, "component_version": version}]})
+    assert not _compat({"nodes": [{"component_id": component, "component_version": "999"}]})
+
+
+@pytest.mark.parametrize("component,version", [
+    ("models.source", "2"), ("models.source", "4"), ("models.chat", "3"), ("models.chat", "4"),
+    ("agents.execute", "4"), ("agents.execute", "8"), ("prompts.assembly", "2"),
+    ("context.output", "4"), ("context.assembly", "4"), ("context.merge", "4"),
+])
+def test_retirement_preserves_current_protocol_and_native_declarations(component, version):
+    assert not _compat({"nodes": [{"component_id": component, "component_version": version}]})
+
+
+@pytest.mark.parametrize("retired", ["models.source", "agents.execute", "prompts.assembly", "retired-package"])
+def test_v15_removes_retired_node_workflow_and_receipts_but_keeps_unrelated_current(tmp_path, retired):
+    path = tmp_path / "route-retirement.sqlite"
+    with closing(GraphWorkflowService(path)) as service:
+        app = GraphApplication(service)
+        document = text_graph(service.registry)
+        app.command("definition.save", {
+            "document": document, "expected_revision": 0, "idempotency_key": "current-save"})
+        created = app.command("session.create", {
+            "workflow_definition_id": document["workflow_definition_id"], "definition_revision": 1,
+            "idempotency_key": "current-session"})["result"]
+    with closing(sqlite3.connect(path, isolation_level=None)) as connection:
+        before = connection.execute("SELECT * FROM records ORDER BY record_type,record_id").fetchall()
+        receipts = connection.execute("SELECT * FROM idempotency ORDER BY operation,key").fetchall()
+        sid, chain, old = seed_old(connection)
+        old["nodes"] = [{"component_id": retired, "component_version": "1"}]
+        old["package_lock"] = [{"package_id": "workflow.context-compression", "version": "1.0.0"}] \
+            if retired == "retired-package" else []
+        connection.execute(
+            "UPDATE records SET payload=? WHERE record_type='workflow_definition_revision' AND record_id=?",
+            (canonical_bytes({"execution_model": "graph", "workflow_definition_id": old["workflow_definition_id"],
+                              "revision": 1, "document": old}).decode(), old["workflow_definition_id"]))
+        connection.execute("INSERT INTO idempotency VALUES(?,?,?,?,?,?)", (
+            "graph.definition.save", "old-save", "old-digest", "[]",
+            canonical_bytes([{"graph_result": old}]).decode(), "old-digest"))
+        connection.execute(
+            "UPDATE graph_project_packages SET payload=? WHERE configuration_id='current-execution'",
+            (canonical_bytes({**DEFAULT_PACKAGES, "workflow.context-compression": "1.0.0"}).decode(),))
+        connection.execute("PRAGMA user_version=14")
+    with closing(SqliteStore(path)) as store:
+        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == 15
+        assert [tuple(row) for row in store._connection.execute(
+            "SELECT * FROM records ORDER BY record_type,record_id")] == before
+        assert [tuple(row) for row in store._connection.execute(
+            "SELECT * FROM idempotency ORDER BY operation,key")] == receipts
+        assert store._connection.execute("SELECT * FROM records WHERE record_id IN (?,?)", (sid, chain)).fetchone() is None
+        assert store._connection.execute(
+            "SELECT payload FROM graph_project_packages WHERE configuration_id='current-execution'"
+        ).fetchone()[0] == canonical_bytes(DEFAULT_PACKAGES).decode()
+    with closing(GraphWorkflowService(path)) as service:
+        assert service.get_session(created["workflow_session_id"]) == created
+
+
+def test_v15_removes_resource_one_and_its_graph_without_breaking_current_resource_list(tmp_path):
+    path = tmp_path / "resource-retirement.sqlite"
+    current = prompt_record("Current lifecycle resource")
+    old = deepcopy(current)
+    old.update(scope="project:retired", data_schema_version=1)
+    for member in old["value"]["members"]:
+        del member["lifecycle"], member["compaction"]
+    identity = ResourceIdentity(old["scope"], old["type_id"], old["resource_id"]).to_dict()
+    with closing(GraphWorkflowService(path)) as service:
+        service.save_global_resource(current, expected_sequence=0, idempotency_key=str(uuid4()))
+    with closing(sqlite3.connect(path, isolation_level=None)) as connection:
+        before = connection.execute("SELECT * FROM global_resource_current").fetchall()
+        connection.execute("INSERT INTO global_resource_current VALUES(?,?,?,1,0,?)",
+                           (old["scope"], old["type_id"], old["resource_id"], canonical_bytes(old).decode()))
+        connection.execute("INSERT INTO global_resource_receipts VALUES(?,?,?)",
+                           ("old-prompt", "old-digest", canonical_bytes({
+                               "reference": identity, "update_sequence": 1, "deleted": False}).decode()))
+        sid, _, retired = seed_old(connection)
+        retired["package_lock"] = []
+        retired["nodes"] = [{"component_id": "prompts.global-reference", "component_version": "2",
+                             "config": {"reference": identity}}]
+        connection.execute(
+            "UPDATE records SET payload=? WHERE record_type='workflow_definition_revision' AND record_id=?",
+            (canonical_bytes({"execution_model": "graph", "workflow_definition_id": retired["workflow_definition_id"],
+                              "revision": 1, "document": retired}).decode(), retired["workflow_definition_id"]))
+        connection.execute("PRAGMA user_version=14")
+    with closing(GraphWorkflowService(path)) as service:
+        assert service.list_global_resources(type_id=current["type_id"]) == [current]
+        assert service.get_global_resource(identity) is None
+        with closing(SqliteStore(path)) as store:
+            assert [tuple(row) for row in store._connection.execute("SELECT * FROM global_resource_current")] == before
+            assert store._connection.execute("SELECT 1 FROM global_resource_receipts WHERE idempotency_key='old-prompt'").fetchone() is None
+            assert store._connection.execute("SELECT 1 FROM records WHERE record_id=?", (sid,)).fetchone() is None
 
 
 @pytest.mark.parametrize("lock", [True, False], ids=["full-compat-lock", "exact-schema1-components"])

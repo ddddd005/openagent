@@ -15,7 +15,7 @@ from phase1_agent.host_sdk import ObjectBinding
 from phase1_agent.session_objects import SessionObjectStore
 from phase1_agent.storage import SqliteStore
 
-from test_agent_integration import run
+from workflow_test_support import run
 from test_graph_service import copy_current, create, document, edge, node
 from test_model_package import source_config
 from test_models_service_integration import ModelDatabaseFixture

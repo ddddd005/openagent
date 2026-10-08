@@ -15,10 +15,6 @@ _RESULT_SCHEMA = {"type": "object", "required": ["schema_version", "kind", "bind
                                  "kind": {"const": "workflow.model-result"},
                                  "binding_id": {"type": "string"}, "request_id": {"type": "string"}}}
 MODEL_SERVICE_DEFINITION = ServiceDefinition(MODEL_SERVICE_REF, (
-    ServiceOperation("models:resolve", "bind-model", object_schema({
-        "reference": {"type": "object"}, "parameters": {"type": "object"}}),
-        {**_BINDING_SCHEMA, "properties": {
-            **_BINDING_SCHEMA["properties"], "schema_version": {"enum": [1, 3]}}}),
     ServiceOperation("models:resolve", "bind-native-model", object_schema({
         "reference": {"type": "object"}, "parameters": {"type": "object"},
         "capacity": {"type": "object"}}),
@@ -60,7 +56,7 @@ class ModelHostService:
     def prepare_run(self, *, workflow_session_id, chain_run_id, nodes, resources):
         source_ids = {node["node_binding_id"] for node in nodes if any(
             grant["capability"] == "models:resolve"
-            and bool({"bind-model", "bind-native-model"} & set(grant["operations"]))
+            and "bind-native-model" in grant["operations"]
             for grant in node["service_requirements"])}
         self.implementation.prepare_run(
             workflow_session_id=workflow_session_id, chain_run_id=chain_run_id,

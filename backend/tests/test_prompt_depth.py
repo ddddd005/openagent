@@ -7,20 +7,14 @@ import pytest
 from phase1_agent.content_contracts import (
     default_presentation, make_prompt_item, prompt_content, text_content,
 )
-from phase1_agent.context_prompt import (
-    _build, assemble_bound_context_prompt, assemble_context_prompt,
-    assemble_summary_context_prompt, validate_any_context_prompt,
-)
-from phase1_agent.context_prompt_v6 import _assemble, assemble_native_context_prompt
-from phase1_agent.context_v2 import read_bound_context
-from phase1_agent.context_v3 import read_effective_view
+from phase1_agent.context_prompt_v6 import _assemble, assemble_native_context_prompt, validate_native_context_prompt
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.prompt_assembly import assemble_prompt_collection
 from phase1_agent.prompt_contract import _build_assembly, assemble_prompt, validate_ready_prompt
 from phase1_agent.prompt_depth import LOGICAL_FLOOR_PLACEMENT
 from phase1_agent.prompt_lifecycle import lifecycle_prompt_content, make_lifecycle_prompt_item
 
-from test_context_package import record, ref, uid, unit, view
+from test_prompt_lifecycle import ref, uid
 from test_prompt_assembly import collection, item as old_item, message
 from test_prompt_lifecycle import history_text, view as native_view
 
@@ -43,20 +37,6 @@ def assemble(version, depth, *, materials=None):
                   for index in range(4)]
         return assemble_native_context_prompt(
             [lifecycle_prompt_content(members)], native_view(messages, layout), text_content("U3"), **refs)
-    if version == 3:
-        initial, build = view(), assemble_context_prompt
-    else:
-        basis = record()
-        basis["schema_version"] = version - 2
-        initial = (read_bound_context(basis, uid(1), "context", uid(3)) if version == 4
-                   else read_effective_view(basis, uid(1), "context", uid(3)))
-        build = assemble_bound_context_prompt if version == 4 else assemble_summary_context_prompt
-    initial["units"] = [{"unit_ref": ref(100 + index), "unit": unit(20 + index)}
-                        for index in range(2)]
-    for index, entry in enumerate(initial["units"], 1):
-        entry["unit"]["root"]["content"] = f"U{index}"
-        entry["unit"]["messages"][0]["content"] = f"A{index}"
-    return build([prompt_content(members)], initial, text_content("U3"), **refs)
 
 
 def texts(prompt):
@@ -64,7 +44,7 @@ def texts(prompt):
             for entry in prompt["messages"]]
 
 
-@pytest.mark.parametrize("version", [3, 4, 5, 6])
+@pytest.mark.parametrize("version", [6])
 @pytest.mark.parametrize("depth", [0, 1, 2, 3, 4, 5, 20, 99])
 def test_current_context_depth_matches_old_root_delta_floors(version, depth):
     original = [message(index, source, text) for index, source, text in (
@@ -76,10 +56,10 @@ def test_current_context_depth_matches_old_root_delta_floors(version, depth):
     result = assemble(version, depth)
     assert texts(result) == [entry["blocks"][0]["text"] for entry in old["messages"]]
     assert result["placement_profile"] == LOGICAL_FLOOR_PLACEMENT
-    assert validate_any_context_prompt(result) == result
+    assert validate_native_context_prompt(result) == result
 
 
-@pytest.mark.parametrize("version", [3, 4, 5, 6])
+@pytest.mark.parametrize("version", [6])
 def test_clamped_depths_share_boundary_and_use_order_before_original_item_order(version):
     result = assemble(version, 0, materials=[
         material(20, lifecycle=version == 6, number=1, text="later", order=10),
@@ -89,22 +69,22 @@ def test_clamped_depths_share_boundary_and_use_order_before_original_item_order(
     assert texts(result) == ["earlier", "later", "U1", "A1", "U2", "A2", "U3", "after-current"]
 
 
-@pytest.mark.parametrize("version", [3, 4, 5, 6])
+@pytest.mark.parametrize("version", [6])
 def test_disabled_material_does_not_participate_in_depth_placement(version):
     assert texts(assemble(version, 0, materials=[
         material(99, lifecycle=version == 6, enabled=False)])) == ["U1", "A1", "U2", "A2", "U3"]
 
 
-@pytest.mark.parametrize("version", [3, 4, 5, 6])
+@pytest.mark.parametrize("version", [6])
 @pytest.mark.parametrize("profile", [None, False, "rounds", {}])
 def test_unknown_placement_profile_is_rejected(version, profile):
     result = assemble(version, 0)
     result["placement_profile"] = profile
     with pytest.raises(ContractValidationError):
-        validate_any_context_prompt(result)
+        validate_native_context_prompt(result)
 
 
-@pytest.mark.parametrize("version", [3, 4, 5, 6])
+@pytest.mark.parametrize("version", [6])
 def test_frozen_round_based_prompt_remains_readable_without_rewriting_projection(version):
     result = assemble(version, 1)
     del result["placement_profile"]
@@ -113,24 +93,21 @@ def test_frozen_round_based_prompt_remains_readable_without_rewriting_projection
                                logical_floors=False)
         for key, value in zip(("messages", "provenance", "layout", "once_pending_item_ids"), projection):
             result[key] = value
-    else:
-        result["messages"], result["provenance"] = _build(
-            result["items"], result["context"], result["current_input"], logical_floors=False)
     before = deepcopy(result)
     assert texts(result) == ["U1", "A1", "M", "U2", "A2", "U3"]
-    assert validate_any_context_prompt(result) == before
+    assert validate_native_context_prompt(result) == before
     assert result == before
     result["placement_profile"] = LOGICAL_FLOOR_PLACEMENT
     with pytest.raises(ContractValidationError):
-        validate_any_context_prompt(result)
+        validate_native_context_prompt(result)
 
 
-@pytest.mark.parametrize("version", [3, 4, 5, 6])
+@pytest.mark.parametrize("version", [6])
 def test_removing_profile_cannot_reinterpret_new_depth_zero_projection(version):
     result = assemble(version, 0)
     del result["placement_profile"]
     with pytest.raises(ContractValidationError):
-        validate_any_context_prompt(result)
+        validate_native_context_prompt(result)
 
 
 def test_material_only_prompt_depth_zero_follows_current_input_and_old_freeze_is_readable():

@@ -83,7 +83,9 @@ def _run_current_scenario(database):
                 "target_port_id": target_port, "order": 0,
             })
 
-        model = node("models.source")
+        model = node("models.source", "2", capacity={
+            "context_window_tokens": 100000, "output_reserve_tokens": 1024,
+            "summary_max_tokens": 128, "max_cold_input_tokens": 100000})
         provider = {
             **model["config"]["reference"], "data_schema_version": 1, "update_sequence": 1,
             "value": {
@@ -94,19 +96,20 @@ def _run_current_scenario(database):
         service.save_global_resource(provider, expected_sequence=0, idempotency_key=str(uuid4()))
         reference = ResourceIdentity("workspace", PROMPT_RESOURCE_TYPE, str(uuid4())).to_dict()
         service.save_global_resource({
-            **reference, "data_schema_version": 1, "update_sequence": 1,
+            **reference, "data_schema_version": 2, "update_sequence": 1,
             "value": {"enabled": True, "members": [{
                 "id": str(uuid4()), "text": "Retained current prompt",
                 "presentation": default_presentation(), "metadata": {},
+                "lifecycle": "per_request", "compaction": "never",
             }]},
         }, expected_sequence=0, idempotency_key=str(uuid4()))
-        prompt = node("prompts.global-reference", reference=reference)
-        resolved = node("prompts.global-resolve")
+        prompt = node("prompts.global-reference", "2", reference=reference)
+        resolved = node("prompts.global-resolve", "2")
         current = node("tools.current-input")
-        execute = node("agents.execute", "3")
-        read = node("context.output", "2", object_key="context", agent_node_id=execute["node_binding_id"])
-        assembly = node("context.assembly", "3")
-        merge = node("context.merge", "2", object_key="context", agent_node_id=execute["node_binding_id"])
+        execute = node("agents.execute", "4")
+        read = node("context.output", "4", object_key="context", agent_node_id=execute["node_binding_id"])
+        assembly = node("context.assembly", "4")
+        merge = node("context.merge", "4", object_key="context", agent_node_id=execute["node_binding_id"])
         output = node("tools.output")
         output["public_outputs"] = ["output"]
         connect(prompt, resolved)
@@ -128,7 +131,7 @@ def _run_current_scenario(database):
                 "target_node_id": output["node_binding_id"],
             }],
             "object_bindings": [ObjectBinding(
-                "context", "workflow.effective-context", 3, "shared",
+                "context", "workflow.effective-context", 4, "shared",
                 readers=(read["node_binding_id"], merge["node_binding_id"]),
                 writers=(merge["node_binding_id"],),
             ).to_dict()],

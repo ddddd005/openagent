@@ -289,7 +289,7 @@ class PublicModelService:
     def __call__(self, context, capability: str, operation: str, payload: dict):
         require(capability in context.definition.capabilities, "graph_capability_denied",
                 "Model operation requires a declared capability")
-        if capability == "models:resolve" and operation in ("bind-model", "bind-native-model"):
+        if capability == "models:resolve" and operation == "bind-native-model":
             require(type(payload) is dict and ("capacity" in payload) == (operation == "bind-native-model"),
                     "model_source_invalid", "Model resolution operation differs from its source version")
             return self.bind_model(context, payload)
@@ -336,15 +336,13 @@ class PublicModelService:
             if frame.binding is None:
                 frame.producer_node_run_id = uuid4_string(context.node_run_id)
                 frame.binding = validate_public_model_binding({
-                    "schema_version": (4 if "capacity" in config else 3)
-                    if frame.provider["protocol"] == "gemini" else (
-                        2 if "capacity" in config else 1),
+                    "schema_version": 4 if frame.provider["protocol"] == "gemini" else 2,
                     "kind": "workflow.model-binding",
                     "binding_id": str(uuid4()), "reference": config["reference"],
                     "parameters": config["parameters"],
                     "capabilities": binding_capabilities(
                         frame.provider["protocol"], config["parameters"]),
-                    **({"capacity": config["capacity"]} if "capacity" in config else {}),
+                    "capacity": config["capacity"],
                 })
                 self._bindings[frame.binding["binding_id"]] = frame
             require(frame.producer_node_run_id == context.node_run_id, "model_owner_mismatch",

@@ -4,9 +4,9 @@ import { modelFrontendExtensions } from "../plugins/modelFrontendManifest";
 import type { WorkflowNodeConfigurationRequest } from "../plugins/workflowFrontendSdk";
 
 const request = (): WorkflowNodeConfigurationRequest => ({
-  workflowId: crypto.randomUUID(), nodeId: crypto.randomUUID(), componentId: "models.source", componentVersion: "1",
+  workflowId: crypto.randomUUID(), nodeId: crypto.randomUUID(), componentId: "models.source", componentVersion: "2",
   expectedConfig: { reference: {}, parameters: {} }, patch: { parameters: { model: "selected" } },
-  extensionId: "workflow.models.node-fields", lifecycle: "origin",
+  extensionId: "workflow.models.node-fields-v2", lifecycle: "origin",
 });
 describe("trusted package configuration access", () => {
   it("rejects asynchronous late edits after workflow/lifecycle changes or package unload", () => {
@@ -26,7 +26,7 @@ describe("trusted package configuration access", () => {
     const configure = createNodeConfigurationAccess({ workflowId: () => original.workflowId, lifecycle: () => original.lifecycle,
       trustedExtensions: () => modelFrontendExtensions, patch });
     expect(configure({ ...original, extensionId: "workflow.models.workbench-panel" })).toBeNull();
-    expect(configure({ ...original, componentVersion: "2" })).toBeNull();
+    expect(configure({ ...original, componentVersion: "4" })).toBeNull();
     expect(configure({ ...original, componentId: "agents.execute" })).toBeNull();
     expect(configure({ ...original, extensionId: "arbitrary" })).toBeNull();
     expect(patch).not.toHaveBeenCalled();

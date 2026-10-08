@@ -17,9 +17,9 @@ from phase1_agent.graph_contracts import GraphCompiler, NodeDefinition, NodePort
 from phase1_agent.graph_execution import execute_graph
 from phase1_agent.host_sdk import ResourceIdentity
 from phase1_agent.prompt_package import (
-    PROMPT_FRONTEND_EXTENSIONS, PROMPT_RESOURCE_TYPE, assemble_prompt, create_prompt_package, merge_prompt_materials,
-    validate_prompt_resource, validate_ready_prompt,
+    PROMPT_FRONTEND_EXTENSIONS, PROMPT_RESOURCE_TYPE, create_prompt_package,
 )
+from phase1_agent.prompt_contract import assemble_prompt, merge_prompt_materials, validate_ready_prompt
 
 
 def uid(number):
@@ -39,7 +39,8 @@ def item(number, text, **changes):
 
 
 def member(number, text, **changes):
-    return {"id": uid(number), "text": text, "presentation": presentation(**changes), "metadata": {}}
+    return {"id": uid(number), "text": text, "presentation": presentation(**changes), "metadata": {},
+            "lifecycle": "per_request", "compaction": "never"}
 
 
 def loaded(*, tools=None):
@@ -48,8 +49,9 @@ def loaded(*, tools=None):
 
 
 def graph_node(registry, component, number, **config):
-    entry = registry.get(component, "1")
-    return {"node_binding_id": uid(number), "component_id": component, "component_version": "1",
+    version = "3" if component == "models.chat" else "2" if component.startswith(("models.", "prompts.")) else "1"
+    entry = registry.get(component, version)
+    return {"node_binding_id": uid(number), "component_id": component, "component_version": version,
             "title": component, "position": {"x": 0, "y": 0},
             "config": {**deepcopy(entry.definition.default_config), **config}}
 
@@ -95,8 +97,8 @@ def test_prompt_package_loads_with_only_content_and_no_agent_or_tools_dependency
         "prompts.global-reference", "prompts.global-resolve", "prompts.tool", "prompts.tool-summary",
     }
     assert registry.get("workflow.agent", "1") is None
-    assert registry.data_types.get(PROMPT_RESOURCE_TYPE, 1, scope="global") is not None
-    assert registry.get("prompts.global-resolve", "1").resource_input_ports == ("input",)
+    assert registry.data_types.get(PROMPT_RESOURCE_TYPE, 2, scope="global") is not None
+    assert registry.get("prompts.global-resolve", "2").resource_input_ports == ("input",)
 
 
 def test_prompt_package_declares_exact_current_panel_and_reference_editor_without_compat():
@@ -111,7 +113,6 @@ def test_prompt_package_declares_exact_current_panel_and_reference_editor_withou
     assert list(capabilities.frontend_extensions) == expected
     assert {(row["extension_id"], row["entrypoint"]) for row in expected} == {
         ("workflow.prompts.workbench-panel", "workflow.prompts.workbench.panel"),
-        ("workflow.prompts.node-fields", "workflow.prompts.workbench.node-fields"),
         ("workflow.prompts.node-fields-v2", "workflow.prompts.workbench.node-fields-v2"),
     }
     manifest = package.manifest.to_dict()
@@ -119,7 +120,7 @@ def test_prompt_package_declares_exact_current_panel_and_reference_editor_withou
     assert manifest["exports"]["frontend_extensions"] == [
         {"extension_id": row["extension_id"]} for row in PROMPT_FRONTEND_EXTENSIONS]
     assert next(row for row in expected if row["kind"] == "field-editor")["binding"]["target"] == {
-        "component_id": "prompts.global-reference", "component_version": "1"}
+        "component_id": "prompts.global-reference", "component_version": "2"}
     loaded_manifest = next(row for row in capabilities.package_manifests
                            if row["package_id"] == "workflow.prompts")
     assert loaded_manifest["exports"] == manifest["exports"]
@@ -258,107 +259,3 @@ def test_readiness_rejects_legal_json_with_forged_messages_order_or_bindings(tam
     tamper(result)
     with pytest.raises(ContractValidationError):
         validate_ready_prompt(result)
-
-
-def test_fixed_group_source_increment_and_shared_upstream_execute_without_agent():
-    registry = loaded().registry.detached()
-    register_sink(registry)
-    group = graph_node(registry, "prompts.group", 1, members=[member(11, "fixed"), member(12, "second")])
-    source = graph_node(registry, "prompts.source", 2,
-                        value=prompt_content([item(13, "configured")]))
-    summary_a = graph_node(registry, "prompts.summary", 3)
-    summary_b = graph_node(registry, "prompts.summary", 4)
-    output_a = graph_node(registry, "test.prompt-sink", 5)
-    output_b = graph_node(registry, "test.prompt-sink", 6)
-    doc = graph_document([output_b, source, summary_b, group, output_a, summary_a], [
-        graph_edge(30, group, summary_a, order=0), graph_edge(31, source, summary_a, order=1),
-        graph_edge(32, group, summary_b), graph_edge(33, summary_a, output_a),
-        graph_edge(34, summary_b, output_b),
-    ])
-    result = run_graph(registry, doc)
-    assert result.status == "succeeded"
-    assert len([entry for entry in result.node_runs if entry["node_binding_id"] == group["node_binding_id"]]) == 1
-    assert {entry["text"] for entry in result.outputs[output_a["node_binding_id"]]["output"]["items"]} == {
-        "fixed", "second", "configured"}
-    assert len(result.outputs[output_b["node_binding_id"]]["output"]["items"]) == 2
-
-
-def test_source_explicit_text_increment_has_stable_identity_and_preserves_fixed_materials():
-    registry = loaded().registry
-    entry = registry.get("prompts.source", "1")
-    config = {**deepcopy(entry.definition.default_config), "value": prompt_content([item(1, "fixed")])}
-    context = SimpleNamespace(node_binding_id=uid(7))
-    first = entry.executor(config, {"input": text_content("increment")}, context)["output"]
-    second = entry.executor(config, {"input": text_content("changed")}, context)["output"]
-    assert {entry["text"] for entry in first["items"]} == {"fixed", "increment"}
-    incremental = next(entry for entry in first["items"] if entry["text"] == "increment")
-    changed = next(entry for entry in second["items"] if entry["text"] == "changed")
-    assert incremental["item_instance_id"] == changed["item_instance_id"]
-    assert config["value"] == prompt_content([item(1, "fixed")])
-
-
-def test_global_reference_contains_only_identity_and_resolver_needs_no_second_config():
-    registry = loaded().registry
-    reference = ResourceIdentity("workspace", PROMPT_RESOURCE_TYPE, uid(9)).to_dict()
-    reference_entry = registry.get("prompts.global-reference", "1")
-    envelope = reference_entry.executor({"reference": reference}, {}, SimpleNamespace())["output"]
-    assert envelope == global_resource_reference(reference)
-    assert "secret-resource-body" not in canonical_bytes(envelope).decode()
-    assert reference_entry.resource_dependencies_declaration({"reference": reference}) == [
-        {"kind": "global-resource", "reference": reference}]
-    calls = []
-    record = {"envelope_version": 1, **{key: reference[key] for key in ("scope", "type_id", "resource_id")},
-              "data_schema_version": 1, "update_sequence": 1,
-              "value": {"enabled": True, "members": [member(10, "secret-resource-body")]}}
-    context = SimpleNamespace(node_binding_id=uid(11), reads=[],
-        host_call=lambda capability, operation, payload: (
-            calls.append((capability, operation, deepcopy(payload))) or deepcopy(record)))
-    resolved = registry.get("prompts.global-resolve", "1").executor({}, {"input": envelope}, context)["output"]
-    assert resolved["items"][0]["text"] == "secret-resource-body"
-    assert calls == [("resources:read", "current-global-resource", reference)]
-    assert resolved["items"][0]["source"]["reference"] == reference
-    assert "update_sequence" not in resolved["items"][0]["source"]
-    assert registry.get("prompts.global-resolve", "1").definition.default_config == {}
-
-
-@pytest.mark.parametrize("value", [
-    {"enabled": True, "members": [member(1, "one"), member(1, "two")]},
-    {"enabled": True, "members": [member(1, "invalid depth", depth=1)]},
-    {"enabled": True, "members": [], "kind": "role_card"},
-])
-def test_global_prompt_resource_rejects_conflicts_invalid_presentation_and_role_cards(value):
-    with pytest.raises(ContractValidationError):
-        validate_prompt_resource(value)
-
-
-def test_disabled_global_resource_is_rejected_before_execution():
-    registry = loaded().registry
-    reference = ResourceIdentity("workspace", PROMPT_RESOURCE_TYPE, uid(9)).to_dict()
-    record = {**reference, "data_schema_version": 1, "update_sequence": 1,
-              "value": {"enabled": False, "members": []}}
-    with pytest.raises(ContractValidationError) as caught:
-        registry.get("prompts.global-reference", "1").resource_preflight_validator(
-            {"reference": reference}, [record])
-    assert caught.value.reason_code == "global_content_disabled"
-
-
-def test_tool_description_and_schema_use_injected_exact_catalog_and_separate_stable_ids():
-    tool_schema = {"type": "object", "properties": {"text": {"type": "string"}},
-                   "required": ["text"], "additionalProperties": False}
-    catalog = {("inspect_text", "1"): {"description": "Inspect a text", "parameters": tool_schema}}
-    registry = loaded(tools=catalog).registry
-    catalog[("inspect_text", "1")]["description"] = "mutated"
-    tool = registry.get("prompts.tool", "1")
-    config = deepcopy(tool.definition.default_config)
-    tool.config_validator(config)
-    first = tool.executor(config, {}, SimpleNamespace(node_binding_id=uid(20)))
-    second = tool.executor(config, {}, SimpleNamespace(node_binding_id=uid(20)))
-    assert first == second
-    description, schema = first["tool-descriptions"]["items"][0], first["tool-schemas"]["items"][0]
-    assert description["text"] == "Inspect a text"
-    assert schema["text"] == canonical_bytes(tool_schema).decode()
-    assert description["item_instance_id"] != schema["item_instance_id"]
-    assert description["purpose"] == "tool-description" and schema["purpose"] == "tool-schema"
-    with pytest.raises(ContractValidationError) as caught:
-        tool.config_validator({**config, "tool_ref": {"name": "inspect_text", "version": "2"}})
-    assert caught.value.reason_code == "graph_tool_not_registered"

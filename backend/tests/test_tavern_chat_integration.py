@@ -15,7 +15,7 @@ from phase1_agent.session_objects import SessionObjectStore
 from phase1_agent.storage import SqliteStore
 from phase1_agent.tavern.chat_contracts import TAVERN_CHAT_STATE_TYPE
 
-from test_agent_integration import run
+from workflow_test_support import run
 from test_context_native_integration import NativeTransport, native_graph, node_output
 from test_graph_service import create, document, edge, node
 from test_models_service_integration import ModelDatabaseFixture

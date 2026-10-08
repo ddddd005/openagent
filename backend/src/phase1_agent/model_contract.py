@@ -85,8 +85,7 @@ def validate_native_model_source_config(value: object) -> dict:
 
 
 def validate_any_model_source_config(value: object) -> dict:
-    return (validate_native_model_source_config(value) if type(value) is dict and "capacity" in value
-            else validate_model_source_config(value))
+    return validate_native_model_source_config(value)
 
 
 def validate_model_capacity(value: object, parameters: dict) -> dict:
@@ -125,7 +124,7 @@ def validate_public_model_binding(value: object) -> dict:
         "schema_version", "kind", "binding_id", "reference", "parameters", "capabilities",
     } | ({"capacity"} if version in (2, 4) else set())
     require(type(value) is dict and set(value) == expected
-            and type(version) is int and version in (1, 2, 3, 4)
+            and type(version) is int and version in (2, 4)
             and value["kind"] == "workflow.model-binding",
             "model_binding_invalid", "Public model binding fields are invalid")
     uuid4_string(value["binding_id"])
@@ -246,15 +245,7 @@ def model_type_definitions() -> tuple[DataTypeDefinition, ...]:
                            validator=validate_chat_provider_v1, max_bytes=8192),
         DataTypeDefinition(CHAT_PROVIDER_TYPE, 2, gemini_provider_schema, scope="global",
                            validator=validate_gemini_provider, max_bytes=8192),
-        DataTypeDefinition(MODEL_BINDING_TYPE, 1, binding_schema, scope="content",
-                           validator=validate_public_model_binding, max_bytes=8192,
-                           references=lambda value: [deepcopy(value["reference"])],
-                           reference_mapper=lambda value, mapping: deepcopy(value)),
         DataTypeDefinition(MODEL_BINDING_TYPE, 2, native_binding_schema, scope="content",
-                           validator=validate_public_model_binding, max_bytes=8192,
-                           references=lambda value: [deepcopy(value["reference"])],
-                           reference_mapper=lambda value, mapping: deepcopy(value)),
-        DataTypeDefinition(MODEL_BINDING_TYPE, 3, gemini_binding_schema, scope="content",
                            validator=validate_public_model_binding, max_bytes=8192,
                            references=lambda value: [deepcopy(value["reference"])],
                            reference_mapper=lambda value, mapping: deepcopy(value)),

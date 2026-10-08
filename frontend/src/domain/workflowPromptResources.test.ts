@@ -6,7 +6,7 @@ describe("current independent prompt resource contracts", () => {
   it("creates an empty workspace group without legacy name or kind fields", () => {
     const record = newPromptResource();
     expect(record).toMatchObject({ envelope_version: 1, scope: "workspace", type_id: promptResourceType,
-      data_schema_version: 1, update_sequence: 1, value: { enabled: true, members: [] } });
+      data_schema_version: 2, update_sequence: 1, value: { enabled: true, members: [] } });
     expect(isCurrentPromptResource(record)).toBe(true);
     expect(isPromptIdentity(promptIdentity(record))).toBe(true);
     expect(promptResourceLabel(record)).toBe(record.resource_id);
@@ -136,7 +136,7 @@ describe("current independent prompt resource contracts", () => {
     member.compaction = "never";
     expect(isCurrentPromptResource(record)).toBe(true);
     expect(isCurrentPromptResource({ ...record, data_schema_version: 1 })).toBe(false);
-    record.value.members = [newPromptMember()];
+    record.value.members = [newPromptMember("", 1)];
     expect(isCurrentPromptResource(record)).toBe(false);
   });
   it.each([1, 2] as const)("duplicates schema %i into an independent group without upgrading or mutating the source", version => {

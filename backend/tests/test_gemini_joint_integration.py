@@ -12,10 +12,8 @@ from phase1_agent.gemini_adapter import GeminiAdapter
 from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_service import GraphWorkflowService
 
-from test_agent_integration import graph as legacy_graph, output, run
-from test_bound_context_integration import graph as bound_graph
+from workflow_test_support import output, run
 from test_context_native_integration import native_graph
-from test_context_summary_integration import base_graph as summary_graph
 from test_graph_service import create
 from test_model_package import source_config
 from test_tavern_chat_integration import add_chat, public_read
@@ -65,19 +63,13 @@ class GeminiGraphFixture:
 
 
 def gemini_graph(service, route):
-    if route == "native":
-        doc, _ = native_graph(service, policy=False, once=False)
-    else:
-        doc = {"legacy": legacy_graph, "bound": bound_graph, "summary": summary_graph}[route](service)
+    doc, _ = native_graph(service, policy=False, once=False)
     source = next(node for node in doc["nodes"] if node["component_id"] == "models.source")
-    source["component_version"] = "4" if route == "native" else "3"
+    source["component_version"] = "4"
     source["config"]["parameters"].update(model="gemini-3-flash-preview",
         thinking={"mode": "level", "level": "low", "include_summary": True})
     agent = next(node for node in doc["nodes"] if node["component_id"] == "agents.execute")
-    agent["component_version"] = {"legacy": "5", "bound": "6", "summary": "7", "native": "8"}[route]
-    for node in doc["nodes"]:
-        if node["component_id"] == "agents.delta":
-            node["component_version"] = "2"
+    agent["component_version"] = "8"
     current = next(node for node in doc["nodes"] if node["component_id"] == "tools.current-input")
     chat = add_chat(service, doc, current, agent)
     return doc, chat
@@ -108,7 +100,7 @@ def read_public_thinking(service, view):
     return items
 
 
-@pytest.mark.parametrize("route", ["legacy", "bound", "summary", "native"])
+@pytest.mark.parametrize("route", ["native"])
 def test_gemini_agent_tools_context_cold_reopen_and_public_tavern(route, tmp_path, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "offline-fixture-not-a-real-key")
     fixture = GeminiGraphFixture()

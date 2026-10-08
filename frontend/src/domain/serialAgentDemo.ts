@@ -42,7 +42,7 @@ function serialAgentDemo(catalog: GraphNodeType[],
       target_node_id: to.node_binding_id });
   }
   const input = node("tools.current-input", "1", "用户输入", 0, 0, { input_name: "text" });
-  const model = node("models.source", compacting ? "2" : "1",
+  const model = node("models.source", "2",
     modelConfig ? "共享模型" : compacting ? "模型与容量待配置" : "模型资源与模型名待选择", 0, 200);
   if (modelConfig) model.config = { ...model.config, ...graphClone(modelConfig) };
   else {
@@ -50,13 +50,13 @@ function serialAgentDemo(catalog: GraphNodeType[],
     model.config.parameters = { ...(model.config.parameters as Record<string, unknown>), model: "" };
   }
   function agent(label: string, y: number, prompt: string) {
-    const execute = node("agents.execute", compacting ? "4" : "3", `Agent ${label}`, 850, y);
+    const execute = node("agents.execute", "4", `Agent ${label}`, 850, y);
     const key = `context/${label.toLowerCase()}`;
     const bound = { object_key: key, agent_node_id: execute.node_binding_id };
-    const read = node("context.output", compacting ? "4" : "2", `${label} 上下文`, 0, y + 400, bound);
-    const assembly = node("context.assembly", compacting ? "4" : "3", `${label} 装配`, 550, y);
-    const merge = node("context.merge", compacting ? "4" : "2", `${label} 上下文写回`, 1150, y, bound);
-    const material = node("prompts.item", compacting ? "2" : "1", `${label} 提示词`, 250, y + 200, { text: prompt });
+    const read = node("context.output", "4", `${label} 上下文`, 0, y + 400, bound);
+    const assembly = node("context.assembly", "4", `${label} 装配`, 550, y);
+    const merge = node("context.merge", "4", `${label} 上下文写回`, 1150, y, bound);
+    const material = node("prompts.item", "2", `${label} 提示词`, 250, y + 200, { text: prompt });
     if (compacting) {
       const policy = node("agents.compaction-policy", "1", `${label} 精简策略`, 550, y + 300);
       edge(policy, "output", execute, "compaction_policy");
@@ -65,14 +65,14 @@ function serialAgentDemo(catalog: GraphNodeType[],
     edge(material, "output", assembly, "materials"); edge(assembly, "output", execute, "prompt");
     edge(model, "output", execute, "model"); edge(read, "output", merge, "view");
     edge(execute, "context", merge, "context");
-    doc.object_bindings!.push({ object_key: key, type_id: "workflow.effective-context", schema_version: compacting ? 4 : 3,
+    doc.object_bindings!.push({ object_key: key, type_id: "workflow.effective-context", schema_version: 4,
       scope: "shared", owner_node_id: null, readers: [read.node_binding_id, merge.node_binding_id],
       writers: [merge.node_binding_id], default_value: { view_ref: null, accepted_delta_ids: [] } });
     return { execute, assembly, merge };
   }
   const a = agent("A", 0, "Analyze the user's request and produce useful working notes. Use inspect_text only when useful. Complete with final_answer containing an answer with text.");
   const b = agent("B", 700, "Answer the user's original request using Agent A's working notes in the final user material. Treat those notes as reference material. Use inspect_text only when useful. Complete with final_answer containing an answer with text.");
-  const handoff = node(compacting ? "prompts.source" : "tools.text-to-prompt", compacting ? "2" : "1", "A 本轮分析材料", 1100, 450,
+  const handoff = node("prompts.source", "2", "A 本轮分析材料", 1100, 450,
     { presentation: { role: "user", placement: "after", depth: null, order: 0, enabled: true } });
   edge(a.execute, "result", handoff, "input"); edge(handoff, "output", b.assembly, "materials", 1);
   control(b.execute, a.merge); control(a.merge, b.merge);

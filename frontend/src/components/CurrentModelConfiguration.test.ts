@@ -15,18 +15,20 @@ import type { GraphDocument, GraphNode, GraphNodeType } from "../domain/workflow
 
 function fixture(provider: CurrentProvider | null = newProvider()) {
   const fallback = provider ?? newProvider(), workflowId = crypto.randomUUID();
-  const node: GraphNode = { node_binding_id: crypto.randomUUID(), component_id: "models.source", component_version: "1",
+  const node: GraphNode = { node_binding_id: crypto.randomUUID(), component_id: "models.source", component_version: "2",
     title: "Model source", position: { x: 0, y: 0 }, config: {
-      reference: providerIdentity(fallback), parameters: { model: "chosen-model", thinking: "disabled", stream: false } } };
+      reference: providerIdentity(fallback), parameters: { model: "chosen-model", thinking: "disabled", stream: false, max_tokens: 1024 },
+      capacity: { context_window_tokens: 128000, output_reserve_tokens: 1024,
+        summary_max_tokens: 128, max_cold_input_tokens: 128000 } } };
   const document: GraphDocument = { schema_version: 2, workflow_definition_id: workflowId, revision: 1, name: "config",
     nodes: [node], edges: [], object_bindings: [], execution_roots: [node.node_binding_id], control_edges: [],
     package_lock: [{ package_id: "workflow.content", version: "1.0.0" }, { package_id: "workflow.models", version: "1.0.0" }] };
-  const definition: GraphNodeType = { component_id: "models.source", component_version: "1", display_name: "Model source",
+  const definition: GraphNodeType = { component_id: "models.source", component_version: "2", display_name: "Model source",
     category: "Models", default_config: node.config, inputs: [],
     outputs: [{ port_id: "output", data_type: "MODEL_BINDING", required: true, multiple: false }],
     executable: true, is_output: false, input_storage: "references", capabilities: ["models:resolve", "resources:read"],
-    config_schema: { type: "object", required: ["reference", "parameters"], additionalProperties: false,
-      properties: { reference: { type: "object" }, parameters: { type: "object" } } } };
+    config_schema: { type: "object", required: ["reference", "parameters", "capacity"], additionalProperties: false,
+      properties: { reference: { type: "object" }, parameters: { type: "object" }, capacity: { type: "object" } } } };
   const resources = createProviderResources({ list: async () => [], save: async () => ({}), readReceipt: vi.fn(),
     readPending: () => null, writePending: () => {} });
   resources.records.value = provider ? [provider] : [];
@@ -64,8 +66,7 @@ describe("current model package UI", () => {
   it("loads exact models declarations and unmounts them when the package or declaration changes", async () => {
     const f = fixture();
     expect(f.host.extensions.value.map(row => row.declaration.extension_id))
-      .toEqual(["workflow.models.workbench-panel", "workflow.models.node-fields", "workflow.models.node-fields-v2",
-        "workflow.models.node-fields-v3", "workflow.models.node-fields-v4"]);
+      .toEqual(["workflow.models.workbench-panel", "workflow.models.node-fields-v2", "workflow.models.node-fields-v4"]);
     const html = await renderToString(createSSRApp(CurrentProviderPanel).provide(modelResourceControllerKey, f.resources));
     expect(html).toContain("DeepSeek"); expect(html).toContain("当前资源");
     const mismatch = modelFrontendExtensions.map(row => ({ ...row, entrypoint: row.entrypoint + ".forged" }));
@@ -120,7 +121,7 @@ describe("current model package UI", () => {
     expect(html).toContain('value="1024"'); expect(html).toContain('value="128"'); expect(html).toContain('value="0"');
     expect(f.sdk.configureNode).not.toHaveBeenCalled();
   });
-  it.each(["3", "4"])("renders Gemini v%s thinking controls and preserves explicit settings", async version => {
+  it.each(["4"])("renders Gemini v%s thinking controls and preserves explicit settings", async version => {
     const provider = newProvider();
     provider.value = { name: "Gemini", protocol: "gemini", base_url: "https://generativelanguage.googleapis.com/v1beta",
       credential_ref: "env:GEMINI_API_KEY", enabled: true };

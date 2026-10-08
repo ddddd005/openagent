@@ -8,7 +8,5 @@ export const promptFrontendPackage: WorkbenchFrontendPackageModule = {
     { declaration: promptFrontendExtensions[0]!, implementation: CurrentPromptPanel },
     { declaration: promptFrontendExtensions[1]!, implementation: PromptReferenceFields,
       configurationFields: ["reference"] },
-    { declaration: promptFrontendExtensions[2]!, implementation: PromptReferenceFields,
-      configurationFields: ["reference"] },
   ],
 };

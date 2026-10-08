@@ -11,8 +11,7 @@ import { promptFrontendExtensions } from "../plugins/promptFrontendManifest";
 const props = defineProps<{ node: GraphNode; document: GraphDocument; disabled?: boolean }>();
 const sdk = useWorkflowFrontendSdk(), resources = usePromptResources();
 const records = resources.records, loading = resources.loading, resourceError = resources.error;
-const supportedRecords = computed(() => records.value.filter(record =>
-  record.data_schema_version === (props.node.component_version === "2" ? 2 : 1)));
+const supportedRecords = computed(() => records.value.filter(record => record.data_schema_version === 2));
 const selected = ref(""), status = ref(""), basis = ref<WorkflowNodeConfigurationRequest | null>(null);
 const identityKey = (identity: PromptIdentity) => JSON.stringify([
   identity.envelope_version, identity.scope, identity.type_id, identity.resource_id,
@@ -27,7 +26,7 @@ const diagnosis = computed(() => {
   const record = records.value.find(row => isCurrentPromptResource(row)
     && samePromptIdentity(promptIdentity(row), reference.value!));
   if (!record) return "所选提示词资源缺失或尚未读取";
-  if (record.data_schema_version !== (props.node.component_version === "2" ? 2 : 1)) return "提示词资源版本与节点不匹配";
+  if (record.data_schema_version !== 2) return "提示词资源版本与节点不匹配";
   if (!record.value.enabled) return "所选提示词资源已停用";
   return `当前资源 · ${record.scope} · s${record.update_sequence}`;
 });
@@ -39,7 +38,7 @@ watch(() => [sdk.workflowId.value, sdk.lifecycle.value, props.node.node_binding_
     workflowId: sdk.workflowId.value, nodeId: props.node.node_binding_id,
     componentId: props.node.component_id, componentVersion: props.node.component_version,
     expectedConfig: graphClone(props.node.config), patch: {},
-    extensionId: promptFrontendExtensions[props.node.component_version === "2" ? 2 : 1]!.extension_id,
+    extensionId: promptFrontendExtensions[1]!.extension_id,
     lifecycle: sdk.lifecycle.value,
   };
 }, { immediate: true, deep: true });

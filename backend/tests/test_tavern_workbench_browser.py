@@ -13,7 +13,7 @@ import pytest
 
 from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_service import GraphWorkflowService
-from test_agent_integration import run
+from workflow_test_support import run
 from test_context_native_integration import NativeTransport, native_graph, versioned_node
 from test_graph_service import create
 from test_models_service_integration import ModelDatabaseFixture

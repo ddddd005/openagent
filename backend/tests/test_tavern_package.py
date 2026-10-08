@@ -324,7 +324,8 @@ def test_graph_compile_accepts_explicit_read_only_variable_binding(registry):
     ("workflow.effective-context", (NODE_ID,), "session_object_type_mismatch"),
 ])
 def test_graph_compile_rejects_unauthorized_or_wrong_variable_binding(registry, type_id, readers, reason):
-    binding = ObjectBinding(KEY, type_id, 1, "shared", readers=readers).to_dict()
+    binding = ObjectBinding(KEY, type_id, 4 if type_id == "workflow.effective-context" else 1,
+                            "shared", readers=readers).to_dict()
     with pytest.raises(ContractValidationError) as caught:
         compile_fixture(registry, binding=binding)
     assert caught.value.reason_code == reason

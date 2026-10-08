@@ -135,7 +135,7 @@ class GraphPlatform:
 
     def adopt_context_view(self, sid, *, node_id, view_output_id, expected_revision, idempotency_key):
         """Retry only a proven accepted view after explicitly settling a failed run."""
-        from .context_package import prepare_context_adoption, validate_context_adoption_proof
+        from .context_v4 import prepare_native_context_adoption, prove_native_context_view
         from .host_sdk import ObjectBinding
         request = {"session": sid, "node_id": node_id, "view_output_id": view_output_id,
                    "expected_revision": expected_revision}
@@ -145,12 +145,8 @@ class GraphPlatform:
             document = self._document(repo, session["workflow_definition_id"], session["definition_revision"])
             writer = next((node for node in document["nodes"] if node["node_binding_id"] == node_id), None)
             require(writer is not None and (writer["component_id"], writer["component_version"])
-                    in (("context.save", "1"), ("context.merge", "1"), ("context.merge", "2"),
-                        ("context.merge", "4")), "context_adoption_writer_denied",
+                    == ("context.merge", "4"), "context_adoption_writer_denied",
                     "Adoption requires this workflow's declared context writer", 403)
-            bound = writer["component_id"] == "context.merge"
-            summary_aware = bound and writer["component_version"] == "2"
-            native = bound and writer["component_version"] == "4"
             key = writer["config"]["object_key"]
             objects = self._objects(repo)
             current = objects.read(sid, key, node_id=node_id)
@@ -164,7 +160,7 @@ class GraphPlatform:
             original = self._document_for_runtime_output(repo, output)
             source = next(node for node in original["nodes"]
                           if node["node_binding_id"] == output["node_binding_id"])
-            require(source["component_version"] == ("4" if native else "2" if summary_aware else "1"), "context_adoption_source_invalid",
+            require(source["component_version"] == "4", "context_adoption_source_invalid",
                     "View producer implementation version is unsupported")
             view_ref = {"scope": "artifact", "output_id": view_output_id}
             allowed = self._artifact_closure(repo, [view_ref])
@@ -174,44 +170,20 @@ class GraphPlatform:
                         "context_reference_denied", "Adoption reference escapes its accepted closure", 403)
                 return repo.get("workflow_output", output_id=reference["output_id"])["payload"]
 
-            prepare = prepare_context_adoption
-            if bound:
-                from .context_v2 import (
-                    prepare_bound_context_adoption, validate_bound_context_artifacts,
-                )
-                require(source["component_id"] == "context.merge"
-                        and output["node_binding_id"] == node_id
-                        and output["port_id"] == "output", "context_adoption_source_invalid",
-                        "Bound adoption requires the same merge node's accepted context candidate")
-                if native:
-                    from .context_v4 import prepare_native_context_adoption, prove_native_context_view
+            require(source["component_id"] == "context.merge"
+                    and output["node_binding_id"] == node_id
+                    and output["port_id"] == "output", "context_adoption_source_invalid",
+                    "Adoption requires the same merge node's accepted context candidate")
 
-                    def resolve_detail(reference):
-                        resolve(reference)
-                        return objects._resolve_write_artifact(sid, reference)
+            def resolve_detail(reference):
+                resolve(reference)
+                return objects._resolve_write_artifact(sid, reference)
 
-                    view = prove_native_context_view(view_ref, resolve_detail)
-                    prepare = prepare_native_context_adoption
-                elif summary_aware:
-                    from .context_v3 import prepare_effective_view_adoption, prove_effective_view
-
-                    def resolve_detail(reference):
-                        resolve(reference)  # Restrict metadata to the same authorized artifact closure.
-                        return objects._resolve_write_artifact(sid, reference)
-
-                    view = prove_effective_view(view_ref, resolve_detail)
-                    prepare = prepare_effective_view_adoption
-                else:
-                    view = validate_bound_context_artifacts(
-                        {"view_ref": view_ref, "view": output["payload"]}, resolve)
-                    prepare = prepare_bound_context_adoption
-                require(view["owner"]["agent_node_id"] == writer["config"]["agent_node_id"]
-                        and view["owner"]["object_key"] == key, "context_agent_binding_mismatch",
-                        "Accepted candidate differs from the current writer binding")
-            else:
-                validate_context_adoption_proof(view_ref, output["payload"], resolve,
-                                               source["component_id"], producer["config"])
-            prepared = prepare(
+            view = prove_native_context_view(view_ref, resolve_detail)
+            require(view["owner"]["agent_node_id"] == writer["config"]["agent_node_id"]
+                    and view["owner"]["object_key"] == key, "context_agent_binding_mismatch",
+                    "Accepted candidate differs from the current writer binding")
+            prepared = prepare_native_context_adoption(
                 workflow_session_id=sid, object_key=key, object_record=current,
                 view_ref=view_ref, view=output["payload"])
             writes = [] if prepared["write_intent"] is None else [prepared["write_intent"]]

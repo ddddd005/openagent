@@ -82,11 +82,11 @@ export function samePromptIdentity(left: PromptIdentity, right: PromptIdentity) 
   return left.envelope_version === right.envelope_version && left.scope === right.scope
     && left.type_id === right.type_id && left.resource_id === right.resource_id;
 }
-export function newPromptResource(version: 1 | 2 = 1): CurrentPromptResource {
+export function newPromptResource(version: 1 | 2 = 2): CurrentPromptResource {
   return { envelope_version: 1, scope: "workspace", type_id: promptResourceType, resource_id: crypto.randomUUID(),
     data_schema_version: version, update_sequence: 1, value: { enabled: true, members: [] } };
 }
-export function newPromptMember(text = "", version: 1 | 2 = 1): PromptMember {
+export function newPromptMember(text = "", version: 1 | 2 = 2): PromptMember {
   return { id: crypto.randomUUID(), text,
     presentation: { role: "system", placement: "before", depth: null, order: 0, enabled: true }, metadata: {},
     ...(version === 2 ? { lifecycle: "per_request", compaction: "never" } as const : {}) };

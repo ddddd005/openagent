@@ -8,16 +8,17 @@ const packageLock = ["content", "tools", "prompts", "models", "agents", "context
 const base = { component_version: "1", display_name: "Node", category: "Test", config_schema: {},
   default_config: {}, inputs: [], outputs: [], is_output: false, executable: true };
 const catalog: GraphNodeType[] = [...graphClone(frontendCatalog),
-  { ...base, component_id: "models.source", default_config: {
+  { ...base, component_id: "models.source", component_version: "2", default_config: {
     reference: { envelope_version: 1, scope: "workspace", type_id: "workflow.chat-provider", resource_id: "default-provider" },
     parameters: { model: "default-model", thinking: "disabled", stream: false } } },
-  { ...base, component_id: "prompts.item", default_config: { id: "00000000-0000-4000-8000-000000000001",
-    text: "", presentation: { role: "system", placement: "before", depth: null, order: 0, enabled: true }, metadata: {} } },
-  { ...base, component_id: "tools.text-to-prompt" },
-  { ...base, component_id: "context.output", component_version: "2" },
-  { ...base, component_id: "context.assembly", component_version: "3", default_config: { character_budget: 100_000 } },
-  { ...base, component_id: "context.merge", component_version: "2" },
-  { ...base, component_id: "agents.execute", component_version: "3" },
+  { ...base, component_id: "prompts.item", component_version: "2", default_config: { id: "00000000-0000-4000-8000-000000000001",
+    text: "", presentation: { role: "system", placement: "before", depth: null, order: 0, enabled: true }, metadata: {},
+    lifecycle: "per_request", compaction: "never" } },
+  { ...base, component_id: "prompts.source", component_version: "2" },
+  { ...base, component_id: "context.output", component_version: "4" },
+  { ...base, component_id: "context.assembly", component_version: "4" },
+  { ...base, component_id: "context.merge", component_version: "4" },
+  { ...base, component_id: "agents.execute", component_version: "4" },
 ];
 const model = { reference: { envelope_version: 1, scope: "workspace", type_id: "workflow.chat-provider", resource_id: "selected-provider" },
   parameters: { model: "selected-model", thinking: "disabled", stream: false } };
@@ -27,7 +28,7 @@ describe("serial Agent example", () => {
     const before = graphClone(catalog), doc = createSerialAgentDemo(catalog, packageLock, model);
     expect(isGraphDocument(doc)).toBe(true); expect(catalog).toEqual(before);
     const input = doc.nodes.find(row => row.component_id === "tools.current-input")!;
-    const handoff = doc.nodes.find(row => row.component_id === "tools.text-to-prompt")!;
+    const handoff = doc.nodes.find(row => row.component_id === "prompts.source")!;
     const a = doc.nodes.find(row => row.title === "Agent A")!, b = doc.nodes.find(row => row.title === "B 装配")!;
     expect(doc.edges.filter(row => row.source_node_id === input.node_binding_id && row.target_port_id === "current_input")).toHaveLength(2);
     expect(doc.edges).toContainEqual(expect.objectContaining({ source_node_id: a.node_binding_id,
@@ -50,7 +51,7 @@ describe("serial Agent example", () => {
       expect(read.config).toEqual(merge.config);
       expect(read.config.agent_node_id).toBe(execute.node_binding_id);
       expect(doc.object_bindings!.find(row => row.object_key === read.config.object_key)).toMatchObject({
-        type_id: "workflow.effective-context", schema_version: 3,
+        type_id: "workflow.effective-context", schema_version: 4,
         readers: [read.node_binding_id, merge.node_binding_id], writers: [merge.node_binding_id] });
       expect(doc.edges.filter(row => row.source_node_id === read.node_binding_id).map(row => [row.source_port_id, row.target_node_id]))
         .toEqual([["output", assembly.node_binding_id], ["output", merge.node_binding_id]]);
@@ -87,7 +88,7 @@ describe("serial Agent example", () => {
   });
   it("rejects missing exact versions and package locks instead of falling back", () => {
     expect(() => createSerialAgentDemo(catalog.filter(row => row.component_id !== "context.merge"), packageLock, model))
-      .toThrow("context.merge@2");
+      .toThrow("context.merge@4");
     expect(() => createSerialAgentDemo(catalog, packageLock.filter(row => row.package_id !== "workflow.frontend-business"), model))
       .toThrow("workflow.frontend-business");
   });
@@ -96,7 +97,9 @@ describe("serial Agent example", () => {
 describe("native compacting serial example", () => {
   const capacity = { context_window_tokens: 0, output_reserve_tokens: 1024, summary_max_tokens: 128,
     max_cold_input_tokens: 0 };
-  const nativeCatalog: GraphNodeType[] = [...catalog,
+  const nativeCatalog: GraphNodeType[] = [...catalog.filter(row => !row.component_id.startsWith("models.")
+    && !row.component_id.startsWith("prompts.") && !row.component_id.startsWith("context.")
+    && row.component_id !== "agents.execute"),
     { ...base, component_id: "models.source", component_version: "2", default_config: {
       reference: model.reference, parameters: { ...model.parameters, max_tokens: 1024 }, capacity } },
     { ...base, component_id: "prompts.item", component_version: "2", default_config: {
@@ -141,6 +144,6 @@ describe("native compacting serial example", () => {
     configured.capacity.summary_max_tokens = 42;
     expect((doc.nodes.find(row => row.component_id === "models.source")!.config.capacity as typeof capacity)
       .summary_max_tokens).toBe(128);
-    expect(() => createCompactingSerialAgentDemo(catalog, packageLock)).toThrow("models.source@2");
+    expect(() => createCompactingSerialAgentDemo(catalog, packageLock)).toThrow("agents.compaction-policy@1");
   });
 });

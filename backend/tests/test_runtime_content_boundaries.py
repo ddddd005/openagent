@@ -18,6 +18,7 @@ from phase1_agent.graph_records import is_graph_record, validate_graph_bundle
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import DataTypeDefinition, ObjectBinding, ResourceIdentity
 from phase1_agent.prompt_package import PROMPT_RESOURCE_TYPE, assemble_prompt, create_prompt_package
+from phase1_agent.prompt_lifecycle import lifecycle_prompt_content
 from phase1_agent.storage import SqliteStore
 from phase1_agent.tool_package import create_tool_package
 
@@ -33,8 +34,14 @@ def uid(number):
 
 
 def node(registry, component, number, **config):
-    entry = registry.get(component, "1")
-    return {"node_binding_id": uid(number), "component_id": component, "component_version": "1",
+    version = "2" if component.startswith("prompts.") else "1"
+    entry = registry.get(component, version)
+    if component == "prompts.source":
+        config["value"] = lifecycle_prompt_content([
+            {**item, "source": {**item["source"], "origin_item_id": item["item_instance_id"]},
+             "origin_item_ids": [item["item_instance_id"]], "lifecycle": "per_request", "compaction": "never"}
+            for item in config["value"]["items"]])
+    return {"node_binding_id": uid(number), "component_id": component, "component_version": version,
             "title": component, "position": {"x": 0, "y": 0},
             "config": {**deepcopy(entry.definition.default_config), **config}}
 
@@ -139,7 +146,7 @@ def materials(number, text):
 
 
 def prompt_resource(service, reference):
-    record = {**reference, "data_schema_version": 1, "update_sequence": 1,
+    record = {**reference, "data_schema_version": 2, "update_sequence": 1,
               "value": {"enabled": True, "members": []}}
     with closing(SqliteStore(service.database)) as store:
         GlobalResourceStore(store, service.registry.data_types).write(
@@ -165,8 +172,10 @@ def test_multi_identity_source_cannot_expand_downstream_authority_or_commit_earl
     source = node(registry, "boundary.multi-resource", 2)
     resolve = node(registry, "prompts.global-resolve", 3)
     output = node(registry, "tools.output", 4, mode="prompt")
-    doc = document([writer, source, resolve, output], [
-        edge(100, source, resolve, source_port="a"), edge(101, resolve, output),
+    assembly = node(registry, "prompts.assembly", 5)
+    doc = document([writer, source, resolve, assembly, output], [
+        edge(100, source, resolve, source_port="a"),
+        edge(101, resolve, assembly), edge(102, assembly, output),
     ], bindings=[counter_binding(writer)], roots=[writer["node_binding_id"]])
     with closing(GraphWorkflowService(tmp_path / "resource.sqlite", registry=registry)) as service:
         for reference in references:
@@ -246,7 +255,7 @@ def test_successful_reference_only_records_cannot_lose_or_forge_binding_evidence
     records = deepcopy(original)
     runs = {row["node_binding_id"]: row for row in records["node_run"]}
     read, output = runs[read_id], runs[output_id]
-    assert output["schema_version"] == 4 and output["input_storage"] == "references"
+    assert output["schema_version"] == 5 and output["input_storage"] == "references"
     assert output["input_values"] == {}
     if tamper == "empty-inputs":
         output["input_refs"] = {}

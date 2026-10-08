@@ -18,9 +18,11 @@ def uid(number):
 
 def node(registry, type_name, number, **config):
     component = type_name if "." in type_name else "tools." + type_name
-    entry = registry.get(component, "1")
+    version = {"models.source": "2", "models.chat": "3", "agents.execute": "4"}.get(
+        component, "4" if component.startswith("context.") else "2" if component.startswith("prompts.") else "1")
+    entry = registry.get(component, version)
     return {
-        "node_binding_id": uid(number), "component_id": component, "component_version": "1",
+        "node_binding_id": uid(number), "component_id": component, "component_version": version,
         "title": type_name, "position": {"x": number * 100, "y": 0},
         "config": {**deepcopy(entry.definition.default_config), **config} if entry else config,
     }

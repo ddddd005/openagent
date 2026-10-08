@@ -24,6 +24,41 @@ function mixed(value: SavedWorkbench) {
     graph: { schema_version: 1, entries }, runtime: {}, registrations: [] };
 }
 describe("current-only workbench persistence", () => {
+  it.each([
+    ["models.source", "1"], ["models.source", "3"], ["models.chat", "1"], ["models.chat", "2"],
+    ["agents.execute", "3"], ["agents.execute", "7"], ["agents.delta", "2"],
+    ["context.output", "2"], ["context.assembly", "3"], ["context.merge", "2"], ["context.window", "3"],
+    ["prompts.item", "1"], ["prompts.assembly", "1"], ["prompts.global-reference", "1"],
+  ])("removes an entire retired %s@%s graph without rebinding its nodes", (component_id, component_version) => {
+    const { value, id } = fixture(), retired = newGraph("Retired test graph");
+    retired.nodes.push({ node_binding_id: crypto.randomUUID(), component_id, component_version,
+      title: "Old test", position: { x: 0, y: 0 }, config: {} });
+    value.catalog.push({ id: retired.workflow_definition_id, title: retired.name, description: "", nodeCount: 1 });
+    value.graph.entries[retired.workflow_definition_id] = { document: retired, saved_revision: 1,
+      session_id: crypto.randomUUID(), pending: null };
+    value.activeWorkflowId = value.selectedWorkflowId = retired.workflow_definition_id;
+    const storage = memory(JSON.stringify(value)), raw = storage.getItem();
+    const loaded = readWorkbench(storage);
+    expect(loaded.error).toBeNull(); expect(loaded.rewrite).toBe(true);
+    expect(loaded.value?.catalog.map(row => row.id)).toEqual([id]);
+    expect(loaded.value?.activeWorkflowId).toBe(id);
+    expect(loaded.value?.graph.entries).toEqual({ [id]: value.graph.entries[id] });
+    expect(storage.getItem()).toBe(raw);
+    expect(isSavedWorkbench(loaded.value)).toBe(true);
+    writeWorkbench(storage, loaded.value!, raw);
+    expect(readWorkbench(storage).rewrite).toBe(false);
+  });
+  it.each([
+    ["models.source", "2"], ["models.source", "4"], ["models.chat", "3"], ["models.chat", "4"],
+    ["agents.execute", "4"], ["agents.execute", "8"], ["context.assembly", "4"], ["prompts.assembly", "2"],
+  ])("preserves the current %s@%s route unchanged", (component_id, component_version) => {
+    const { value, document } = fixture();
+    document.nodes.push({ node_binding_id: crypto.randomUUID(), component_id, component_version,
+      title: "Current node", position: { x: 0, y: 0 }, config: {} });
+    value.catalog[0].nodeCount = 1;
+    const raw = JSON.stringify(value);
+    expect(readWorkbench(memory(raw))).toEqual({ value, raw, error: null, rewrite: false });
+  });
   it("roundtrips a current graph without requiring acceptance evidence or projecting fixed stages", () => {
     const { value } = fixture(), storage = memory(null);
     const raw = writeWorkbench(storage, value, null);

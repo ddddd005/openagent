@@ -1,4 +1,4 @@
-"""One-time v14 removal of explicitly retired fixed/compat test data."""
+"""Upgrade-only removal of explicitly retired routes and affiliated test data."""
 
 from .contract_errors import ContractValidationError
 from .contract_json import canonical_bytes, loads_strict
@@ -27,6 +27,22 @@ _COMPAT_NODES = {
         ("model-provider", 2), ("context", 1), ("prompt-assembly", 1),
     )
 }
+_RETIRED_NODES = _COMPAT_NODES | {
+    (component, str(version))
+    for component, versions in (
+        ("models.source", (1, 3)), ("models.chat", (1, 2)),
+        ("agents.execute", (1, 2, 3, 5, 6, 7)), ("agents.delta", (1, 2)),
+        ("context.output", (1, 2)), ("context.assembly", (1, 2, 3)), ("context.merge", (1, 2)),
+        ("context.window", (1, 2, 3)),
+        *((f"context.{name}", (1,)) for name in (
+            "read", "save", "advance", "project-text", "plan", "summary-prompt", "summary", "replace")),
+        *((f"prompts.{name}", (1,)) for name in (
+            "item", "group", "source", "summary", "assembly", "global-reference",
+            "global-resolve", "tool", "tool-summary")),
+    )
+    for version in versions
+}
+_RETIRED_PACKAGES = {"workflow.compat", "workflow.context-compression"}
 _RETIRED_TABLES = (
     "execution_facts", "prompt_heads", "prompt_revisions", "prompt_mutations",
     "variable_bindings", "variable_heads", "variable_states", "variable_registries",
@@ -56,10 +72,10 @@ def _compat(document):
     if type(document) is not dict:
         return False
     lock, nodes = document.get("package_lock"), document.get("nodes")
-    return (type(lock) is list and any(type(item) is dict and item.get("package_id") == "workflow.compat"
+    return (type(lock) is list and any(type(item) is dict and item.get("package_id") in _RETIRED_PACKAGES
                                      for item in lock)
             or type(nodes) is list and any(type(node) is dict
-                and (node.get("component_id"), node.get("component_version")) in _COMPAT_NODES for node in nodes))
+                and (node.get("component_id"), node.get("component_version")) in _RETIRED_NODES for node in nodes))
 
 
 def _references_removed(value, identities):
@@ -71,6 +87,16 @@ def _references_removed(value, identities):
     if type(value) is list:
         return any(_references_removed(item, identities) for item in value)
     return False
+
+
+def _references_retired_resources(value, identities):
+    if type(value) is dict:
+        coordinate = tuple(value.get(key) for key in ("scope", "type_id", "resource_id"))
+        return (set(value) == {"envelope_version", "scope", "type_id", "resource_id"}
+                and type(value["envelope_version"]) is int and value["envelope_version"] == 1
+                and all(type(part) is str for part in coordinate) and coordinate in identities
+                or any(_references_retired_resources(item, identities) for item in value.values()))
+    return type(value) is list and any(_references_retired_resources(item, identities) for item in value)
 
 
 def _retired_document(value):
@@ -96,10 +122,19 @@ def remove_retired_test_data(connection):
     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     rows = [(row["record_type"], row["record_id"], _parse(row["payload"]))
             for row in connection.execute("SELECT record_type,record_id,payload FROM records")]
+    retired_resources = set()
+    for row in connection.execute(
+            "SELECT scope,type_id,resource_id,payload FROM global_resource_current "
+            "WHERE type_id='workflow.prompt-resource' AND deleted=0"):
+        resource = _parse(row["payload"])
+        if type(resource) is dict and type(resource.get("data_schema_version")) is int \
+                and resource["data_schema_version"] == 1:
+            retired_resources.add((row["scope"], row["type_id"], row["resource_id"]))
     retired_revisions = {
         (value.get("workflow_definition_id"), value.get("revision"))
         for kind, _, value in rows
-        if kind == "workflow_definition_revision" and type(value) is dict and _compat(value.get("document"))
+        if kind == "workflow_definition_revision" and type(value) is dict
+        and (_compat(value.get("document")) or _references_retired_resources(value.get("document"), retired_resources))
     }
     sessions = {
         _session_id(value) for kind, _, value in rows
@@ -124,7 +159,7 @@ def remove_retired_test_data(connection):
             or kind == "node_binding"
             and (value.get("workflow_definition_id"), value.get("workflow_definition_revision")) in retired_revisions
             or kind == "node_definition"
-            and (value.get("component_id"), value.get("component_version")) in _COMPAT_NODES
+            and (value.get("component_id"), value.get("component_version")) in _RETIRED_NODES
         )
         if retired:
             discarded.append((kind, identity))
@@ -219,7 +254,8 @@ def remove_retired_test_data(connection):
                             and value["reference"].get("type_id") == "workflow.global-content")
             old_operation = (table == "idempotency" and (row["operation"].startswith("workflow.")
                              or row["operation"] in {"pre_dispatch", "archive", "graph.legacy.migrate"}))
-            if old_operation or old_resource or _references_removed(value, removed) or _retired_document(value):
+            if (old_operation or old_resource or _references_removed(value, removed) or _retired_document(value)
+                    or _references_retired_resources(value, retired_resources)):
                 clause = " AND ".join(f"{column}=?" for column in key_columns)
                 connection.execute(f"DELETE FROM {table} WHERE {clause}", tuple(row[column] for column in key_columns))
                 deleted_receipts.add((table, row["operation"] if table == "idempotency" else None,
@@ -237,6 +273,11 @@ def remove_retired_test_data(connection):
                     (row["key"],))
     connection.execute("DELETE FROM global_resource_current WHERE type_id='workflow.global-content'")
     connection.execute("DELETE FROM registered_type_contracts WHERE scope='global' AND type_id='workflow.global-content'")
+    connection.executemany(
+        "DELETE FROM global_resource_current WHERE scope=? AND type_id=? AND resource_id=?", retired_resources)
+    connection.execute(
+        "DELETE FROM registered_type_contracts WHERE scope='global' AND type_id='workflow.prompt-resource' "
+        "AND schema_version=1")
     row = connection.execute(
         "SELECT payload FROM graph_project_packages WHERE configuration_id='current-execution'").fetchone()
     if row is None:
@@ -245,13 +286,15 @@ def remove_retired_test_data(connection):
         selected = _parse(historical["payload"]) if historical else None
         if (type(selected) is dict
                 and all(type(key) is str and type(version) is str for key, version in selected.items())):
-            selected.pop("workflow.compat", None)
+            for package in _RETIRED_PACKAGES:
+                selected.pop(package, None)
             connection.execute("INSERT INTO graph_project_packages VALUES('current-execution',?)",
                                (canonical_bytes(selected).decode("utf-8"),))
     else:
         selected = _parse(row["payload"])
-        if type(selected) is dict and "workflow.compat" in selected:
-            selected.pop("workflow.compat")
+        if type(selected) is dict and set(selected) & _RETIRED_PACKAGES:
+            for package in _RETIRED_PACKAGES:
+                selected.pop(package, None)
             connection.execute("UPDATE graph_project_packages SET payload=? WHERE configuration_id='current-execution'",
                                (canonical_bytes(selected).decode("utf-8"),))
     connection.execute("DELETE FROM graph_project_packages WHERE configuration_id='project'")

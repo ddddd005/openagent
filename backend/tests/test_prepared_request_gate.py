@@ -54,8 +54,9 @@ def ordinary_snapshot():
 def public_snapshot():
     from phase1_agent.agent_executor import make_public_agent_snapshot
     from phase1_agent.content_contracts import text_content
-    from phase1_agent.context_contract import EFFECTIVE_CONTEXT_TYPE, read_context_view
-    from phase1_agent.context_prompt import assemble_context_prompt
+    from phase1_agent.context_contract import EFFECTIVE_CONTEXT_TYPE
+    from phase1_agent.context_v4 import read_native_context
+    from phase1_agent.context_prompt_v6 import assemble_native_context_prompt
     from phase1_agent.host_sdk import ObjectBinding
 
     registered = tools()
@@ -66,19 +67,19 @@ def public_snapshot():
     reference = lambda number: {"scope": "artifact", "output_id": uid(number)}
     record = {
         "revision_id": uid(50), "revision": 1, "type_id": EFFECTIVE_CONTEXT_TYPE,
-        "schema_version": 1, "deleted": False,
+        "schema_version": 4, "deleted": False,
         "binding": ObjectBinding(
-            "context", EFFECTIVE_CONTEXT_TYPE, 1, "shared",
+            "context", EFFECTIVE_CONTEXT_TYPE, 4, "shared",
             readers=(uid(3),), writers=(uid(3),),
         ).to_dict(),
         "value": {"view_ref": None, "accepted_delta_ids": []},
     }
-    prompt = assemble_context_prompt(
-        [], read_context_view(record, uid(1), "context"), text_content("question"),
+    prompt = assemble_native_context_prompt(
+        [], read_native_context(record, uid(1), "context", uid(3)), text_content("question"),
         context_ref=reference(60), current_input_ref=reference(61),
     )
     binding = {
-        "schema_version": 1, "kind": "workflow.model-binding", "binding_id": uid(70),
+        "schema_version": 2, "kind": "workflow.model-binding", "binding_id": uid(70),
         "reference": {
             "envelope_version": 1, "scope": "workspace",
             "type_id": "workflow.chat-provider", "resource_id": uid(71),
@@ -90,6 +91,8 @@ def public_snapshot():
         "capabilities": {
             "protocol": "chat", "tools": True, "stream": False, "thinking": "disabled",
         },
+        "capacity": {"context_window_tokens": 100000, "output_reserve_tokens": 128,
+                     "summary_max_tokens": 128, "max_cold_input_tokens": 100000},
     }
     return make_public_agent_snapshot(context, {}, prompt, binding, registered), registered
 

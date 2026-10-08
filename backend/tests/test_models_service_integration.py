@@ -122,7 +122,7 @@ def test_default_loaded_model_graph_persists_secret_free_facts_and_releases_fram
     fixture = ModelDatabaseFixture()
     path = tmp_path / "models.sqlite"
     with closing(GraphWorkflowService(path, public_model_factory=fixture.factory)) as service:
-        assert service.registry.get("models.chat", "1") is not None
+        assert service.registry.get("models.chat", "3") is not None
         assert service.registry.data_types.get(CHAT_PROVIDER_TYPE, 1, scope="global") is not None
         fixture.write(service, 1)
         final = fixture.execute(service, fixture.create(service, fixture.document(service)))

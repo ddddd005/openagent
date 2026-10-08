@@ -17,7 +17,7 @@ from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import ResourceIdentity
 from phase1_agent.prompt_package import PROMPT_RESOURCE_TYPE
 
-from test_agent_integration import run as native_run
+from workflow_test_support import run as native_run
 from test_context_native_integration import NativeTransport, native_graph, node_output, rebind, versioned_node
 from test_graph_service import create, document, edge, node, run, uid
 from test_models_service_integration import ModelDatabaseFixture
@@ -124,7 +124,6 @@ def test_schema_two_save_read_cas_receipt_replay_and_reopen(tmp_path):
 
 @pytest.mark.parametrize("problem,reason", [
     ("missing", "global_resource_missing"), ("disabled", "global_content_disabled"),
-    ("schema-one", "graph_prompt_resource_type_mismatch"),
 ])
 def test_version_two_preflight_rejects_before_start_without_changing_session(tmp_path, problem, reason):
     value = record(member(9001, "Rule"))
@@ -133,10 +132,6 @@ def test_version_two_preflight_rejects_before_start_without_changing_session(tmp
         if problem != "missing":
             if problem == "disabled":
                 value["value"]["enabled"] = False
-            else:
-                value["data_schema_version"] = 1
-                for entry in value["value"]["members"]:
-                    del entry["lifecycle"], entry["compaction"]
             save(GraphApplication(service), value)
         initial = create(service, doc)
         with pytest.raises(ContractValidationError) as caught:

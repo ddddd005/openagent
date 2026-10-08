@@ -24,7 +24,7 @@ from phase1_agent.prompt_lifecycle import (
     validate_lifecycle_prompt_materials,
 )
 from phase1_agent.prompt_lifecycle_nodes import validate_lifecycle_prompt_resource
-from phase1_agent.prompt_package import create_prompt_package, validate_prompt_resource
+from phase1_agent.prompt_package import create_prompt_package
 
 
 def uid(number):
@@ -125,19 +125,17 @@ def test_transform_preserves_lifetime_and_complete_origins():
     assert transformed["items"][0]["compaction"] == "allowed"
 
 
-def test_new_producers_are_explicit_versions_and_keep_old_resource_semantics():
+def test_only_current_lifecycle_producers_are_registered():
     registry = loaded().registry
     assert registry.data_types.get(PROMPT_MATERIALS_TYPE, 1, scope="content")
     modern = registry.get("prompts.item", "2")
-    legacy = registry.get("prompts.item", "1")
+    assert registry.get("prompts.item", "1") is None
     assert modern.definition.outputs[0].data_type == PROMPT_MATERIALS_TYPE
-    assert legacy.definition.outputs[0].data_type == "PROMPT"
     config = deepcopy(modern.definition.default_config)
     output = modern.executor(config, {}, SimpleNamespace(node_binding_id=uid(5)))["output"]
     assert output["items"][0]["lifecycle"] == "per_request"
     assert output["items"][0]["compaction"] == "never"
     assert registry.validate_content(output, PROMPT_MATERIALS_TYPE, 1) == output
-    assert validate_prompt_resource({"enabled": True, "members": []}) == {"enabled": True, "members": []}
     assert validate_lifecycle_prompt_resource({"enabled": True, "members": []}) == {"enabled": True, "members": []}
 
 
@@ -146,8 +144,6 @@ def test_resource_two_requires_explicit_member_lifetime_and_never_elevates_syste
               "metadata": {}, "lifecycle": "context_once", "compaction": "never"}
     value = {"enabled": True, "members": [member]}
     assert validate_lifecycle_prompt_resource(value) == value
-    with pytest.raises(ContractValidationError):
-        validate_prompt_resource(value)
     with pytest.raises(ContractValidationError):
         validate_lifecycle_prompt_resource({
             "enabled": True, "members": [{key: val for key, val in member.items() if key != "lifecycle"}]})
@@ -166,9 +162,7 @@ def test_global_version_two_source_requires_resource_two_without_implicit_upgrad
         modern.resource_preflight_validator({"reference": reference}, [record])
     record["data_schema_version"] = 2
     modern.resource_preflight_validator({"reference": reference}, [record])
-    with pytest.raises(ContractValidationError):
-        registry.get("prompts.global-reference", "1").resource_preflight_validator(
-            {"reference": reference}, [record])
+    assert registry.get("prompts.global-reference", "1") is None
 
 
 def test_global_resource_edits_keep_once_identity_and_do_not_use_resource_sequence_as_identity():
@@ -337,8 +331,11 @@ def test_native_assembly_does_not_silently_default_invalid_artifact_reference_ar
 
 
 def test_graph_compiler_does_not_connect_old_material_port_to_new_material_consumer():
-    registry = loaded().registry
-    first = registry.get("prompts.item", "1").definition
+    registry = loaded().registry.detached()
+    from phase1_agent.graph_contracts import NodeDefinition, NodePort
+    first = NodeDefinition("test.raw-prompt", "1", "Raw prompt", "Test", {}, {},
+                           outputs=(NodePort("output", "PROMPT", data_schema_version=2),))
+    registry.register(first, lambda config, inputs, context: {"output": prompt_content([])})
     second = registry.get("prompts.summary", "2").definition
     nodes = [{
         "node_binding_id": uid(number), "component_id": definition.component_id,

@@ -14,8 +14,8 @@ from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_receipts import read_graph_application_receipt
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import WriteIntent
-from test_context_failure_audit import _candidate_id
-from test_context_integration import context_graph, synthetic_package
+from workflow_test_support import graph as context_graph, run as run_agent, AgentTransportFixture
+from test_models_service_integration import ModelDatabaseFixture
 from test_graph_resource_host import prompt_record
 from test_graph_service import create, document, edge, node, run, service, text_graph
 from test_graph_session_objects import object_graph, task_package
@@ -226,33 +226,24 @@ def test_current_resource_save_replace_and_delete_roundtrip(service):
 
 
 def test_context_adoption_roundtrip_and_malformed_object_receipts_stay_unresolved(tmp_path, monkeypatch):
-    calls = []
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-receipt-fixture")
+    transport = AgentTransportFixture()
     with closing(GraphWorkflowService(tmp_path / "adoption-roundtrip.sqlite",
-        capability_packages=[synthetic_package(calls)],
-        enabled_packages={"workflow.context-test.synthetic": "1.0.0"},
+        public_model_factory=transport.factory,
     )) as service:
-        original = service._host_call
-
-        def fail_save(context, capability, operation, payload):
-            if capability == "context:validate" and payload.get("operation") == "save":
-                raise OSError("injected save failure")
-            return original(context, capability, operation, payload)
-
-        monkeypatch.setattr(service, "_host_call", fail_save)
-        final = run(service, create(service, context_graph(service)))
-        assert final["status"] == "failed"
-        output = _candidate_id(service, final)
-        writer = next(entry["node_binding_id"] for entry in final["nodes"] if entry["label"] == "context.save")
-        monkeypatch.setattr(service, "_host_call", original)
+        ModelDatabaseFixture.write(service, 1)
+        final = run_agent(service, create(service, context_graph(service)), "Receipt test")
+        assert final["status"] == "succeeded"
+        output = final["objects"]["context"]["value"]["view_ref"]["output_id"]
+        writer = next(entry["node_binding_id"] for entry in final["nodes"] if entry["label"] == "context.merge")
         app = GraphApplication(service)
-        closed = roundtrip(app, "run.control", {
-            "session_id": final["workflow_session_id"], "action": "close",
-            "expected_revision": final["revision"], "idempotency_key": str(uuid4()),
-        })
+        closed = final
         parameters = {"session_id": closed["workflow_session_id"], "node_id": writer,
             "view_output_id": output, "expected_revision": closed["revision"], "idempotency_key": str(uuid4())}
         adopted = roundtrip(app, "context.adopt", parameters)
-        receipt = adopted["results"][0]
+        assert adopted["results"] == []
+        receipt = {"object_key": "context", **{key: final["objects"]["context"][key] for key in
+                   ("revision", "revision_id", "deleted")}}
         variants = [
             [{"arbitrary": "receipt"}], [{**receipt, "revision_id": "not-an-id"}],
             [{**receipt, "revision": True}], [{**receipt, "deleted": True}],
@@ -278,4 +269,4 @@ def test_context_adoption_roundtrip_and_malformed_object_receipts_stay_unresolve
             )
         again = {**parameters, "expected_revision": adopted["session"]["revision"], "idempotency_key": str(uuid4())}
         assert roundtrip(app, "context.adopt", again)["results"] == []
-        assert len(calls) == 1
+        assert len(transport.calls) == 1

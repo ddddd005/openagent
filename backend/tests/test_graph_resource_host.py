@@ -37,9 +37,10 @@ def independent_registry():
 def prompt_record(text="frozen prompt", *, scope="project:resources"):
     return {
         **ResourceIdentity(scope, PROMPT_RESOURCE_TYPE, uid(1)).to_dict(),
-        "data_schema_version": 1, "update_sequence": 1,
+        "data_schema_version": 2, "update_sequence": 1,
         "value": {"enabled": True, "members": [
-            {"id": uid(2), "text": text, "presentation": default_presentation(), "metadata": {}}]},
+            {"id": uid(2), "text": text, "presentation": default_presentation(), "metadata": {},
+             "lifecycle": "per_request", "compaction": "never"}]},
     }
 
 
@@ -48,9 +49,10 @@ def identity(record):
 
 
 def graph_node(registry, component, number, **config):
-    definition = registry.get(component, "1").definition
+    version = "2" if component.startswith("prompts.") else "1"
+    definition = registry.get(component, version).definition
     return {
-        "node_binding_id": uid(number), "component_id": component, "component_version": "1",
+        "node_binding_id": uid(number), "component_id": component, "component_version": version,
         "title": component, "position": {"x": number * 100, "y": 0},
         "config": {**deepcopy(definition.default_config), **config},
     }
@@ -59,9 +61,10 @@ def graph_node(registry, component, number, **config):
 def current_graph(registry, record):
     reference = graph_node(registry, "prompts.global-reference", 10, reference=identity(record))
     resolve = graph_node(registry, "prompts.global-resolve", 11)
+    assembly = graph_node(registry, "prompts.assembly", 13)
     output = graph_node(registry, "tools.output", 12, mode="prompt")
     output["public_outputs"] = ["output"]
-    nodes = [reference, resolve, output]
+    nodes = [reference, resolve, assembly, output]
     return {
         "schema_version": 2, "workflow_definition_id": uid(20), "revision": 1,
         "name": "Independent resource graph", "nodes": nodes, "object_bindings": [],
@@ -70,7 +73,7 @@ def current_graph(registry, record):
             {"edge_id": uid(30 + index), "source_node_id": nodes[index]["node_binding_id"],
              "source_port_id": "output", "target_node_id": nodes[index + 1]["node_binding_id"],
              "target_port_id": "input", "order": 0}
-            for index in range(2)],
+            for index in range(3)],
     }
 
 

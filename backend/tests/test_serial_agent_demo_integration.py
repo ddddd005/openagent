@@ -10,7 +10,7 @@ from phase1_agent.contracts import ModelResponse, ModelToolCall
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import ObjectBinding
 
-from test_agent_integration import run
+from workflow_test_support import run
 from test_graph_service import copy_current, create, document, edge, node
 from test_model_package import source_config
 from test_models_service_integration import ModelDatabaseFixture
@@ -48,8 +48,9 @@ def serial_graph(service):
     registry = service.registry
     entries, connections, controls, bindings = [], [], [], []
 
-    def make(component, version="1", **config):
+    def make(component, version=None, **config):
         value = node(registry, component, 3001 + len(entries))
+        version = version or value["component_version"]
         value["component_version"] = version
         value["config"] = {**deepcopy(registry.get(component, version).definition.default_config), **config}
         entries.append(value)
@@ -66,11 +67,11 @@ def serial_graph(service):
     current, model = make("tools.current-input", input_name="text"), make("models.source", **source_config())
     agents = {}
     for label in ("A", "B"):
-        execute = make("agents.execute", "3")
+        execute = make("agents.execute", "4")
         key = f"context/{label.lower()}"
-        read = make("context.output", "2", object_key=key, agent_node_id=execute["node_binding_id"])
-        assembly = make("context.assembly", "3")
-        merge = make("context.merge", "2", object_key=key, agent_node_id=execute["node_binding_id"])
+        read = make("context.output", "4", object_key=key, agent_node_id=execute["node_binding_id"])
+        assembly = make("context.assembly", "4")
+        merge = make("context.merge", "4", object_key=key, agent_node_id=execute["node_binding_id"])
         prompt = make("prompts.item", text=f"ROLE {label}")
         connect(current, assembly, target_port="current_input")
         connect(read, assembly, target_port="view")
@@ -79,11 +80,11 @@ def serial_graph(service):
         connect(model, execute, target_port="model")
         connect(read, merge, target_port="view")
         connect(execute, merge, source_port="context", target_port="context")
-        bindings.append(ObjectBinding(key, "workflow.effective-context", 3, "shared",
+        bindings.append(ObjectBinding(key, "workflow.effective-context", 4, "shared",
             readers=(read["node_binding_id"], merge["node_binding_id"]),
             writers=(merge["node_binding_id"],)).to_dict())
         agents[label] = {"execute": execute, "read": read, "assembly": assembly, "merge": merge}
-    handoff = make("tools.text-to-prompt", presentation={
+    handoff = make("prompts.source", presentation={
         "role": "user", "placement": "after", "depth": None, "order": 0, "enabled": True})
     connect(agents["A"]["execute"], handoff, source_port="result")
     connect(handoff, agents["B"]["assembly"], target_port="materials", order=1)
@@ -126,7 +127,8 @@ def assert_round(view, agents, roots, *, local_rounds=None):
         key = f"context/{label.lower()}"
         merged = result(view, agents[label]["merge"])
         assert merged["owner"]["agent_node_id"] == agents[label]["execute"]["node_binding_id"]
-        assert [unit["unit"]["root"]["content"] for unit in merged["units"]] == roots
+        assert [message["blocks"][0]["text"] for message in merged["messages"]
+                if message["role"] == "user"] == roots
         assert len(view["objects"][key]["value"]["accepted_delta_ids"]) == len(roots)
         assert view["objects"][key]["revision"] == local_rounds + 1
         assert result(view, agents[label]["merge"], "commit")["receipt"]["revision_id"] == view["objects"][key]["revision_id"]

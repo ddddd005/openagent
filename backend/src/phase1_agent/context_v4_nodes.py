@@ -10,7 +10,7 @@ from .context_contract import (
 from .context_host_service import native_service_requirement
 from .context_package import _exact_input
 from .context_update import context_update_references, validate_context_update
-from .context_v2_nodes import validate_context_receipt
+from .context_receipt import validate_context_receipt
 from .context_v4 import (
     merge_native_context, native_context_references, prepare_native_context_adoption,
     read_native_context, validate_native_context_view, validate_native_context_write,

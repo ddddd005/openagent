@@ -39,10 +39,11 @@ def registry(*, models=False):
 
 def prompt_record(text="current prompt", *, scope="workspace"):
     reference = ResourceIdentity(scope, PROMPT_RESOURCE_TYPE, uid(1)).to_dict()
-    return {**reference, "data_schema_version": 1, "update_sequence": 1,
+    return {**reference, "data_schema_version": 2, "update_sequence": 1,
             "value": {"enabled": True, "members": [
                 {"id": uid(2), "text": text, "presentation": default_presentation(),
-                 "metadata": {"label": "Fixture member"}}]}}
+                 "metadata": {"label": "Fixture member"},
+                 "lifecycle": "per_request", "compaction": "never"}]}}
 
 
 def identity(record):
@@ -61,12 +62,13 @@ def prompt_graph(installed, reference):
     installed.register(NodeDefinition(
         "test.prompt-sink", "1", "Prompt sink", "Test", {},
         {"type": "object", "additionalProperties": False},
-        inputs=(NodePort("input", "PROMPT", data_schema_version=2),),
-        outputs=(NodePort("output", "PROMPT", data_schema_version=2),), is_output=True,
+        inputs=(NodePort("input", "PROMPT_MATERIALS"),),
+        outputs=(NodePort("output", "PROMPT_MATERIALS"),), is_output=True,
     ), lambda config, inputs, context: {"output": inputs["input"]})
     components = ("prompts.global-reference", "prompts.global-resolve", "test.prompt-sink")
     nodes = [
-        {"node_binding_id": uid(10 + index), "component_id": component, "component_version": "1",
+        {"node_binding_id": uid(10 + index), "component_id": component,
+         "component_version": "2" if component.startswith("prompts.") else "1",
          "title": component, "position": {"x": index * 150, "y": 0},
          "config": {"reference": reference} if index == 0 else {}}
         for index, component in enumerate(components)
@@ -172,7 +174,7 @@ def test_prompt_current_same_uuid_scope_and_type_are_isolated(tmp_path):
         assert app.query("resource.list", {"scope": "project:one", "type_id": PROMPT_RESOURCE_TYPE}) == [project]
         assert app.query("resource.list", {"scope": "workspace", "type_id": CHAT_PROVIDER_TYPE}) == [provider]
 
-        entry = installed.get("prompts.global-reference", "1")
+        entry = installed.get("prompts.global-reference", "2")
         project_config = {"reference": identity(project)}
         entry.config_validator(project_config)
         entry.resource_preflight_validator(project_config, [workspace, provider, project])
@@ -194,7 +196,7 @@ def test_prompt_current_same_uuid_scope_and_type_are_isolated(tmp_path):
             return app.query("resource.read", {"identity": reference})
 
         context = SimpleNamespace(node_binding_id=uid(3), reads=[], host_call=host_call)
-        resolved = installed.get("prompts.global-resolve", "1").executor(
+        resolved = installed.get("prompts.global-resolve", "2").executor(
             {}, {"input": global_resource_reference(identity(project))}, context)["output"]
         assert [item["text"] for item in resolved["items"]] == ["project prompt"]
         assert calls == [("resources:read", "current-global-resource", identity(project))]
@@ -202,7 +204,7 @@ def test_prompt_current_same_uuid_scope_and_type_are_isolated(tmp_path):
 
 
 @pytest.mark.parametrize("field,value", [("name", "Unsupported name"), ("kind", "role_card")])
-def test_prompt_current_schema_one_rejects_legacy_top_level_fields_without_writing(tmp_path, field, value):
+def test_prompt_current_schema_two_rejects_unsupported_top_level_fields_without_writing(tmp_path, field, value):
     installed = registry()
     original = prompt_record()
     with closing(GraphWorkflowService(tmp_path / "prompt-schema.sqlite", registry=installed)) as service:
@@ -233,8 +235,8 @@ def test_prompt_current_reference_preflight_checks_saved_identity_and_value(tmp_
         current = app.query("resource.read", {"identity": reference})
         records = [] if problem == "missing" else [current]
         if problem == "schema":
-            records[0]["data_schema_version"] = 2
-        entry = installed.get("prompts.global-reference", "1")
+            records[0]["data_schema_version"] = 1
+        entry = installed.get("prompts.global-reference", "2")
         with pytest.raises(ContractValidationError) as failure:
             entry.resource_preflight_validator({"reference": reference}, records)
         assert failure.value.reason_code == reason

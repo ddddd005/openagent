@@ -56,9 +56,13 @@ async function screenshot(label) {
   await page.getByRole("menuitem", { name: "添加节点", exact: true }).click();
   const menu = page.getByRole("menu", { name: "添加节点", exact: true });
   const catalog = await (await context.request.get(backend + "/api/graph/node-types/v2")).json();
-  const source = catalog.node_types.find(row => row.component_id === "models.source" && row.component_version === "3");
+  const source = catalog.node_types.find(row => row.component_id === "models.source" && row.component_version === "4");
   assert.ok(source);
-  await menu.getByRole("menuitem", { name: source.display_name + " · v3", exact: true }).click();
+  await menu.getByRole("menuitem", { name: "模型", exact: true }).click();
+  await page.getByRole("menu", { name: "模型节点", exact: true }).getByRole("menuitem", { name: "模型来源", exact: true }).click();
+  const profile = page.getByRole("dialog", { name: "添加模型来源", exact: true });
+  await profile.getByRole("button", { name: "Gemini", exact: true }).click();
+  await profile.getByRole("button", { name: "添加节点", exact: true }).click();
   await page.getByRole("button", { name: "定位全部节点", exact: true }).click();
   await page.locator(".vue-flow__node").first().click();
   const fields = page.getByRole("form", { name: "模型源配置", exact: true });

@@ -9,7 +9,7 @@ from phase1_agent.contracts import ModelResponse, ModelToolCall
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import ObjectBinding
 
-from test_agent_integration import run
+from workflow_test_support import run
 from test_context_native_integration import node_output, rebind, versioned_node
 from test_graph_service import create, document, edge
 from test_model_package import source_config
@@ -87,10 +87,10 @@ def compacting_serial_graph(service, *, with_frontend=False):
                          "target_node_id": target["node_binding_id"]})
 
     current = make("tools.current-input", input_name="text")
-    model = make("models.source", "2", **source_config(), capacity={
+    model = make("models.source", "2", **{**source_config(), "capacity": {
         "context_window_tokens": 100_000, "output_reserve_tokens": 128,
         "summary_max_tokens": 128, "max_cold_input_tokens": 100_000,
-    })
+    }})
     model["config"]["parameters"]["max_tokens"] = 128
     once = make("prompts.item", "2", text="ONCE_SERIAL_ORIGINAL " * 1600,
                 lifecycle="context_once", compaction="allowed")

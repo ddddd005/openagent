@@ -20,23 +20,25 @@ describe("canvas menu rendering", () => {
     expect(html).toContain("添加节点");
   });
 
-  it("renders stage groups and disables unique or unavailable node types", async () => {
+  it("renders categories without exposing the family leaves or version list at the first level", async () => {
     const html = await renderMenu("add", [{
-      label: "Agent B",
+      id: "agents", label: "Agent",
       items: [
-        { id: "B:assemble", label: "提示词装配", disabled: true },
-        { id: "B:prompt-item", label: "提示词条目" },
+        { id: "agents.execute", label: "Agent 执行", disabled: true },
+        { id: "agents.delta", label: "Agent 增量" },
       ],
     }]);
-    expect(html).toContain("Agent B");
-    expect(html).toMatch(/disabled[^>]*>提示词装配/);
-    expect(html).toContain("提示词条目");
+    expect(html).toContain('data-group-id="agents"');
+    expect(html).toContain('aria-haspopup="menu" aria-expanded="false"');
+    expect(html).toContain(">2</small>");
+    expect(html).not.toContain("Agent 执行");
+    expect(html).not.toContain("Agent 增量");
   });
 
   it("keeps an unavailable add action visible on the empty workflow", async () => {
     const html = await renderMenu("add", []);
     expect(html).toContain("添加节点");
     expect(html).toContain("disabled");
-    expect(html).toContain("空工作流暂不支持节点编辑");
+    expect(html).toContain("节点目录不可用");
   });
 });

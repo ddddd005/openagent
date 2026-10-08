@@ -5,7 +5,7 @@ import type { WorkspaceWorkflow } from "../domain/workspace";
 export const WORKBENCH_STORAGE_KEY = "workflow-workbench:fixed-base:v1";
 export const WORKBENCH_RECOVERY_STORAGE_KEY = "workflow-workbench:isolated-graph:v7";
 const MAX_BYTES = 4_000_000;
-// Keep these exact identities aligned with backend storage_retirement._COMPAT_NODES.
+// Keep these exact identities aligned with backend storage_retirement._RETIRED_NODES.
 const RETIRED_COMPONENTS = [
   ["workflow.text", "1"], ["workflow.current-input", "1"],
   ["workflow.output", "1"], ["workflow.regex", "1"],
@@ -22,6 +22,21 @@ const RETIRED_COMPONENTS = [
   ["workflow.agent", "1"], ["workflow.agent", "2"],
   ["workflow.model-provider", "1"], ["workflow.model-provider", "2"],
   ["workflow.context", "1"], ["workflow.prompt-assembly", "1"],
+  ["models.source", "1"], ["models.source", "3"],
+  ["models.chat", "1"], ["models.chat", "2"],
+  ["agents.execute", "1"], ["agents.execute", "2"], ["agents.execute", "3"],
+  ["agents.execute", "5"], ["agents.execute", "6"], ["agents.execute", "7"],
+  ["agents.delta", "1"], ["agents.delta", "2"],
+  ["context.output", "1"], ["context.output", "2"],
+  ["context.assembly", "1"], ["context.assembly", "2"], ["context.assembly", "3"],
+  ["context.merge", "1"], ["context.merge", "2"],
+  ["context.window", "1"], ["context.window", "2"], ["context.window", "3"],
+  ["context.read", "1"], ["context.save", "1"], ["context.advance", "1"],
+  ["context.project-text", "1"], ["context.plan", "1"], ["context.summary-prompt", "1"],
+  ["context.summary", "1"], ["context.replace", "1"],
+  ["prompts.item", "1"], ["prompts.group", "1"], ["prompts.source", "1"],
+  ["prompts.summary", "1"], ["prompts.assembly", "1"], ["prompts.global-reference", "1"],
+  ["prompts.global-resolve", "1"], ["prompts.tool", "1"], ["prompts.tool-summary", "1"],
 ] as const;
 export interface WorkbenchConfiguration {
   activeWorkflowId: string;
@@ -64,7 +79,7 @@ function explicitLegacy(document: unknown, row?: Record<string, unknown>) {
   const body = graphObject(pending) && graphObject(pending.body) ? pending.body : null;
   return [document, row?.saved_document, body?.document].some(candidate =>
     graphObject(candidate) && (Array.isArray(candidate.package_lock) && candidate.package_lock.some(lock =>
-      graphObject(lock) && lock.package_id === "workflow.compat")
+      graphObject(lock) && ["workflow.compat", "workflow.context-compression"].includes(String(lock.package_id)))
       || Array.isArray(candidate.nodes) && candidate.nodes.some(node =>
         graphObject(node) && RETIRED_COMPONENTS.some(([id, version]) =>
           node.component_id === id && node.component_version === version))));

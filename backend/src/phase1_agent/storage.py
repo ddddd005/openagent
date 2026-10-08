@@ -13,7 +13,7 @@ from .contract_json import canonical_bytes, loads_strict
 from .graph_records import GRAPH_VERSIONS, is_graph_record, require, validate_graph_transition
 
 
-STORAGE_VERSION = 14
+STORAGE_VERSION = 15
 _IDENTITIES = {
     "node_definition": ("component_id", "component_version"),
     "node_binding": ("workflow_definition_id", "workflow_definition_revision", "node_binding_id"),

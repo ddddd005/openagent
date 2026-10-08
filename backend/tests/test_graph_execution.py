@@ -14,7 +14,12 @@ from graph_test_plugin import PROBE_COMPONENT, register_content_probe
 
 
 def _registry():
-    return create_package_registry().registry.detached()
+    registry = create_package_registry().registry.detached()
+    registry.register(NodeDefinition(
+        "test.prompt-source", "1", "Raw prompt fixture", "Test", {}, {"type": "object"},
+        outputs=(NodePort("output", "PROMPT", data_schema_version=2),),
+    ), lambda config, inputs, context: {"output": copy.deepcopy(config["value"])})
+    return registry
 
 
 def identity(number):
@@ -23,10 +28,11 @@ def identity(number):
 
 def node(number, component="tools.text", config=None, registry=None):
     registry = registry or _registry()
-    entry = registry.get(component, "1")
+    version = "2" if component.startswith("prompts.") else "1"
+    entry = registry.get(component, version)
     default = copy.deepcopy(entry.definition.default_config) if entry else {}
     return {
-        "node_binding_id": identity(number), "component_id": component, "component_version": "1",
+        "node_binding_id": identity(number), "component_id": component, "component_version": version,
         "title": component, "position": {"x": 0, "y": 0},
         "config": {**default, **copy.deepcopy(config or {})},
     }
@@ -66,7 +72,7 @@ def material(number, text, *, purpose="prompt", protected=False, role="system", 
 
 
 def prompt_node(number, items):
-    return node(number, "prompts.source", {"value": prompt_content(items)})
+    return node(number, "test.prompt-source", {"value": prompt_content(items)})
 
 
 def test_zero_agent_text_regex_output_ignores_unreachable_unknown_nodes():
@@ -178,8 +184,9 @@ def test_cycle_and_multi_input_order_conflict_are_static_failures():
         GraphCompiler(_registry()).compile(value)
     value = document([
         prompt_node(1, [material(80, "one")]), prompt_node(2, [material(81, "two")]),
-        node(3, "prompts.summary"), node(4, "tools.output", {"mode": "prompt"}),
-    ], [edge(10, 1, 3), edge(11, 2, 3), edge(12, 3, 4)])
+        node(3, "prompts.assembly"), node(4, "tools.output", {"mode": "prompt"}),
+    ], [edge(10, 1, 3, target_port="raw_prompt"),
+        edge(11, 2, 3, target_port="raw_prompt"), edge(12, 3, 4)])
     with pytest.raises(GraphDiagnosticError) as caught:
         GraphCompiler(_registry()).compile(value)
     assert caught.value.reason_code == "graph_input_order_conflict"

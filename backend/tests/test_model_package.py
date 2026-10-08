@@ -10,7 +10,7 @@ import pytest
 
 from phase1_agent.capability_packages import CapabilityPackageLoader
 from phase1_agent.content_contracts import create_content_package
-from phase1_agent.contract_errors import ContractValidationError
+from phase1_agent.contract_errors import ContractValidationError, ModelRequestError
 from phase1_agent.contracts import ModelResponse, ModelToolCall
 from phase1_agent.graph_contracts import GraphCompiler
 from phase1_agent.graph_execution import execute_graph
@@ -38,7 +38,7 @@ def test_model_package_declares_exact_current_resource_management_and_source_edi
     assert package.manifest.to_dict()["exports"]["frontend_extensions"] == [
         {"extension_id": row["extension_id"]} for row in MODEL_FRONTEND_EXTENSIONS]
     fields = next(row for row in loaded.frontend_extensions if row["kind"] == "field-editor")
-    assert fields["binding"]["target"] == {"component_id": "models.source", "component_version": "1"}
+    assert fields["binding"]["target"] == {"component_id": "models.source", "component_version": "2"}
 
 
 def uid(number):
@@ -51,6 +51,8 @@ def source_config():
                       "type_id": CHAT_PROVIDER_TYPE, "resource_id": uid(1)},
         "parameters": {"model": "deepseek-test", "max_tokens": 32,
                        "temperature": 0.5, "thinking": "disabled", "stream": False},
+        "capacity": {"context_window_tokens": 100000, "output_reserve_tokens": 128,
+                     "summary_max_tokens": 128, "max_cold_input_tokens": 100000},
     }
 
 
@@ -79,7 +81,7 @@ class BoundaryFixture:
         )
         self.service.prepare_run(workflow_session_id=uid(2), chain_run_id=uid(3),
                                  node_configs={uid(10): self.config}, records=[self.record])
-        self.binding = self.service(self.source, "models:resolve", "bind-model", self.config)
+        self.binding = self.service(self.source, "models:resolve", "bind-native-model", self.config)
         self.service.accept_binding_output(workflow_session_id=uid(2), chain_run_id=uid(3),
                                            node_run_id=uid(11), binding_id=self.binding["binding_id"],
                                            output_id=uid(30))
@@ -130,8 +132,8 @@ def test_model_package_exports_without_agent_dependency():
     loaded = CapabilityPackageLoader((create_content_package(), create_model_package())).load(
         {"workflow.models": "1.0.0"})
     assert loaded.registry.get("workflow.agent", "1") is None
-    assert loaded.registry.get("models.source", "1").resource_dependencies_declaration is not None
-    assert loaded.registry.get("models.chat", "1").definition.input_storage == "references"
+    assert loaded.registry.get("models.source", "2").resource_dependencies_declaration is not None
+    assert loaded.registry.get("models.chat", "3").definition.input_storage == "references"
     assert loaded.registry.data_types.get(CHAT_PROVIDER_TYPE, 1, scope="global") is not None
     assert loaded.package_lock == ({"package_id": "workflow.content", "version": "1.0.0"},
                                    {"package_id": "workflow.models", "version": "1.0.0"})
@@ -324,8 +326,9 @@ def test_capability_adapter_returns_public_tool_response_and_keeps_failed_reques
     tools = [{"type": "function", "function": {"name": "inspect", "description": "Inspect",
                                               "parameters": {"type": "object"}}}]
     fixture.fail_stage = "outcome"
-    with pytest.raises(ContractValidationError):
+    with pytest.raises(ModelRequestError) as rejected:
         adapter.generate(messages, tools)
+    assert rejected.value.code == "model_fact_acceptance_failed"
     fixture.fail_stage = None
     response = adapter.generate(messages, tools)
     assert response.tool_calls == (ModelToolCall("call-1", "inspect", "{}"),)
@@ -455,15 +458,16 @@ def test_no_agent_graph_assembles_prompt_calls_model_and_accepts_result():
         create_content_package(), create_prompt_package(), create_model_package(),
     )).load({"workflow.prompts": "1.0.0", "workflow.models": "1.0.0"}).registry
     def node(component, number, config=None):
-        return {"node_binding_id": uid(number), "component_id": component, "component_version": "1",
+        version = "3" if component == "models.chat" else "2"
+        return {"node_binding_id": uid(number), "component_id": component, "component_version": version,
                 "title": component, "position": {"x": 0, "y": 0},
                 "config": deepcopy(config if config is not None
-                                   else registry.get(component, "1").definition.default_config)}
+                                   else registry.get(component, version).definition.default_config)}
     source = node("models.source", 10, fixture.config)
     prompt = node("prompts.assembly", 50)
     chat = node("models.chat", 20)
     # A fixed prompt group supplies effective material for the ordinary assembly.
-    group_config = deepcopy(registry.get("prompts.group", "1").definition.default_config)
+    group_config = deepcopy(registry.get("prompts.group", "2").definition.default_config)
     group_config["members"][0]["text"] = "Say hello"
     group = node("prompts.group", 51, group_config)
     def edge(number, producer, consumer, port):

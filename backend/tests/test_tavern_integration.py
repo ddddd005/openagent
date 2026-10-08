@@ -11,7 +11,7 @@ from phase1_agent.host_sdk import ObjectBinding
 from phase1_agent.lorebook_engine import default_lorebook_entry
 from phase1_agent.session_objects import SessionObjectStore
 
-from test_agent_integration import run
+from workflow_test_support import run
 from test_context_native_integration import (
     NativeTransport, native_graph, node_output, versioned_node,
 )
