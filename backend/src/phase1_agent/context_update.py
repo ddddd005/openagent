@@ -10,6 +10,7 @@ from .context_contract import (
 from .context_compaction_policy import frame_checkpoint
 from .context_compaction import is_compactable_text, validate_compaction_operation
 from .contract_graph import validate_message_history, validate_pending_message_history
+from .contract_errors import ContractValidationError
 from .contract_json import content_digest, validate_json_value
 from .contracts_v2 import validate_record
 from .graph_contracts import require, uuid4_string
@@ -108,13 +109,19 @@ def validate_context_operations(operations):
                 and bool(instruction["blocks"][0]["text"].strip()),
                 "context_update_invalid_proof", "Maintenance instructions must be appended at the request tail")
         result = operation["result"]
-        _fields(result, ("text", "finish_reason", "tool_calls", "usage", "response_id", "model"))
+        _fields(result, ("text", "finish_reason", "tool_calls", "usage", "response_id", "model"),
+                optional=("thinking_summary", "provider_metadata"))
         require(type(result["text"]) is str and bool(result["text"].strip())
                 and result["finish_reason"] == "stop" and result["tool_calls"] == []
                 and (result["usage"] is None or type(result["usage"]) is dict)
                 and all(value is None or type(value) is str
                         for value in (result["response_id"], result["model"])),
                 "context_update_invalid_summary", "Accepted summaries require nonempty text without tool calls")
+        from .context_compaction import validate_summary_result
+        try:
+            validate_summary_result(result, successful=True)
+        except ContractValidationError:
+            require(False, "context_update_invalid_summary", "Summary protocol evidence is inconsistent")
         require(checkpoint["blocks"] == [{"kind": "text", "text": frame_checkpoint(result["text"])}],
                 "context_update_invalid_checkpoint", "Checkpoint text must frame its exact accepted summary")
         _fields(operation["capacity"], ("before", "after"))

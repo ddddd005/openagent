@@ -144,7 +144,8 @@ def register_bound_context(host):
     schema = object_schema({"object_key": {"type": "string", "minLength": 1, "maxLength": 128},
                             "agent_node_id": {"type": "string"}})
     binding = ({"config_field": "agent_node_id", "multiple": False,
-                "target_types": [{"component_id": "agents.execute", "component_version": "2"}]},)
+                "target_types": [{"component_id": "agents.execute", "component_version": version}
+                                 for version in ("2", "6")]},)
     view = NodePort("view", "CONTEXT_VIEW", data_schema_version=2)
     host.register_node(NodeDefinition(
         "context.output", "1", "Bound context output", "Context", config, schema,

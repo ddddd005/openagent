@@ -13,6 +13,8 @@ import GraphSessionData from "./GraphSessionData.vue";
 import GraphObjectBindings from "./GraphObjectBindings.vue";
 import GraphInformation from "./GraphInformation.vue";
 import GraphEvents from "./GraphEvents.vue";
+import ThinkingSummary from "./ThinkingSummary.vue";
+import { modelPresentationJson } from "../domain/modelPresentation";
 import { useWorkbenchFrontendHost } from "../composables/useWorkbenchFrontendHost";
 import { useCanvasNodeMenu } from "../composables/useCanvasNodeMenu";
 const graph = useWorkflowGraphStore();
@@ -71,7 +73,7 @@ const diagnostics = computed(() => [
   ...(graph.session?.chains.flatMap(chain => chain.diagnostic ? [chain.diagnostic] : []) ?? []),
   ...(graph.session?.nodes.flatMap(node => node.diagnostic ? [{ ...node.diagnostic, node_id: node.node_binding_id }] : []) ?? []),
 ]);
-const json = (value: unknown) => JSON.stringify(value, null, 2);
+const json = modelPresentationJson;
 function fit() { void flow.value?.fitView({ padding: 0.2, maxZoom: 0.9 }); }
 function attach(instance: VueFlowStore) {
   flow.value = instance;
@@ -175,7 +177,7 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; initialFit = 
             <section v-if="incoming.length"><h3>输入顺序</h3><div v-for="edge in incoming" :key="edge.edge_id" class="graph-incoming"><span>{{ edge.target_port_id }} · {{ graph.document?.nodes.find(n => n.node_binding_id === edge.source_node_id)?.title ?? edge.source_node_id }} / {{ edge.source_port_id }}</span><button type="button" title="上移" aria-label="上移输入" :disabled="graph.locked" @click="graph.reorderEdge(edge.edge_id, -1)"><ArrowUp :size="13" /></button><button type="button" title="下移" aria-label="下移输入" :disabled="graph.locked" @click="graph.reorderEdge(edge.edge_id, 1)"><ArrowDown :size="13" /></button></div></section>
           </div>
           <div v-else-if="inspectorTab === 'information'" class="graph-inspector-content"><GraphInformation :session-id="graph.session?.workflow_session_id" :node-id="selectedNode.node_binding_id" initial-kind="information_binding" /></div>
-          <div v-else class="graph-inspector-content"><code>{{ selectedState?.status ?? 'idle' }}</code><dl v-if="selectedState?.budget" class="graph-budget"><div><dt>模型请求</dt><dd>{{ selectedState.budget.model_requests ?? 0 }} / {{ selectedState.budget.max_model_requests }}</dd></div><div><dt>模型尝试</dt><dd>{{ selectedState.budget.attempts ?? 0 }} / {{ selectedState.budget.max_model_attempts }}</dd></div><div><dt>已接受消息</dt><dd>{{ selectedState.budget.accepted_messages ?? 0 }}</dd></div></dl><pre>{{ json(selectedState?.outputs ?? {}) }}</pre><pre v-if="selectedState?.diagnostic" class="graph-warning">{{ json(selectedState.diagnostic) }}</pre></div>
+          <div v-else class="graph-inspector-content"><code>{{ selectedState?.status ?? 'idle' }}</code><dl v-if="selectedState?.budget" class="graph-budget"><div><dt>模型请求</dt><dd>{{ selectedState.budget.model_requests ?? 0 }} / {{ selectedState.budget.max_model_requests }}</dd></div><div><dt>模型尝试</dt><dd>{{ selectedState.budget.attempts ?? 0 }} / {{ selectedState.budget.max_model_attempts }}</dd></div><div><dt>已接受消息</dt><dd>{{ selectedState.budget.accepted_messages ?? 0 }}</dd></div></dl><ThinkingSummary :value="selectedState?.outputs" /><pre>{{ json(selectedState?.outputs ?? {}) }}</pre><pre v-if="selectedState?.diagnostic" class="graph-warning">{{ json(selectedState.diagnostic) }}</pre></div>
         </template>
         <div v-else class="graph-inspector-content">
           <section v-for="output in graph.session?.outputs ?? []" :key="output.output_id"><h3>{{ graph.document?.nodes.find(n => n.node_binding_id === output.node_binding_id)?.title ?? output.node_binding_id }} / {{ output.port_id }}</h3><pre>{{ json(output.payload) }}</pre></section>

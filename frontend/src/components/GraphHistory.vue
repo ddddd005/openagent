@@ -6,6 +6,8 @@ import { resolveGraphRunInputs, type GraphRunDetail } from "../domain/workflowGr
 import GraphInformation from "./GraphInformation.vue";
 import { contextMaintenanceDiagnosis } from "../domain/contextMaintenance";
 import LorebookEvaluationFacts from "./LorebookEvaluationFacts.vue";
+import ThinkingSummary from "./ThinkingSummary.vue";
+import { modelPresentationJson } from "../domain/modelPresentation";
 const graph = useWorkflowGraphStore();
 const selected = ref<string | null>(null);
 const detail = ref<GraphRunDetail | null>(null);
@@ -53,12 +55,13 @@ onUnmounted(() => { generation++; });
       <section v-for="run in detail?.node_runs ?? []" :key="run.run_id" class="node-history">
         <header>{{ run.node_binding_id.slice(0,8) }} · {{ run.status }}</header>
         <LorebookEvaluationFacts :reads="run.reads" />
-        <details><summary>输入与读取依据</summary><pre>{{ JSON.stringify(inputEvidence(run), null, 2) }}</pre></details>
-        <details v-if="run.effects.length"><summary>会话写入</summary><pre>{{ JSON.stringify(run.effects, null, 2) }}</pre></details>
+        <ThinkingSummary :value="inputEvidence(run)" />
+        <details><summary>输入与读取依据</summary><pre>{{ modelPresentationJson(inputEvidence(run)) }}</pre></details>
+        <details v-if="run.effects.length"><summary>会话写入</summary><pre>{{ modelPresentationJson(run.effects) }}</pre></details>
         <p v-if="contextMaintenanceDiagnosis(run.diagnostic)" class="error" role="status">{{ contextMaintenanceDiagnosis(run.diagnostic) }}</p>
         <pre v-if="run.diagnostic" class="error">{{ JSON.stringify(run.diagnostic, null, 2) }}</pre>
       </section>
-      <section v-for="output in outputs" :key="output.output_id"><header>{{ output.node_binding_id.slice(0,8) }} / {{ output.port_id }}</header><pre>{{ JSON.stringify(output.payload, null, 2) }}</pre></section><p v-if="!outputs.length && !loading">暂无结果</p>
+      <section v-for="output in outputs" :key="output.output_id"><header>{{ output.node_binding_id.slice(0,8) }} / {{ output.port_id }}</header><ThinkingSummary :value="output.payload" /><pre>{{ modelPresentationJson(output.payload) }}</pre></section><p v-if="!outputs.length && !loading">暂无结果</p>
     </main>
   </section>
 </template>

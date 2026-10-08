@@ -9,5 +9,9 @@ export const modelFrontendPackage: WorkbenchFrontendPackageModule = {
       configurationFields: ["reference", "parameters"] },
     { declaration: modelFrontendExtensions[2]!, implementation: ModelSourceFields,
       configurationFields: ["reference", "parameters", "capacity"] },
+    { declaration: modelFrontendExtensions[3]!, implementation: ModelSourceFields,
+      configurationFields: ["reference", "parameters"] },
+    { declaration: modelFrontendExtensions[4]!, implementation: ModelSourceFields,
+      configurationFields: ["reference", "parameters", "capacity"] },
   ],
 };

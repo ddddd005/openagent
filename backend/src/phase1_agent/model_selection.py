@@ -26,9 +26,10 @@ def validate_model_selection(value: Any) -> dict[str, Any]:
 
 
 def _credential(provider: dict[str, Any]) -> str:
-    if provider["credential_ref"] != "env:DEEPSEEK_API_KEY":
+    reference = "GEMINI_API_KEY" if provider["protocol"] == "gemini" else "DEEPSEEK_API_KEY"
+    if provider["credential_ref"] != "env:" + reference:
         raise configuration_error("credential_reference_missing", 409)
-    secret = os.environ.get("DEEPSEEK_API_KEY")
+    secret = os.environ.get(reference)
     if not secret or not secret.strip():
         raise configuration_error("credential_unavailable", 409)
     return secret
@@ -48,6 +49,8 @@ def validate_model_binding(value: Any) -> dict[str, Any]:
             and re.fullmatch(r"[0-9a-f]{64}", value["credential_evidence"]) is not None)
     parameters = FrozenModelParameters.from_mapping(value["parameters"])
     require(dict(parameters.as_mapping()) == value["parameters"])
+    from .gemini_capabilities import validate_provider_parameters
+    validate_provider_parameters(provider["protocol"], dict(parameters.as_mapping()))
     return copy.deepcopy(value)
 
 

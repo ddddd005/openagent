@@ -15,7 +15,7 @@
       "source_ranges": [[7391, 7475], [8080, 8127]],
       "source_sha256": "5b03c7ee0090eb171421bd3fcddef4c3a2de0a31277c0467620032d633a104e6",
       "destination": "index.html",
-      "destination_sha256": "75ad72abdfe31e2963786e81b9e85f8d5ae6d950d968a1e6c34a90e41ec55d52",
+      "destination_sha256": "883769860f44969acaf201f7068dad684b35689ddc731116de3d78486935bfbe",
       "modifications": "Retain chat/message/form structure; native template and accessible buttons; delete excluded ST actions/scripts; local GraphChat adapter and legal notice. P4 restores only completed-round platform fork control, hidden unless its exact producer checkpoint is available.",
       "dependencies": ["showdown@2.1.0", "dompurify@3.4.16", "lucide@0.577.0", "/static/graph-chat-core.js"]
     },
@@ -24,7 +24,7 @@
       "source_ranges": [[772, 793], [861, 950], [1185, 1193], [1406, 1461], [1511, 1543], [1577, 1627]],
       "source_sha256": "abcdcafe484d9b0948266d5a583b00d5ccecb6374147b2d7cf585904d32b9d5a",
       "destination": "styles/chat.css",
-      "destination_sha256": "ff73e9deba60280ce5748eab940b04a76f7d833c34356a8cdc67fdb1f09c66a8",
+      "destination_sha256": "6d0a476b238f2197066115d15945b97779d1940cf1e516a33d3062b50ed6a007",
       "modifications": "Extract chat selectors and layout; local variables; remove imports/drag/blur/global ST rules; ordinary-flow responsive layout, narrow controls and Markdown styles.",
       "dependencies": []
     },
@@ -33,7 +33,7 @@
       "source_ranges": [[1800, 1803], [1935, 1935], [1967, 1967], [2551, 2607], [2621, 2705], [2773, 2807]],
       "source_sha256": "d1e248efbae8a1df0a248410225cea76901f33533919fc32a28a172c1514600f",
       "destination": "chat.js",
-      "destination_sha256": "13ce1e277436be67d394a2791634e1e85db0adfcf125d248dcd3215a4bf32de9",
+      "destination_sha256": "acc9043fd6980eaf8fe58e5b3f5fc9ddd89420016fd8b47f15608f24de7c88d9",
       "modifications": "Adapt message insertion/update/name/avatar/body/last_mes/scheduled-scroll to native DOM and public immutable facts. Strip ST globals, macros, regex, media, context/swipe/edit actions. Narrow sanitized Markdown allowlist. P4 dynamic fork action is based on actual TEXT producer session/chain, shared round targets and pending locks; it never slices message arrays.",
       "dependencies": ["showdown@2.1.0", "dompurify@3.4.16", "lucide@0.577.0"]
     },

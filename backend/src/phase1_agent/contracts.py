@@ -27,6 +27,8 @@ class ModelResponse:
     usage: dict[str, Any] | None = None
     response_id: str | None = None
     model: str | None = None
+    thinking_summary: str | None = None
+    provider_metadata: dict[str, Any] | None = None
 
 
 class ModelAdapter(Protocol):

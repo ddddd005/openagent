@@ -11,6 +11,7 @@ from uuid import UUID
 from .contract_errors import ContractValidationError
 from .contract_json import validate_json_value
 from .frozen_model import FrozenModelParameters
+from .gemini_capabilities import validate_provider_parameters
 
 
 DEFAULT_PROVIDER_ID = "7be319b8-30bd-4674-b7bf-d1cf54a1a110"
@@ -27,10 +28,11 @@ def _has_control_characters(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
-def chat_parameter_diagnostic(parameters: dict[str, Any]) -> str | None:
+def chat_parameter_diagnostic(parameters: dict[str, Any], protocol="chat") -> str | None:
     """Keep stored configurations readable while diagnosing the current adapter."""
     try:
         model = FrozenModelParameters.from_mapping(parameters)
+        validate_provider_parameters(protocol, dict(model.as_mapping()))
     except ContractValidationError:
         return "model_parameters_unsupported"
     if model.max_tokens is not None and model.max_tokens > CHAT_MAX_TOKENS:
@@ -87,7 +89,7 @@ def validate_provider(value: Any) -> dict[str, Any]:
     revision(value["revision"])
     require(type(value["name"]) is str and bool(value["name"].strip()) and len(value["name"]) <= 128
             and not _has_control_characters(value["name"]))
-    require(value["protocol"] == "chat")
+    require(value["protocol"] in ("chat", "gemini"))
     address = value["base_url"]
     require(type(address) is str and 0 < len(address) <= 2048
             and address.lower().startswith(("http://", "https://"))
@@ -102,8 +104,8 @@ def validate_provider(value: Any) -> dict[str, Any]:
             and parts.username is None and parts.password is None and not parts.query
             and not parts.fragment and (port is None or 1 <= port <= 65535))
     require(parts.scheme == "https" or parts.hostname in ("127.0.0.1", "localhost", "::1"))
-    # This slice reuses the existing backend credential; no secret ingestion API.
-    require(value["credential_ref"] in (None, "env:DEEPSEEK_API_KEY"))
+    credential = "env:GEMINI_API_KEY" if value["protocol"] == "gemini" else "env:DEEPSEEK_API_KEY"
+    require(value["credential_ref"] in (None, credential))
     require(type(value["enabled"]) is bool)
     validate_json_value(value)
     return copy.deepcopy(value)
@@ -136,7 +138,8 @@ def validate_model_configuration(value: Any) -> dict[str, Any]:
             identifier(reference["provider_id"])
             revision(reference["revision"])
         parameters = node["parameters"]
-        require(type(parameters) is dict and set(parameters) <= {"model", "max_tokens", "temperature"}
+        require(type(parameters) is dict and set(parameters) <= {
+            "model", "max_tokens", "temperature", "thinking", "stream"}
                 and "model" in parameters and type(parameters["model"]) is str
                 and len(parameters["model"]) <= 256 and not _has_control_characters(parameters["model"]))
         try:

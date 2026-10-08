@@ -1783,6 +1783,234 @@
                   }
                 },
                 "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": [
+                  "schema_version",
+                  "message_id",
+                  "role",
+                  "source",
+                  "blocks"
+                ],
+                "properties": {
+                  "schema_version": {
+                    "type": "integer",
+                    "const": 4
+                  },
+                  "message_id": {
+                    "type": "string",
+                    "format": "uuid4",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "minLength": 36,
+                    "maxLength": 36
+                  },
+                  "role": {
+                    "const": "user"
+                  },
+                  "source": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "kind",
+                          "compaction_id"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "context_checkpoint"
+                          },
+                          "compaction_id": {
+                            "type": "string",
+                            "format": "uuid4",
+                            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "minLength": 36,
+                            "maxLength": 36
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "kind",
+                          "compaction_id"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "context_compaction_instruction"
+                          },
+                          "compaction_id": {
+                            "type": "string",
+                            "format": "uuid4",
+                            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "minLength": 36,
+                            "maxLength": 36
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "blocks": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "kind",
+                        "text"
+                      ],
+                      "properties": {
+                        "kind": {
+                          "const": "text"
+                        },
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "minItems": 1,
+                    "maxItems": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": [
+                  "schema_version",
+                  "message_id",
+                  "role",
+                  "source",
+                  "blocks"
+                ],
+                "properties": {
+                  "schema_version": {
+                    "type": "integer",
+                    "const": 5
+                  },
+                  "created_at": {
+                    "type": "string",
+                    "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                    "minLength": 24,
+                    "maxLength": 24,
+                    "allOf": [
+                      {
+                        "format": "date-time"
+                      },
+                      {
+                        "format": "utc_millis"
+                      }
+                    ]
+                  },
+                  "message_id": {
+                    "type": "string",
+                    "format": "uuid4",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "minLength": 36,
+                    "maxLength": 36
+                  },
+                  "role": {
+                    "const": "assistant"
+                  },
+                  "source": {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "request_id"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "model"
+                      },
+                      "request_id": {
+                        "type": "string",
+                        "format": "uuid4",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "minLength": 36,
+                        "maxLength": 36
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "blocks": {
+                    "type": "array",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "text"
+                          ],
+                          "properties": {
+                            "kind": {
+                              "const": "text"
+                            },
+                            "text": {
+                              "type": "string"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "tool_call_id",
+                            "tool_name",
+                            "tool_definition_version",
+                            "raw_arguments",
+                            "parsed_arguments"
+                          ],
+                          "properties": {
+                            "kind": {
+                              "const": "tool_call"
+                            },
+                            "tool_call_id": {
+                              "type": "string",
+                              "format": "uuid4",
+                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "minLength": 36,
+                              "maxLength": 36
+                            },
+                            "tool_name": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "tool_definition_version": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "raw_arguments": {
+                              "type": "string"
+                            },
+                            "parsed_arguments": {
+                              "type": "object"
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "minItems": 1
+                  },
+                  "thinking_summary": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 131072
+                  },
+                  "provider_metadata": {
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false
               }
             ]
           }
@@ -3271,6 +3499,234 @@
                       }
                     },
                     "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "schema_version",
+                      "message_id",
+                      "role",
+                      "source",
+                      "blocks"
+                    ],
+                    "properties": {
+                      "schema_version": {
+                        "type": "integer",
+                        "const": 4
+                      },
+                      "message_id": {
+                        "type": "string",
+                        "format": "uuid4",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "minLength": 36,
+                        "maxLength": 36
+                      },
+                      "role": {
+                        "const": "user"
+                      },
+                      "source": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "required": [
+                              "kind",
+                              "compaction_id"
+                            ],
+                            "properties": {
+                              "kind": {
+                                "const": "context_checkpoint"
+                              },
+                              "compaction_id": {
+                                "type": "string",
+                                "format": "uuid4",
+                                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "minLength": 36,
+                                "maxLength": 36
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "kind",
+                              "compaction_id"
+                            ],
+                            "properties": {
+                              "kind": {
+                                "const": "context_compaction_instruction"
+                              },
+                              "compaction_id": {
+                                "type": "string",
+                                "format": "uuid4",
+                                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "minLength": 36,
+                                "maxLength": 36
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      "blocks": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "text"
+                          ],
+                          "properties": {
+                            "kind": {
+                              "const": "text"
+                            },
+                            "text": {
+                              "type": "string"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "minItems": 1,
+                        "maxItems": 1
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "schema_version",
+                      "message_id",
+                      "role",
+                      "source",
+                      "blocks"
+                    ],
+                    "properties": {
+                      "schema_version": {
+                        "type": "integer",
+                        "const": 5
+                      },
+                      "created_at": {
+                        "type": "string",
+                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                        "minLength": 24,
+                        "maxLength": 24,
+                        "allOf": [
+                          {
+                            "format": "date-time"
+                          },
+                          {
+                            "format": "utc_millis"
+                          }
+                        ]
+                      },
+                      "message_id": {
+                        "type": "string",
+                        "format": "uuid4",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "minLength": 36,
+                        "maxLength": 36
+                      },
+                      "role": {
+                        "const": "assistant"
+                      },
+                      "source": {
+                        "type": "object",
+                        "required": [
+                          "kind",
+                          "request_id"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "model"
+                          },
+                          "request_id": {
+                            "type": "string",
+                            "format": "uuid4",
+                            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "minLength": 36,
+                            "maxLength": 36
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "blocks": {
+                        "type": "array",
+                        "items": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "required": [
+                                "kind",
+                                "text"
+                              ],
+                              "properties": {
+                                "kind": {
+                                  "const": "text"
+                                },
+                                "text": {
+                                  "type": "string"
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "required": [
+                                "kind",
+                                "tool_call_id",
+                                "tool_name",
+                                "tool_definition_version",
+                                "raw_arguments",
+                                "parsed_arguments"
+                              ],
+                              "properties": {
+                                "kind": {
+                                  "const": "tool_call"
+                                },
+                                "tool_call_id": {
+                                  "type": "string",
+                                  "format": "uuid4",
+                                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "minLength": 36,
+                                  "maxLength": 36
+                                },
+                                "tool_name": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "tool_definition_version": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "raw_arguments": {
+                                  "type": "string"
+                                },
+                                "parsed_arguments": {
+                                  "type": "object"
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "minItems": 1
+                      },
+                      "thinking_summary": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "maxLength": 131072
+                      },
+                      "provider_metadata": {
+                        "type": [
+                          "object",
+                          "null"
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 ]
               },
@@ -4527,6 +4983,234 @@
                 "additionalProperties": false
               },
               "minItems": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "message_id",
+            "role",
+            "source",
+            "blocks"
+          ],
+          "properties": {
+            "schema_version": {
+              "type": "integer",
+              "const": 4
+            },
+            "message_id": {
+              "type": "string",
+              "format": "uuid4",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "minLength": 36,
+              "maxLength": 36
+            },
+            "role": {
+              "const": "user"
+            },
+            "source": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "compaction_id"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "context_checkpoint"
+                    },
+                    "compaction_id": {
+                      "type": "string",
+                      "format": "uuid4",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "minLength": 36,
+                      "maxLength": 36
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "compaction_id"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "context_compaction_instruction"
+                    },
+                    "compaction_id": {
+                      "type": "string",
+                      "format": "uuid4",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "minLength": 36,
+                      "maxLength": 36
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "blocks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "text"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "text"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "minItems": 1,
+              "maxItems": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "message_id",
+            "role",
+            "source",
+            "blocks"
+          ],
+          "properties": {
+            "schema_version": {
+              "type": "integer",
+              "const": 5
+            },
+            "created_at": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+              "minLength": 24,
+              "maxLength": 24,
+              "allOf": [
+                {
+                  "format": "date-time"
+                },
+                {
+                  "format": "utc_millis"
+                }
+              ]
+            },
+            "message_id": {
+              "type": "string",
+              "format": "uuid4",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "minLength": 36,
+              "maxLength": 36
+            },
+            "role": {
+              "const": "assistant"
+            },
+            "source": {
+              "type": "object",
+              "required": [
+                "kind",
+                "request_id"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "model"
+                },
+                "request_id": {
+                  "type": "string",
+                  "format": "uuid4",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "minLength": 36,
+                  "maxLength": 36
+                }
+              },
+              "additionalProperties": false
+            },
+            "blocks": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "text"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "text"
+                      },
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "tool_call_id",
+                      "tool_name",
+                      "tool_definition_version",
+                      "raw_arguments",
+                      "parsed_arguments"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "tool_call"
+                      },
+                      "tool_call_id": {
+                        "type": "string",
+                        "format": "uuid4",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "minLength": 36,
+                        "maxLength": 36
+                      },
+                      "tool_name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "tool_definition_version": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "raw_arguments": {
+                        "type": "string"
+                      },
+                      "parsed_arguments": {
+                        "type": "object"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "minItems": 1
+            },
+            "thinking_summary": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 131072
+            },
+            "provider_metadata": {
+              "type": [
+                "object",
+                "null"
+              ]
             }
           },
           "additionalProperties": false

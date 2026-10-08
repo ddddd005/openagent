@@ -34,6 +34,8 @@
 | 文档 | 内容 |
 | --- | --- |
 | [当前工作区验收与 Git 收口](docs/WORKTREE-ACCEPTANCE-2026-10-09.md) | 2026-10-09 改动归属、前端全量/后端定向证据、提交分组与分支边界 |
+| [Gemini 工具与思考规划](docs/PLAN-GEMINI-THINKING.md) | main 稳定 BAT / develop 隔离、签名闭环、G1-G5 范围与验收矩阵 |
+| [Gemini 实现与离线验收](docs/GEMINI-ACCEPTANCE-2026-10-09.md) | 原生工具协议、思考配置、签名持久化与回传、验收证据及剩余边界 |
 | [进度基线：2026-10-06](docs/BASELINE-2026-10-06.md) | `00970f7` 的能力、数据职责、验证事实与剩余边界 |
 | [0.2.0 架构收口基线](docs/BASELINE-0.2.0-2026-10-07.md) | 当前独立架构、安装/常驻/真实证据、固定版本身份及未完成边界 |
 | [内核上下文精简规划](docs/PLAN-CONTEXT-COMPACTION.md) | 基线确认、token 与 90% 守卫、精简提示词、有序替换后新增及三批实施 |

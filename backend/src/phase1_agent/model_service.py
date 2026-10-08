@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 import hashlib
 import hmac
 import os
+import httpx
 from threading import RLock
 from uuid import uuid4
 
@@ -24,6 +25,8 @@ from .contract_errors import ContractValidationError, ModelRequestError
 from .contract_json import canonical_bytes, content_digest, validate_json_value
 from .contracts import ModelResponse, ModelToolCall
 from .frozen_model import FrozenConfiguredAdapter, FrozenModelParameters
+from .gemini_adapter import GeminiAdapter, GeminiProtocolError
+from .gemini_capabilities import binding_capabilities, validate_provider_parameters
 from .graph_contracts import GraphDiagnosticError, require, uuid4_string
 from .model_contract import (
     validate_any_model_source_config, validate_provider_record, validate_public_model_binding,
@@ -46,9 +49,10 @@ class EnvironmentCredentialBroker:
         self._evidence_key = os.urandom(32)
 
     def _secret(self, reference):
-        require(reference == "env:DEEPSEEK_API_KEY", "model_credential_reference_denied",
+        require(reference in ("env:DEEPSEEK_API_KEY", "env:GEMINI_API_KEY"),
+                "model_credential_reference_denied",
                 "Credential reference is outside the installed broker policy")
-        secret = self._environ.get("DEEPSEEK_API_KEY")
+        secret = self._environ.get(reference.removeprefix("env:"))
         require(type(secret) is str and bool(secret.strip()), "model_credential_unavailable",
                 "Controlled model credential is unavailable")
         return secret
@@ -68,8 +72,16 @@ class EnvironmentCredentialBroker:
 
 def create_chat_transport(*, provider: dict, parameters: dict, api_key: str,
                           http_client=None):
-    """Existing DeepSeek Chat transport with all SDK retries explicitly off."""
+    """Provider-specific transports with automatic retries explicitly off."""
     frozen = FrozenModelParameters.from_mapping(parameters)
+    validate_provider_parameters(provider["protocol"], dict(frozen.as_mapping()))
+    if provider["protocol"] == "gemini":
+        adapter = GeminiAdapter(
+            api_key=api_key, model=frozen.model, base_url=provider["base_url"],
+            max_tokens=frozen.max_tokens, temperature=frozen.temperature,
+            thinking=dict(frozen.as_mapping())["thinking"], http_client=http_client,
+        )
+        return FrozenConfiguredAdapter(adapter, frozen, provider_address=provider["base_url"])
     adapter = DeepSeekAdapter(
         api_key=api_key, model=frozen.model, base_url=provider["base_url"],
         max_tokens=frozen.max_tokens, temperature=frozen.temperature,
@@ -118,7 +130,7 @@ class ModelCapabilityAdapter:
             if code in {
                 "model_provider_error", "model_dispatch_unknown",
                 "model_not_dispatched", "model_response_invalid",
-            } or (self._binding["schema_version"] == 2 and code in {
+            } or ("capacity" in self._binding and code in {
                 "model_fact_acceptance_failed", "context_compaction_cold_input_budget_exceeded",
             }):
                 raise ModelRequestError(code) from None
@@ -129,6 +141,8 @@ class ModelCapabilityAdapter:
             finish_reason=value["finish_reason"], content=value["content"],
             tool_calls=tuple(ModelToolCall(**call) for call in value["tool_calls"]),
             usage=deepcopy(value["usage"]), response_id=value["response_id"], model=value["model"],
+            thinking_summary=value.get("thinking_summary"),
+            provider_metadata=deepcopy(value.get("provider_metadata")),
         )
 
 
@@ -200,6 +214,7 @@ class PublicModelService:
             record = next((record for record in records if all(
                 record.get(key) == reference[key] for key in reference)), None)
             provider = validate_provider_record(record, reference)
+            validate_provider_parameters(provider["protocol"], config["parameters"])
             lease = self._broker.freeze(provider["credential_ref"])
             prepared[(*owner, node_id)] = _Frame(owner, node_id, config, provider, lease)
         with self._lock:
@@ -321,11 +336,14 @@ class PublicModelService:
             if frame.binding is None:
                 frame.producer_node_run_id = uuid4_string(context.node_run_id)
                 frame.binding = validate_public_model_binding({
-                    "schema_version": 2 if "capacity" in config else 1, "kind": "workflow.model-binding",
+                    "schema_version": (4 if "capacity" in config else 3)
+                    if frame.provider["protocol"] == "gemini" else (
+                        2 if "capacity" in config else 1),
+                    "kind": "workflow.model-binding",
                     "binding_id": str(uuid4()), "reference": config["reference"],
                     "parameters": config["parameters"],
-                    "capabilities": {"protocol": "chat", "tools": True, "stream": False,
-                                     "thinking": "disabled"},
+                    "capabilities": binding_capabilities(
+                        frame.provider["protocol"], config["parameters"]),
                     **({"capacity": config["capacity"]} if "capacity" in config else {}),
                 })
                 self._bindings[frame.binding["binding_id"]] = frame
@@ -429,26 +447,25 @@ class PublicModelService:
             names.append(tool["function"]["name"])
         require(len(set(names)) == len(names), "model_request_invalid", "Tool names repeat")
         messages, tools = deepcopy(messages), deepcopy(tools)
-        wire_messages = DeepSeekAdapter._project_messages(messages)
         frame = self._authorize_binding(context, binding_id)
         with self._frame_operation(frame):
             require(purpose in ("normal", "compaction"), "model_request_invalid", "Unknown model purpose")
             parameters = deepcopy(frame.config["parameters"])
             if purpose == "compaction":
-                require(frame.binding["schema_version"] == 2, "model_capacity_unknown",
+                require("capacity" in frame.binding, "model_capacity_unknown",
                         "Compaction requires an explicit native model capacity binding")
                 parameters["max_tokens"] = frame.config["capacity"]["summary_max_tokens"]
-                cold_estimate = len(canonical_bytes({"messages": wire_messages, "tools": tools}))
+            projector = GeminiAdapter if frame.provider["protocol"] == "gemini" else DeepSeekAdapter
+            prepared = projector.prepare_request(messages, tools, parameters)
+            if purpose == "compaction":
+                cold_estimate = len(canonical_bytes(prepared["wire_request"]))
                 require(cold_estimate <= frame.config["capacity"]["max_cold_input_tokens"],
                         "context_compaction_cold_input_budget_exceeded",
                         "Unconfirmed cache cannot exceed the explicit cold-input budget")
-            wire = {"model": parameters["model"], "messages": wire_messages,
-                    "tools": tools, "tool_choice": "auto", "stream": False,
-                    "extra_body": {"thinking": {"type": "disabled"}}}
-            wire.update({key: parameters[key]
-                         for key in ("max_tokens", "temperature") if key in parameters})
-            basis = {"messages": messages, "tools": tools, "wire_request": wire,
-                     "projection": "deepseek-chat@1",
+            basis = {"messages": messages, "tools": tools,
+                     "wire_request": deepcopy(prepared["wire_request"]),
+                     "transport_arguments": deepcopy(prepared["transport_arguments"]),
+                     "projection": prepared["projection"],
                      "provider_reference": deepcopy(frame.config["reference"]),
                      "parameters": deepcopy(parameters),
                      "input_refs": {"model": context.input_artifact_refs("model"),
@@ -459,11 +476,6 @@ class PublicModelService:
                     "input_tokens": cold_estimate, "token_count_kind": "utf8_bytes_estimate",
                     "max_cold_input_tokens": frame.config["capacity"]["max_cold_input_tokens"],
                 }
-            # The SDK merges extra_body into the transmitted JSON object.
-            basis["transport_arguments"] = deepcopy(wire)
-            basis["wire_request"] = {key: deepcopy(value) for key, value in wire.items()
-                                     if key != "extra_body"}
-            basis["wire_request"].update(deepcopy(wire["extra_body"]))
             digest = content_digest(basis)
             key = (*self._owner(context), uuid4_string(context.node_run_id), request_key)
             with self._lock:
@@ -520,9 +532,10 @@ class PublicModelService:
                     "model_not_dispatched", "Model request was blocked before transport entry") from None
             request.dispatched = True
             try:
-                response = selected_adapter.generate(messages, tools)
+                response = selected_adapter.generate_prepared(messages, tools, prepared)
+                gemini = frame.provider["protocol"] == "gemini"
                 result = {
-                    "schema_version": 1, "kind": "workflow.model-result",
+                    "schema_version": 2 if gemini else 1, "kind": "workflow.model-result",
                     "binding_id": binding_id, "request_id": request.request_id,
                     "finish_reason": response.finish_reason, "content": response.content,
                     "tool_calls": [{"id": call.id, "name": call.name,
@@ -530,6 +543,8 @@ class PublicModelService:
                                    for call in response.tool_calls],
                     "usage": deepcopy(response.usage), "response_id": response.response_id,
                     "model": response.model, "fact_refs": request.facts + [{"fact_id": str(uuid4())}],
+                    **({"thinking_summary": response.thinking_summary,
+                        "provider_metadata": deepcopy(response.provider_metadata)} if gemini else {}),
                 }
                 validate_public_model_result(result)
                 result.pop("fact_refs")
@@ -538,15 +553,19 @@ class PublicModelService:
                     {"classification": "response_received", "response": result,
                      "attempt_id": request.attempt_id})
             except Exception as exc:
-                if isinstance(exc, APIStatusError):
+                if isinstance(exc, (APIStatusError, httpx.HTTPStatusError)):
                     classification, request.error_code = "provider_error", "model_provider_error"
                 elif isinstance(exc, (ProviderResponseError, ContractValidationError)):
                     classification, request.error_code = "response_invalid", "model_response_invalid"
                 else:
                     classification, request.error_code = "dispatch_unknown", "model_dispatch_unknown"
                 details = {"classification": classification, "attempt_id": request.attempt_id}
-                if isinstance(exc, APIStatusError) and type(exc.status_code) is int:
-                    details["status_code"] = exc.status_code
+                if isinstance(exc, GeminiProtocolError):
+                    details["diagnostic"] = deepcopy(exc.diagnostic)
+                if isinstance(exc, (APIStatusError, httpx.HTTPStatusError)):
+                    status = exc.status_code if isinstance(exc, APIStatusError) else exc.response.status_code
+                    if type(status) is int:
+                        details["status_code"] = status
                 request.outcome = self._fact(context, request, "outcome",
                                             details)
             return self._settle(context, request)

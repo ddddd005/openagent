@@ -71,8 +71,11 @@ def preserve_artifact_references(value, mapping):
 
 
 def validate_context_unit(value):
-    _envelope(value, "workflow.context-unit",
-              ("unit_id", "source_kind", "root", "messages", "source_refs"))
+    validate_json_value(value)
+    _fields(value, ("schema_version", "kind", "unit_id", "source_kind", "root", "messages", "source_refs"))
+    require(type(value["schema_version"]) is int and value["schema_version"] in (1, 2)
+            and value["kind"] == "workflow.context-unit",
+            "context_invalid_contract", "Context unit version or kind is invalid")
     uuid4_string(value["unit_id"])
     require(value["source_kind"] in ("accepted_execution", "manual"),
             "context_invalid_source", "Context unit requires an explicit source family")
@@ -90,12 +93,17 @@ def validate_context_unit(value):
         return deepcopy(value)
     pending, seen_calls, identities = [], set(), []
     for message in messages:
-        _fields(message, ("message_id", "role", "content"),
-                optional=("tool_calls", "tool_call_id", "status", "is_error", "outcome_reason", "result"))
+        optional = ("tool_calls", "tool_call_id", "status", "is_error", "outcome_reason", "result")
+        if value["schema_version"] == 2:
+            optional += ("thinking_summary", "provider_metadata")
+        _fields(message, ("message_id", "role", "content"), optional=optional)
         identities.append(uuid4_string(message["message_id"]))
         require(type(message["content"]) is str and message["role"] in ("assistant", "tool"),
                 "context_invalid_message", "Generated units contain only assistant and tool messages")
         if message["role"] == "assistant":
+            from .provider_metadata import validate_provider_metadata, validate_thinking_summary
+            if "thinking_summary" in message:
+                validate_thinking_summary(message["thinking_summary"])
             require(not pending and not ({"tool_call_id", "status", "is_error", "outcome_reason", "result"} & set(message)),
                     "context_protocol_unclosed",
                     "An assistant cannot interrupt a pending tool batch")
@@ -110,7 +118,16 @@ def validate_context_unit(value):
                         "context_invalid_tool_call", "Tool call identity or payload is invalid")
                 pending.append(call["id"])
                 seen_calls.add(call["id"])
+            if message.get("provider_metadata") is not None:
+                validate_provider_metadata(
+                    message["provider_metadata"],
+                    calls=[{"id": call["id"], "name": call["name"], "raw_arguments": call["arguments"]}
+                           for call in calls],
+                    content=message["content"], thinking_summary=message.get("thinking_summary"),
+                )
         else:
+            require(not ({"thinking_summary", "provider_metadata"} & set(message)),
+                    "context_invalid_message", "Tool results cannot impersonate model protocol state")
             require({"tool_call_id", "status", "is_error", "outcome_reason", "result"} <= set(message)
                     and message["status"] in ("success", "error") and type(message["is_error"]) is bool
                     and message["is_error"] == (message["status"] == "error")
@@ -132,6 +149,13 @@ def validate_context_unit(value):
 
 def context_unit_references(value):
     return deepcopy(value["source_refs"])
+
+
+def validate_context_unit_version(value, version):
+    checked = validate_context_unit(value)
+    require(checked["schema_version"] == version, "context_invalid_contract",
+            "Context unit envelope differs from its registered contract version")
+    return checked
 
 
 def validate_context_view(value):

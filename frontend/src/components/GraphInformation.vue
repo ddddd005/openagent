@@ -9,6 +9,8 @@ import {
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { useWorkspaceStore } from "../stores/workspace";
 import ContextMaintenanceFact from "./ContextMaintenanceFact.vue";
+import ThinkingSummary from "./ThinkingSummary.vue";
+import { modelPresentationJson } from "../domain/modelPresentation";
 
 const props = defineProps<{ sessionId?: string; chainId?: string; nodeId?: string; initialKind?: string }>();
 const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
@@ -119,7 +121,7 @@ onUnmounted(() => { directoryGeneration++; directoryAccess.invalidate(); clearRe
       <p v-if="page && !page.items.length">本页无内容</p>
       <template v-for="(item, index) in page?.items ?? []" :key="index">
         <ContextMaintenanceFact v-if="page?.format_id === 'workflow.executor-facts'" :item="item" />
-        <pre v-else>{{ JSON.stringify(item, null, 2) }}</pre>
+        <template v-else><ThinkingSummary :value="item" /><pre>{{ modelPresentationJson(item) }}</pre></template>
       </template>
       <nav class="pagination" aria-label="信息分页">
         <button type="button" title="上一页信息" aria-label="上一页信息" :disabled="reading || readCursors.length < 2" @click="read(readCursors[readCursors.length - 2], true)"><ArrowLeft :size="14" /></button>

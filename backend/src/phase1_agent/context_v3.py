@@ -260,7 +260,8 @@ def prove_effective_view(view_ref, resolve_detail):
                     "context_adoption_source_invalid", "Window differs from its exact frozen configuration")
         if operation == "merge":
             origin = resolve_detail(derivation["round_ref"])
-            require((origin["component_id"], origin["component_version"]) == ("agents.execute", "3"),
+            require((origin["component_id"], origin["component_version"]) in (
+                ("agents.execute", "3"), ("agents.execute", "7")),
                     "context_adoption_source_invalid", "Summary-aware merge requires its direct Agent version")
             packet = validate_agent_context(origin["value"])
             require(origin.get("producer") == packet["owner"]

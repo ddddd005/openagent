@@ -45,6 +45,11 @@
       timestamp.title = `来源运行 ${mes.producer.node_run_id}`;
       messageElement.querySelector(".mesIDDisplay").textContent = `#${messageId + 1}`;
       messageElement.querySelector(".mes_text").innerHTML = messageFormatting(mes.text);
+      const thinking = messageElement.querySelector(".mes_thinking");
+      if (thinking) {
+        thinking.hidden = typeof mes.thinking_summary !== "string" || !mes.thinking_summary.trim();
+        thinking.querySelector(".thinking_text").textContent = mes.thinking_summary ?? "";
+      }
       for (const anchor of messageElement.querySelectorAll(".mes_text a")) {
         anchor.setAttribute("target", "_blank"); anchor.setAttribute("rel", "noopener noreferrer");
       }
@@ -76,10 +81,12 @@
       for (const [index, message] of messages.entries()) {
         let row = this.rows.get(message.entry_id);
         if (!row) {
-          row = { element: this.addOneMessage(message, { messageId: index, scroll: false }), text: message.text };
+          row = { element: this.addOneMessage(message, { messageId: index, scroll: false }),
+            text: message.text, thinking: message.thinking_summary };
           this.rows.set(message.entry_id, row); added = true;
-        } else if (row.text !== message.text) {
-          this.updateMessageElement(message, { messageId: index, messageElement: row.element }); row.text = message.text;
+        } else if (row.text !== message.text || row.thinking !== message.thinking_summary) {
+          this.updateMessageElement(message, { messageId: index, messageElement: row.element });
+          row.text = message.text; row.thinking = message.thinking_summary;
         }
         if (this.chatElement.children[index] !== row.element)
           this.chatElement.insertBefore(row.element, this.chatElement.children[index] ?? null);

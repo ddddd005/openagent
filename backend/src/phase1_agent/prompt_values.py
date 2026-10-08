@@ -249,6 +249,8 @@ def make_context_view(
 
 
 def _editable_text(message: dict[str, Any], block: dict[str, Any]) -> bool:
+    if message.get("provider_metadata") is not None:
+        return False
     if block["kind"] != "text" or any(item["kind"] != "text" for item in message["blocks"]):
         return False
     if message["role"] == "user":

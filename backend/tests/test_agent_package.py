@@ -201,17 +201,30 @@ def test_tool_batch_pause_retains_accepted_response_and_pending_tool_order_witho
     validate_execution_projection(unit, outcome.outputs["facts"], fixture.facts, fixture.handle.prompt)
 
 
-def test_pause_while_response_inflight_accepts_it_before_safe_point_and_never_resends():
+def test_pause_after_inflight_response_retains_unaccepted_message_and_never_resends():
     fixture = Fixture(pause_during_response=True)
     assert fixture.host.drive(fixture.owner).status == "paused"
     assert len(fixture.model_calls) == 1
-    assert len(fixture.handle.checkpoint.messages) == 1
-    assert len(fixture.handle.checkpoint.pending_tools) == 1
-    assert fixture.handle.checkpoint.pending_tools[0].name == "final_answer"
+    checkpoint = fixture.handle.checkpoint
+    assert checkpoint.messages == checkpoint.pending_tools == ()
+    retained = deepcopy(checkpoint.pending_model_message)
+    assert retained["role"] == "assistant" and retained["source"]["kind"] == "model"
+    assert len(checkpoint.pending_model_tools) == 1
+    assert checkpoint.pending_model_tools[0].name == "final_answer"
+    assert checkpoint.pending_model_tools[0].call_id == retained["blocks"][0]["tool_call_id"]
+    assert fixture.handle.retains(checkpoint)
+    assert not any(fact["payload"]["kind"] == "message_accepted" for fact in fixture.facts)
     fixture.host.resume(fixture.owner, "resume.retained")
     result = fixture.host.drive(fixture.owner)
     assert result.status == "succeeded" and result.outputs["result"] == text_content("answer")
     assert len(fixture.model_calls) == 1
+    accepted = [fact["payload"]["payload"]["message"] for fact in fixture.facts
+                if fact["payload"]["kind"] == "message_accepted"]
+    assert len(accepted) == 2 and accepted[0] == retained
+    assert accepted[1]["role"] == "tool"
+    assert accepted[1]["blocks"][0]["tool_call_id"] == retained["blocks"][0]["tool_call_id"]
+    assert sum(fact["payload"]["kind"] == "tool_dispatch" for fact in fixture.facts) == 1
+    assert sum(fact["payload"]["kind"] == "tool_settled" for fact in fixture.facts) == 1
 
 
 def test_protocol_correction_feedback_stays_in_actual_facts_and_not_effective_human_history():

@@ -9,6 +9,8 @@ from .frozen_model import FrozenModelParameters
 from .graph_contracts import require, uuid4_string
 from .host_sdk import DataTypeDefinition, ResourceIdentity
 from .model_configuration import CHAT_MAX_TOKENS, DEFAULT_PROVIDER_ID, validate_provider
+from .gemini_capabilities import binding_capabilities
+from .provider_metadata import validate_provider_metadata, validate_thinking_summary
 
 
 MODEL_PACKAGE_ID = "workflow.models"
@@ -38,6 +40,20 @@ def validate_chat_provider(value: object) -> dict:
     validate_provider({"schema_version": 1, "kind": "chat_provider",
                        "provider_id": DEFAULT_PROVIDER_ID, "revision": 1, **value})
     return deepcopy(value)
+
+
+def validate_chat_provider_v1(value: object) -> dict:
+    result = validate_chat_provider(value)
+    require(result["protocol"] == "chat", "model_provider_invalid",
+            "Provider schema one is the existing DeepSeek Chat contract")
+    return result
+
+
+def validate_gemini_provider(value: object) -> dict:
+    result = validate_chat_provider(value)
+    require(result["protocol"] == "gemini", "model_provider_invalid",
+            "Provider schema two requires Gemini generateContent")
+    return result
 
 
 def validate_model_parameters(value: object) -> dict:
@@ -90,9 +106,12 @@ def validate_model_capacity(value: object, parameters: dict) -> dict:
 
 def validate_provider_record(record: object, reference: dict) -> dict:
     require(type(record) is dict and all(record.get(key) == reference[key] for key in reference)
-            and record.get("data_schema_version") == 1,
+            and type(record.get("data_schema_version")) is int
+            and record["data_schema_version"] in (1, 2),
             "model_provider_unavailable", "Current provider is missing or has an unsupported schema")
     value = validate_chat_provider(record["value"])
+    require(record["data_schema_version"] == (2 if value["protocol"] == "gemini" else 1),
+            "model_provider_invalid", "Provider data schema version does not match its protocol")
     require(value["enabled"], "model_provider_disabled", "Current provider is disabled")
     require(value["credential_ref"] is not None, "model_credential_unavailable",
             "Current provider needs a controlled credential reference")
@@ -104,32 +123,34 @@ def validate_public_model_binding(value: object) -> dict:
     version = value.get("schema_version") if type(value) is dict else None
     expected = {
         "schema_version", "kind", "binding_id", "reference", "parameters", "capabilities",
-    } | ({"capacity"} if version == 2 else set())
+    } | ({"capacity"} if version in (2, 4) else set())
     require(type(value) is dict and set(value) == expected
-            and type(version) is int and version in (1, 2)
+            and type(version) is int and version in (1, 2, 3, 4)
             and value["kind"] == "workflow.model-binding",
             "model_binding_invalid", "Public model binding fields are invalid")
     uuid4_string(value["binding_id"])
     validate_model_reference(value["reference"])
     parameters = validate_model_parameters(value["parameters"])
     require(parameters == value["parameters"], "model_binding_invalid", "Binding parameters must be explicit")
-    if version == 2:
+    if version in (2, 4):
         validate_model_capacity(value["capacity"], parameters)
+    protocol = "gemini" if version in (3, 4) else "chat"
     require(type(value["capabilities"]) is dict
             and type(value["capabilities"].get("tools")) is bool
             and type(value["capabilities"].get("stream")) is bool
-            and value["capabilities"] == {"protocol": "chat", "tools": True, "stream": False,
-                                         "thinking": "disabled"},
+            and value["capabilities"] == binding_capabilities(protocol, parameters),
             "model_binding_invalid", "Binding capabilities do not match the supported transport")
     return deepcopy(value)
 
 
 def validate_public_model_result(value: object) -> dict:
     validate_json_value(value)
+    version = value.get("schema_version") if type(value) is dict else None
     require(type(value) is dict and set(value) == {
         "schema_version", "kind", "binding_id", "request_id", "finish_reason", "content",
         "tool_calls", "usage", "response_id", "model", "fact_refs",
-    } and type(value["schema_version"]) is int and value["schema_version"] == 1
+    } | ({"thinking_summary", "provider_metadata"} if version == 2 else set())
+            and type(version) is int and version in (1, 2)
             and value["kind"] == "workflow.model-result",
             "model_result_invalid", "Public model result fields are invalid")
     for field in ("binding_id", "request_id"):
@@ -149,6 +170,12 @@ def validate_public_model_result(value: object) -> dict:
                 "model_result_invalid", "Public model tool call fields are invalid")
         identities.append(call["id"])
     require(len(set(identities)) == len(identities), "model_result_invalid", "Tool call identities repeat")
+    if version == 2:
+        validate_thinking_summary(value["thinking_summary"])
+        validate_provider_metadata(value["provider_metadata"], calls=value["tool_calls"],
+                                   content=value["content"],
+                                   thinking_summary=value["thinking_summary"],
+                                   response_model=value["model"])
     require(type(value["fact_refs"]) is list and len(value["fact_refs"]) == 3,
             "model_result_invalid", "Model result requires request, attempt and outcome facts")
     for ref in value["fact_refs"]:
@@ -166,6 +193,10 @@ def model_type_definitions() -> tuple[DataTypeDefinition, ...]:
         "protocol": {"const": "chat"}, "base_url": {"type": "string"},
         "credential_ref": {"enum": [None, "env:DEEPSEEK_API_KEY"]}, "enabled": {"type": "boolean"},
     })
+    gemini_provider_schema = deepcopy(provider_schema)
+    gemini_provider_schema["properties"].update({
+        "protocol": {"const": "gemini"}, "credential_ref": {"enum": [None, "env:GEMINI_API_KEY"]},
+    })
     binding_schema = object_schema({
         "schema_version": {"const": 1}, "kind": {"const": "workflow.model-binding"},
         "binding_id": _uuid_schema(), "reference": {"type": "object"},
@@ -181,6 +212,16 @@ def model_type_definitions() -> tuple[DataTypeDefinition, ...]:
         field: {"type": "integer", "minimum": 1} for field in _CAPACITY_FIELDS
     })
     native_binding_schema["required"].append("capacity")
+    gemini_binding_schema = deepcopy(binding_schema)
+    gemini_binding_schema["properties"]["schema_version"] = {"const": 3}
+    gemini_binding_schema["properties"]["capabilities"]["properties"].update({
+        "protocol": {"const": "gemini"}, "thinking": {"enum": ["disabled", "budget", "level"]},
+    })
+    gemini_native_binding_schema = deepcopy(gemini_binding_schema)
+    gemini_native_binding_schema["properties"]["schema_version"] = {"const": 4}
+    gemini_native_binding_schema["properties"]["capacity"] = deepcopy(
+        native_binding_schema["properties"]["capacity"])
+    gemini_native_binding_schema["required"].append("capacity")
     result_schema = object_schema({
         "schema_version": {"const": 1}, "kind": {"const": "workflow.model-result"},
         "binding_id": _uuid_schema(), "request_id": _uuid_schema(),
@@ -194,9 +235,17 @@ def model_type_definitions() -> tuple[DataTypeDefinition, ...]:
         "fact_refs": {"type": "array", "minItems": 3, "maxItems": 3,
                       "items": object_schema({"fact_id": _uuid_schema()})},
     })
+    gemini_result_schema = deepcopy(result_schema)
+    gemini_result_schema["properties"].update({
+        "schema_version": {"const": 2}, "thinking_summary": {"type": ["string", "null"]},
+        "provider_metadata": {"type": "object"},
+    })
+    gemini_result_schema["required"].extend(["thinking_summary", "provider_metadata"])
     return (
         DataTypeDefinition(CHAT_PROVIDER_TYPE, 1, provider_schema, scope="global",
-                           validator=validate_chat_provider, max_bytes=8192),
+                           validator=validate_chat_provider_v1, max_bytes=8192),
+        DataTypeDefinition(CHAT_PROVIDER_TYPE, 2, gemini_provider_schema, scope="global",
+                           validator=validate_gemini_provider, max_bytes=8192),
         DataTypeDefinition(MODEL_BINDING_TYPE, 1, binding_schema, scope="content",
                            validator=validate_public_model_binding, max_bytes=8192,
                            references=lambda value: [deepcopy(value["reference"])],
@@ -205,6 +254,16 @@ def model_type_definitions() -> tuple[DataTypeDefinition, ...]:
                            validator=validate_public_model_binding, max_bytes=8192,
                            references=lambda value: [deepcopy(value["reference"])],
                            reference_mapper=lambda value, mapping: deepcopy(value)),
+        DataTypeDefinition(MODEL_BINDING_TYPE, 3, gemini_binding_schema, scope="content",
+                           validator=validate_public_model_binding, max_bytes=8192,
+                           references=lambda value: [deepcopy(value["reference"])],
+                           reference_mapper=lambda value, mapping: deepcopy(value)),
+        DataTypeDefinition(MODEL_BINDING_TYPE, 4, gemini_native_binding_schema, scope="content",
+                           validator=validate_public_model_binding, max_bytes=8192,
+                           references=lambda value: [deepcopy(value["reference"])],
+                           reference_mapper=lambda value, mapping: deepcopy(value)),
         DataTypeDefinition(MODEL_RESULT_TYPE, 1, result_schema, scope="content",
+                           validator=validate_public_model_result),
+        DataTypeDefinition(MODEL_RESULT_TYPE, 2, gemini_result_schema, scope="content",
                            validator=validate_public_model_result),
     )

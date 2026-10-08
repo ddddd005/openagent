@@ -70,7 +70,59 @@
       messages.push({ entry_id: row.entry.entry_id, role: row.entry.role, text: resolved.text,
         source_ref: clone(row.entry.source_ref), producer: clone(resolved.producer) });
     }
+    if (client.application?.queries.some(query => query.name === "information.read")
+      && client.application.queries.some(query => query.name === "registration.list")) {
+      await attachThinking(client, messages, cache, view);
+      if (view !== client.consumer) return null;
+    }
     return messages;
+  }
+  async function attachThinking(client, messages, cache, view) {
+    const owners = new Set(messages.filter(row => row.role === "assistant").map(row => row.producer.node_run_id));
+    const summaries = new Map();
+    for (const owner of owners) {
+      const saved = cache.get("thinking:" + owner);
+      if (saved !== undefined) summaries.set(owner, saved);
+    }
+    if ([...owners].some(owner => !summaries.has(owner))) {
+      let cursor = null;
+      const directoryCursors = new Set();
+      do {
+        if (view !== client.consumer) return;
+        const directory = await client.listRegistrations({ limit: 1000, cursor });
+        if (!directory || view !== client.consumer) return;
+        for (const binding of directory.items) {
+          if (binding.kind !== "information_binding" || binding.declaration.channel_id !== "thinking-summaries"
+            || binding.declaration.format_id !== "workflow.thinking-summaries" || !binding.read_public
+            || !owners.has(binding.owner.node_run_id) || summaries.has(binding.owner.node_run_id)) continue;
+          const items = [], seen = new Set();
+          let next = null;
+          do {
+            const page = await client.readInformation(binding, { source_scope: "history", cursor: next });
+            if (!page || view !== client.consumer) return;
+            if (page.status !== "ok") throw new Error("思考摘要历史不完整，请重新读取");
+            for (const item of page.items) {
+              if (!GraphChat.exact(item, ["message_id", "request_id", "thinking_summary"])
+                || !GraphChat.uuid(item.message_id) || !GraphChat.uuid(item.request_id)
+                || typeof item.thinking_summary !== "string") throw new Error("思考摘要格式无效");
+              if (item.thinking_summary.trim()) items.push(item.thinking_summary);
+            }
+            next = page.next_cursor;
+            if (next && seen.has(next)) throw new Error("思考摘要分页游标重复");
+            if (next) seen.add(next);
+          } while (next);
+          summaries.set(binding.owner.node_run_id, items);
+          cache.set("thinking:" + binding.owner.node_run_id, items);
+        }
+        cursor = directory.next_cursor;
+        if (cursor && directoryCursors.has(cursor)) throw new Error("思考摘要目录游标重复");
+        if (cursor) directoryCursors.add(cursor);
+      } while (cursor);
+    }
+    for (const message of messages) if (message.role === "assistant") {
+      const items = summaries.get(message.producer.node_run_id);
+      if (items?.length) message.thinking_summary = items.join("\n\n");
+    }
   }
   function roundTargets(messages, packet) {
     const targets = new Map();
@@ -132,5 +184,5 @@
       request: createRequest(fetcher) });
   }
   root.TavernAdapter = { MAX_TEXT, type, namespace, storageForTavern, textInput, inputsFor,
-    displayPorts, collectEntries, transcript, roundTargets, forkConfirmation, createRequest, createClient };
+    displayPorts, collectEntries, transcript, attachThinking, roundTargets, forkConfirmation, createRequest, createClient };
 })(globalThis);

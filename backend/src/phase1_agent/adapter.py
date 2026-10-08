@@ -12,6 +12,7 @@ from openai import APIResponseValidationError, OpenAI
 
 from .contracts import Message, ModelResponse, ModelToolCall
 from .frozen_model import FrozenModelParameters
+from .gemini_capabilities import validate_provider_parameters
 
 
 class ProviderResponseError(Exception):
@@ -45,6 +46,7 @@ class DeepSeekAdapter:
         if temperature is not None:
             parameters["temperature"] = temperature
         self._parameters = FrozenModelParameters.from_mapping(parameters)
+        validate_provider_parameters("chat", dict(self._parameters.as_mapping()))
         self._max_retries = max_retries
         self._client = OpenAI(
             api_key=api_key,
@@ -88,26 +90,37 @@ class DeepSeekAdapter:
     ) -> ModelResponse:
         if self._client.max_retries != self.max_retries:
             raise ValueError("Model client retry settings changed after construction")
-        internal_snapshot = copy.deepcopy(list(messages))
-        tool_snapshot = copy.deepcopy(list(tools))
-        wire_messages = self._project_messages(internal_snapshot)
+        return self.generate_prepared(self.prepare_request(messages, tools, self.model_parameters))
+
+    @classmethod
+    def prepare_request(cls, messages, tools, parameters):
+        parameters = dict(FrozenModelParameters.from_mapping(parameters).as_mapping())
+        validate_provider_parameters("chat", parameters)
         request_snapshot = copy.deepcopy(
             {
-                "model": self.model,
-                "messages": wire_messages,
-                "tools": tool_snapshot,
+                "model": parameters["model"],
+                "messages": cls._project_messages(copy.deepcopy(list(messages))),
+                "tools": list(tools),
                 "tool_choice": "auto",
                 "stream": False,
                 "extra_body": {"thinking": {"type": "disabled"}},
             }
         )
-        if self.max_tokens is not None:
-            request_snapshot["max_tokens"] = self.max_tokens
-        if self.temperature is not None:
-            request_snapshot["temperature"] = self.temperature
+        for key in ("max_tokens", "temperature"):
+            if key in parameters:
+                request_snapshot[key] = parameters[key]
+        wire = {key: copy.deepcopy(value) for key, value in request_snapshot.items()
+                if key != "extra_body"}
+        wire.update(copy.deepcopy(request_snapshot["extra_body"]))
+        return {"projection": "deepseek-chat@1", "wire_request": wire,
+                "transport_arguments": request_snapshot}
 
+    def generate_prepared(self, prepared):
+        if self._client.max_retries != self.max_retries:
+            raise ValueError("Model client retry settings changed after construction")
         try:
-            response = self._client.chat.completions.create(**request_snapshot)
+            response = self._client.chat.completions.create(
+                **copy.deepcopy(prepared["transport_arguments"]))
         except (JSONDecodeError, UnicodeDecodeError, APIResponseValidationError) as exc:
             raise ProviderResponseError("Provider response could not be decoded.") from exc
         return self._parse_response(response)
@@ -196,6 +209,8 @@ class DeepSeekAdapter:
         for message in messages:
             if not isinstance(message, Mapping):
                 raise ValueError("History messages must be mappings.")
+            if message.get("provider_metadata") is not None or message.get("thinking_summary") is not None:
+                raise ValueError("DeepSeek Chat cannot replay another provider's signed thinking history.")
 
             kind = message.get("kind")
             if pending_call_ids and kind != "tool_result":

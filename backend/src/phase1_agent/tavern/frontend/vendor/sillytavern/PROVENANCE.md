@@ -1,6 +1,7 @@
 # Isolated Tavern Frontend: Source And Modifications
 
 Recorded and modified: 2026-10-08, Asia/Shanghai.
+Gemini visible-summary disclosure modified: 2026-10-09, Asia/Shanghai.
 
 ## Upstream Identity
 
@@ -45,6 +46,12 @@ relative to this isolated frontend directory.
 
 `adapter.js` and `entry.js` are package-local OpenAgent adaptations. They reuse
 the shared public GraphChat client, not the ST application or server.
+
+The Gemini addition uses a separate closed `thinking-summaries` information
+channel and an independent, initially collapsed disclosure. It shows only the
+provider's visible summary as text; opaque signatures and original provider
+parts are never imported into the message body or copied text. No ST reasoning
+parser, signature fallback or model execution path was introduced.
 
 ## Closed Runtime Dependencies
 

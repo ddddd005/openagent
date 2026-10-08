@@ -253,12 +253,16 @@ def create_context_package():
             write_validator=validate_effective_context_write))
         for identity, version, validator, references, bindings in (
             ("CONTEXT_UNIT", 1, validate_context_unit, context_unit_references, None),
+            ("CONTEXT_UNIT", 2, validate_context_unit, context_unit_references, None),
             ("CONTEXT_VIEW", 1, validate_context_view, context_view_references, None),
             ("AGENT_DELTA", 1, validate_agent_delta, agent_delta_references, None),
             ("CONTEXT_COMMIT", 1, validate_context_commit, lambda value: [value["view_ref"]], None),
             ("PROMPT", 3, validate_context_ready_prompt, context_prompt_references,
              lambda value: value["source_output_refs"]),
         ):
+            if identity == "CONTEXT_UNIT":
+                from .context_contract import validate_context_unit_version
+                validator = lambda value, expected=version: validate_context_unit_version(value, expected)
             host.register_data_type(DataTypeDefinition(
                 identity, version, {"type": "object"}, scope="content", validator=validator,
                 references=references, reference_mapper=preserve_artifact_references,

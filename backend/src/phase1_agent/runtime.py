@@ -38,6 +38,10 @@ from .context_compaction import (
 from .context_compaction_policy import effective_summary_prompt
 from .prepared_request import check_prepared_request_capacity
 from .prompt_errors import PromptProcessingError
+from .provider_metadata import (
+    canonical_message_metadata, remap_provider_metadata, validate_provider_metadata,
+    validate_thinking_summary,
+)
 from .tools import RegisteredTool, ToolExecutionError, ToolOutcomeUnknown
 
 
@@ -75,6 +79,9 @@ class KernelCheckpoint:
     integrity_tag: str
     effective_messages: tuple[dict[str, Any], ...] = ()
     context_operations: tuple[dict[str, Any], ...] = ()
+    pending_model_message: dict[str, Any] | None = None
+    pending_model_tools: tuple[PendingTool, ...] = ()
+    pending_model_provider_ids: tuple[str, ...] = ()
 
 
 class KernelPaused(Exception):
@@ -108,6 +115,12 @@ def _checkpoint_tag(checkpoint: KernelCheckpoint) -> str:
         "seen_provider_ids": sorted(checkpoint.seen_provider_ids),
         "effective_messages": list(checkpoint.effective_messages),
         "context_operations": list(checkpoint.context_operations),
+        "pending_model_message": checkpoint.pending_model_message,
+        "pending_model_tools": [{
+            "name": item.name, "raw_arguments": item.raw_arguments,
+            "arguments": item.arguments, "call_id": item.call_id,
+        } for item in checkpoint.pending_model_tools],
+        "pending_model_provider_ids": list(checkpoint.pending_model_provider_ids),
     }
     return hmac.new(_CHECKPOINT_KEY, canonical_bytes(payload), hashlib.sha256).hexdigest()
 
@@ -162,10 +175,12 @@ def _id() -> str:
     return str(uuid4())
 
 
-def _message(role: str, source: dict[str, Any], blocks: list[dict[str, Any]]) -> dict[str, Any]:
+def _message(role: str, source: dict[str, Any], blocks: list[dict[str, Any]],
+             metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     return validate_record("agent_message", {
-        "schema_version": 1, "message_id": _id(), "role": role,
+        "schema_version": 5 if metadata else 1, "message_id": _id(), "role": role,
         "source": source, "blocks": blocks,
+        **(metadata or {}),
     })
 
 
@@ -210,9 +225,9 @@ def _observation(call_id: str, execution_id: str | None, reason_code: str) -> di
 
 
 class CanonicalModelAdapter:
-    """Project canonical v2 history into a legacy DeepSeekAdapter's internal format.
+    """Project canonical history into the provider boundary's internal format.
 
-    Construct the legacy adapter with max_retries=0. Credentials are neither
+    Construct DeepSeekAdapter with max_retries=0. Credentials are neither
     inspected nor created here.
     """
 
@@ -256,11 +271,13 @@ class CanonicalModelAdapter:
                         "id": b["tool_call_id"], "name": b["tool_name"],
                         "raw_arguments": b["raw_arguments"],
                     } for b in blocks if b["kind"] == "tool_call"],
+                    **canonical_message_metadata(message),
                 })
             else:
                 legacy.append({
                     "kind": "text", "role": message["role"],
                     "content": "\n".join(b["text"] for b in blocks),
+                    **canonical_message_metadata(message),
                 })
         return legacy
 
@@ -310,6 +327,9 @@ class SnapshotKernel:
         context_operations: list[dict[str, Any]] = []
         compaction_settings = None
         pending_tools: list[PendingTool] = []
+        pending_model_message: dict[str, Any] | None = None
+        pending_model_tools: list[PendingTool] = []
+        pending_model_provider_ids: list[str] = []
         model_requests = 0
         attempts = 0
         final_corrections = 0
@@ -356,7 +376,9 @@ class SnapshotKernel:
 
         def fail(code: str, cause: BaseException | None = None) -> None:
             category = ("interrupted" if code == "execution_interrupted" else
-                        "protocol" if code in {"protocol_error", "invalid_final", "model_response_invalid"}
+                        "protocol" if code in {
+                            "protocol_error", "invalid_final", "model_response_invalid", "provider_metadata_invalid",
+                        }
                         else "model")
             recoverable = code in {
                 "protocol_error", "invalid_final",
@@ -405,6 +427,9 @@ class SnapshotKernel:
                 integrity_tag="",
                 effective_messages=tuple(copy.deepcopy(effective_messages)),
                 context_operations=tuple(copy.deepcopy(context_operations)),
+                pending_model_message=copy.deepcopy(pending_model_message),
+                pending_model_tools=tuple(copy.deepcopy(pending_model_tools)),
+                pending_model_provider_ids=tuple(pending_model_provider_ids),
             )
             return replace(state, integrity_tag=_checkpoint_tag(state))
 
@@ -602,6 +627,35 @@ class SnapshotKernel:
                                       if checkpoint.effective_messages else
                                       copy.deepcopy(frozen["s0"] + messages))
                 context_operations = copy.deepcopy(list(checkpoint.context_operations))
+                pending_model_message = copy.deepcopy(checkpoint.pending_model_message)
+                pending_model_tools = copy.deepcopy(list(checkpoint.pending_model_tools))
+                pending_model_provider_ids = list(checkpoint.pending_model_provider_ids)
+                if pending_model_message is not None:
+                    if pending_tools:
+                        raise ValueError("Retained model response cannot overlap accepted pending tools")
+                    retained = validate_record("agent_message", pending_model_message)
+                    if retained["role"] != "assistant" or retained["source"]["kind"] != "model":
+                        raise ValueError("Retained response must be an original model message")
+                    calls = [block for block in retained["blocks"] if block["kind"] == "tool_call"]
+                    if (len(calls) != len(pending_model_tools)
+                            or len(calls) != len(pending_model_provider_ids)
+                            or any(type(item) is not PendingTool
+                                   or item.call_id != block["tool_call_id"]
+                                   or item.name != block["tool_name"]
+                                   or item.raw_arguments != block["raw_arguments"]
+                                   or item.arguments != block["parsed_arguments"]
+                                   for item, block in zip(pending_model_tools, calls))
+                            or set(pending_model_provider_ids) & seen_provider_ids):
+                        raise ValueError("Retained response queue differs from original model message")
+                    if calls:
+                        validate_pending_message_history(
+                            effective_messages + [retained],
+                            [item.call_id for item in pending_model_tools],
+                        )
+                    else:
+                        validate_message_history(effective_messages + [retained])
+                elif pending_model_tools or pending_model_provider_ids:
+                    raise ValueError("Retained queue requires its original response")
                 if pending_tools:
                     validate_pending_message_history(
                         effective_messages, [item.call_id for item in pending_tools],
@@ -767,6 +821,25 @@ class SnapshotKernel:
                 boundary("after_compaction")
 
         while True:
+            if pending_model_message is not None:
+                retained = pending_model_message
+                accept(retained)
+                pending_model_message = None
+                pending_tools = pending_model_tools
+                pending_model_tools = []
+                seen_provider_ids.update(pending_model_provider_ids)
+                pending_model_provider_ids = []
+                if not pending_tools:
+                    if text_feedback:
+                        fail("protocol_error")
+                    text_feedback += 1
+                    accept(checked_record(
+                        _message, "user", {"kind": "protocol_feedback",
+                                          "request_id": retained["source"]["request_id"]},
+                        [{"kind": "text", "text": "Call final_answer with a valid JSON answer."}],
+                    ))
+                for pending in pending_tools:
+                    tool_event("queue", pending.call_id)
             while pending_tools:
                 boundary("before_tool")
                 pending = pending_tools[0]
@@ -953,6 +1026,21 @@ class SnapshotKernel:
 
             if not isinstance(response, ModelResponse):
                 fail("protocol_error")
+            response_metadata = {}
+            try:
+                validate_thinking_summary(response.thinking_summary)
+                if response.thinking_summary is not None:
+                    response_metadata["thinking_summary"] = response.thinking_summary
+                if response.provider_metadata is not None:
+                    response_metadata["provider_metadata"] = validate_provider_metadata(
+                        response.provider_metadata,
+                        calls=[{"id": call.id, "name": call.name,
+                                "raw_arguments": call.raw_arguments} for call in response.tool_calls],
+                        content=response.content, thinking_summary=response.thinking_summary,
+                        response_model=response.model,
+                    )
+            except (ContractValidationError, TypeError, AttributeError):
+                fail("provider_metadata_invalid")
             if response.finish_reason == "stop":
                 if response.tool_calls or not isinstance(response.content, str) or not response.content:
                     fail("protocol_error")
@@ -960,14 +1048,11 @@ class SnapshotKernel:
                     validate_json_value(response.content)
                 except ContractValidationError:
                     fail("protocol_error")
+                pending_model_message = checked_record(
+                    _message, "assistant", {"kind": "model", "request_id": request_id},
+                    [{"kind": "text", "text": response.content}], response_metadata,
+                )
                 boundary("before_accept")
-                accept(checked_record(_message, "assistant", {"kind": "model", "request_id": request_id},
-                                      [{"kind": "text", "text": response.content}]))
-                if text_feedback:
-                    fail("protocol_error")
-                text_feedback += 1
-                accept(checked_record(_message, "user", {"kind": "protocol_feedback", "request_id": request_id},
-                                      [{"kind": "text", "text": "Call final_answer with a valid JSON answer."}]))
                 continue
             if response.finish_reason != "tool_calls" or not response.tool_calls:
                 fail("protocol_error")
@@ -1005,8 +1090,15 @@ class SnapshotKernel:
                 "tool_definition_version": versions[name], "raw_arguments": raw,
                 "parsed_arguments": args,
             } for name, raw, args, internal_id in accepted)
-            assistant = checked_record(_message, "assistant", {"kind": "model", "request_id": request_id}, blocks)
-            boundary("before_accept")
+            if "provider_metadata" in response_metadata:
+                response_metadata["provider_metadata"] = remap_provider_metadata(
+                    response_metadata["provider_metadata"],
+                    {call.id: item[3] for call, item in zip(response.tool_calls, accepted)},
+                    calls=[{"id": item[3], "name": item[0], "raw_arguments": item[1]}
+                           for item in accepted],
+                )
+            assistant = checked_record(_message, "assistant", {"kind": "model", "request_id": request_id},
+                                       blocks, response_metadata)
             try:
                 validate_pending_message_history(
                     frozen["s0"] + messages + [assistant],
@@ -1014,9 +1106,8 @@ class SnapshotKernel:
                 )
             except ContractValidationError as exc:
                 contract_fail("message_contract_error", exc)
-            accept(assistant)
-            seen_provider_ids.update(batch_ids)
-            pending_tools = [PendingTool(name, raw, copy.deepcopy(args), call_id)
-                             for name, raw, args, call_id in accepted]
-            for pending in pending_tools:
-                tool_event("queue", pending.call_id)
+            pending_model_message = assistant
+            pending_model_tools = [PendingTool(name, raw, copy.deepcopy(args), call_id)
+                                   for name, raw, args, call_id in accepted]
+            pending_model_provider_ids = [call.id for call in response.tool_calls]
+            boundary("before_accept")

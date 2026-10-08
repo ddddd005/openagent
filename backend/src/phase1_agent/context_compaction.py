@@ -135,6 +135,7 @@ def should_compact(capacity: dict, policy: dict) -> bool:
 
 def is_compactable_text(message: dict) -> bool:
     return (message["role"] in ("user", "assistant")
+            and message.get("provider_metadata") is None
             and all(block["kind"] == "text" for block in message["blocks"])
             and message["source"]["kind"] not in (
                 "protocol_feedback", "context_compaction_instruction", "upstream_node",
@@ -229,7 +230,7 @@ def replace_compacted_messages(messages: list[dict], covered: list[str],
 
 
 def response_evidence(response: Any) -> dict:
-    return {
+    result = {
         "text": response.content, "finish_reason": response.finish_reason,
         "tool_calls": [{"id": call.id, "name": call.name,
                         "raw_arguments": call.raw_arguments, "type": call.type}
@@ -237,11 +238,18 @@ def response_evidence(response: Any) -> dict:
         "usage": deepcopy(response.usage), "response_id": response.response_id,
         "model": response.model,
     }
+    if response.thinking_summary is not None:
+        result["thinking_summary"] = response.thinking_summary
+    if response.provider_metadata is not None:
+        result["provider_metadata"] = deepcopy(response.provider_metadata)
+    return result
 
 
 def validate_summary_result(value: Any, *, successful: bool = False) -> dict:
     validate_json_value(value)
-    _require(type(value) is dict and set(value) == _RESULT_FIELDS
+    _require(type(value) is dict and _RESULT_FIELDS <= set(value) <= _RESULT_FIELDS | {
+        "thinking_summary", "provider_metadata",
+    }
              and (value["text"] is None or type(value["text"]) is str)
              and type(value["finish_reason"]) is str
              and type(value["tool_calls"]) is list
@@ -250,6 +258,15 @@ def validate_summary_result(value: Any, *, successful: bool = False) -> dict:
              and all(value[key] is None or type(value[key]) is str
                      for key in ("response_id", "model")),
              "Invalid context summary response evidence")
+    from .provider_metadata import validate_provider_metadata, validate_thinking_summary
+    if "thinking_summary" in value:
+        validate_thinking_summary(value["thinking_summary"])
+    if value.get("provider_metadata") is not None:
+        validate_provider_metadata(
+            value["provider_metadata"], calls=value["tool_calls"],
+            content=value["text"], thinking_summary=value.get("thinking_summary"),
+            response_model=value["model"],
+        )
     if successful:
         _require(value["finish_reason"] == "stop" and not value["tool_calls"]
                  and type(value["text"]) is str and bool(value["text"].strip()),

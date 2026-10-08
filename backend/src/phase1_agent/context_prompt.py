@@ -14,7 +14,8 @@ from .prompt_depth import (
 
 def _message(message):
     result = {key: deepcopy(message[key]) for key in
-              ("role", "content", "tool_calls", "tool_call_id") if key in message}
+              ("role", "content", "tool_calls", "tool_call_id", "thinking_summary", "provider_metadata")
+              if key in message}
     if "tool_calls" in result:
         result["tool_calls"] = [{"id": call["id"], "type": "function",
                                  "function": {"name": call["name"], "arguments": call["arguments"]}}

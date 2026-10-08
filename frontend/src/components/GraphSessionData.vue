@@ -3,6 +3,8 @@ import { computed } from "vue";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { graphObject } from "../domain/workflowGraph";
 import { useInstalledWorkbenchFrontendHost } from "../application/workbenchFrontendHost";
+import ThinkingSummary from "./ThinkingSummary.vue";
+import { modelPresentationJson } from "../domain/modelPresentation";
 const graph = useWorkflowGraphStore();
 const frontendHost = useInstalledWorkbenchFrontendHost();
 const objects = computed(() => Object.entries(graph.session?.objects ?? {}).map(([key, object]) => ({ key, ...object })));
@@ -24,7 +26,7 @@ function write(name: string, event: Event) {
   <section v-if="graph.session?.objects !== undefined" class="graph-session-data"><h3>会话对象</h3>
     <p v-if="!objects.length">此会话尚无对象绑定。</p>
     <details v-for="object in objects" :key="object.key"><summary>{{ object.key }} · {{ object.type_id }}@{{ object.schema_version }} · r{{ object.revision }}{{ object.deleted ? ' · 已删除' : '' }}</summary>
-      <pre>{{ JSON.stringify(object.value, null, 2) }}</pre><small>{{ object.binding.scope }} · {{ object.revision_id }}</small>
+      <ThinkingSummary :value="object.value" /><pre>{{ modelPresentationJson(object.value) }}</pre><small>{{ object.binding.scope }} · {{ object.revision_id }}</small>
     </details>
     <component v-for="renderer in renderers" :key="`${renderer.declaration.extension_id}:${renderer.objectKey}`"
       :is="renderer.component" :object-key="renderer.objectKey" />

@@ -202,7 +202,7 @@ def validate_bound_context_write(value, context):
             "context_agent_binding_mismatch", "Merge candidate differs from its bound writer")
     packet_source = resolver(view["derivation"]["delta_ref"])
     packet = validate_agent_context(packet_source["value"])
-    require(packet_source["component_id"] == "agents.execute" and packet_source["component_version"] == "2",
+    require(packet_source["component_id"] == "agents.execute" and packet_source["component_version"] in ("2", "6"),
             "context_adoption_source_invalid", "Merge requires the official Agent direct output")
     require(packet_source.get("producer", packet["owner"]) == packet["owner"],
             "context_agent_binding_mismatch", "Agent receipt owner differs from accepted producer")
@@ -245,7 +245,8 @@ def validate_bound_context_adoption_proof(view_ref, resolve_detail):
                         "context_adoption_source_invalid", "Window differs from its frozen configuration")
         if operation == "merge":
             packet_source = resolve_detail(view["derivation"]["delta_ref"])
-            require((packet_source["component_id"], packet_source["component_version"]) == ("agents.execute", "2"),
+            require((packet_source["component_id"], packet_source["component_version"]) in (
+                ("agents.execute", "2"), ("agents.execute", "6")),
                     "context_adoption_source_invalid", "Merge requires the official direct Agent output")
         validate_bound_context_artifacts(
             {"view_ref": reference, "view": view}, lambda ref: resolve_detail(ref)["value"])

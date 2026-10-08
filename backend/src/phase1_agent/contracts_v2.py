@@ -212,7 +212,12 @@ class CandidateSelection(TypedDict):
     revision: int
 
 
-class AgentMessage(TypedDict):
+class _OptionalModelChannels(TypedDict, total=False):
+    thinking_summary: str | None
+    provider_metadata: dict[str, Any] | None
+
+
+class AgentMessage(_OptionalModelChannels):
     schema_version: int
     message_id: str
     role: Role
@@ -627,6 +632,15 @@ _CONTEXT_MAINTENANCE_MESSAGE = _object(
     ),
     blocks={**_array(_TEXT), "minItems": 1, "maxItems": 1},
 )
+_PROVIDER_MODEL_MESSAGE = _object(
+    ("schema_version", "message_id", "role", "source", "blocks"),
+    schema_version={"type": "integer", "const": 5},
+    created_at=_UTC_MILLIS, message_id=_UUID, role={"const": "assistant"},
+    source=_MESSAGE_SOURCE["assistant"],
+    blocks={**_array(_union(_TEXT, _TOOL_CALL)), "minItems": 1},
+    thinking_summary={"type": ["string", "null"], "maxLength": 131072},
+    provider_metadata={"type": ["object", "null"]},
+)
 _AGENT_MESSAGE = _union(
     *(
         _record(
@@ -648,6 +662,7 @@ _AGENT_MESSAGE = _union(
     _RUNTIME_EXECUTION_MESSAGE,
     _PROMPT_MESSAGE,
     _CONTEXT_MAINTENANCE_MESSAGE,
+    _PROVIDER_MODEL_MESSAGE,
 )
 _GENERATED_MESSAGE = {
     "allOf": [
@@ -1120,6 +1135,9 @@ _VALIDATORS = {
 
 def _check_tool_arguments(messages: list[dict[str, Any]]) -> None:
     for message in messages:
+        if message["schema_version"] == 5:
+            from .provider_metadata import canonical_message_metadata
+            canonical_message_metadata(message)
         for block in message["blocks"]:
             if block["kind"] == "tool_result":
                 if message["source"]["tool_execution_id"] != block["tool_execution_id"]:

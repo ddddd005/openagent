@@ -17,6 +17,7 @@ class FrozenModelParameters:
     model: str
     max_tokens: int | None = None
     temperature: float | int | None = None
+    thinking: tuple | str = "disabled"
 
     @classmethod
     def from_mapping(cls, parameters: Mapping[str, Any]) -> FrozenModelParameters:
@@ -37,15 +38,32 @@ class FrozenModelParameters:
             or not 0 <= temperature <= 2
         ):
             raise ContractValidationError("Frozen temperature must be between 0 and 2")
-        if parameters.get("thinking", "disabled") != "disabled":
-            raise ContractValidationError("Only disabled thinking is supported")
+        thinking = parameters.get("thinking", "disabled")
+        if thinking != "disabled":
+            if not isinstance(thinking, Mapping):
+                raise ContractValidationError("Thinking settings must be explicit")
+            mode = thinking.get("mode")
+            keys = {"mode", "include_summary", "budget" if mode == "budget" else "level"}
+            if mode not in ("budget", "level") or set(thinking) != keys \
+                    or type(thinking["include_summary"]) is not bool:
+                raise ContractValidationError("Thinking settings have unsupported fields")
+            if mode == "budget" and (type(thinking["budget"]) is not int or thinking["budget"] < -1):
+                raise ContractValidationError("Thinking budget must be -1 or a nonnegative integer")
+            if mode == "level" and thinking["level"] not in ("minimal", "low", "medium", "high"):
+                raise ContractValidationError("Unsupported thinking level")
+            thinking = (mode, thinking["budget" if mode == "budget" else "level"],
+                        thinking["include_summary"])
         if parameters.get("stream", False) is not False:
             raise ContractValidationError("Only non-streaming model requests are supported")
-        return cls(model, max_tokens, temperature)
+        return cls(model, max_tokens, temperature, thinking)
 
     def as_mapping(self) -> Mapping[str, Any]:
         parameters: dict[str, Any] = {
-            "model": self.model, "thinking": "disabled", "stream": False,
+            "model": self.model, "thinking": self.thinking if self.thinking == "disabled" else {
+                "mode": self.thinking[0],
+                "budget" if self.thinking[0] == "budget" else "level": self.thinking[1],
+                "include_summary": self.thinking[2],
+            }, "stream": False,
         }
         if self.max_tokens is not None:
             parameters["max_tokens"] = self.max_tokens
@@ -84,6 +102,14 @@ class FrozenConfiguredAdapter:
         if self._dispatch_guard is not None:
             self._dispatch_guard()
         return self.implementation.generate(messages, tools)
+
+    def generate_prepared(self, messages, tools, prepared):
+        self.verify_settings()
+        if self._dispatch_guard is not None:
+            self._dispatch_guard()
+        generate = getattr(self.implementation, "generate_prepared", None)
+        return (generate(prepared) if callable(generate)
+                else self.implementation.generate(messages, tools))
 
     def close(self) -> None:
         close = getattr(self.implementation, "close", None)

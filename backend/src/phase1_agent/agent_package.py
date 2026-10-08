@@ -15,9 +15,34 @@ from .host_sdk import DataTypeDefinition, InformationSourceDefinition, Informati
 from .runtime_executor_contracts import ExecutorDefinition, PauseSupport
 from .agent_failed_retry import validate_agent_failed_retry
 from .context_compaction_policy import compaction_policy_exports, register_compaction_policy
+from .provider_metadata import validate_thinking_summary
 
 
 AGENT_PACKAGE_ID = "workflow.agents"
+
+
+def thinking_summary_page(reader, request):
+    """Publish only visible summaries, keeping original private fact pagination."""
+    page = reader(request)
+    require(type(page) is dict and set(page) == {"items", "next_cursor", "status"}
+            and type(page["items"]) is list,
+            "information_provider_invalid", "Agent fact reader returned an invalid page")
+    summaries = []
+    for fact in page["items"]:
+        event = fact.get("payload", {}) if type(fact) is dict else {}
+        if event.get("kind") != "message_accepted":
+            continue
+        message = event.get("payload", {}).get("message", {})
+        if message.get("role") != "assistant" or message.get("source", {}).get("kind") != "model":
+            continue
+        summary = validate_thinking_summary(message.get("thinking_summary"))
+        if summary:
+            summaries.append({
+                "message_id": message["message_id"],
+                "request_id": message["source"]["request_id"],
+                "thinking_summary": summary,
+            })
+    return {"items": summaries, "next_cursor": page["next_cursor"], "status": page["status"]}
 
 
 def _delta(config, inputs, context):
@@ -111,12 +136,53 @@ def create_agent_package(*, tools=None, kernel=None, information_reader=None):
             service_requirements=(model_service_requirement(
                 "models:call", "kernel-model", "kernel-compaction"),)),
             None, executor_ref=AGENT_EXECUTOR_REF)
-        for version in ("1", "2", "3", "4"):
+        for version, prompt_version, binding_version, output, output_version in (
+            ("5", 3, 3, "unit", 2),
+            ("6", 4, 3, "context", 1),
+            ("7", 5, 3, "context", 1),
+            ("8", 6, 4, "context", 1),
+        ):
+            native = version == "8"
+            host.register_node(NodeDefinition(
+                "agents.execute", version, "Gemini Agent execution", "Agent", {}, object_schema({}),
+                inputs=(NodePort("prompt", "PROMPT", data_schema_version=prompt_version),
+                        NodePort("model", "MODEL_BINDING", data_schema_version=binding_version),
+                        *((NodePort("compaction_policy", "CONTEXT_COMPACTION_POLICY", required=False),)
+                          if native else ())),
+                outputs=(NodePort("result", "TEXT", data_schema_version=2),
+                         NodePort(output, "CONTEXT_UNIT" if output == "unit" else (
+                             "AGENT_CONTEXT_UPDATE" if native else "AGENT_CONTEXT"),
+                             data_schema_version=output_version),
+                         *((NodePort("facts", "AGENT_RECEIPTS"),) if output == "unit" else ())),
+                capabilities=("models:call", "artifacts:read"), input_storage="references",
+                service_requirements=(model_service_requirement(
+                    "models:call", "kernel-model", *(("kernel-compaction",) if native else ())),)),
+                None, executor_ref=AGENT_EXECUTOR_REF,
+                failed_retry_validator=validate_agent_failed_retry if version == "7" else None)
+        host.register_node(NodeDefinition(
+            "agents.delta", "2", "Protocol-aware Agent delta", "Agent", {}, object_schema({}),
+            inputs=(NodePort("prompt", "PROMPT", data_schema_version=3),
+                    NodePort("unit", "CONTEXT_UNIT", data_schema_version=2),
+                    NodePort("facts", "AGENT_RECEIPTS")),
+            outputs=(NodePort("output", "AGENT_DELTA"),),
+            capabilities=("artifacts:read", "facts:read"), input_storage="references"), _delta)
+        for version in ("1", "2", "3", "4", "5", "6", "7", "8"):
             host.register_information_source(InformationSourceDefinition(
                 InformationSourceReference("workflow.agents.execute-" + version + ".facts", "1"),
                 "agents.execute", version, "execution-facts", "workflow.executor-facts",
                 item_schema={"type": "object"}, source_scope="history", max_page_bytes=4_000_000),
                 history_reader=information_reader)
+        for version in ("5", "6", "7", "8"):
+            host.register_information_source(InformationSourceDefinition(
+                InformationSourceReference("workflow.agents.execute-" + version + ".thinking", "1"),
+                "agents.execute", version, "thinking-summaries", "workflow.thinking-summaries",
+                item_schema=object_schema({
+                    "message_id": {"type": "string"}, "request_id": {"type": "string"},
+                    "thinking_summary": {"type": "string", "minLength": 1, "maxLength": 131072},
+                }), source_scope="history", discover_public=True, read_public=True,
+                max_page_bytes=4_000_000),
+                history_reader=(lambda request: thinking_summary_page(information_reader, request))
+                if information_reader is not None else None)
 
     return CapabilityPackage(PackageManifest(
         AGENT_PACKAGE_ID, "1.0.0", (PackageDependency("workflow.context", "1.0.0"),
@@ -127,11 +193,18 @@ def create_agent_package(*, tools=None, kernel=None, information_reader=None):
                            {"component_id": "agents.execute", "component_version": "2"},
                            {"component_id": "agents.execute", "component_version": "3"},
                            {"component_id": "agents.execute", "component_version": "4"},
+                           {"component_id": "agents.execute", "component_version": "5"},
+                           {"component_id": "agents.execute", "component_version": "6"},
+                           {"component_id": "agents.execute", "component_version": "7"},
+                           {"component_id": "agents.execute", "component_version": "8"},
                            {"component_id": "agents.delta", "component_version": "1"},
+                           {"component_id": "agents.delta", "component_version": "2"},
                            *policy_exports["nodes"]],
                  "executors": [AGENT_EXECUTOR_REF.to_dict()],
                  "pause_support": [AGENT_EXECUTOR_REF.to_dict()],
                  "information_sources": [
                      InformationSourceReference("workflow.agents.execute-" + version + ".facts", "1").to_dict()
-                     for version in ("1", "2", "3", "4")]},
+                     for version in ("1", "2", "3", "4", "5", "6", "7", "8")] + [
+                     InformationSourceReference("workflow.agents.execute-" + version + ".thinking", "1").to_dict()
+                     for version in ("5", "6", "7", "8")]},
         schema_version=4), register)

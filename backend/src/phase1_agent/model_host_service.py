@@ -11,17 +11,19 @@ _BINDING_SCHEMA = {"type": "object", "required": ["schema_version", "kind", "bin
                                   "kind": {"const": "workflow.model-binding"},
                                   "binding_id": {"type": "string"}}}
 _RESULT_SCHEMA = {"type": "object", "required": ["schema_version", "kind", "binding_id", "request_id"],
-                  "properties": {"schema_version": {"const": 1},
+                  "properties": {"schema_version": {"enum": [1, 2]},
                                  "kind": {"const": "workflow.model-result"},
                                  "binding_id": {"type": "string"}, "request_id": {"type": "string"}}}
 MODEL_SERVICE_DEFINITION = ServiceDefinition(MODEL_SERVICE_REF, (
     ServiceOperation("models:resolve", "bind-model", object_schema({
-        "reference": {"type": "object"}, "parameters": {"type": "object"}}), _BINDING_SCHEMA),
+        "reference": {"type": "object"}, "parameters": {"type": "object"}}),
+        {**_BINDING_SCHEMA, "properties": {
+            **_BINDING_SCHEMA["properties"], "schema_version": {"enum": [1, 3]}}}),
     ServiceOperation("models:resolve", "bind-native-model", object_schema({
         "reference": {"type": "object"}, "parameters": {"type": "object"},
         "capacity": {"type": "object"}}),
         {**_BINDING_SCHEMA, "properties": {
-            **_BINDING_SCHEMA["properties"], "schema_version": {"const": 2}}}),
+            **_BINDING_SCHEMA["properties"], "schema_version": {"enum": [2, 4]}}}),
     ServiceOperation("models:call", "chat", object_schema({"binding_id": {"type": "string"}}), _RESULT_SCHEMA),
     ServiceOperation("models:call", "kernel-model", object_schema({
         "binding_id": {"type": "string"}, "request_key": {"type": "string"},

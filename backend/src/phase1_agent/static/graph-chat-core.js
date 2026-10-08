@@ -48,6 +48,7 @@
   function require(value, reason) { if (!value) throw new Error(reason); }
   function supportedContent(type, version) {
     return ["TEXT", "PROMPT", "JSON"].includes(type) && [1, 2].includes(version)
+      || type === "MODEL_RESULT" && [1, 2].includes(version)
       || ["MODEL_RESOURCE", "FRONTEND_DISPLAY", "TAVERN_CHAT_DISPLAY"].includes(type) && version === 1;
   }
   function identity(value, workflow, session) {
@@ -87,6 +88,10 @@
       }
     } else if (type === "JSON") require(exact(value, ["schema_version", "kind", "value"])
       && value.kind === "workflow.json", "JSON 公开内容无效");
+    else if (type === "MODEL_RESULT") require(value.kind === "workflow.model-result"
+      && (value.content === null || typeof value.content === "string")
+      && (value.schema_version === 1 || value.thinking_summary === null || typeof value.thinking_summary === "string"),
+      "模型结果公开内容无效");
     else if (type === "MODEL_RESOURCE") require(value.schema_version === 1 && exact(value, ["schema_version", "kind", "binding"])
       && value.kind === "workflow.model-resource" && exact(value.binding, ["node_id", "provider", "credential_evidence", "parameters"])
       && uuid(value.binding.node_id) && object(value.binding.provider) && uuid(value.binding.provider.provider_id)
@@ -127,6 +132,7 @@
   }
   function displayText(payload) {
     if (payload.kind === "workflow.text") return payload.text;
+    if (payload.kind === "workflow.model-result") return validateContent(payload, "MODEL_RESULT").content ?? "";
     if (payload.kind === "workflow.prompt" && payload.schema_version === 2) {
       validateContent(payload, "PROMPT");
       return payload.stage === "assembled" ? payload.assembly.messages.map(message => message.content).join("\n\n")
@@ -134,7 +140,24 @@
     }
     if (payload.kind === "workflow.model-resource") return JSON.stringify({ provider_id: payload.binding.provider.provider_id,
       revision: payload.binding.provider.revision, name: payload.binding.provider.name, model: payload.binding.parameters.model }, null, 2);
-    return JSON.stringify(payload, null, 2);
+    return JSON.stringify(modelPresentation(payload), null, 2);
+  }
+  const protocolFields = new Set(["provider_metadata", "thoughtSignature", "thought_signature"]);
+  function modelPresentation(value) {
+    if (Array.isArray(value)) return value.map(modelPresentation);
+    if (!object(value)) return value;
+    return Object.fromEntries(Object.entries(value).filter(([key]) =>
+      !protocolFields.has(key) && key !== "thinking_summary").map(([key, item]) => [key, modelPresentation(item)]));
+  }
+  function thinkingSummaries(value) {
+    const summaries = new Set();
+    const visit = item => {
+      if (Array.isArray(item)) { item.forEach(visit); return; }
+      if (!object(item)) return;
+      if (typeof item.thinking_summary === "string" && item.thinking_summary.trim()) summaries.add(item.thinking_summary);
+      for (const [key, child] of Object.entries(item)) if (!protocolFields.has(key) && key !== "thinking_summary") visit(child);
+    };
+    visit(value); return [...summaries];
   }
   function displayEntryText(value) {
     if (value.data_type === "TEXT" && value.data_schema_version === 2)
@@ -929,7 +952,8 @@
       } finally { this.busy = false; }
     }
   }
-  root.GraphChat = { uuid, exact, clone, supportedContent, validateContent, displayText, displayEntryText, httpFailure, parseExternalInput,
+  root.GraphChat = { uuid, exact, clone, supportedContent, validateContent, displayText, displayEntryText,
+    modelPresentation, thinkingSummaries, httpFailure, parseExternalInput,
     validateConsumer, validateReceipt, validateCommand, commandEnvelope, validateApplicationReceipt, validateApplicationReceiptRead, validateApplication,
     validateHistory, validateRegistrations, validateInformationPage, validatePublicArtifact,
     validateEventBinding, validateEventBindings, validateEventRun, validateCandidate, validateCandidates, strictJson, GraphChatClient };

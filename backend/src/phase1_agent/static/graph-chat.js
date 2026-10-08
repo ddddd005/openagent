@@ -28,6 +28,16 @@
       </form><details><summary>事件载荷 schema</summary><pre id="graph-event-schema"></pre></details>
     </section>`;
   const $ = id => document.getElementById(id);
+  function appendThinking(target, value) {
+    const summaries = GraphChat.thinkingSummaries(value);
+    if (!summaries.length) return;
+    const details = document.createElement("details"), label = document.createElement("summary");
+    details.setAttribute("aria-label", "思考摘要"); label.textContent = "思考摘要"; details.append(label);
+    for (const text of summaries) {
+      const paragraph = document.createElement("pre"); paragraph.textContent = text; details.append(paragraph);
+    }
+    target.append(details);
+  }
   const labels = { idle: "待开始", prepared: "准备中", running: "进行中", pausing: "正在暂停", paused: "已暂停",
     budget_exhausted: "额度已耗尽", archive_failed: "归档待重试", succeeded: "已完成", failed: "失败",
     recovery_unavailable: "恢复不可用", closed: "已结束", superseded: "已替代" };
@@ -135,7 +145,7 @@
     content.textContent = output.availability === "produced" ? supportedContent(output.data_type, version)
       ? displayText(output.payload) : `不支持的公开格式 · ${output.data_type}@${version ?? "未知版本"}`
       : output.availability === "unproduced" ? "尚未产出" : `不可用 · ${output.reason_code}`;
-    article.append(heading, content);
+    article.append(heading); appendThinking(article, output.payload); article.append(content);
     if (output.availability === "produced" && frontendHost) {
       const slot = document.createElement("div"), status = document.createElement("small");
       article.append(slot, status);
@@ -352,7 +362,8 @@
       informationCursor = value.next_cursor;
       $("graph-information-status").textContent = `${value.format_id}@${value.format_version} · ${value.status === "gap" ? "存在缺口" : value.status === "reset" ? "需要重新读取" : "当前页"} · ${value.items.length} 项`;
       for (const item of value.items) {
-        const content = document.createElement("pre"); content.textContent = JSON.stringify(item, null, 2);
+        appendThinking($("graph-information-items"), item);
+        const content = document.createElement("pre"); content.textContent = JSON.stringify(GraphChat.modelPresentation(item), null, 2);
         $("graph-information-items").append(content);
       }
     } catch (failure) {

@@ -19,6 +19,7 @@ from .contracts_v2 import validate_record
 from .execution_facts import ExecutionFactHistory
 from .graph_contracts import require, uuid4_string
 from .model_contract import validate_public_model_binding
+from .provider_metadata import canonical_message_metadata, remap_provider_metadata
 from .runtime import CanonicalModelAdapter, KernelCheckpoint, KernelPaused, SnapshotKernel
 from .workflow_tool_catalog import builtin_workflow_tools
 
@@ -54,6 +55,10 @@ def _snapshot_messages(prompt: dict, prompt_ref: dict) -> tuple[list[dict], list
         message_id = projection_id(basis, f"message:{index}")
         role = wire["role"]
         blocks = [{"kind": "text", "text": wire.get("content") or ""}]
+        model_metadata = {}
+        if role == "assistant":
+            model_metadata = {key: deepcopy(wire[key]) for key in ("thinking_summary", "provider_metadata")
+                              if key in wire}
         if role == "assistant":
             source = {"kind": "model", "request_id": projection_id(basis, f"request:{index}")}
             for call in wire.get("tool_calls", []):
@@ -67,6 +72,13 @@ def _snapshot_messages(prompt: dict, prompt_ref: dict) -> tuple[list[dict], list
                 blocks.append({"kind": "tool_call", "tool_call_id": call_id,
                                "tool_name": call["function"]["name"], "tool_definition_version": "1",
                                "raw_arguments": raw, "parsed_arguments": arguments})
+            if model_metadata.get("provider_metadata") is not None:
+                model_metadata["provider_metadata"] = remap_provider_metadata(
+                    model_metadata["provider_metadata"], pending,
+                    calls=[{"id": block["tool_call_id"], "name": block["tool_name"],
+                            "raw_arguments": block["raw_arguments"]}
+                           for block in blocks if block["kind"] == "tool_call"],
+                )
         elif role == "tool":
             original_id = wire["tool_call_id"]
             require(original_id in pending, "agent_history_projection_invalid",
@@ -91,7 +103,7 @@ def _snapshot_messages(prompt: dict, prompt_ref: dict) -> tuple[list[dict], list
             source = {"kind": "upstream_node", "output_id": prompt["current_input_ref"]["output_id"]}
         else:
             source = {"kind": "prompt", "prompt_id": basis, "revision": 1}
-        if role == "assistant" and not wire.get("tool_calls"):
+        if role == "assistant" and not wire.get("tool_calls") and not model_metadata:
             # Prompt sources can express assistant text without inventing a
             # model request. Protocol-bearing history uses the mapping above.
             message = {"schema_version": 3, "message_id": message_id, "role": role,
@@ -102,6 +114,8 @@ def _snapshot_messages(prompt: dict, prompt_ref: dict) -> tuple[list[dict], list
             message = {"schema_version": 2 if role == "tool" and source["kind"] == (
                 "runtime_tool_observation") else 1, "message_id": message_id, "role": role,
                        "source": source, "blocks": blocks}
+            if model_metadata:
+                message.update(schema_version=5, **model_metadata)
         messages.append(validate_record("agent_message", message))
         mapping.append({"canonical_message_id": message_id, "source_provenance": deepcopy(provenance),
                         "identity_policy": "frozen_transport_projection"})
@@ -124,7 +138,7 @@ def make_public_agent_snapshot(context, config, prompt, binding, tools, *, polic
                "frozen_prompt_ref": prompt_ref, "model_ref": model_ref,
                "public_model_binding": binding, "transport_projection": projection}
     if native:
-        require(binding["schema_version"] == 2, "model_capacity_unknown",
+        require(binding["schema_version"] in (2, 4), "model_capacity_unknown",
                 "Native Agent requires an explicit model capacity binding")
         payload.update(frozen_compaction_policy_ref=deepcopy(policy_ref), context_compaction={
             **deepcopy(binding["capacity"]), "policy": deepcopy(policy), "layout": deepcopy(prompt["layout"])})
@@ -169,6 +183,7 @@ def project_generated_messages(messages: list[dict], final: dict, snapshot_id: s
                       "arguments": block["raw_arguments"]} for block in blocks if block["kind"] == "tool_call"]
             if calls:
                 value["tool_calls"] = calls
+            value.update(canonical_message_metadata(message))
         projected.append(value)
     require(type(final) is dict and set(final) == {"message_id", "value"}
             and type(final["value"]) is dict and set(final["value"]) == {"text"}
@@ -262,7 +277,7 @@ def validate_execution_update(packet, facts, prompt, binding, *, policy=None, po
     snapshot = validate_record("input_snapshot", result["snapshot"])
     payload = snapshot["config"]["payload"]
     descriptor = payload["context_compaction"]
-    require(binding["schema_version"] == 2 and snapshot["component_id"] == AGENT_COMPONENT_ID
+    require(binding["schema_version"] in (2, 4) and snapshot["component_id"] == AGENT_COMPONENT_ID
             and snapshot["component_version"] == "public-2"
             and snapshot["snapshot_id"] == result["snapshot_id"] == receipts["snapshot_id"]
             and result["unit_id"] == receipts["unit_id"]
@@ -400,10 +415,7 @@ class PublicAgentExecutor:
             result = self.kernel.run(
                 self.snapshot, self.tools, self.adapter,
                 max_model_requests=None, max_model_attempts=None, checkpoint=continuation,
-                # The legacy checkpoint does not retain an unaccepted response.
-                # Finish its local acceptance before acknowledging user pause;
-                # the next before_tool/before_request point retains that result.
-                on_boundary=lambda boundary: boundary == "before_accept" or not callbacks.pause_requested,
+                on_boundary=lambda boundary: not callbacks.pause_requested,
                 on_progress=callbacks.report_progress, on_fact=fact)
         except KernelPaused as exc:
             self.checkpoint = exc.checkpoint
@@ -433,10 +445,13 @@ class PublicAgentExecutor:
             self.fact_ids.append(identity)
             self._result_fact_accepted = True
         result = self._completed_result
+        projected = project_generated_messages(result.messages, result.final, self.snapshot["snapshot_id"])
         unit = None if self.native_context else validate_context_unit({
-            "schema_version": 1, "kind": "workflow.context-unit", "unit_id": self.unit_id,
+            "schema_version": 2 if self.binding["schema_version"] in (3, 4) or any(
+                {"thinking_summary", "provider_metadata"} & set(message) for message in projected) else 1,
+            "kind": "workflow.context-unit", "unit_id": self.unit_id,
             "source_kind": "accepted_execution", "root": deepcopy(self.prompt["current_input"]),
-            "messages": project_generated_messages(result.messages, result.final, self.snapshot["snapshot_id"]),
+            "messages": projected,
             "source_refs": [exact_input(self.context, "prompt"), deepcopy(self.prompt["current_input_ref"])]})
         receipts = validate_agent_receipts({
             "schema_version": 1, "kind": "workflow.agent-receipts",

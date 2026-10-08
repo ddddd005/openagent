@@ -64,7 +64,8 @@ describe("current model package UI", () => {
   it("loads exact models declarations and unmounts them when the package or declaration changes", async () => {
     const f = fixture();
     expect(f.host.extensions.value.map(row => row.declaration.extension_id))
-      .toEqual(["workflow.models.workbench-panel", "workflow.models.node-fields", "workflow.models.node-fields-v2"]);
+      .toEqual(["workflow.models.workbench-panel", "workflow.models.node-fields", "workflow.models.node-fields-v2",
+        "workflow.models.node-fields-v3", "workflow.models.node-fields-v4"]);
     const html = await renderToString(createSSRApp(CurrentProviderPanel).provide(modelResourceControllerKey, f.resources));
     expect(html).toContain("DeepSeek"); expect(html).toContain("当前资源");
     const mismatch = modelFrontendExtensions.map(row => ({ ...row, entrypoint: row.entrypoint + ".forged" }));
@@ -117,6 +118,25 @@ describe("current model package UI", () => {
     const html = await renderToString(createSSRApp(ModelSourceFields, { node: f.node, document: f.document })
       .provide(workflowFrontendSdkKey, f.sdk).provide(modelResourceControllerKey, f.resources));
     expect(html).toContain('value="1024"'); expect(html).toContain('value="128"'); expect(html).toContain('value="0"');
+    expect(f.sdk.configureNode).not.toHaveBeenCalled();
+  });
+  it.each(["3", "4"])("renders Gemini v%s thinking controls and preserves explicit settings", async version => {
+    const provider = newProvider();
+    provider.value = { name: "Gemini", protocol: "gemini", base_url: "https://generativelanguage.googleapis.com/v1beta",
+      credential_ref: "env:GEMINI_API_KEY", enabled: true };
+    provider.data_schema_version = 2;
+    const f = fixture(provider); f.node.component_version = version;
+    f.node.config = { reference: providerIdentity(provider),
+      parameters: { model: "gemini-3-flash-preview", thinking: { mode: "level", level: "medium", include_summary: true },
+        stream: false, max_tokens: 4096 },
+      ...(version === "4" ? { capacity: { context_window_tokens: 128000, output_reserve_tokens: 4096,
+        summary_max_tokens: 128, max_cold_input_tokens: 128000 } } : {}) };
+    const html = await renderToString(createSSRApp(ModelSourceFields, { node: f.node, document: f.document })
+      .provide(workflowFrontendSdkKey, f.sdk).provide(modelResourceControllerKey, f.resources));
+    expect(html).toContain('aria-label="思考模式"'); expect(html).toContain('aria-label="思考强度"');
+    expect(html).toMatch(/<option value="medium"[^>]* selected>/); expect(html).toContain('aria-label="请求思考摘要"');
+    expect(html).not.toContain("思考预算 tokens");
+    expect(html.includes("上下文窗口 tokens")).toBe(version === "4");
     expect(f.sdk.configureNode).not.toHaveBeenCalled();
   });
 });

@@ -88,7 +88,7 @@ def test_pause_before_first_dispatch_preserves_zero_budget_and_resume_uses_first
     assert (result.model_requests, result.attempts) == (1, 1)
 
 
-def test_interrupt_while_nonstreaming_model_is_in_flight_discards_unaccepted_batch():
+def test_pause_after_nonstreaming_response_retains_unaccepted_batch():
     started, release = Event(), Event()
     executed = []
     snapshot, tools = setup(lambda text: executed.append(text) or {"text": text})
@@ -101,7 +101,7 @@ def test_interrupt_while_nonstreaming_model_is_in_flight_discards_unaccepted_bat
             return super().generate(messages, definitions)
 
     adapter = BlockingAdapter(
-        batch(call("inspect_text", '{"text":"discard"}', "provider-old")),
+        batch(call("inspect_text", '{"text":"retained"}', "provider-old")),
         final("new"),
     )
     interrupt = Event()
@@ -118,12 +118,13 @@ def test_interrupt_while_nonstreaming_model_is_in_flight_discards_unaccepted_bat
     checkpoint = caught.value.checkpoint
     assert (checkpoint.model_requests, checkpoint.attempts) == (1, 1)
     assert checkpoint.messages == checkpoint.pending_tools == ()
+    assert checkpoint.pending_model_message is not None
     assert executed == []
 
     result = SnapshotKernel().run(snapshot, tools, adapter, checkpoint=checkpoint)
     assert (result.model_requests, result.attempts) == (2, 2)
     assert result.final["value"] == {"text": "new"}
-    assert executed == []
+    assert executed == ["retained"]
 
 
 @pytest.mark.parametrize("failure", [TimeoutError("private"), asyncio.CancelledError()])

@@ -510,6 +510,7 @@ def _projection_targets(view: dict, step: dict) -> list[dict]:
         source = message["source"]["kind"]
         if (
             source not in step["sources"] or message["role"] != source_roles.get(source)
+            or message.get("provider_metadata") is not None
             or any(block["kind"] != "text" for block in message["blocks"])
         ):
             continue

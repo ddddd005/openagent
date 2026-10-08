@@ -67,6 +67,8 @@ def apply_context_regex(
             source = message["source"]["kind"]
             if source not in config["sources"] or message["role"] != _SOURCE_ROLES.get(source):
                 continue
+            if message.get("provider_metadata") is not None:
+                continue
             # Mixed assistant text/tool-call messages are protocol groups too.
             if any(block["kind"] != "text" for block in message["blocks"]):
                 continue

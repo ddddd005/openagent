@@ -2,7 +2,7 @@
 import { onMounted, ref } from "vue";
 import { Plus, RefreshCw, Save, X } from "lucide-vue-next";
 import { useProviderResources } from "../application/workflowResources";
-import { cloneProvider, newProvider, type CurrentProvider } from "../domain/workflowModelResources";
+import { cloneProvider, newProvider, type CurrentProvider, type ProviderProtocol } from "../domain/workflowModelResources";
 
 const resources = useProviderResources();
 const records = resources.records, loading = resources.loading, locked = resources.locked;
@@ -16,6 +16,19 @@ function edit(record: CurrentProvider | null) {
 async function save() {
   if (!form.value || locked.value) return;
   if (await resources.save(cloneProvider(form.value), expectedSequence.value)) form.value = null;
+}
+function changeProtocol(event: Event) {
+  if (!form.value || locked.value || expectedSequence.value !== 0) return;
+  const protocol = (event.target as HTMLSelectElement).value as ProviderProtocol;
+  const value = form.value.value;
+  const previousDefault = value.protocol === "gemini"
+    ? "https://generativelanguage.googleapis.com/v1beta" : "https://api.deepseek.com";
+  if (value.base_url === previousDefault) value.base_url = protocol === "gemini"
+    ? "https://generativelanguage.googleapis.com/v1beta" : "https://api.deepseek.com";
+  if (value.name === "DeepSeek" || value.name === "Gemini") value.name = protocol === "gemini" ? "Gemini" : "DeepSeek";
+  if (value.credential_ref) value.credential_ref = protocol === "gemini" ? "env:GEMINI_API_KEY" : "env:DEEPSEEK_API_KEY";
+  value.protocol = protocol;
+  form.value.data_schema_version = protocol === "gemini" ? 2 : 1;
 }
 onMounted(() => { void resources.refresh(); });
 </script>
@@ -31,7 +44,7 @@ onMounted(() => { void resources.refresh(); });
     <ul>
       <li v-for="record in records" :key="record.scope + record.resource_id">
         <button type="button" :disabled="locked" @click="edit(record)">
-          <strong>{{ record.value.name }}</strong><span>{{ record.value.enabled ? 'Chat' : '已停用' }} · s{{ record.update_sequence }}</span>
+          <strong>{{ record.value.name }}</strong><span>{{ record.value.enabled ? record.value.protocol === 'gemini' ? 'Gemini' : 'Chat' : '已停用' }} · s{{ record.update_sequence }}</span>
           <small>{{ record.scope }} · {{ record.value.base_url }}</small>
         </button>
       </li>
@@ -42,10 +55,15 @@ onMounted(() => { void resources.refresh(); });
       </header>
       <fieldset :disabled="locked">
         <label>名称<input v-model="form.value.name" required maxlength="128" /></label>
+        <label>协议<select :value="form.value.protocol" aria-label="供应商协议" :disabled="expectedSequence !== 0" @change="changeProtocol">
+          <option value="chat">Chat Completions</option><option value="gemini">Gemini generateContent</option>
+        </select></label>
         <label>范围<output>{{ form.scope }}</output></label>
         <label>服务地址<input v-model="form.value.base_url" type="url" required maxlength="2048" autocomplete="off" /></label>
-        <label>后端凭据引用<select v-model="form.value.credential_ref">
-          <option :value="null">未配置</option><option value="env:DEEPSEEK_API_KEY">env:DEEPSEEK_API_KEY</option>
+        <label>后端凭据引用<select v-model="form.value.credential_ref" aria-label="后端凭据引用">
+          <option :value="null">未配置</option>
+          <option v-if="form.value.protocol === 'chat'" value="env:DEEPSEEK_API_KEY">env:DEEPSEEK_API_KEY</option>
+          <option v-else value="env:GEMINI_API_KEY">env:GEMINI_API_KEY</option>
         </select></label>
         <label class="enabled"><input v-model="form.value.enabled" type="checkbox" />启用</label>
       </fieldset>

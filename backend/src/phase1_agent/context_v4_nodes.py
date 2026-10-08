@@ -72,7 +72,8 @@ def _merge(config, inputs, context):
         "reference": packet["receipts"]["model_ref"]})["value"]
     origin = context.host_call("artifacts:read", "describe-input-origin", {"port": "context"})
     require(origin["producer"] == producer
-            and (origin["component_id"], origin["component_version"]) == ("agents.execute", "4"),
+            and (origin["component_id"], origin["component_version"]) in (
+                ("agents.execute", "4"), ("agents.execute", "8")),
             "context_agent_binding_mismatch", "Native updates require their actual official Agent producer")
     policy_refs = origin["input_refs"].get("compaction_policy", [])
     require(len(policy_refs) == (0 if packet["compaction_policy_ref"] is None else 1)
@@ -133,7 +134,8 @@ def register_native_context(host):
     schema = object_schema({"object_key": {"type": "string", "minLength": 1, "maxLength": 128},
                             "agent_node_id": {"type": "string"}})
     binding = ({"config_field": "agent_node_id", "multiple": False,
-                "target_types": [{"component_id": "agents.execute", "component_version": "4"}]},)
+                "target_types": [{"component_id": "agents.execute", "component_version": version}
+                                 for version in ("4", "8")]},)
     view = NodePort("view", "CONTEXT_VIEW", data_schema_version=4)
     host.register_node(NodeDefinition(
         "context.output", "4", "Native context output", "Context", config, schema,

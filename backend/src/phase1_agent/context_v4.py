@@ -147,7 +147,10 @@ def build_context_update_view(prompt, operations, receipts, final):
     require(final == final_from_context_operations(operations), "context_update_final_unproven",
             "The derived final answer must equal its accepted canonical control pair")
     accepted = [operation["message"] for operation in operations if operation["kind"] == "append"]
-    removed_final_ids = {accepted[-2]["message_id"], accepted[-1]["message_id"]}
+    preserve_final_protocol = accepted[-2].get("provider_metadata") is not None
+    removed_final_ids = set() if preserve_final_protocol else {
+        accepted[-2]["message_id"], accepted[-1]["message_id"],
+    }
     layouts = {}
     for message, item in zip(prompt["messages"], prompt["layout"]):
         if item["kind"] == "fixed":
@@ -177,8 +180,9 @@ def build_context_update_view(prompt, operations, receipts, final):
                    "item_instance_id": answer_id, "group_instance_id": None},
         "blocks": [{"kind": "text", "text": final["value"]["text"]}],
     })
-    retained.append(answer)
-    layouts[answer_id] = {"kind": "history", "round_id": update_id, "compaction": "allowed"}
+    if not preserve_final_protocol:
+        retained.append(answer)
+        layouts[answer_id] = {"kind": "history", "round_id": update_id, "compaction": "allowed"}
     once = deepcopy(initial["once_injected_item_ids"])
     for identity in prompt["once_pending_item_ids"]:
         if identity not in once:
@@ -299,7 +303,8 @@ def prove_native_context_view(view_ref, resolve_detail):
             from .context_update import validate_context_update
             origin = resolve_detail(lineage["update_ref"])
             update = validate_context_update(origin["value"])
-            require((origin["component_id"], origin["component_version"]) == ("agents.execute", "4")
+            require((origin["component_id"], origin["component_version"]) in (
+                ("agents.execute", "4"), ("agents.execute", "8"))
                     and origin["producer"] == update["owner"]
                     and input_matches(origin, "prompt", update["receipts"]["frozen_prompt_ref"])
                     and input_matches(origin, "model", update["receipts"]["model_ref"])

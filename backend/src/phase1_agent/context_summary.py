@@ -67,6 +67,10 @@ def plan_compression(view, view_ref, policy, plan_id):
     require(count <= len(view["units"]), "context_compression_range_missing",
             "Explicit compression requires an existing complete historical prefix")
     selected, retained = view["units"][:count], view["units"][count:]
+    require(not any(message.get("provider_metadata") is not None for entry in selected
+                    if "unit" in entry for message in entry["unit"]["messages"]),
+            "context_signed_protocol_compaction_forbidden",
+            "Signed provider history cannot be replaced by a textual summary")
     coverage = [reference for entry in selected for reference in entry_coverage(entry)]
     require(len(coverage) == len({ref["output_id"] for ref in coverage}),
             "context_summary_overlap", "Selected units cannot have overlapping original coverage")
