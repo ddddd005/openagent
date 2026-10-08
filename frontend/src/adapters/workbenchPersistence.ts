@@ -3,6 +3,7 @@ import type { DraftStorage } from "./browserStorage";
 import type { WorkspaceWorkflow } from "../domain/workspace";
 
 export const WORKBENCH_STORAGE_KEY = "workflow-workbench:fixed-base:v1";
+export const WORKBENCH_RECOVERY_STORAGE_KEY = "workflow-workbench:isolated-graph:v7";
 const MAX_BYTES = 4_000_000;
 // Keep these exact identities aligned with backend storage_retirement._COMPAT_NODES.
 const RETIRED_COMPONENTS = [

@@ -72,6 +72,26 @@ describe("current model package UI", () => {
     expect(host.extensions.value).toEqual([]);
     expect(createWorkbenchFrontendHost(() => modelFrontendExtensions, () => []).extensions.value).toEqual([]);
   });
+  it("shows the empty resource state and keeps explicit creation available", async () => {
+    const f = fixture(null);
+    const html = await renderToString(createSSRApp(CurrentProviderPanel).provide(modelResourceControllerKey, f.resources));
+    expect(html).toContain("暂无供应商当前资源");
+    expect(html).toContain('aria-label="新增供应商资源"');
+    expect(html).not.toContain('aria-label="新增供应商资源" disabled');
+  });
+  it("does not describe resource-read or original-request failures as an empty provider list", async () => {
+    const f = fixture(null);
+    for (const message of ["供应商读取失败", "原资源请求无法读取，资源修改已禁用"]) {
+      f.resources.error.value = message;
+      const html = await renderToString(createSSRApp(CurrentProviderPanel).provide(modelResourceControllerKey, f.resources));
+      expect(html).toContain(message); expect(html).not.toContain("暂无供应商当前资源");
+    }
+  });
+  it("does not show the empty resource state while loading", async () => {
+    const f = fixture(null); f.resources.loading.value = true;
+    const html = await renderToString(createSSRApp(CurrentProviderPanel).provide(modelResourceControllerKey, f.resources));
+    expect(html).toContain("读取中"); expect(html).not.toContain("暂无供应商当前资源");
+  });
   it("renders source two capacity controls without duplicate raw configuration fields", async () => {
     const f = fixture();
     f.node.component_version = "2"; f.definition.component_version = "2";

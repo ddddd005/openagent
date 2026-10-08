@@ -1,8 +1,8 @@
 # 快速启动
 
-以下命令从仓库根目录开始。开发模式使用两个 PowerShell 终端；生产构建模式只需一个运行中的 Python 服务。不要复用其他项目的数据库或虚拟环境。
+以下命令从仓库根目录开始。Windows 开发验收推荐使用根目录 `start.bat`，它同时启动当前源码的后端与 Vite；手动开发模式使用两个 PowerShell 终端。生产构建模式只需一个运行中的 Python 服务。不要复用其他项目的数据库或虚拟环境。
 
-**本工作区已有 1.0 常驻占用 8765，直接使用 `http://127.0.0.1:8765/workbench/` 或下方“本机已建立的常驻入口”，不要再次启动下面的 8765 示例。**下面安装/启动步骤面向没有该常驻的新环境。要并行建立独立开发或验收环境，另选空闲后端端口，并同步 Vite 的 `/api` 代理、`VITE_CHAT_UI_URL` 与对应只读检查地址；不要让新 Vite 页面误连当前常驻库。只有确认自己常驻没有 active/in-flight 或待核实业务后，才能按停止流程释放其端口。
+**启动前先核对端口占用。**源码 BAT 不接管或结束旧进程，端口被占用会明确拒绝启动。要与已有服务并行验收，给 BAT 指定另一组空闲端口，它会同步 `/api` 代理和聊天链接；手动启动时则需自行同步这些设置。下面“本机已建立的常驻入口”使用固定安装和构建快照，不会因源码编辑自动更新，不能作为新版酒馆功能的开发入口。只有确认原服务没有 active/in-flight 或待核实业务后，才能按它自己的停止流程释放端口。
 
 ## 环境
 
@@ -25,9 +25,43 @@ New-Item -ItemType Directory -Force .local | Out-Null
 
 当前运行和测试均不需要安装 `vendor/smolagents`；其源码仅保留来源与许可。
 
+## Windows 源码 BAT
+
+双击仓库根目录 `start.bat`，或执行：
+
+```powershell
+.\start.bat
+```
+
+旧 `step1/docs/启动服务.bat` 已改为转发到同级 `openagent/start.bat`，不再启动 `step1` 的旧源码和虚拟环境。入口始终使用此 checkout 的 `backend/src` 和 `frontend`，不拉取 Git、不安装依赖，也不自动重配已有数据库或升级工作流的精确包锁。
+
+默认后端端口 `8765`、工作台端口 `5178`，数据库为 `.local/dev/workflow.sqlite`。优先选择本仓库 `.venv/Scripts/python.exe`，否则使用 PATH 中的 Python；可显式指定解释器。仅检查依赖、源码和节点注册，不启动服务或打开数据库：
+
+```powershell
+.\start.bat -CheckOnly -NoBrowser
+```
+
+端口已被其他服务使用时，显式选择空闲端口和独立数据库，例如：
+
+```powershell
+.\start.bat -BackendPort 8766 -FrontendPort 5179 -DatabasePath .local/dev/acceptance.sqlite -NoBrowser
+```
+
+工作台为对应前端端口的 `/`，酒馆壳为后端端口的 `/tavern/`。启动器会核对当前源码的酒馆包与实际节点目录，并验证前端代理连到同一后端。原 `-Mode offline` 已退出，不支持用它阻止真实模型节点调用；单纯启动和浏览页面不会派发模型。
+
+若指定的已有数据库保存了不含当前酒馆版本的包选择，启动器会报错并停止本次新进程，不覆盖原选择。需另选新库验收，或在确认业务状态后显式管理该库的启用包。入口跟随当前源码与工作流继续保留精确版本锁，是两个不同约束。
+
+BAT 启动时会打开可见的前后端控制台，服务在各自窗口中运行并显示日志，不使用隐藏后台启动。每次启动会打印 `.local/service-starts/<launch>/services.json`。确认该次运行没有活动或待核实业务后，使用它打印的完整停止命令：
+
+```powershell
+powershell.exe -NoProfile -File .\scripts\stop-services.ps1 -MetadataPath ".local/service-starts/<launch>/services.json"
+```
+
+将 `<launch>` 换成实际启动目录。停止脚本核对进程的创建时间、可执行文件和命令行，只停止这次启动的进程，保留数据库。旧服务不能用新启动器的记录停止。
+
 ## 启动后端
 
-终端一在仓库根目录执行：
+以下是不用 BAT 的手动方式。终端一在仓库根目录执行：
 
 ```powershell
 .\.venv\Scripts\python.exe -u -m phase1_agent.server --port 8765 --database .local/demo.sqlite
@@ -174,10 +208,10 @@ Remove-Variable secret
 
 | 现象 | 检查 |
 | --- | --- |
-| 端口占用 | 不结束不明进程。开发前端可另选如 `5180`；开发后端换端口时同步 `frontend/vite.config.ts` 代理目标。生产模式改 `--port` 后须以相同 `VITE_CHAT_UI_URL` 重建工作台 |
+| 端口占用 | 不结束不明进程。BAT 可指定 `-BackendPort` 和 `-FrontendPort`；手动 Vite 使用 `OPENAGENT_API_PORT` 指定后端端口，并同步 `VITE_CHAT_UI_URL`。生产模式改 `--port` 后须以相同 `VITE_CHAT_UI_URL` 重建工作台 |
 | 代理连接失败 | 先看后端终端及直连 health，再查前端代理；前端能打开不代表后端已启动 |
 | 缺 Python 模块 | 确认使用本仓库 `.venv` 解释器并已 editable 安装 `./backend` |
-| 没有新版节点 | 检查节点目录、启用包及实际后端源码；不要误连旧服务 |
+| 没有新版节点 | 使用根目录源码 BAT，检查其打印的源码路径和包目录；不要误连 `step1` 或固定安装的旧服务。工作台右键“添加节点”中查找“全局 Lorebook”及含 `tavern chat` 的英文项，内容面板可创建酒馆示例；完整菜单名见 [本地验收入口记录](tavern/LOCAL-ACCEPTANCE-ENTRY-2026-10-08.md) |
 | 凭据不可用 | 检查后端启动环境、资源启用状态与引用；保存资源成功不等于模型可调用 |
 | 资源或控制结果待核实 | 核实同一原请求，保留 body/key；不要刷新后换 key 重发 |
 | 有模型响应但没有聊天回复 | 检查节点接纳、上下文 merge、前端追加和 presentation，模型 HTTP 200 不等于整图完成 |

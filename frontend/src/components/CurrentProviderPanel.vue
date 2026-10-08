@@ -27,7 +27,7 @@ onMounted(() => { void resources.refresh(); });
       <button type="button" title="新增供应商资源" aria-label="新增供应商资源" :disabled="locked" @click="edit(null)"><Plus :size="16" /></button>
     </header>
     <p v-if="loading" role="status">读取中</p>
-    <p v-else-if="!records.length">暂无供应商当前资源</p>
+    <p v-else-if="!records.length && !error">暂无供应商当前资源</p>
     <ul>
       <li v-for="record in records" :key="record.scope + record.resource_id">
         <button type="button" :disabled="locked" @click="edit(record)">

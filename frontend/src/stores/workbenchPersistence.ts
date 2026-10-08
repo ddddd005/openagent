@@ -1,9 +1,9 @@
 import { computed, onScopeDispose, ref, watch } from "vue";
 import { defineStore } from "pinia";
-import { readWorkbench, writeWorkbench, WORKBENCH_STORAGE_KEY,
+import { readWorkbench, writeWorkbench, WORKBENCH_STORAGE_KEY, WORKBENCH_RECOVERY_STORAGE_KEY,
   type SavedWorkbench, type WorkbenchConfiguration } from "../adapters/workbenchPersistence";
 import type { DraftStorage } from "../adapters/browserStorage";
-import { graphClone } from "../domain/workflowGraph";
+import { graphClone, newGraph } from "../domain/workflowGraph";
 import { useWorkspaceStore } from "./workspace";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkbenchNoticesStore } from "./workbenchNotices";
@@ -17,7 +17,15 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
   const savedAt = ref<string | null>(null);
   const pendingCopy = computed(() => workspace.workflows.find(row => row.copyPending) ?? null);
   const ready = ref(false);
+  const isolated = ref(false);
+  const originalRaw = ref<string | null>(null);
+  const hasRawRecord = computed(() => originalRaw.value !== null);
+  const canRecover = computed(() => status.value === "blocked" && !isolated.value
+    && hasRawRecord.value && !graph.locked
+    && Object.values(graph.entries).every(row => row.saved_revision === 0 && row.session_id === null && row.pending === null));
+  let sourceStorage: DraftStorage | null = null;
   let storage: DraftStorage | null = null;
+  let storageKey = WORKBENCH_STORAGE_KEY;
   let expectedRaw: string | null = null;
   let revision = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -30,6 +38,53 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
   function stopTimer() {
     if (timer) clearTimeout(timer);
     timer = null;
+  }
+  function scopedStorage(key: string): DraftStorage {
+    return { getItem: () => sourceStorage!.getItem(key),
+      setItem: (_key, raw) => sourceStorage!.setItem(key, raw) };
+  }
+  function rawRecord() { return originalRaw.value; }
+  function recoverWorkspace() {
+    if (!canRecover.value || !sourceStorage) return false;
+    try {
+      if (sourceStorage.getItem(WORKBENCH_STORAGE_KEY) !== expectedRaw)
+        throw new Error("其他页面更新了原记录，请重新加载后再恢复");
+      if (sourceStorage.getItem(WORKBENCH_RECOVERY_STORAGE_KEY) !== null)
+        throw new Error("已有独立工作区记录，请重新加载后读取；原记录未覆盖");
+      // Carry only new unsaved drafts, never a rejected session or its outbox.
+      let configuration = capture();
+      const fresh = !Object.keys(configuration.graph.entries).length;
+      if (fresh) {
+        const document = newGraph("新工作流", graph.executionPackageLock), id = document.workflow_definition_id;
+        configuration = { activeWorkflowId: id, selectedWorkflowId: id,
+          catalog: [{ id, title: document.name, description: "", nodeCount: 0, state: "draft" }],
+          graph: { schema_version: 1, entries: { [id]: { document, saved_revision: 0, session_id: null, pending: null } } } };
+      }
+      const value: SavedWorkbench = { ...configuration, schemaVersion: 7, kind: "graph-workbench",
+        revision: 1, savedAt: new Date().toISOString() };
+      const recoveryStorage = scopedStorage(WORKBENCH_RECOVERY_STORAGE_KEY);
+      const raw = writeWorkbench(recoveryStorage, value, null);
+      storage = recoveryStorage;
+      storageKey = WORKBENCH_RECOVERY_STORAGE_KEY;
+      isolated.value = true;
+      expectedRaw = raw;
+      revision = value.revision;
+      savedAt.value = value.savedAt;
+      if (fresh) {
+        workspace.restoreCatalog(value.catalog, value.activeWorkflowId, value.selectedWorkflowId);
+        if (!graph.restoreSnapshot(value.graph)) throw new Error("独立工作区无法安全恢复，原记录未覆盖");
+      }
+      graph.selectedNodeIds = []; graph.selectedEdgeId = null;
+      workspace.sidebarSection = "workflows"; workspace.interactionMode = "select";
+      signature = JSON.stringify(capture());
+      stopTimer();
+      status.value = "saved";
+      error.value = null;
+      return true;
+    } catch (failure) {
+      error.value = failure instanceof Error ? failure.message : "独立工作区无法保存，原记录未覆盖";
+      return false;
+    }
   }
   function save() {
     stopTimer();
@@ -61,14 +116,27 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
     if (ready.value) return;
     let rewrite = false;
     try {
-      storage = target ?? window.localStorage;
-      const loaded = readWorkbench(storage);
+      sourceStorage = target ?? window.localStorage;
+      storage = sourceStorage;
+      let loaded = readWorkbench(storage);
+      originalRaw.value = loaded.error ? loaded.raw : null;
+      const recoveryRaw = sourceStorage.getItem(WORKBENCH_RECOVERY_STORAGE_KEY);
+      if (recoveryRaw !== null) {
+        originalRaw.value = loaded.raw;
+        storageKey = WORKBENCH_RECOVERY_STORAGE_KEY;
+        storage = scopedStorage(storageKey);
+        isolated.value = true;
+        loaded = readWorkbench(storage);
+        if (loaded.error) originalRaw.value = loaded.raw;
+      }
       expectedRaw = loaded.raw;
       if (loaded.error) throw new Error(loaded.error);
       if (loaded.value) {
         workspace.restoreCatalog(loaded.value.catalog, loaded.value.activeWorkflowId, loaded.value.selectedWorkflowId);
-        if (!graph.restoreSnapshot(loaded.value.graph))
+        if (!graph.restoreSnapshot(loaded.value.graph)) {
+          originalRaw.value = loaded.raw;
           throw new Error("工作流文档或原请求无法安全恢复，原始保存未覆盖");
+        }
         revision = loaded.value.revision;
         savedAt.value = loaded.value.savedAt;
       }
@@ -97,7 +165,7 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
     timer = setTimeout(save, 200);
   }, { flush: "sync" });
   function changed(event: StorageEvent) {
-    if (event.key !== WORKBENCH_STORAGE_KEY || event.newValue === expectedRaw) return;
+    if (event.key !== storageKey || event.newValue === expectedRaw) return;
     stopTimer();
     status.value = "blocked";
     error.value = "其他页面更新了保存记录，当前修改尚未保存";
@@ -114,5 +182,6 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
       window.removeEventListener("beforeunload", flush);
     });
   } else onScopeDispose(stopTimer);
-  return { status, error, savedAt, pendingCopy, initialize, save, saveWorkflow, discardDraft, reconcileCopy };
+  return { status, error, savedAt, pendingCopy, isolated, hasRawRecord, canRecover,
+    initialize, save, saveWorkflow, discardDraft, reconcileCopy, rawRecord, recoverWorkspace };
 });

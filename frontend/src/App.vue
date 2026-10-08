@@ -28,6 +28,7 @@ import GraphWorkbench from "./components/GraphWorkbench.vue";
 import GraphRunControls from "./components/GraphRunControls.vue";
 import GraphSessions from "./components/GraphSessions.vue";
 import GraphHistory from "./components/GraphHistory.vue";
+import WorkbenchStorageRecovery from "./components/WorkbenchStorageRecovery.vue";
 
 const workspace = useWorkspaceStore();
 const persistence = useWorkbenchPersistenceStore();
@@ -200,7 +201,7 @@ watch(
           <GraphRunControls />
         </div>
       </header>
-      <div v-if="persistence.error" class="workbench-save-error" role="status">{{ persistence.error }}</div>
+      <WorkbenchStorageRecovery />
       <div v-if="persistence.pendingCopy" class="workbench-save-error model-pending-banner" role="status">
         <span>工作流编辑副本等待会话复制确认</span>
         <button v-if="graph.entries[persistence.pendingCopy.id]?.pending" type="button" :disabled="!!graph.busy" @click="persistence.reconcileCopy()">核实复制</button>
