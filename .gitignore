@@ -10,6 +10,7 @@ coverage/
 
 # Runtime state, test evidence and local databases
 .local/
+/.codex-tavern-p1-*/
 tmp/
 .pytest_cache/
 .pytest*/
