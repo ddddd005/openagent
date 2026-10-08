@@ -134,19 +134,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     for (const id of Object.keys(entries.value)) history.value[id] = { past: [], future: [] };
     return true;
   }
-  function createWorkflow() {
-    const doc = newGraph("新工作流");
-    const id = doc.workflow_definition_id;
-    entries.value[id] = { document: doc, saved_revision: 0, session_id: null, pending: null };
-    workspace.registerGraphWorkflow({ id, title: doc.name, description: "", nodeCount: 0, state: "draft" });
-    history.value[id] = { past: [], future: [] };
-    workspace.openWorkflow(id);
-    persistence?.();
-    return id;
-  }
-  function createWorkflowDraft(value: GraphDocument, description = "") {
-    if (locked.value || !isGraphDocument(value) || entries.value[value.workflow_definition_id]
-      || workspace.workflows.some(row => row.id === value.workflow_definition_id)) return null;
+  function registerWorkflowDraft(value: GraphDocument, description = "") {
     const doc = graphClone(value), id = doc.workflow_definition_id;
     entries.value[id] = { document: doc, saved_revision: 0, session_id: null, pending: null };
     history.value[id] = { past: [], future: [] };
@@ -156,22 +144,20 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     persistence?.();
     return id;
   }
+  function createWorkflow() {
+    return registerWorkflowDraft(newGraph("新工作流", executionPackageLock.value));
+  }
+  function createWorkflowDraft(value: GraphDocument, description = "") {
+    if (locked.value || !isGraphDocument(value) || entries.value[value.workflow_definition_id]
+      || workspace.workflows.some(row => row.id === value.workflow_definition_id)) return null;
+    return registerWorkflowDraft(value, description);
+  }
   function createSerialAgentExample(modelConfig?: SerialAgentModelConfig, compacting = false) {
     if (catalogLoading.value || catalogError.value) return null;
     try {
       const builder = compacting ? createCompactingSerialAgentDemo : createSerialAgentDemo;
       const doc = builder(catalog.value, executionPackageLock.value, modelConfig);
-      const id = doc.workflow_definition_id;
-      entries.value[id] = { document: doc, saved_revision: 0, session_id: null, pending: null };
-      history.value[id] = { past: [], future: [] };
-      workspace.registerGraphWorkflow({ id, title: doc.name,
-        description: compacting ? "A → B 串行，独立上下文与精简策略" : "A → B 串行",
-        nodeCount: doc.nodes.length, state: "draft" });
-      workspace.openWorkflow(id);
-      selectedNodeIds.value = [];
-      selectedEdgeId.value = null;
-      persistence?.();
-      return id;
+      return registerWorkflowDraft(doc, compacting ? "A → B 串行，独立上下文与精简策略" : "A → B 串行");
     } catch (failure) {
       report(failure, "创建串行 Agent 示例");
       return null;

@@ -402,8 +402,9 @@ function canonicalGraphValue(value: unknown): unknown {
 export function graphSignature(document: GraphDocument) {
   return JSON.stringify(canonicalGraphValue({ ...document, revision: 0 }));
 }
-export function newGraph(name: string): GraphDocument {
-  return { schema_version: 1, workflow_definition_id: crypto.randomUUID(), revision: 1, name, nodes: [], edges: [] };
+export function newGraph(name: string, packageLock: NonNullable<GraphDocument["package_lock"]> = []): GraphDocument {
+  return { schema_version: 2, workflow_definition_id: crypto.randomUUID(), revision: 1, name, nodes: [], edges: [],
+    object_bindings: [], package_lock: graphClone(packageLock), execution_roots: [], control_edges: [] };
 }
 export function upgradeGraph(document: GraphDocument, packageLock: NonNullable<GraphDocument["package_lock"]> = []) {
   document.schema_version = 2;

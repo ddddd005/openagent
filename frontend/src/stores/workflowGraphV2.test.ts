@@ -40,10 +40,14 @@ beforeEach(() => setActivePinia(createPinia()));
 afterEach(() => { useWorkflowGraphStore().$dispose(); useWorkspaceStore().$dispose(); vi.unstubAllGlobals(); });
 
 describe("minimum v2 tools/prompt workbench wiring", () => {
-  it("upgrades on an object writer even though it has no content outputs and records the loaded package lock", () => {
+  it("creates a blank v2 document with the exact execution lock before adding an object writer", () => {
     const graph = useWorkflowGraphStore(); graph.setPersistenceGuard(() => true);
-    graph.catalog = [writer]; graph.packageLock = lock; graph.createWorkflow();
-    expect(graph.document?.schema_version).toBe(1);
+    graph.catalog = [writer]; graph.packageLock = [{ package_id: "plugin", version: "2.0.0" }];
+    graph.executionPackageLock = lock; graph.createWorkflow();
+    expect(graph.document?.schema_version).toBe(2);
+    expect(graph.document?.package_lock).toEqual(lock);
+    expect(graph.document?.object_bindings).toEqual([]);
+    expect(graph.document?.execution_roots).toEqual([]); expect(graph.document?.control_edges).toEqual([]);
     graph.addNode("plugin.writer@1", { x: 0, y: 0 });
     expect(graph.document?.schema_version).toBe(2);
     expect(graph.document?.package_lock).toEqual(lock);

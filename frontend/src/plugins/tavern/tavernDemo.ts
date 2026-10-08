@@ -1,4 +1,4 @@
-import { graphClone, type GraphDocument, type GraphNode, type GraphNodeType } from "../../domain/workflowGraph";
+import { graphClone, newGraph, type GraphDocument, type GraphNode, type GraphNodeType } from "../../domain/workflowGraph";
 import type { SerialAgentModelConfig } from "../../domain/serialAgentDemo";
 
 const requiredPackages = ["workflow.content", "workflow.tools", "workflow.prompts",
@@ -10,9 +10,7 @@ export function createTavernDemo(catalog: GraphNodeType[],
   if (!packageLock.some(row => row.package_id === "workflow.tavern" && row.version === "1.2.0"))
     missing.push("workflow.tavern@1.2.0");
   if (missing.length) throw new Error(`酒馆示例缺少精确包：${missing.join("、")}`);
-  const doc: GraphDocument = { schema_version: 2, workflow_definition_id: crypto.randomUUID(),
-    revision: 1, name: "酒馆聊天", nodes: [], edges: [], control_edges: [], execution_roots: [],
-    object_bindings: [], package_lock: graphClone(packageLock) };
+  const doc = newGraph("酒馆聊天", packageLock);
   function node(component: string, version: string, title: string, x: number, y: number,
     config: Record<string, unknown> = {}) {
     const type = catalog.find(row => row.component_id === component && row.component_version === version && row.executable);

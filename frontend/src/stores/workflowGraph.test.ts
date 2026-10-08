@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkspaceStore } from "./workspace";
 import { useWorkbenchNoticesStore } from "./workbenchNotices";
-import { graphClone, type GraphDocument, type GraphNodeType, type GraphSession } from "../domain/workflowGraph";
+import { graphClone, isGraphDocument, newGraph, type GraphDocument, type GraphNodeType, type GraphSession } from "../domain/workflowGraph";
 const source: GraphNodeType = { component_id: "workflow.text", component_version: "1", display_name: "文本", category: "内容",
   config_schema: { type: "object", properties: { text: { type: "string" } } }, default_config: { text: "hello" },
   inputs: [], outputs: [{ port_id: "output", data_type: "TEXT", required: true, multiple: false }], is_output: false, executable: true };
@@ -33,6 +33,91 @@ function session(document: GraphDocument, sid = crypto.randomUUID()): GraphSessi
 beforeEach(() => setActivePinia(createPinia()));
 afterEach(() => { useWorkflowGraphStore().$dispose(); useWorkspaceStore().$dispose(); vi.unstubAllGlobals(); });
 describe("generic workbench execution and document transactions", () => {
+  it("resets selection when creating blank drafts and keeps empty/populated switches on the same document contract", async () => {
+    const { graph, id, text, output } = fixture(), workspace = useWorkspaceStore();
+    const populated = graphClone(graph.document!);
+    graph.executionPackageLock = [{ package_id: "plugin", version: "1.0.0" }];
+    graph.selectedNodeIds = [text, output]; graph.selectedEdgeId = populated.edges[0].edge_id;
+    const blankId = graph.createWorkflow(), blank = graphClone(graph.document!);
+    expect(blank.schema_version).toBe(populated.schema_version);
+    expect(Object.keys(blank).sort()).toEqual(Object.keys(populated).sort());
+    expect(blank.package_lock).toEqual([{ package_id: "plugin", version: "1.0.0" }]);
+    expect(graph.selectedNodeIds).toEqual([]); expect(graph.selectedEdgeId).toBeNull();
+    expect(graph.history[blankId]).toEqual({ past: [], future: [] });
+    expect(graph.entries[blankId]).toMatchObject({ saved_revision: 0, session_id: null, pending: null });
+    expect(graph.entries[id].document).toEqual(populated);
+    const added = graph.addNode("workflow.text@1", { x: 20, y: 30 })!;
+    expect(graph.selectedNodeIds).toEqual([added]); expect(isGraphDocument(graph.document)).toBe(true);
+    graph.removeSelection();
+    expect(graph.document).toEqual(blank);
+    graph.selectedNodeIds = [added]; graph.selectedEdgeId = populated.edges[0].edge_id;
+    stubGraphApplicationFetch(vi.fn(async () => new Response(JSON.stringify([]))));
+    workspace.openWorkflow(id); await graph.activate(id);
+    expect(graph.document).toEqual(populated);
+    expect(graph.selectedNodeIds).toEqual([]); expect(graph.selectedEdgeId).toBeNull();
+    graph.selectedNodeIds = [text]; graph.selectedEdgeId = populated.edges[0].edge_id;
+    workspace.openWorkflow(blankId); await graph.activate(blankId);
+    expect(graph.document).toEqual(blank);
+    expect(graph.selectedNodeIds).toEqual([]); expect(graph.selectedEdgeId).toBeNull();
+    expect(graph.canUndo).toBe(true); expect(graph.entries[id].document).toEqual(populated);
+  });
+  it("uses the same passive draft registration for provided documents without sharing their state", () => {
+    const { graph, id, text } = fixture(), workspace = useWorkspaceStore();
+    const before = graphClone(graph.entries[id]), persist = vi.fn(() => true), fetcher = vi.fn();
+    graph.setPersistenceGuard(persist); vi.stubGlobal("fetch", fetcher);
+    graph.selectedNodeIds = [text]; graph.selectedEdgeId = graph.document!.edges[0].edge_id;
+    const doc = newGraph("Plugin draft", [{ package_id: "workflow.tavern", version: "1.2.0" }]);
+    doc.nodes = [graphClone(graph.document!.nodes[0])];
+    const nextId = graph.createWorkflowDraft(doc, "plugin")!;
+    expect(workspace.activeWorkflowId).toBe(nextId);
+    expect(workspace.activeWorkflow).toMatchObject({ state: "draft", nodeCount: 1, description: "plugin" });
+    expect(graph.entries[nextId]).toMatchObject({ document: doc, saved_revision: 0, session_id: null, pending: null });
+    expect(graph.history[nextId]).toEqual({ past: [], future: [] });
+    expect(graph.selectedNodeIds).toEqual([]); expect(graph.selectedEdgeId).toBeNull();
+    expect(graph.entries[id]).toEqual(before);
+    doc.nodes[0].config.text = "external mutation"; doc.package_lock![0].version = "2.0.0";
+    expect(graph.document!.nodes[0].config.text).toBe("hello");
+    expect(graph.document!.package_lock![0].version).toBe("1.2.0");
+    expect(persist).toHaveBeenCalledOnce(); expect(fetcher).not.toHaveBeenCalled();
+  });
+  it("restores and opens frozen v1 definitions without adding package locks or migrating them", async () => {
+    const { graph, id } = fixture(), workspace = useWorkspaceStore();
+    const old: GraphDocument = { schema_version: 1, workflow_definition_id: id, revision: 7,
+      name: "Legacy frozen", nodes: graphClone(graph.document!.nodes), edges: graphClone(graph.document!.edges) };
+    const snapshot = graph.storeSnapshot();
+    snapshot.entries[id] = { document: graphClone(old), saved_document: graphClone(old),
+      saved_revision: 7, session_id: null, pending: null };
+    workspace.markWorkflowSaved(id, old.name);
+    graph.executionPackageLock = [{ package_id: "plugin", version: "2.0.0" }];
+    expect(graph.restoreSnapshot(snapshot)).toBe(true);
+    stubGraphApplicationFetch(vi.fn(async () => new Response(JSON.stringify([]))));
+    await graph.activate(id);
+    expect(graph.entries[id].document).toEqual(old); expect(graph.entries[id].saved_document).toEqual(old);
+    expect(graph.document!.schema_version).toBe(1); expect(graph.document!.package_lock).toBeUndefined();
+    expect(graph.storeSnapshot().entries[id]).toEqual(snapshot.entries[id]);
+  });
+  it("keeps an explicitly empty execution lock usable when the catalog arrives after blank creation", async () => {
+    const graph = useWorkflowGraphStore(); graph.setPersistenceGuard(() => true); graph.createWorkflow();
+    expect(graph.document!.package_lock).toEqual([]);
+    let saved: GraphDocument | undefined, view: GraphSession | undefined;
+    const lock = [{ package_id: "plugin", version: "1.0.0" }];
+    stubGraphApplicationFetch(vi.fn(async (path, options) => {
+      const body = options.body ? JSON.parse(options.body) : {};
+      if (path === "/api/graph/node-types/v2") return new Response(JSON.stringify({ schema_version: 2,
+        node_types: [source, sink], package_lock: lock, execution_package_lock: lock, data_types: [] }));
+      if (path === "/api/graph/definitions") { saved = body.document; return new Response(JSON.stringify(saved)); }
+      if (path === "/api/graph/sessions") { view = session(saved!); return new Response(JSON.stringify(view)); }
+      return new Response(JSON.stringify({ ...view!, revision: 2, status: "succeeded" }));
+    }));
+    await graph.loadCatalog();
+    const text = graph.addNode("workflow.text@1", { x: 0, y: 0 })!;
+    const output = graph.addNode("workflow.output@1", { x: 300, y: 0 })!;
+    graph.connect({ source_node_id: text, source_port_id: "output", target_node_id: output, target_port_id: "input" });
+    await graph.submitPrimary();
+    expect(saved).toMatchObject({ schema_version: 2, package_lock: [], execution_roots: [], control_edges: [] });
+    expect(saved!.nodes).toHaveLength(2); expect(saved!.edges).toHaveLength(1);
+    expect(isGraphDocument(saved)).toBe(true); expect(graph.session!.status).toBe("succeeded");
+  });
   it("uses a registered independent plugin without a frontend kind branch", () => {
     const { graph } = fixture();
     graph.catalog.push({ ...source, component_id: "independent.upper", display_name: "大写" });

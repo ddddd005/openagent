@@ -7,15 +7,25 @@ export const textType: GraphNodeType = { component_id: "workflow.text", componen
 export const outputType: GraphNodeType = { ...textType, component_id: "workflow.output", display_name: "输出", is_output: true,
   default_config: { mode: "text" }, inputs: [{ port_id: "input", data_type: "TEXT", required: true, multiple: false }] };
 describe("versioned workflow graph boundary", () => {
+  it("creates blank current documents with detached exact package locks and no implicit nodes", () => {
+    const lock = [{ package_id: "workflow.tavern", version: "1.2.0" }];
+    const doc = newGraph("Blank", lock);
+    expect(doc).toMatchObject({ schema_version: 2, revision: 1, name: "Blank", nodes: [], edges: [],
+      object_bindings: [], execution_roots: [], control_edges: [], package_lock: lock });
+    expect(isGraphDocument(doc)).toBe(true);
+    lock[0].version = "2.0.0";
+    expect(doc.package_lock).toEqual([{ package_id: "workflow.tavern", version: "1.2.0" }]);
+    expect(newGraph("Without packages").package_lock).toEqual([]);
+  });
   it("compares JSON objects by content while retaining array order, types and graph identities", () => {
     const doc = newGraph("semantic receipt");
     doc.nodes.push({ node_binding_id: crypto.randomUUID(), component_id: "external.test", component_version: "1",
       title: "node", position: { x: 1, y: 2 }, config: { nested: { z: 7, a: [{ second: true, first: null }, "tail"] } } });
     doc.edges.push({ edge_id: crypto.randomUUID(), source_node_id: doc.nodes[0].node_binding_id, source_port_id: "out",
       target_node_id: doc.nodes[0].node_binding_id, target_port_id: "in", order: 0 });
-    const reordered = { edges: doc.edges, nodes: [{ ...doc.nodes[0], config: {
+    const reordered = { ...doc, edges: doc.edges, nodes: [{ ...doc.nodes[0], config: {
       nested: { a: [{ first: null, second: true }, "tail"], z: 7 },
-    } }], name: doc.name, revision: 99, workflow_definition_id: doc.workflow_definition_id, schema_version: 1 as const };
+    } }], name: doc.name, revision: 99, workflow_definition_id: doc.workflow_definition_id, schema_version: 2 as const };
     expect(graphSignature(reordered)).toBe(graphSignature(doc));
     for (const change of [
       (copy: typeof doc) => { (copy.nodes[0].config.nested as { a: unknown[] }).a.reverse(); },

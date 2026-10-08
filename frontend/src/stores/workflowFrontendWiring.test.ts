@@ -24,7 +24,8 @@ describe("frontend display definition transactions", () => {
     graph.packageLock = graphClone(frontendProjectLock); graph.executionPackageLock = graphClone(frontendExecutionLock);
     graph.createWorkflow();
     expect(graph.document!.nodes).toEqual([]); expect(graph.document!.edges).toEqual([]);
-    expect(graph.document!.schema_version).toBe(1); expect(graph.document!.object_bindings).toBeUndefined();
+    expect(graph.document!.schema_version).toBe(2); expect(graph.document!.object_bindings).toEqual([]);
+    expect(graph.document!.package_lock).toEqual(frontendExecutionLock);
   });
   it("accepts the entire recommendation as one undo/redo step and preserves it through draft persistence", () => {
     const { graph, id, request } = fixture(), before = graphClone(graph.document);

@@ -69,15 +69,20 @@ describe("package configuration edits and serial example drafts", () => {
     const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
     const doc: GraphDocument = { ...newGraph("Serial"), schema_version: 2, package_lock: [],
       object_bindings: [], execution_roots: [], control_edges: [] };
+    graph.selectedNodeIds = [crypto.randomUUID()]; graph.selectedEdgeId = crypto.randomUUID();
     constructor.mockReturnValue(doc);
     const persist = vi.fn(() => true), fetcher = vi.fn();
     graph.setPersistenceGuard(persist); vi.stubGlobal("fetch", fetcher);
     const id = graph.createSerialAgentExample()!;
     expect(workspace.activeWorkflowId).toBe(id);
     expect(graph.entries[id].saved_revision).toBe(0); expect(graph.entries[id].session_id).toBeNull();
+    expect(graph.selectedNodeIds).toEqual([]); expect(graph.selectedEdgeId).toBeNull();
+    expect(graph.history[id]).toEqual({ past: [], future: [] });
     expect(persist).toHaveBeenCalledOnce(); expect(fetcher).not.toHaveBeenCalled();
     expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(true);
     expect(graph.entries[id].document).toEqual(doc);
+    doc.name = "external mutation";
+    expect(graph.entries[id].document.name).toBe("Serial");
     graph.createWorkflow(); expect(graph.document!.nodes).toEqual([]);
   });
   it("does not create a draft when the exact template prerequisites are unavailable", () => {

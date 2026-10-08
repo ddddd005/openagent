@@ -1,4 +1,4 @@
-import { graphClone, type GraphDocument, type GraphNode, type GraphNodeType } from "./workflowGraph";
+import { graphClone, newGraph, type GraphDocument, type GraphNode, type GraphNodeType } from "./workflowGraph";
 import type { ModelCapacity } from "./workflowModelResources";
 
 export interface SerialAgentModelConfig {
@@ -24,9 +24,7 @@ function serialAgentDemo(catalog: GraphNodeType[],
   compacting: boolean): GraphDocument {
   const missing = requiredPackages.filter(id => !packageLock.some(row => row.package_id === id && row.version === "1.0.0"));
   if (missing.length) throw new Error(`串行示例缺少已启用的包：${missing.join("、")}。请启用后刷新目录。`);
-  const doc: GraphDocument = { schema_version: 2, workflow_definition_id: crypto.randomUUID(),
-    revision: 1, name: compacting ? "上下文精简 · Agent A → B" : "串行 Agent A → B", nodes: [], edges: [], control_edges: [],
-    execution_roots: [], object_bindings: [], package_lock: graphClone(packageLock) };
+  const doc = newGraph(compacting ? "上下文精简 · Agent A → B" : "串行 Agent A → B", packageLock);
   function node(component: string, version: string, title: string, x: number, y: number,
     config: Record<string, unknown> = {}) {
     const type = catalog.find(row => row.component_id === component && row.component_version === version && row.executable);

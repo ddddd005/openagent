@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { graphClone, graphEnumLabel, isGraphCatalog, isGraphDocument, isGraphObjectBindings,
   isGraphSession, newGraph, resolveGraphRunInputs, upgradeGraph,
-  type GraphNodeType, type GraphRunDetail, type GraphSession } from "./workflowGraph";
+  type GraphDocument, type GraphNodeType, type GraphRunDetail, type GraphSession } from "./workflowGraph";
 
 function fixture() {
   const document = newGraph("v2 tools");
@@ -19,8 +19,14 @@ function fixture() {
 
 describe("v2 workflow document and registered object boundaries", () => {
   it("keeps v1 unchanged until an explicit v2 upgrade and retains the full v2 definition", () => {
-    const old = newGraph("existing");
+    const old: GraphDocument = { schema_version: 1, workflow_definition_id: crypto.randomUUID(), revision: 1,
+      name: "existing", nodes: [], edges: [] };
+    const original = graphClone(old);
     expect(old.schema_version).toBe(1); expect(isGraphDocument(old)).toBe(true);
+    expect(old).toEqual(original);
+    upgradeGraph(old, [{ package_id: "legacy", version: "1.0.0" }]);
+    expect(old.schema_version).toBe(2);
+    expect(old.package_lock).toEqual([{ package_id: "legacy", version: "1.0.0" }]);
     const { document } = fixture();
     expect(isGraphDocument(document)).toBe(true);
     expect(graphClone(document)).toEqual(document);
