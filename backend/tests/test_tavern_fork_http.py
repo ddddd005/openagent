@@ -3,8 +3,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from copy import deepcopy
+from importlib.resources import files
 import json
-from pathlib import Path
 import shutil
 import subprocess
 from threading import Thread
@@ -215,7 +215,7 @@ function client() {
     command_count: commandCount, receipt_count: 1, candidate_chain: candidate.chain_run_id }));
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
-    core = Path(__file__).resolve().parents[1] / "src" / "phase1_agent" / "static" / "graph-chat-core.js"
+    core = files("phase1_agent").joinpath("static", "graph-chat-core.js")
     with closing(GraphWorkflowService(tmp_path / "actual-client.sqlite")) as service:
         doc, _ = chat_graph(service)
         first = run(service, create(service, doc), "First real client round.")
