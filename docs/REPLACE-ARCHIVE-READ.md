@@ -1,5 +1,7 @@
 # 退役前归档与旧上下文纯读取
 
+> 历史切片：下文的实现、节点版本、未推送状态和验证结果指登记时快照，不是当前入口。最新使用与工程说明见[文档索引](README.md)，当前退役范围见[节点目录](NODE-DIRECTORY-2026-10-09.md)；不按本页重建旧 API。
+
 承接 [固定基线](BASELINE-2026-10-06.md)、[1.0 规划](PLAN-1.0.md)、[支持与处置矩阵](REPLACE-SUPPORT-MATRIX.md)和 [旧客户端原请求保全](REPLACE-LEGACY-PENDING.md)。本轮按用户同意采用 Git 留档、仓库外备份和按依赖逐批移除；归档不是保留长期双架构的正式运行入口。
 
 ## 1. 退役前快照
@@ -27,10 +29,10 @@
 
 ## 2. 解除旧读取依赖
 
-- [legacy_context_contracts](../backend/src/phase1_agent/legacy_context_contracts.py) 接管 basic/prepared 的闭合 Turn 投影和完整冻结准备校验主体。它不构造工作流、Context、Kernel、执行器、数据库或目录；普通 basic 投影也不加载准备算法。
+- [legacy_context_contracts](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/src/phase1_agent/legacy_context_contracts.py) 接管 basic/prepared 的闭合 Turn 投影和完整冻结准备校验主体。它不构造工作流、Context、Kernel、执行器、数据库或目录；普通 basic 投影也不加载准备算法。
 - prepared 读取沿用共用的 frozen correspondence 校验，包括 schema1/2/3、S0/已存 observations、配置、parent/binding、变量事务/seed/重派生及程序结果，不重新执行宏或上下文正则。共享声明及纯验证算法按裁决保留，不以清理为由削弱协议。
-- [legacy_archive](../backend/src/phase1_agent/legacy_archive.py) 只使用调用者提供的 `get_record` 读取确切 Turn/InputSnapshot/NodeInput 和成功 owner，保留 run_record/node_run 后备及未知 Context 拒绝。它负责闭合记录校验，**不自行授予会话读取权限**；原冻结 refs 和源节点作用域检查仍由调用者执行。
-- [GraphAgentHost._legacy_archive](../backend/src/phase1_agent/graph_agent_host.py) 已委托纯 reader，不再为档案读取导入 `workflow`、`PreparedPromptContext` 或 `BasicContext`。旧 Context 类和公开 frozen wrapper 委托同一主体，原请求门禁的单次结构校验及每次完整 frozen 校验保持。
+- [legacy_archive](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/src/phase1_agent/legacy_archive.py) 只使用调用者提供的 `get_record` 读取确切 Turn/InputSnapshot/NodeInput 和成功 owner，保留 run_record/node_run 后备及未知 Context 拒绝。它负责闭合记录校验，**不自行授予会话读取权限**；原冻结 refs 和源节点作用域检查仍由调用者执行。
+- [GraphAgentHost._legacy_archive](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/src/phase1_agent/graph_agent_host.py) 已委托纯 reader，不再为档案读取导入 `workflow`、`PreparedPromptContext` 或 `BasicContext`。旧 Context 类和公开 frozen wrapper 委托同一主体，原请求门禁的单次结构校验及每次完整 frozen 校验保持。
 
 AST 对照退役前标签：完整 frozen core 和 BasicContext 原投影函数体一致；prepared 投影只把 BasicContext 的 fallback 换成纯函数调用。最初核对脚本误取同名 Protocol 方法而断言失败，修正为精确类方法后核实通过；未为该脚本修改产品算法。
 
@@ -38,7 +40,7 @@ AST 对照退役前标签：完整 frozen core 和 BasicContext 原投影函数�
 
 ## 3. 定向验证
 
-新增 [纯档案回归](../backend/tests/test_legacy_archive_contracts.py) 覆盖 basic、prepared1、prepared2、变量重派生和 prepared3；只读 reader、原 owner、确切 Context、输入/根身份、完整冻结变量/程序证据和返回隔离均有拒绝或保全案例。五个 fresh 进程阻断旧工作流、宿主、上下文类、bindings、Kernel、Runtime、SQLite store 及旧资源 store 导入，仍能读取；basic 另阻断准备算法导入。
+新增 [纯档案回归](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/tests/test_legacy_archive_contracts.py) 覆盖 basic、prepared1、prepared2、变量重派生和 prepared3；只读 reader、原 owner、确切 Context、输入/根身份、完整冻结变量/程序证据和返回隔离均有拒绝或保全案例。五个 fresh 进程阻断旧工作流、宿主、上下文类、bindings、Kernel、Runtime、SQLite store 及旧资源 store 导入，仍能读取；basic 另阻断准备算法导入。
 
 首批在 `backend/` 执行纯档案、bindings、prepared request gate 三文件：**104 passed，13.47 秒，退出码 0**。这是追加变量拒绝回归前的中间范围，不追加累计。
 

@@ -1,5 +1,7 @@
 # REPLACE-03 公共资源与请求门禁解耦
 
+> 历史切片：下文的实现、节点版本、未推送状态和验证结果指登记时快照，不是当前入口。最新使用与工程说明见[文档索引](README.md)，当前退役范围见[节点目录](NODE-DIRECTORY-2026-10-09.md)；不按本页重建旧 API。
+
 承接 [支持与处置矩阵](REPLACE-SUPPORT-MATRIX.md)、[1.0 规划](PLAN-1.0.md)及固定 [2026-10-06 基线](BASELINE-2026-10-06.md)。用户授权提交既有改动后开始架构收口；此前各切片和阶段 A 联合裁决已提交为 `237afb5c0692f78b05f1aad912a53941d67e9aee`，提交后工作区曾为空，**尚未推送**。
 
 本页对应该提交之上的新工作区，尚未再次提交。本轮三个并发子代理分别拆公共资源宿主、请求门禁及资源纯契约，主代理负责剩余纯导入接线、当前 Agent 新进程回归和合并复核。这是阶段 B / REPLACE-03 的首个实际解耦切片，不是阶段 A 的再次盘点，也不是旧架构全部退出。
@@ -14,7 +16,7 @@
 | 普通/准备型请求门禁 | 新增 `prepared_request.py`；每次先验证并分离快照，按 `resolved.context.capabilities` 判断；只有 prepared 请求按需进入原完整算法 | 普通请求拒绝非空 preparation evidence，不按 `public_agent` 标记绕过校验；prepared 仍校验完整冻结证据及容量 |
 | 导入接线 | 当前资源、图节点/执行/公开字段、准备程序、model/exposure 纯校验改用纯契约；WorkbenchInterfaces 仅在调用旧资源方法时构造原 store | 旧方法的锁、事务、CAS、owner 和回执语义不改 |
 
-主要新模块：[资源契约](../backend/src/phase1_agent/resource_contracts.py)、[资源宿主](../backend/src/phase1_agent/graph_resource_host.py)、[请求门禁](../backend/src/phase1_agent/prepared_request.py)。接线入口：[graph_service](../backend/src/phase1_agent/graph_service.py)、[graph_runtime_host](../backend/src/phase1_agent/graph_runtime_host.py)、[runtime](../backend/src/phase1_agent/runtime.py)、[workbench_interfaces](../backend/src/phase1_agent/workbench_interfaces.py)。
+主要新模块：[资源契约](../backend/src/phase1_agent/resource_contracts.py)、[资源宿主](../backend/src/phase1_agent/graph_resource_host.py)、[请求门禁](../backend/src/phase1_agent/prepared_request.py)。接线入口：[graph_service](../backend/src/phase1_agent/graph_service.py)、[graph_runtime_host](../backend/src/phase1_agent/graph_runtime_host.py)、[runtime](../backend/src/phase1_agent/runtime.py)、[workbench_interfaces](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/src/phase1_agent/workbench_interfaces.py)。
 
 门禁对 malformed resolved/context/capabilities 明确抛 `ContractValidationError`，不静默跳过或把非数组 capabilities 当成合法描述。有效普通和 prepared 请求的业务语义保持；prepared 消息/工具的 canonical 字符容量、消息上限、适配器工具校验和 close 转发没有重写。
 

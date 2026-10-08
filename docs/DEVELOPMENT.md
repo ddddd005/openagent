@@ -1,27 +1,44 @@
 # 开发说明
 
-本版使用 Vue 3、TypeScript、Pinia、Vue Flow 工作台，以及 Python `phase1_agent` 包和 SQLite 持久化。包名沿用开发版本，不等于项目永久限定为第一阶段或固定 A/B。
+本版使用 Vue 3、TypeScript、Pinia、Vue Flow 工作台，以及 Python `phase1_agent` 包和 SQLite 持久化。包名保留既有导入身份，不代表当前仍使用固定 A/B 宿主。
 
-## 当前开发边界
+本文描述 2026-10-09 现行主干的工程边界。入口见 [文档索引](README.md)，操作见 [使用手册](USER-GUIDE.md)；历史记录不作为当前节点目录、部署状态或 API 的替代说明。
 
-唯一产品开发主仓为 `openagent`；`step1` 及其旧后端是历史来源，根目录 `smolagents` 等是第三方参考，不作为当前开发分支使用。2026-10-09 的改动归属、限定修补、验收证据与 Git 收口统一见 [工作区梳理与验收](WORKTREE-ACCEPTANCE-2026-10-09.md)。该记录的前六节保留验收时状态，最后一节登记随后提交，不把历史快照当作当前分支状态。
+## 分支与启动
 
-自本次收口起固定以下分支职责：
+唯一产品仓库为 `openagent`。仓库外旧 `step1` 及 vendored 第三方源码只作历史/来源参考，不作为产品开发工作区。
 
 | 分支 | 职责 |
 | --- | --- |
-| `main` | 当前产品主干；2026-10-09 已用测试版替换旧正式源码，旧版本只归档参考；不等于后端全量绿色、发布版本或已部署 |
-| `develop` | 从当前主干延续的唯一串行开发与隔离验收工作区，不保留另一套产品路线；新能力在这里实现、测试和分组提交 |
-| 临时功能分支 | 仅用于明确授权的并行工作，从 `develop` 派生并合回 `develop`，不直接混入 `main` |
+| `main` | 当前产品主干；原测试版已晋升，旧正式源码仅归档参考 |
+| `develop` | 基于同一主干继续开发及隔离验收，不维护第二套实现 |
+| 临时功能分支 | 只在明确需要时用于授权并行工作，合回 `develop` 后再进入 `main` |
 
-- 开始新能力前先确认范围与验收标准；不再为每次开发另建分支。Gemini 本轮已按用户授权三并发在 `develop` 实现，随后分组提交并经用户授权快进纳入 `main`。
-- `develop` 的目标提交通过对应验收后才纳入 `main`；单线无分叉时优先 fast-forward。推送、标签、版本升级和部署分别决策，不因本机验收自动执行。
-- 分支只隔离 Git 代码，不隔离运行进程、Vite 页面、端口、SQLite 或浏览器存档。根 `start.bat` 固定启动干净的 `main` 工作区；`start-dev.bat` 是唯一显式开发入口，默认独立端口和数据库。切换代码后须核对实际服务源码和启动记录，不能把旧进程当作新基线。
-- `v0.2.0` 继续固定 2026-10-07 的架构收口，不移动旧标签来冒充当前 HEAD。当前版本元数据仍为 `0.2.0`。
+2026-10-09 上一次同步已正常推送 `main`；当时本地 `main`、`develop` 与远端 `main` 对齐到 `0c158e7`。这只是该次同步的身份，不是后续 HEAD 的固定名称。版本元数据仍为 `0.2.0`；`v0.2.0` 固定原 2026-10-07 基线，不移动旧标签冒充当前源码。`main-before-node-unification-2026-10-09` 是仅本地保存的旧版归档标签，未随 `main` 自动推送。
 
-Gemini 工具与思考按 [G1-G5 规划](PLAN-GEMINI-THINKING.md) 实施，具体版本、配置、离线验收证据、主干收口及剩余边界见 [本轮实现记录](GEMINI-ACCEPTANCE-2026-10-09.md)。根 `start.bat` 仍固定稳定 `main`，下次启动将使用已合入的 Gemini 实现；Git 合并不自动更新正在运行的服务。
+根 `start.bat` 通过 `scripts/start-branch-services.ps1` 选择唯一干净的 `main` 工作区；本机为 `.local/stable-main`。`start-dev.bat` 只接受入口工作区的 `develop`，不回退为其他源码。
 
-随后在 `develop` 收敛节点路线与二级菜单，按用户授权删除旧节点及旧测试图，不保留迁移或兼容选择器。用户进一步授权当前测试版成为主干，旧 `main` 建立独立归档标签、源码 ZIP 与默认稳定数据库只读快照，节点整理随之纳入 `main`。当前声明与存档清理边界见 [节点目录](NODE-DIRECTORY-2026-10-09.md)，归档与本机晋升记录见 [主干晋升](MAIN-PROMOTION-2026-10-09.md)。后续开发以这份新主干为基线，不恢复旧实现、重建历史版本菜单或从旧归档继续分叉开发。
+| 入口 | 后端 / 工作台 | 默认数据库，相对于 BAT 所在目录 |
+| --- | --- | --- |
+| `start.bat` | `8765` / `5178` | `.local/dev/workflow.sqlite` |
+| `start-dev.bat` | `8766` / `5179` | `.local/develop/workflow.sqlite` |
+
+`.local/dev` 名称沿用原稳定库位置，并不表示开发 BAT 使用它。两入口使用可见控制台；不隐藏启动、不自动 `pull`、不切分支、不安装依赖、不杀占端口进程。分支不能隔离运行进程或数据；正在运行的旧服务不会因提交、合并或推送而换版。
+
+新能力先明确范围和对应验收，在 `develop` 实现；通过后优先从干净 `main` 工作区 `git merge --ff-only develop`。若存在分叉、工作区改动或验证失败，先解决原因，不自动覆盖文件或强推。
+
+核对远端不能只看可能过期的 `origin/main`。从仓库根目录执行：
+
+```powershell
+git status --short
+git worktree list --porcelain
+git rev-parse main develop
+git ls-remote --heads origin main
+```
+
+本地 `main` 的完整 SHA 应与 `ls-remote` 返回的 `refs/heads/main` 一致；开发有未晋升提交时 `develop` 可合理领先。同步前可执行 `git fetch origin`，再检查 `git log --oneline --left-right main...origin/main`。在实际 `main` 工作区以 `git push origin main:main` 正常推送；拒绝时检查分叉，不用强推绕过。推送后重新核对远端 SHA 和工作区状态。
+
+明确只推 `main`、不连带标签时使用 `git -c push.followTags=false push origin main:main`。归档标签需另行明确推送。Git 同步、发布标签、版本升级、安装/构建和服务部署是不同操作；日志、数据库、依赖、截图、`dist` 及本地归档不随代码推送。
 
 ## 代码入口
 
@@ -29,110 +46,115 @@ Gemini 工具与思考按 [G1-G5 规划](PLAN-GEMINI-THINKING.md) 实施，具�
 
 | 修改范围 | 入口 |
 | --- | --- |
-| 服务启动与 HTTP 适配 | `server.py`、`graph_http.py` |
-| 统一应用命令与查询 | `graph_application.py`、`graph_application_contracts.py` |
-| 应用请求身份与纯回执读取 | `graph_application_identity.py`、`graph_receipts.py`；HTTP 读取在构造服务前截获 |
-| 图服务与编译/执行 | `graph_service.py`、`graph_contracts.py`、`graph_execution.py`、`graph_runtime_host.py` |
-| 公共资源预检与冻结读取 | `graph_resource_host.py` |
-| 资源纯契约与请求门禁 | `resource_contracts.py`、`prepared_request.py`；旧 prepared 请求直接拒绝 |
+| 服务启动与 HTTP | `server.py`、`graph_http.py` |
+| 统一应用命令、查询及身份 | `graph_application.py`、`graph_application_contracts.py`、`graph_application_identity.py`、`graph_receipts.py` |
+| 图服务、编译及执行 | `graph_service.py`、`graph_contracts.py`、`graph_execution.py`、`graph_runtime_host.py` |
+| 公共资源预检与冻结 | `graph_resource_host.py`、`resource_contracts.py`、`prepared_request.py` |
 | 公共 Runtime 与控制 | `runtime.py`、`runtime_hosting.py`、`runtime_control.py`、`runtime_executor_contracts.py` |
-| 能力声明与注册 | `host_sdk.py`、`capability_packages.py`、`builtin_packages.py`、`capability_registry.py` |
-| 当前精确包选择与依赖解析 | `graph_package_selection.py`、`CapabilityPackageLoader.resolve`；无旧配置运行回退 |
-| 普通内容、提示词与模型节点 | `tool_package.py`、`prompt_package.py`、`model_package.py` |
-| Agent 执行与失败分类 | `agent_package.py`、`agent_executor.py`、`runtime.py` |
+| 能力声明、包选择与注册 | `host_sdk.py`、`capability_packages.py`、`builtin_packages.py`、`capability_registry.py`、`graph_package_selection.py` |
+| 内容、提示词与模型节点 | `tool_package.py`、`prompt_package.py`、`model_package.py` |
+| 原生 Agent、工具及精简 | `agent_package.py`、`agent_executor.py`、`context_compaction.py`、`context_compaction_policy.py` |
 | 模型调用与受控失败 | `model_service.py`、`model_host_service.py`、`adapter.py`、`contract_errors.py` |
-| 上下文读、装配、写回 | `context_package.py`、`context_v4_nodes.py`、`context_v4.py`、`context_receipt.py` |
-| 前端业务节点 | `frontend_package.py`、`frontend_business.py` |
-| 定义、会话、对象与运行存储 | `storage.py`、`graph_store.py`、`graph_records.py`、`session_objects.py`、`runtime_fact_store.py` |
-| 旧测试数据的一次性清理 | `storage_retirement.py`；仅版本升级事务使用，不提供旧读写 API |
+| Gemini 协议、思考及签名 | `gemini_adapter.py`、`gemini_capabilities.py`、`provider_metadata.py` |
+| 原生上下文装配与写回 | `context_package.py`、`context_v4_nodes.py`、`context_v4.py`、`context_prompt_v6.py`、`context_receipt.py` |
+| 前端对象与酒馆 | `frontend_package.py`、`frontend_business.py`、`tavern/` |
+| 定义、会话、对象、事实与存储升级 | `storage.py`、`graph_store.py`、`graph_records.py`、`session_objects.py`、`runtime_fact_store.py`、`storage_retirement.py` |
 | 信息源与事实读取 | `graph_information.py`、`runtime_information.py` |
 | 独立聊天客户端 | `static/graph-chat.js`、`static/graph-chat-core.js` |
 
-前端入口如下：
+下表中的前端路径均在 `frontend/src/` 下。
 
 | 修改范围 | 入口 |
 | --- | --- |
-| 应用与工作台 | `frontend/src/App.vue`、`components/GraphWorkbench.vue` |
-| 通用图、串行示例、节点目录 | `domain/workflowGraph.ts`、`domain/serialAgentDemo.ts`、`domain/nodeCatalog.ts` |
-| 图与会话状态 | `stores/workflowGraph.ts`、`stores/workspace.ts` |
-| 浏览器持久化接口与档案 | `adapters/browserStorage.ts`、`adapters/workbenchPersistence.ts`、`stores/workbenchPersistence.ts` |
-| 应用边界 | `application/workflowCommands.ts`、`workflowEditing.ts`、`workflowInformation.ts` |
-| HTTP 适配 | `adapters/workflowApplicationApi.ts`、`workflowGraphApi.ts`、`workflowResourcesApi.ts` |
-| 供应商与模型源编辑 | `components/CurrentProviderPanel.vue`、`ModelSourceFields.vue`、`application/workflowResources.ts` |
-| 可信本地前端扩展 | `plugins/workflowFrontendSdk.ts`、`modelFrontendPackage.ts`、`workflowFrontendPackage.ts` |
-| 观察与控制 | `components/GraphInformation.vue`、`GraphRunControls.vue`、`GraphHistory.vue` |
+| 应用与工作台 | `App.vue`、`components/GraphWorkbench.vue` |
+| 图契约与串行示例 | `domain/workflowGraph.ts`、`domain/serialAgentDemo.ts` |
+| 二级节点目录与协议选择 | `domain/nodeCatalog.ts`、`domain/nodeSelection.ts`、`components/NodeProfileDialog.vue` |
+| 图、会话与工作区状态 | `stores/workflowGraph.ts`、`stores/workspace.ts` |
+| 浏览器持久化与精确退役 | `adapters/browserStorage.ts`、`adapters/workbenchPersistence.ts`、`stores/workbenchPersistence.ts` |
+| 应用命令、编辑及信息读取 | `application/workflowCommands.ts`、`application/workflowEditing.ts`、`application/workflowInformation.ts` |
+| HTTP 适配 | `adapters/workflowApplicationApi.ts`、`adapters/workflowGraphApi.ts`、`adapters/workflowResourcesApi.ts` |
+| 供应商与模型编辑 | `components/CurrentProviderPanel.vue`、`components/ModelSourceFields.vue`、`application/workflowResources.ts` |
+| 可信本地扩展 | `plugins/workflowFrontendSdk.ts`、`plugins/modelFrontendPackage.ts`、`plugins/workflowFrontendPackage.ts` |
+| 观察与控制 | `components/GraphInformation.vue`、`components/GraphRunControls.vue`、`components/GraphHistory.vue` |
 
-前端表中没有前缀的路径继承对应行的 `frontend/src/` 子目录。
+## 当前数据契约
 
-## 一次运行的数据流
+默认注册为 44 个可执行声明、41 个家族、9 个分类。二级菜单按家族添加；DeepSeek/Gemini 是当前协议选项，不是可互相覆盖的历史版本。确切声明见 [节点目录](NODE-DIRECTORY-2026-10-09.md)。
+
+| 路线 | DeepSeek | Gemini |
+| --- | --- | --- |
+| 带容量模型来源 | `models.source@2` / `MODEL_BINDING@2` | `models.source@4` / `MODEL_BINDING@4` |
+| 普通模型调用 | `models.chat@3` | `models.chat@4` |
+| 原生 Agent | `agents.execute@4` | `agents.execute@8` |
+
+普通提示词材料及 `prompts.assembly` 使用节点版本 `@2`，装配输出已就绪 `PROMPT@2`。格式转换的普通提示词通过独立 `raw_prompt` 端口接入，保留真实产物引用。普通 Chat 消费该契约，不把普通提示词当作持久 Agent 上下文。
+
+当前 `context.output/assembly/merge@4` 与 Agent 的 `PROMPT@6`、`AGENT_CONTEXT_UPDATE` 组成原生上下文路线；`context_receipt.py` 校验真实写入回执。两个串行示例都走这条路线，仅是否连接 `agents.compaction-policy@1` 不同。
+
+Gemini 普通响应及 `agent_message@5` 分离回答正文、可见 `thinking_summary` 和不透明 `provider_metadata`。原 Content/parts、签名、供应商调用 ID 与显式内核调用绑定经响应、运行事实、上下文、持久化重读进入下一次请求；不能按工具名合并调用、改写原签名 part 或重新生成签名。摘要不是完整内部思维链，签名不能作为正文展示。
+
+工具定义转换、`functionCall/functionResponse` 继续复用公共工具执行及 `final_answer`，没有另建无工具路径或并行工具执行器。型号思考能力由 `gemini_capabilities.py` 的明确规则校验，未知能力派发前拒绝；不为绕过错误默改模式、预算、签名或工具 schema。
+
+## 运行与权威
 
 ```text
 工作台编辑副本
   -> 保存定义及修订
   -> 创建/选择工作流会话
-  -> 应用 run.start 校验身份、状态与冻结依据
+  -> run.start 校验身份、状态与冻结依据
   -> 编译激活节点和依赖，准备宿主服务
   -> Runtime 逐节点执行
   -> 校验并接纳输出、事实及声明的对象写入
-  -> 激活计划全部成功接纳
+  -> 全部激活节点成功接纳
   -> 结算完成检查点
   -> 消费者读取显式公开的 presentation.display
 ```
 
-普通 A -> B 图通过数据边表达输入依赖，通过控制边约束业务写回顺序。B 的模型响应成功后才进入两个上下文 merge 和聊天追加；第二次追加前重新读取对象。这个顺序不是整图事务：前面的对象写入已接纳后，后面的失败不会自动撤销它。
+串行 A -> B 示例通过数据边表达输入依赖、控制边约束写回顺序。B 的成功响应后才进行对应 merge 和聊天追加；同一对象再次写入前重新读取。这不是整图事务：已接纳的前缀不会因后续失败自动撤销。
 
-## 数据权威
-
-| 对象 | 权威及职责 |
+| 对象 | 权威 |
 | --- | --- |
-| 工作流定义及修订 | 持久化节点、配置、端口连接、依赖、对象绑定、包版本；不持有某次会话的动态上下文 |
-| 工作流会话 | 持有动态对象、历史和活动链关联；同一会话可执行多轮 |
-| chain_run / node_run | 持有本次执行与节点尝试的冻结依据、状态、产物和事实；不能用新草稿改写旧运行 |
-| 全局当前资源 | 保存可复用供应商配置；运行准备解析资源并冻结实际使用依据 |
-| 会话对象与上下文 | 由声明的读写权限及接纳流程管理；上下文读、装配、merge 分开 |
-| 界面及消费者缓存 | 编辑副本、请求恢复记录和展示投影；不能替代后端运行事实 |
+| 工作流定义及修订 | 节点、配置、端口、包版本与对象绑定；不持有本轮动态上下文 |
+| 工作流会话 | 动态对象、历史及活动链关联，可执行多轮 |
+| chain_run / node_run | 原运行冻结依据、尝试、状态、产物和事实；新草稿不能改写旧运行 |
+| 全局当前资源 | 可复用供应商配置；运行预检解析资源并冻结实际依据 |
+| 会话对象与上下文 | 显式读写权限、接纳及 CAS 管理 |
+| 前端持久化和缓存 | 编辑副本、原请求恢复材料及展示投影，不替代后端事实 |
 
-通用 Runtime 协调节点执行和接纳，不解释 Agent 私有工具语义。模型服务持有真实凭据，节点配置只保存受控的 `env:DEEPSEEK_API_KEY` 或 `env:GEMINI_API_KEY` 引用。信息目录持有声明及绑定坐标，实际正文由登记的信息源或存储读取器提供。
+模型服务读取受控 `env:DEEPSEEK_API_KEY` / `env:GEMINI_API_KEY`，节点只保存引用。通用 Runtime 不解释 Agent 私有工具语义，也不直接暴露供应商凭据。
 
 ## 修改规则
 
-- 先确认操作针对定义、副本、会话还是原运行。复制和检查点分叉应重映射实际身份，不复用私有节点归属。
-- 命令沿统一应用边界提交，保持 request body、idempotency key、修订/CAS 依据和 owner 校验一致。当前应用结果未知时经 `/api/graph/receipts/read` 或 consumer 同作用域入口核实完整原 operation/parameters，不再重发 mutation；后续拒绝不自动证明原请求未发生。
-- 工作流编辑复制的核实仅读原回执；缺原坐标的旧副本继续保留，不生成新 key/body。仅初次明确拒绝复制后保存精确 `rejected_copy`，由独立用户重试命令在证据匹配、新读修订和并发门禁下提交，不能把核实与重试合并。
-- 节点声明类型、版本、配置 schema、端口和执行器；端口数据必须满足内容契约，不以普通字符串代替带版本的结构。
-- 新节点的专有逻辑留在能力包。公共 `graph_failed_retry.py` 仅协调声明了失败策略的合法新尝试；现行原生 Agent 没有开放该重试策略，不把旧摘要路线的许可移植过来。成功结果接纳失败仍可在保留现场下使用 `retry_acceptance`，不重复模型或工具调用。
-- 单节点成功、HTTP 200、可读输出、正式交付和整图完成分别处理。不要让模型结果直接绕过接纳与检查点。
-- 未知外部效果不能凭空判成失败并重试；成功结果接纳失败不能重新调用模型。
-- 模型服务的受控失败经 `ModelRequestError` 保留 `model_provider_error`、`model_dispatch_unknown`、`model_not_dispatched`、`model_response_invalid`，不进入 kernel 的自动 transport retry。安全重试许可仍由原 service facts 和失败重试策略裁决，不能只凭表层错误码授权。
-- 活动运行继续依赖同进程现场及冻结服务。持久化历史可读不授予跨进程 `resume` 或失败重试资格。
-- 前端专用配置通过确切包、扩展、版本与槽位声明加载；通用编辑器不按模型业务字段硬编码。
+- 先辨明操作目标是定义、副本、会话还是原运行；复制和分叉必须重映射实际身份及归属。
+- 命令统一经过应用边界，保持 body、idempotency key、修订/CAS 和 owner 一致。结果未知时按原 operation/parameters 与作用域读取回执，不自动重发 mutation。
+- 回执读取由 `server.py` 在构造应用服务前截获，使用 raw SQLite 只读入口。management 与 consumer 作用域不能混用；缺原身份或证据不匹配时保持 unresolved。
+- 定义节点时提供确切类型/版本、schema、端口和执行器，不用普通字符串替代带版本结构；共用类型在原版本下不可悄悄重定义。
+- 专有行为放入能力包。公共 `graph_failed_retry.py` 只协调已注册的失败策略；当前 `agents.execute@4/@8` 没有注册失败重试策略，不能套用旧摘要路线的重试结论。
+- 原结果成功但接纳失败时，仅在原现场与 `available_actions` 允许下 `retry_acceptance`，不重新调用模型、执行工具或重放外部效果。
+- 受控 `ModelRequestError` 区分 `model_provider_error`、`model_dispatch_unknown`、`model_not_dispatched`、`model_response_invalid`；表层 HTTP 429/503 或未派发诊断本身不授予重试许可，也不进入自动 transport retry。
+- 暂停/恢复依赖同进程现场及冻结服务。历史可冷重读不代表活动内核可跨进程恢复；进程重启后不得凭持久消息自动重建执行或工具队列。
+- 前端专用编辑器经确切包、版本、扩展与槽位声明加载，不在通用调度器中硬编码模型业务。
 
-## 添加普通处理节点
+添加普通处理节点先参考 `tool_package.py` 与 `backend/tests/test_tool_package.py`。至少覆盖正常输出、非法类型/配置、目录/编译、实例隔离及显式对象权限。本版不承诺完整公共插件 SDK、远程不可信插件隔离或插件市场。
 
-先阅读 `tool_package.py` 的纯文本处理实现和 `tests/test_tool_package.py`。一个最小节点需要配置 schema、输入/输出端口、类型/版本和执行函数，再通过包注册进入目录。纯处理执行器应只生成合法输出；需要对象读写时通过执行上下文及显式绑定声明，不直接操作 SQLite 或其他节点私有状态。
+## 数据退役
 
-验证至少覆盖正常输出、错误类型/配置、目录与编译、实例间隔离。需要界面专用编辑器时再接可信本地扩展，不先修改通用调度器。本版不提供完整公共插件 SDK、远程不可信插件隔离或插件市场。
+SQLite `STORAGE_VERSION = 15` 在单笔升级事务内按确切旧节点 ID/版本、退役包或旧资源身份识别旧路线，沿明确归属/引用形成闭包，整组删除相关定义、会话、运行、产物、事实、对象、manifest 及回执。包括旧 `workflow.prompt-resource@1` 及明确关联内容；当前 schema2 提示词与供应商资源、无关联现行记录保留。
 
-## 退役边界
+浏览器 `workbenchPersistence.ts` 对草稿、已保存图与 pending 请求中的旧声明实行对应整图删除。不迁移旧图、不静默换节点版本、不重发 pending；未知插件/未知版本或正文提及旧名称不作为退役依据。节点整理及主干晋升验收只在隔离数据上验证；正常 BAT 首次打开原稳定库时才执行其适用升级。
 
-当前入口只使用普通 Graph、公共 Runtime 与独立能力包。旧固定宿主、私有 Agent 执行器、兼容节点工厂、旧客户端/store、旧 HTTP 路由、在线迁移和私有档案入口已从源码删除；不保留旧运行 fallback 或旧会话只读门面。当前包选择只读 `current-execution`。
+旧固定宿主、兼容工厂、旧上下文/Agent 路线和专用测试已删除。当前包选择为 `current-execution`，没有旧运行 fallback 或旧存储 API 门面。存储版本、数据 schema、节点版本、能力包版本和应用 `0.2.0` 是不同契约，不应混称“软件版本”。
 
-SQLite v15 在单笔升级事务中识别确切固定/compat 内容及本轮退役节点路线，沿明确归属/引用和共享对象 revision 形成关联闭包，包含 Runtime facts 的 payload 引用及 chain/node 归属；整组删除相关定义/会话、事实、对象、manifest、回执及旧专用表。引用旧历史的当前对象/manifest 和共享旧 revision 不再单独保留，正常关联不再作为升级回滚保全的理由；无关联当前记录、独立资源与配置保留，不因缺包或未知节点而猜旧。有效旧 `project` 选择仅在没有当前行时转入当前配置，移除 `workflow.compat` 和 `workflow.context-compression`，然后删除旧行。保留下来的当前 `node_run@4` 空 `agent` 字段迁为版本 5。升级不迁移旧图、不更换节点版本，也不能用来重新启动旧工作流；本轮未对稳定库执行该升级。
+## 验收与历史
 
-当前回执仍通过 raw SQLite `mode=ro` 查询，缺原应用身份或证据不匹配返回 unresolved，不重发 mutation；当前 Vue/GraphChat 保留完整 pending，不为已删除的关联测试内容重建兼容证据。无关联当前数据、可信扩展及共用类型/事实/对象设施保留。旧源码留在 Git 标签及仓库外归档，不放回正式源码树。
+当前主干晋升复核为前端 67 文件 / 928 项、类型/构建、后端定向 13 文件 / 239 项通过。此前节点整理后端全量为 3008 通过 / 50 既有失败 / 9 跳过；剩余失败有旧稳定基线对照，不声明全量绿色。全量后最后修改另有 191 项补测，批次范围不累加。
 
-最终扫描已删除 `frozen_model.py` 无调用者的旧 stage factory/`legacy_adapter` 透传及前端 `archive.read` 死导出、类型、mock、旧专属测试。本批后端初轮 55 个目标、789 个案例为 780 通过 / 9 失败；修复后 8 文件 55 项通过（47.31 秒），9 项原失败均通过；最终扫描对应后端补测 4 文件 64 项通过（24.46 秒）。前端初轮 16 文件 331 通过 / 10 失败、相关修复后 3 文件 102 项通过，最终持久化/API 两文件 26 项及类型/构建通过；期间 TS2345 索引类型收窄错误已通过绑定 `entryRow` 修复。最终 JS 430.45 kB / gzip 137.23 kB。工具中断无可用最终结果不计，后端两批及前端持久化 15 项等重叠范围不累加。
+工程检查、运行验收和部署状态分别记录。当前代码仍有 >500 kB bundle 提示、通用后端测试债务及活动跨进程恢复边界；历史 wheel、旧常驻、收费模型或截图不自动验证当前主干。
 
-2026-10-07 上一轮整合时，阶段 A 的盘点裁决与阶段 B 的实际代码移除、第一批定向验证已完成；208 文件 AST 本地导入扫描 0 缺失已复核，固定基线哈希/退役前标签解引用提交不变。第二批独立非 editable wheel 安装最终 33/33、限定 Mock 浏览器只读联合核对 74/74 通过；前端观察/终态同步窄修后 1 文件 13 项及类型/构建通过，当时 JS 431.16 kB / gzip 137.41 kB。上述代码及文档已纳入阶段性整合提交 `8eb7e93` 并推送至 `origin/main`，退役前标签 `legacy-retirement-2026-10-07` 同步推送；整合后的文档整理未重复已有验证。本轮新增进展见下方，包版本仍为 `0.1.0`，未发布 1.0、未另立完成基线。集中结果、具体文件与本地日志/JUnit 见 [实际移除记录](REPLACE-REMOVAL.md)。
-
-最新阶段 C 本地收口完成：三个并发组补齐必要后端行为/分类、PC 复制安全及长表单约束，并新增 `--workbench-dist`。`server.py` 在启动时读取 index 和允许资产为 byte snapshot，以同一 loopback origin 提供工作台、GraphChat 和 API，不提供任意文件或 SPA fallback；工作台单独允许 VueFlow 所需样式属性，原聊天/API 安全策略不变，运行中重建资产须重启才换版。
-
-本轮后端必要行为 176 独立目标、部署入口 65 独立目标、前端 7 文件 116 项及类型/生产构建通过；当前非 editable 安装/同源资产 18/18、浏览器后只读核对 23/23 通过，生产 JS 432.86 kB / gzip 137.88 kB。旧 wheel 与旧通过数不冒充匹配这些新修改，范围不累加。本轮当前 wheel SHA256 为 `b5b82a9c0c4696c51e70fa754e0a99c9e4e176d194e30634648c446e0b2414b3`，复用已有独立 venv 重装，不称全新环境；详见 [阶段 C 本地收口](REPLACE-REMOVAL.md#阶段-c-本地收口)。
-
-上述为先前本地收口时的状态。随后已完成限定真实供应商及同版常驻门槛，更新版本元数据为 `1.0.0`，标准隔离构建 wheel 并在新的 `.local/resident/runtime/` 非 editable 安装，最终核对 21/21；104 后端包文件与目标源码匹配，且与收费验收时的 0.1.0 wheel 逐字节相同。8765 同源服务使用稳定 dist 和新库，旧启动快捷方式已改指当前入口；没有 Windows 服务注册、自启动或旧 runtime fallback。原 8873 构建及各轮统计不改写。
-
-阶段 C 本期范围已完成。用户随后指定本次提交为 `0.2.0` 基线，见 [最终合并记录](REPLACE-REMOVAL.md#阶段-c-最终收口)与 [0.2.0 基线](BASELINE-0.2.0-2026-10-07.md)。版本元数据、隔离构建 wheel 和常驻已统一到 0.2.0，安装核对 21/21、`pip check` 通过；0.1.0、此前本地 1.0.0 和 0.2.0 的 104 个包文件逐字节相同，前端依赖与稳定 bundle 未变，不重复业务回归或收费。本次 Git 身份为 v0.2.0，不是 1.0 正式版。全面故障、移动/完整窄屏及活动跨进程恢复继续后置；系统 pytest Temp 权限及其他历史根因不关闭。后续仍按 [1.0 规划](PLAN-1.0.md) 与 [待办](BACKLOG.md) 执行。
-
-此前 `REPLACE-*` 切片记录的是当时方案与证据，旧数据保留/引用回滚条款已被最新关联数据整组删除授权替代，不应当作当前 API 文档；固定基线不倒改。本期 0.2.0 收口不外推为全面交互、外部生产或 1.0 正式发布完成。
+- [主干晋升](MAIN-PROMOTION-2026-10-09.md)：产品提交、归档、BAT 预检及本机复核。
+- [节点目录](NODE-DIRECTORY-2026-10-09.md)：现行声明、整图清理、全量失败对照和补测。
+- [Gemini 实现](GEMINI-ACCEPTANCE-2026-10-09.md)：协议/签名专项，节点版本表保留当时实现阶段。
+- [工作区梳理](WORKTREE-ACCEPTANCE-2026-10-09.md)：先前状态与 Git 收口。
+- [0.2.0 基线](BASELINE-0.2.0-2026-10-07.md)、[旧架构移除](REPLACE-REMOVAL.md)：固定历史身份与当时部署证据，不倒改原通过数或哈希。
 
 安装、测试和调试分别见 [快速启动](QUICKSTART.md)、[测试说明](TESTING.md)、[调试说明](DEBUGGING.md)。来源边界见 [第三方说明](../THIRD_PARTY_NOTICES.md)。

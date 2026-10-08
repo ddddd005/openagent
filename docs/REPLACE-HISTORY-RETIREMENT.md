@@ -1,5 +1,7 @@
 # REPLACE-03/05 旧 Agent 历史校验解耦与 mock 原型退役
 
+> 历史切片：下文的实现、节点版本、未推送状态和验证结果指登记时快照，不是当前入口。最新使用与工程说明见[文档索引](README.md)，当前退役范围见[节点目录](NODE-DIRECTORY-2026-10-09.md)；不按本页重建旧 API。
+
 承接 [聊天入口分派](REPLACE-CHAT-ENTRY.md)、[首轮处置表](REPLACE-AUDIT-2026-10-07.md)及 [1.0 规划](PLAN-1.0.md)。本轮三个并发子代理分别负责后端纯校验迁移、独立历史回归、前端原型退役；主代理负责范围裁决、代码复核、合并验证及文档记录。
 
 HEAD 仍为 `00970f75fb52d741b694499a05f702600529fcdd`，记录对应其上的未提交工作区，固定 [2026-10-06 基线](BASELINE-2026-10-06.md)不修改。本轮只推进 REPLACE-03 的历史读取依赖和 REPLACE-05 的孤立原型子项，REPLACE-01/02 仍在进行，旧宿主与正式兼容客户端尚未退出，1.0 未完成。
@@ -21,8 +23,8 @@ HEAD 仍为 `00970f75fb52d741b694499a05f702600529fcdd`，记录对应其上的�
 
 后端产品文件：
 
-- 新增 [graph_agent_contracts.py](../backend/src/phase1_agent/graph_agent_contracts.py)，承载常量、`GraphAgentIdentity`、accepted/facts/limits/capacity 和 UUID 的纯校验。
-- [graph_agent_runtime.py](../backend/src/phase1_agent/graph_agent_runtime.py) 保留同名导入与原运行调用者，回调、快照构造、适配器、workspace 和执行均留在原处。
+- 新增 [graph_agent_contracts.py](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/src/phase1_agent/graph_agent_contracts.py)，承载常量、`GraphAgentIdentity`、accepted/facts/limits/capacity 和 UUID 的纯校验。
+- [graph_agent_runtime.py](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/src/phase1_agent/graph_agent_runtime.py) 保留同名导入与原运行调用者，回调、快照构造、适配器、workspace 和执行均留在原处。
 - [graph_records.py](../backend/src/phase1_agent/graph_records.py) 的 Agent 历史校验改从纯模块导入，不借执行器读取冻结证据。
 
 保留 component UUID `7be319b8-30bd-4674-b7bf-d1cf54a1a101`、`graph-2`、输出 schema、所有归属和事实因果检查、请求容量检查及 detached 返回。扩额后的 limits 仍可大于快照中的原始额度，不新增两者相等的限制。
@@ -64,7 +66,7 @@ domain/graph.ts
 ```
 
 - 既有范围 **9 个文件，304 passed，122.53 秒，退出码 0**。兼容包测试仅选上述一项，不是整个文件或全量；覆盖旧运行/暂停/扩额/归档重试、包选择与缺包只读、共用契约和当前串行图。
-- 新增 [test_graph_agent_contracts.py](../backend/tests/test_graph_agent_contracts.py) **95 passed，5.24 秒，退出码 0**。纯夹具基于已有 `success.json` 和事实结构，不借旧 runtime Harness；覆盖完整 accepted、0–14 条事实前缀、扩额不改冻结配置、schema2/3/4、归属/因果/结果篡改、容量、detached 及 frozen transition。
+- 新增 [test_graph_agent_contracts.py](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/tests/test_graph_agent_contracts.py) **95 passed，5.24 秒，退出码 0**。纯夹具基于已有 `success.json` 和事实结构，不借旧 runtime Harness；覆盖完整 accepted、0–14 条事实前缀、扩额不改冻结配置、schema2/3/4、归属/因果/结果篡改、容量、detached 及 frozen transition。
 - 三个 fresh subprocess 在导入产品模块之前禁止旧 Agent runtime/host、adapter、prepared context、workflow 及公共 runtime 的加载；通过正式 record/bundle 校验、GraphRecordStore 事务写入、测试 SQLite 重开和原回执核实，原定义包锁及记录保持不变，回执不重放写入。
 
 两批共 **10 个文件、399 个不重复案例**。新增回归的子代理初次 94 项及补 alias 后 95 项均通过，与主代理最终 95 项重叠不累加。服务级缺原 compat 安装的只读重开沿用本次已重跑的包选择回归；纯夹具隔离不证明显式 compat 目录加载也已摆脱旧执行器。

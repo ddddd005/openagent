@@ -1,5 +1,7 @@
 # REPLACE-02/04 聊天入口分派收口
 
+> 历史切片：下文的实现、节点版本、未推送状态和验证结果指登记时快照，不是当前入口。最新使用与工程说明见[文档索引](README.md)，当前退役范围见[节点目录](NODE-DIRECTORY-2026-10-09.md)；不按本页重建旧 API。
+
 承接 [默认包与工作区初始化](REPLACE-DEFAULTS.md)和 [1.0 规划](PLAN-1.0.md)，继续使用三个并发子代理，分别负责 HTTP 契约与只读复核、工作台链接及 App 回归、入口 bootstrap 与存储边界。主代理实现静态分派、合并验证、浏览器检查和文档记录。
 
 HEAD 仍为 `00970f75fb52d741b694499a05f702600529fcdd`，证据对应其上的未提交工作区；固定 [2026-10-06 基线](BASELINE-2026-10-06.md)不修改。REPLACE-01/02 仍在进行，REPLACE-04 只推进聊天分派子项，未完成旧客户端、宿主或数据实现退役，也未完成 1.0。
@@ -22,7 +24,7 @@ HEAD 仍为 `00970f75fb52d741b694499a05f702600529fcdd`，证据对应其上的�
 
 [chat-entry.js](../backend/src/phase1_agent/static/chat-entry.js) 是唯一直接加载的入口脚本；[index.html](../backend/src/phase1_agent/static/index.html) 中全部旧控件默认位于隐藏容器，只有合法显式旧身份才解除隐藏。普通图客户端仍替换主区域，不短暂展示旧 A/B 表单。[style.css](../backend/src/phase1_agent/static/style.css) 仅补隐藏容器守卫，未重做聊天布局。
 
-[legacyUi.ts](../frontend/src/adapters/legacyUi.ts) 的两个 helper 改为 `string | null`，不再在身份无效时返回匿名基地址；[App.vue](../frontend/src/App.vue) 根据结果禁用链接，并显示对应 tooltip。现有 `VITE_LEGACY_UI_URL` 名称保留，没有新增路由、flag 或跨服务身份协议。
+[legacyUi.ts](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/frontend/src/adapters/legacyUi.ts) 的两个 helper 改为 `string | null`，不再在身份无效时返回匿名基地址；[App.vue](../frontend/src/App.vue) 根据结果禁用链接，并显示对应 tooltip。现有 `VITE_LEGACY_UI_URL` 名称保留，没有新增路由、flag 或跨服务身份协议。
 
 当前图 helper 保留此前的 loopback、HTTP/HTTPS、自定义端口及 IPv6 地址策略；这不保证默认 IPv4 HTTP 后端支持所有这些部署。旧图 helper 仍只向 `http://127.0.0.1:8765/` 或 `http://localhost:8765/` 共享会话身份，不扩大到其他端口。
 

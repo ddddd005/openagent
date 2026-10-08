@@ -1,13 +1,15 @@
 # REPLACE-04 旧客户端原请求保全
 
+> 历史切片：下文的实现、节点版本、未推送状态和验证结果指登记时快照，不是当前入口。最新使用与工程说明见[文档索引](README.md)，当前退役范围见[节点目录](NODE-DIRECTORY-2026-10-09.md)；不按本页重建旧 API。
+
 承接 [固定基线](BASELINE-2026-10-06.md)、[1.0 规划](PLAN-1.0.md)、[支持与处置矩阵](REPLACE-SUPPORT-MATRIX.md)和 [当前应用回执边界](REPLACE-RECEIPT-BOUNDARY.md)。HEAD 仍为 `237afb5c0692f78b05f1aad912a53941d67e9aee`，尚未推送；本片与前三片均在其上的未提交工作区，不倒改历史记录、模块哈希或基线。
 
 用户再次确认阶段目标是移除旧架构。**本片是删除旧入口前的请求保全，不是长期维护双架构，也不是旧架构已经退出。**三个并发子代理分别实施旧 runtime、旧资源 stores 和独立保全测试；主代理处理持久化副本入口、静态聊天、合并验证及文档。
 
 ## 1. 原请求不重发
 
-- [旧 runtime](../frontend/src/stores/workbenchRuntime.ts) 的 `replayUnknown` 仅本地报告 unresolved，不先读健康/刷新会话，不 POST、不调用保存或清 pending。覆盖会话创建、选择、输入、提示词发布、复制、变量、分叉、候选、重抽及运行控制。
-- [模型/供应商](../frontend/src/stores/modelConfiguration.ts)、[公开声明](../frontend/src/stores/exposures.ts) 的 `reconcile` 和 [旧内容](../frontend/src/stores/globalContent.ts) 的 `save(true)` 同样只保留原请求。旧 native 请求没有可证明的应用 origin，不将它包装成 graph receipt 查询。
+- [旧 runtime](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/frontend/src/stores/workbenchRuntime.ts) 的 `replayUnknown` 仅本地报告 unresolved，不先读健康/刷新会话，不 POST、不调用保存或清 pending。覆盖会话创建、选择、输入、提示词发布、复制、变量、分叉、候选、重抽及运行控制。
+- [模型/供应商](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/frontend/src/stores/modelConfiguration.ts)、[公开声明](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/frontend/src/stores/exposures.ts) 的 `reconcile` 和 [旧内容](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/frontend/src/stores/globalContent.ts) 的 `save(true)` 同样只保留原请求。旧 native 请求没有可证明的应用 origin，不将它包装成 graph receipt 查询。
 - 首次提交仍先保存；完整 pending 指纹、会话/目标对象和恢复/销毁代际约束迟到成功及拒绝。清除结果的本机保存返回 false 或抛异常时恢复原 pending；首次 `idempotency_conflict` 也不作为未发生证明。明确未发送或首次确定拒绝与此前结果未知分别处理。
 - [副本持久化](../frontend/src/stores/workbenchPersistence.ts) 的旧 `reconcileCopy` 不再从缺失请求坐标重建复制，也不激活/刷新/保存。copyPending、目标原请求及源复制原请求不能借放弃副本删除；runtime 的公开删除/绑定也检查未选中的 session pending。确定未发送的临时副本仍可清理。
 
@@ -15,7 +17,7 @@
 
 ## 2. 静态旧聊天
 
-[app.js](../backend/src/phase1_agent/static/app.js) 对既存 schema1/2 `pending_submission` 保留原存储字节、正文与 opaque key；点击核实不网络、不改写。当前页面的旧控制/分叉/选择/预算/创建 pending 阻止重发和覆盖，列表刷新不清掉它们。
+[app.js](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/src/phase1_agent/static/app.js) 对既存 schema1/2 `pending_submission` 保留原存储字节、正文与 opaque key；点击核实不网络、不改写。当前页面的旧控制/分叉/选择/预算/创建 pending 阻止重发和覆盖，列表刷新不清掉它们。
 
 首次原生 2xx 回执须核对确切字段及 session/run/chain/source 身份、适用的修订增量和状态，然后才能清本页面 pending；失形或外来 JSON 保留待核实。检查依据是原 `workflow.py` 返回，不是历史 application origin 证明。`retry_archive` 原 `accepted + completion=unconfirmed` 与 `succeeded` 均保留其原语义。
 
@@ -34,7 +36,7 @@ npm run build
 
 结果：**19 文件、364 passed，5.40 秒，退出码 0**；`vue-tsc --noEmit` 和 Vite 构建通过，Vite 1.14 秒。保留已有大 chunk 警告（JS 708.25 kB / gzip 215.44 kB），不引入拆包或规模优化。
 
-[独立保全测试](../frontend/src/stores/legacyPendingCustody.test.ts) 17 项覆盖 runtime 两版快照中的 13 类请求、选择、模型/供应商、公开声明、旧内容及 schema1–6 初始化；[静态聊天](../frontend/src/adapters/legacyChatPending.test.ts) 最终 41 项覆盖原文、opaque key、网络丢失、首次成功/拒绝、本机失败、跨页面冲突、重置、控制失形和重复操作。不把内部循环当作额外案例累计，也不将初始化原文不变外推为后续保存 frozen passthrough。
+[独立保全测试](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/frontend/src/stores/legacyPendingCustody.test.ts) 17 项覆盖 runtime 两版快照中的 13 类请求、选择、模型/供应商、公开声明、旧内容及 schema1–6 初始化；[静态聊天](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/frontend/src/adapters/legacyChatPending.test.ts) 最终 41 项覆盖原文、opaque key、网络丢失、首次成功/拒绝、本机失败、跨页面冲突、重置、控制失形和重复操作。不把内部循环当作额外案例累计，也不将初始化原文不变外推为后续保存 frozen passthrough。
 
 后端在 `backend/` 使用本工作区源码和全新临时库执行：
 

@@ -1,20 +1,22 @@
 # Agent 归档入口的只读接线
 
+> 历史切片：下文的实现、节点版本、未推送状态和验证结果指登记时快照，不是当前入口。最新使用与工程说明见[文档索引](README.md)，当前退役范围见[节点目录](NODE-DIRECTORY-2026-10-09.md)；不按本页重建旧 API。
+
 承接 [固定基线](BASELINE-2026-10-06.md)、[1.0 规划](PLAN-1.0.md)、[支持与处置矩阵](REPLACE-SUPPORT-MATRIX.md)和 [退役归档与纯投影](REPLACE-ARCHIVE-READ.md)。起点为已提交的 `8bdbe86`；本片只解除现有图 Agent 归档入口的 RW store/协调器依赖，不改历史记录日期或固定归档。
 
 ## 1. 本片实现
 
-- [graph_archives](../backend/src/phase1_agent/graph_archives.py)提供 `read_graph_archive`：只打开已有 SQLite 文件，使用 `mode=ro`、`query_only` 和同一个 `BEGIN` 读取快照；检查存储版本 0–13 及必要 records 列，不初始化表、迁移版本、注册包、获取执行租约或恢复活动链。
+- [graph_archives](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/src/phase1_agent/graph_archives.py)提供 `read_graph_archive`：只打开已有 SQLite 文件，使用 `mode=ro`、`query_only` 和同一个 `BEGIN` 读取快照；检查存储版本 0–13 及必要 records 列，不初始化表、迁移版本、注册包、获取执行租约或恢复活动链。
 - 共享 `resolve_graph_archive` 承接原作用域规则：本会话运行和 Head snapshot 保存的历史引用；原生归档必须来自成功 node_run 的原 accepted 包，返回既有 `{turn, root, snapshot}`，不重新组装请求或补写事实。
 - 补严 Head/commit/snapshot owner、冻结历史引用的存在与闭合状态、原生 run/chain/执行计划及 baseline owner。严格解析 JSON、校对表内 identity；缺失或损坏的库内证据拒绝，不修复或改写。外部非法身份仍是请求错误，库内非法引用是存储契约错误。
 - 已迁移旧 Turn 仍按原 `legacy_archives` 授权；检查引用形状、确切 UUID、列表去重、源节点和相邻 parent 关系，调用上一片的纯闭合 reader。支持原 basic/prepared1/2/3 和变量重派生证据，保留 run_record/node_run owner 后备及未知 Context 拒绝；不执行宏或上下文正则。
-- [graph_archive_http](../backend/src/phase1_agent/graph_archive_http.py)接管已有 GET `/api/graph/sessions/{sid}/archives/{turn}` 和管理 POST `/api/graph/queries` 的 `archive.read`。consumer 仍无私有归档权限；不新增授权或远程身份认证。只有匹配并通过请求检查时才选数据库，显式提供的 graph 数据库优先。
+- [graph_archive_http](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/src/phase1_agent/graph_archive_http.py)接管已有 GET `/api/graph/sessions/{sid}/archives/{turn}` 和管理 POST `/api/graph/queries` 的 `archive.read`。consumer 仍无私有归档权限；不新增授权或远程身份认证。只有匹配并通过请求检查时才选数据库，显式提供的 graph 数据库优先。
 - [server](../backend/src/phase1_agent/server.py)在调用 graph service getter 前分派上述读取；旧 context/operation 模块改为对应旧路由内导入。第一次纯归档请求不初始化新旧协调器，也不导入旧执行链或 `SqliteStore`。
-- [GraphAgentHost](../backend/src/phase1_agent/graph_agent_host.py)的直接 `get_agent_archive` 同样改走只读连接，原上下文调用者使用共享解析规则；移除重复的 `_allowed_archives`。这不代表 GraphWorkflowService 的构造过程或其余写入入口已只读。
+- [GraphAgentHost](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/src/phase1_agent/graph_agent_host.py)的直接 `get_agent_archive` 同样改走只读连接，原上下文调用者使用共享解析规则；移除重复的 `_allowed_archives`。这不代表 GraphWorkflowService 的构造过程或其余写入入口已只读。
 
 ## 2. 验证记录
 
-新增 [存储与作用域回归](../backend/tests/test_graph_archives.py)和 [HTTP 回归](../backend/tests/test_graph_archive_http.py)。只使用新建临时库和 loopback 临时服务，所有测试服务及进程均已结束。
+新增 [存储与作用域回归](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/tests/test_graph_archives.py)和 [HTTP 回归](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/tests/test_graph_archive_http.py)。只使用新建临时库和 loopback 临时服务，所有测试服务及进程均已结束。
 
 覆盖原生 schema3/4 原样返回、旧五类 frozen 档案及 owner 后备、返回副本隔离、复制后来源新增历史排除、其他会话/错误节点拒绝、Head/链/基线 owner 和结果证据损坏、畸形 legacy refs/parent、缺库/不完整表/未知版本不初始化、consumer 拒绝、显式数据库优先和直接服务查询不调用 `_store`。另有只读写入拒绝及并发 writer 改 Head 时读取保持同一快照的临时库案例；这些不是用户库或真实进程故障验收。
 

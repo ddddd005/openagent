@@ -1,5 +1,7 @@
 # REPLACE-02 普通图工作台布局修复与内容入口复核
 
+> 历史切片：下文的实现、节点版本、未推送状态和验证结果指登记时快照，不是当前入口。最新使用与工程说明见[文档索引](README.md)，当前退役范围见[节点目录](NODE-DIRECTORY-2026-10-09.md)；不按本页重建旧 API。
+
 本地验收日期：2026-10-07，Asia/Shanghai。承接 [供应商侧栏切片](REPLACE-PROVIDER-2026-10-07.md)、[首轮盘点](REPLACE-AUDIT-2026-10-07.md)和 [1.0 规划](PLAN-1.0.md)。用户指出前轮截图的工作流排布问题，本轮先修复该基础交互缺陷，不开展界面重设计或 1.0 后置能力。
 
 起点与当前 HEAD 仍为 `00970f75fb52d741b694499a05f702600529fcdd`；以下证据对应该提交上的未提交工作区，固定基线不改。沿用三个子代理，只读复核布局、测试边界及下一内容切片；主代理负责复现、修改和实际验证。
@@ -77,7 +79,7 @@ npm run build
 | 兼容 current | 类型 `workflow.global-content`、节点 `workflow.global-content@2` | 由 `workflow.compat` 注册；bare resource_id、固定 workspace，仍有旧 shape |
 | 独立提示词 current | 类型 `workflow.prompt-resource`、`prompts.global-reference@1` / `global-resolve@1` | 使用完整 ResourceIdentity 与 `{enabled,members}`，明确拒绝兼容类型，不要求 compat |
 
-关键源码：独立类型/schema/引用校验在 [prompt_package.py](../backend/src/phase1_agent/prompt_package.py)；当前 [GraphNodeConfiguration.vue](../frontend/src/components/GraphNodeConfiguration.vue) 仅按旧 component ID 读取旧目录，未区分兼容节点的 v1/v2；旧 [globalContent.ts](../frontend/src/stores/globalContent.ts) 不适合直接复用为新的 unknown 控制器。
+关键源码：独立类型/schema/引用校验在 [prompt_package.py](../backend/src/phase1_agent/prompt_package.py)；当前 [GraphNodeConfiguration.vue](../frontend/src/components/GraphNodeConfiguration.vue) 仅按旧 component ID 读取旧目录，未区分兼容节点的 v1/v2；旧 [globalContent.ts](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/frontend/src/stores/globalContent.ts) 不适合直接复用为新的 unknown 控制器。
 
 下一代码切片以**独立提示词 current 的管理与完整引用选择**为目标，补可信 panel/node-fields 声明与必要入口；兼容 @2 目录错误和执行支持范围另行处置，不能把修正兼容入口当作完成新架构退出。
 

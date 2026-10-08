@@ -1,5 +1,7 @@
 # REPLACE-02/03 默认包与工作区初始化收口
 
+> 历史切片：下文的实现、节点版本、未推送状态和验证结果指登记时快照，不是当前入口。最新使用与工程说明见[文档索引](README.md)，当前退役范围见[节点目录](NODE-DIRECTORY-2026-10-09.md)；不按本页重建旧 API。
+
 承接 [首轮处置表](REPLACE-AUDIT-2026-10-07.md)、[独立提示词切片](REPLACE-PROMPTS-2026-10-07.md)及 [1.0 规划](PLAN-1.0.md)。继续使用三个并发子代理，分别负责后端包选择与加载、前端初始化与受影响夹具、存档边界回归及只读处置审计；主代理复核、补真实 HTTP 离线回归、合并验证和浏览器检查。
 
 HEAD 仍为 `00970f75fb52d741b694499a05f702600529fcdd`，证据对应其上的未提交工作区。固定 [2026-10-06 基线](BASELINE-2026-10-06.md)不修改；REPLACE-01/02 整体仍在进行，REPLACE-03/04 只推进默认加载与新安装初始化子项，未完成旧实现退出或 1.0。
@@ -20,9 +22,9 @@ HEAD 仍为 `00970f75fb52d741b694499a05f702600529fcdd`，证据对应其上的�
 | 损坏或不可读记录 | 保持 blocked，保留非 null 原文，不将读取错误解释成首次安装 |
 | 本机投影 | 根据恢复目录裁剪无关内存项；不再无条件创建 MAIN A/B 准备草稿，App 激活也不再调用 `ensureEmpty` |
 
-后端产品改动集中在 [builtin_packages.py](../backend/src/phase1_agent/builtin_packages.py)、[capability_packages.py](../backend/src/phase1_agent/capability_packages.py)、[graph_nodes.py](../backend/src/phase1_agent/graph_nodes.py) 的公开构造 helper 和 [graph_service.py](../backend/src/phase1_agent/graph_service.py)。前端改动集中在 [workbenchPersistence.ts](../frontend/src/stores/workbenchPersistence.ts)、[workspace.ts](../frontend/src/stores/workspace.ts)及 [App.vue](../frontend/src/App.vue) 的激活分支。
+后端产品改动集中在 [builtin_packages.py](../backend/src/phase1_agent/builtin_packages.py)、[capability_packages.py](../backend/src/phase1_agent/capability_packages.py)、[graph_nodes.py](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/src/phase1_agent/graph_nodes.py) 的公开构造 helper 和 [graph_service.py](../backend/src/phase1_agent/graph_service.py)。前端改动集中在 [workbenchPersistence.ts](../frontend/src/stores/workbenchPersistence.ts)、[workspace.ts](../frontend/src/stores/workspace.ts)及 [App.vue](../frontend/src/App.vue) 的激活分支。
 
-旧测试需要兼容能力时改用显式选择；新测试不借恢复默认兼容包通过。前端纯存档夹具 [legacyWorkbenchStorage.ts](../frontend/src/testUtils/legacyWorkbenchStorage.ts) 明确种入 schema5 或已保存混合 schema6，不再把首次安装等同旧 A/B 示例。
+旧测试需要兼容能力时改用显式选择；新测试不借恢复默认兼容包通过。前端纯存档夹具 [legacyWorkbenchStorage.ts](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/frontend/src/testUtils/legacyWorkbenchStorage.ts) 明确种入 schema5 或已保存混合 schema6，不再把首次安装等同旧 A/B 示例。
 
 旧记录、包锁、SQLite schema、资源权威和 outbox 均未迁移或删除。模型供应商、独立提示词的 pending 键不被本轮初始化读取或覆盖。恢复未确认请求只保留身份、路径、原 key/body，不自动派发核实。
 

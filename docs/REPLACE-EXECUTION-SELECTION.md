@@ -1,5 +1,7 @@
 # REPLACE-03 执行配置分流与纯分类准备
 
+> 历史切片：下文的实现、节点版本、未推送状态和验证结果指登记时快照，不是当前入口。最新使用与工程说明见[文档索引](README.md)，当前退役范围见[节点目录](NODE-DIRECTORY-2026-10-09.md)；不按本页重建旧 API。
+
 承接 [固定基线](BASELINE-2026-10-06.md)、[支持与处置矩阵](REPLACE-SUPPORT-MATRIX.md)、[1.0 规划](PLAN-1.0.md)和上一片 [公共资源与请求门禁解耦](REPLACE-RESOURCE-BOUNDARY.md)。已有提交仍为 `237afb5c0692f78b05f1aad912a53941d67e9aee`，尚未推送；本片及上一资源边界切片均在该提交之上的未提交工作区，不倒改固定基线或历史验证记录。
 
 本片由三个并发子代理分别实现配置存储/依赖解析、纯记录分类准备及独立存储保全测试，主代理完成构造入口接线、合并复核和文档。范围是下一轮冻结实施所需的准备，不是完整混合库隔离，也没有启用冻结写守卫或退役旧入口。
@@ -24,7 +26,7 @@
 
 `CapabilityPackageLoader.resolve` 提取原 `load` 的精确根选择、依赖闭包、冲突、环及 host protocol 校验，返回完整锁、原 manifest 声明及注册顺序，不调用 `register` 或装载执行实现。`load` 复用该解析，再按原顺序注册和检查实际导出；原错误码及 UI-only / execution lock 分离保持。纯 resolve 的 manifest 不是已接纳导出证据，尤其 compat 的原 `exports={}` 不代表实际无导出。
 
-[图记录分类 helper](../backend/src/phase1_agent/graph_record_classification.py)仅接收图定义、纯解析结果、精确包来源及已接纳实际导出证据，准备 `current/frozen/blocked` 评估。判定核对完整锁与依赖闭包、确切组件版本及 owner 集合；不按节点前缀、schema 年龄、版本大小或 `registry.get` 猜测新旧。完整锁中已验证的 compat 使整份图判为 frozen，即使图中节点均为 current；未知包、缺失精确版本、无来源或未核实导出均为 blocked。共享类型保留 owner 集合，不将 `GLOBAL_RESOURCE_REF@1` 独占归属 compat。
+[图记录分类 helper](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/src/phase1_agent/graph_record_classification.py)仅接收图定义、纯解析结果、精确包来源及已接纳实际导出证据，准备 `current/frozen/blocked` 评估。判定核对完整锁与依赖闭包、确切组件版本及 owner 集合；不按节点前缀、schema 年龄、版本大小或 `registry.get` 猜测新旧。完整锁中已验证的 compat 使整份图判为 frozen，即使图中节点均为 current；未知包、缺失精确版本、无来源或未核实导出均为 blocked。共享类型保留 owner 集合，不将 `GLOBAL_RESOURCE_REF@1` 独占归属 compat。
 
 这是图定义的内部纯评估准备，不是全记录家族分类、HTTP 新字段、运行授权或完整可用性证明。分类调用不读写 SQLite、不注册包、不加载旧执行器、不补类型基线、不迁移、恢复或裁锁；它也不核实全部历史事实闭包、持久类型 digest 或同进程执行现场。
 
@@ -54,7 +56,7 @@
 
 - [配置与解析](../backend/tests/test_graph_package_configuration.py)：有效行读取、显式空选择、历史 raw 不变、事务写入边界、精确依赖/版本/拓扑/错误码、resolver 不注册且不改变 loader 契约缓存，新进程禁止旧实现导入。
 - [服务保全](../backend/tests/test_graph_execution_selection_custody.py)：构造/configure/current 优先、显式跨过旧坏 payload、缺包无 fallback、SQL 写失败和类型冲突共同回滚；原生 SQLite 只读完整原行快照核对，以及 current running/paused 继续阻止换包。只涉及新建测试库配置和 current 范围，不外推旧 frozen active 已保护。
-- [图分类](../backend/tests/test_graph_record_classification.py)：完整锁、依赖闭包、精确来源、实际导出、未知/dormant 身份阻断、compat 优先级、共享 owner 及输入/返回隔离。纯 fixture 的注册回调全部拒绝，fresh 进程禁止旧执行/存储导入；另四个真实包夹具只在准备阶段注册，分类阶段禁止 load/注册，确认 current Agent 三版、真实 compat 30 节点/3 类型及 UI-only 锁边界。
+- [图分类](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/backend/tests/test_graph_record_classification.py)：完整锁、依赖闭包、精确来源、实际导出、未知/dormant 身份阻断、compat 优先级、共享 owner 及输入/返回隔离。纯 fixture 的注册回调全部拒绝，fresh 进程禁止旧执行/存储导入；另四个真实包夹具只在准备阶段注册，分类阶段禁止 load/注册，确认 current Agent 三版、真实 compat 30 节点/3 类型及 UI-only 锁边界。
 - 既有 capability/selection/platform/application、fresh HTTP、当前 Agent 新进程多轮/完成分叉/重开隔离和持久类型契约的受影响范围。HTTP 完成运行及精确历史重开不构造兼容 registry 或旧 private runtime，新库只生成当前配置行。
 
 保留初跑与修正过程，不重复累计：

@@ -1,1 +1,1 @@
-"""Independent first-stage agent package."""
+"""Workflow-based agent package with native model tools and thinking."""

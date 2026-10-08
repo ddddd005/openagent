@@ -1,5 +1,7 @@
 # REPLACE-02 普通图供应商侧栏统一
 
+> 历史切片：下文的实现、节点版本、未推送状态和验证结果指登记时快照，不是当前入口。最新使用与工程说明见[文档索引](README.md)，当前退役范围见[节点目录](NODE-DIRECTORY-2026-10-09.md)；不按本页重建旧 API。
+
 本地验收日期：2026-10-07，Asia/Shanghai。承接 [首轮依赖盘点](REPLACE-AUDIT-2026-10-07.md)、[固定基线](BASELINE-2026-10-06.md)及 [1.0 规划](PLAN-1.0.md)，代码起点与当前 HEAD 均为 `00970f75fb52d741b694499a05f702600529fcdd`；以下结果针对该提交上的未提交工作区，不冒称已有新提交。
 
 本轮沿用三个并发子代理：前端实施入口与路由用例，存储/测试代理补控制器与适配器联验，后端代理只读复核契约和边界；主代理集成、补锁边界断言并完成验证。
@@ -12,7 +14,7 @@
 | --- | --- |
 | [App.vue](../frontend/src/App.vue) | 供应商主导航改用 `ProviderSidebar`，仅调整导入与挂载入口 |
 | [ProviderSidebar.vue](../frontend/src/components/ProviderSidebar.vue) | 普通图经既有可信包宿主解析，挂载完整声明身份匹配的当前资源面板；旧图保留原 `ProviderPanel` |
-| [ProviderSidebar.test.ts](../frontend/src/components/ProviderSidebar.test.ts) | 10 项 SSR/路由案例，覆盖声明、目录状态、新旧切换和资源锁边界 |
+| [ProviderSidebar.test.ts](https://github.com/ddddd005/openagent/blob/7ff72afd1e31481e04f7b37b58de961bef7d823f/frontend/src/components/ProviderSidebar.test.ts) | 10 项 SSR/路由案例，覆盖声明、目录状态、新旧切换和资源锁边界 |
 | [ProviderSidebarResources.test.ts](../frontend/src/components/ProviderSidebarResources.test.ts) | 6 项 SSR 与真实 controller/API adapter 的受控联验，覆盖同权威资源、CAS 和 unknown 原请求核实 |
 
 没有修改后端、API、schema、资源 controller 或原面板；没有新增第二套资源权威或自动转换旧供应商。此前测试夹具解耦属于首轮切片，本页不将其再计为本轮修改。
