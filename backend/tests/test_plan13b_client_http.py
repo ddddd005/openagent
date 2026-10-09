@@ -56,7 +56,7 @@ const { runInNewContext } = require("node:vm");
 const { randomUUID } = require("node:crypto");
 const assert = require("node:assert/strict");
 const base = process.argv[1], workflowId = process.argv[2], enabled = JSON.parse(process.argv[3]);
-const privateNode = process.argv[4], scope = {}, calls = [], data = new Map();
+const privateNode = process.argv[4], scope = {}, calls = [];
 class Element {
   constructor() { this.children = []; this.ownerDocument = { createElement: () => new Element() }; this.textContent = ""; }
   append(...items) { this.children.push(...items); }
@@ -102,8 +102,7 @@ async function body(container, index) {
     assert.equal(response.status, 200); assert.ok(response.headers.get("content-type").includes("javascript"));
     runInNewContext(await response.text(), scope);
   }
-  const options = { workflowId, request: transport, keyFactory: randomUUID, storage: {
-    getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) } };
+  const options = { workflowId, request: transport, keyFactory: randomUUID };
   const client = new scope.GraphChat.GraphChatClient(options);
   await client.discover(); const definition = await client.readDefinition();
   assert.ok(client.application.queries.some(row => row.name === "frontend.extensions.read"));
@@ -148,7 +147,9 @@ async function body(container, index) {
   assert.ok(calls.every(call => ["/api/graph/consumer/application", "/api/graph/consumer/queries",
     "/api/graph/consumer/commands"].includes(call.path)), "renderer escalated to a management API");
   host.dispose(); recoveredHost.dispose();
-  assert.ok([...data.values()].every(value => !value.includes("source_ref") && !value.includes("messages")));
+  const drafts = await recovered.query("consumer.draft.list", { workflow_definition_id: workflowId });
+  assert.ok(drafts.records.every(record => !JSON.stringify(record.value).includes("source_ref")
+    && !JSON.stringify(record.value).includes("messages")));
   console.log(JSON.stringify({ sessionId: client.sessionId }));
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """

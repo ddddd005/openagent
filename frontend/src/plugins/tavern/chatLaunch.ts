@@ -1,4 +1,4 @@
-import { graphUuid, type GraphEntry, type GraphNodeType, type GraphSession } from "../../domain/workflowGraph";
+import { graphUuid, type GraphDocument, type GraphEntry, type GraphNode, type GraphNodeType, type GraphSession } from "../../domain/workflowGraph";
 
 export interface TavernLaunch {
   href: string | null;
@@ -6,13 +6,26 @@ export interface TavernLaunch {
 }
 const exactUuid = (value: unknown): value is string => graphUuid(value) && value === value.toLowerCase();
 export function tavernChatLaunch(base: string, entry: GraphEntry | undefined, catalog: GraphNodeType[],
-  availablePackages: readonly { package_id: string; version: string }[], session: GraphSession | null): TavernLaunch {
+  availablePackages: readonly { package_id: string; version: string }[], session: GraphSession | null,
+  target?: { node: GraphNode; document: GraphDocument }): TavernLaunch {
   const unavailable = (diagnosis: string): TavernLaunch => ({ href: null, diagnosis });
   if (!entry || entry.saved_revision < 1) return unavailable("保存酒馆工作流后打开");
   if (entry.pending) return unavailable("核实原请求后打开酒馆");
   const doc = entry.saved_document;
   if (!doc || doc.revision !== entry.saved_revision || doc.workflow_definition_id !== entry.document.workflow_definition_id
     || !exactUuid(doc.workflow_definition_id)) return unavailable("缺少精确的已保存定义");
+  if (target) {
+    const node = target.node;
+    if (target.document.workflow_definition_id !== doc.workflow_definition_id
+      || !target.document.nodes.some(row => row === node || row.node_binding_id === node.node_binding_id
+        && row.component_id === node.component_id && row.component_version === node.component_version)
+      || node.component_id !== "tavern.chat.presentation" || node.component_version !== "1")
+      return unavailable("酒馆节点不属于当前工作流");
+    const savedNode = doc.nodes.find(row => row.node_binding_id === node.node_binding_id);
+    if (!savedNode || savedNode.component_id !== node.component_id || savedNode.component_version !== node.component_version
+      || !savedNode.public_outputs?.includes("display"))
+      return unavailable("当前酒馆节点尚未保存或展示端口未公开");
+  }
   if (!doc.package_lock?.some(row => row.package_id === "workflow.tavern" && row.version === "1.2.0")
     || !availablePackages.some(row => row.package_id === "workflow.tavern" && row.version === "1.2.0"))
     return unavailable("酒馆需要 workflow.tavern@1.2.0，原定义不会自动升级");

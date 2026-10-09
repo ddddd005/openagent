@@ -76,9 +76,7 @@ const scope = {};
 runInNewContext(readFileSync(process.argv[1], "utf8"), scope);
 const { GraphChatClient, httpFailure } = scope.GraphChat;
 const base = process.argv[2], workflowId = process.argv[3];
-const values = new Map(), calls = [];
-const storage = { getItem: key => values.get(key) ?? null,
-  setItem: (key, value) => values.set(key, value) };
+const calls = [];
 async function transport(path, options = {}) {
   calls.push({ path, body: options.body ? JSON.parse(options.body) : null });
   const response = await fetch(base + path, { ...options,
@@ -113,7 +111,7 @@ async function textEntries(client, output) {
   return texts;
 }
 (async () => {
-  const options = { workflowId, storage, request: transport, keyFactory: randomUUID };
+  const options = { workflowId, request: transport, keyFactory: randomUUID };
   const client = new GraphChatClient(options);
   await client.discover();
   const definition = await client.readDefinition();
@@ -132,8 +130,8 @@ async function textEntries(client, output) {
   assert.equal(JSON.stringify(await textEntries(client, second)), JSON.stringify(expected));
   assert.equal(new Set(second.payload.entries.map(item => item.entry_id)).size, 4);
   const recovered = new GraphChatClient(options);
-  assert.equal(recovered.sessionId, client.sessionId);
   await recovered.discover();
+  assert.equal(recovered.sessionId, client.sessionId);
   await recovered.refresh();
   const reopened = recovered.consumer.outputs.find(item => item.data_type === "FRONTEND_DISPLAY");
   assert.equal(JSON.stringify(await textEntries(recovered, reopened)), JSON.stringify(expected));

@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { computed, ref, watch } from "vue";
 import type { RolePlacement } from "../domain/promptPresentation";
+import RawNumberInput from "./RawNumberInput.vue";
 
 const props = defineProps<{
   modelValue: RolePlacement;
@@ -7,10 +9,26 @@ const props = defineProps<{
   errors?: string[];
   labelPrefix?: string;
   depthLabel?: string;
+  disabled?: boolean;
+  draftScope?: string;
+  draftBasis?: unknown;
 }>();
 const emit = defineEmits<{
   "update:modelValue": [value: RolePlacement];
+  validity: [value: boolean];
 }>();
+const orderValid = ref(true), depthValid = ref(true);
+const orderInput = ref<InstanceType<typeof RawNumberInput> | null>(null);
+const depthInput = ref<InstanceType<typeof RawNumberInput> | null>(null);
+const valid = computed(() => orderValid.value && (props.modelValue.placement !== "middle" || depthValid.value));
+watch(valid, value => emit("validity", value), { immediate: true, flush: "sync" });
+defineExpose({
+  adoptBasis(nextBasis: unknown) {
+    const order = orderInput.value?.adoptBasis(nextBasis) ?? true;
+    const depth = depthInput.value?.adoptBasis(nextBasis) ?? true;
+    return order && depth;
+  },
+});
 
 function update(patch: Partial<RolePlacement>) {
   emit("update:modelValue", { ...props.modelValue, ...patch });
@@ -25,7 +43,7 @@ function changePlacement(placement: RolePlacement["placement"]) {
 </script>
 
 <template>
-  <fieldset class="presentation-fields nodrag nowheel">
+  <fieldset class="presentation-fields nodrag nowheel" :disabled="disabled">
     <legend v-if="label">{{ label }}</legend>
     <div class="presentation-role-row">
       <label>
@@ -66,23 +84,31 @@ function changePlacement(placement: RolePlacement["placement"]) {
     <div class="presentation-number-row">
       <label v-if="modelValue.placement === 'middle'">
         <span>{{ depthLabel ?? '深度' }}</span>
-        <input
-          type="number"
-          min="0"
-          step="1"
-          :value="modelValue.depth"
+        <RawNumberInput
+          ref="depthInput"
+          :min="0"
+          integer
+          :model-value="modelValue.depth"
+          :disabled="disabled"
+          :draft-scope="draftScope ? `${draftScope}:depth` : undefined"
+          :draft-basis="draftBasis"
           :aria-label="labelPrefix ? `${labelPrefix} 插入深度` : '中区深度'"
-          @input="update({ depth: ($event.target as HTMLInputElement).valueAsNumber })"
+          @update:model-value="update({ depth: $event })"
+          @validity="depthValid = $event"
         />
       </label>
       <label>
         <span>顺序</span>
-        <input
-          type="number"
-          step="1"
-          :value="modelValue.order"
+        <RawNumberInput
+          ref="orderInput"
+          integer
+          :model-value="modelValue.order"
+          :disabled="disabled"
+          :draft-scope="draftScope ? `${draftScope}:order` : undefined"
+          :draft-basis="draftBasis"
           :aria-label="labelPrefix ? `${labelPrefix} 装配顺序` : '装配顺序'"
-          @input="update({ order: ($event.target as HTMLInputElement).valueAsNumber })"
+          @update:model-value="update({ order: $event })"
+          @validity="orderValid = $event"
         />
       </label>
     </div>

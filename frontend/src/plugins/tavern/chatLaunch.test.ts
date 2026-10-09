@@ -140,11 +140,24 @@ describe("isolated tavern workbench launch and draft", () => {
   });
   it("registers only the exact1.2 workbench extensions, including isolated launcher", () => {
     const host = createWorkbenchFrontendHost(() => chatTavernFrontendExtensions, () => packages);
-    expect(host.issues.value).toEqual([]); expect(host.extensions.value).toHaveLength(6);
+    expect(host.issues.value).toEqual([]); expect(host.extensions.value).toHaveLength(7);
     expect(host.extensions.value[5]!.declaration.extension_id).toBe("workflow.tavern.chat-launch");
     expect(createWorkbenchFrontendHost(() => chatTavernFrontendExtensions, () => [
       { package_id: "workflow.tavern", version: "1.1.0" },
     ]).extensions.value).toEqual([]);
+  });
+  it("requires the clicked saved presentation node and refuses foreign or unsaved node identities", () => {
+    const { entry } = fixture(), node = entry.document.nodes.find(row => row.component_id === "tavern.chat.presentation")!;
+    const launch = (targetNode = node, document = entry.document) =>
+      tavernChatLaunch("http://localhost/", entry, catalog, packages, null, { node: targetNode, document });
+    expect(launch().href).toBeTruthy();
+    expect(launch(node, { ...entry.document, workflow_definition_id: crypto.randomUUID() }).href).toBeNull();
+    const newNode = { ...graphClone(node), node_binding_id: crypto.randomUUID() };
+    entry.document.nodes.push(newNode);
+    expect(launch(newNode).href).toBeNull();
+    expect(launch({ ...node, component_version: "2" }).href).toBeNull();
+    entry.saved_document!.nodes.find(row => row.node_binding_id === node.node_binding_id)!.public_outputs = [];
+    expect(launch().href).toBeNull();
   });
 });
 

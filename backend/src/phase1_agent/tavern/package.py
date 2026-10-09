@@ -45,6 +45,13 @@ CHAT_TAVERN_FRONTEND_EXTENSIONS = (
         "entrypoint": "workflow.tavern.workbench.chat-launch",
         "binding": {"surface": "workbench", "slot": "panel", "target": {}},
     },
+    {
+        "extension_id": "workflow.tavern.presentation-fields", "kind": "field-editor",
+        "entrypoint": "workflow.tavern.workbench.presentation-fields",
+        "component_id": "tavern.chat.presentation", "component_version": "1",
+        "binding": {"surface": "workbench", "slot": "node-fields",
+                    "target": {"component_id": "tavern.chat.presentation", "component_version": "1"}},
+    },
 )
 
 

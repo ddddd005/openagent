@@ -15,8 +15,8 @@
       "source_ranges": [[7391, 7475], [8080, 8127]],
       "source_sha256": "5b03c7ee0090eb171421bd3fcddef4c3a2de0a31277c0467620032d633a104e6",
       "destination": "index.html",
-      "destination_sha256": "883769860f44969acaf201f7068dad684b35689ddc731116de3d78486935bfbe",
-      "modifications": "Retain chat/message/form structure; native template and accessible buttons; delete excluded ST actions/scripts; local GraphChat adapter and legal notice. P4 restores only completed-round platform fork control, hidden unless its exact producer checkpoint is available.",
+      "destination_sha256": "6c656d089799d2cc4182a4292c94b5dd24710045e094426af9ee45bf925d15b8",
+      "modifications": "Retain chat/message/form structure; native template and accessible buttons; delete excluded ST actions/scripts; local GraphChat adapter and legal notice. P4 restores only completed-round platform fork control, hidden unless its exact producer checkpoint is available. P2 adds durable local-draft status and explicit legacy pending-request import.",
       "dependencies": ["showdown@2.1.0", "dompurify@3.4.16", "lucide@0.577.0", "/static/graph-chat-core.js"]
     },
     {

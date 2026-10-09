@@ -3,26 +3,43 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const { randomUUID } = require("node:crypto");
 const { chromium } = require("playwright");
+const { createLocalDraftPort } = require("./local_draft_port.cjs");
 const [base, backend, evidence, fixturePath] = process.argv.slice(2);
 const fixture = fixturePath ? JSON.parse(fs.readFileSync(fixturePath, "utf8").replace(/^\uFEFF/, "")) : null;
 const dist = path.resolve(__dirname, "../../frontend/dist");
-const storageKey = "workflow-workbench:fixed-base:v1";
+const workbenchAddress = { scope: "management", kind: "workbench", key: "workbench:v1",
+  workflow_definition_id: null, workflow_session_id: null };
+const localDrafts = createLocalDraftPort();
 const report = { page_errors: [], console_errors: [], asset_errors: [], mutation_requests: [], scenarios: [], layouts: [] };
 let browser, page;
 
 async function document() {
-  return page.evaluate(key => {
-    const value = JSON.parse(localStorage.getItem(key));
-    return value.graph.entries[value.activeWorkflowId].document;
-  }, storageKey);
+  await page.waitForTimeout(300);
+  const value = await savedWorkbench();
+  return value.graph.entries[value.activeWorkflowId].document;
+}
+async function savedWorkbench() {
+  if (fixture) return localDrafts.value("workbench:v1", null);
+  return page.evaluate(async address => {
+    const response = await fetch("/api/graph/queries", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "draft.read", parameters: { address } }) });
+    if (!response.ok) throw new Error("Workbench local draft read failed");
+    return (await response.json())?.value ?? null;
+  }, workbenchAddress);
 }
 async function ready() {
-  await page.waitForFunction(key => {
-    const value = JSON.parse(localStorage.getItem(key));
-    return value?.graph.entries[value.activeWorkflowId]
-      && !window.document.querySelector('[aria-label="创建串行 Agent 示例"]')?.disabled;
-  }, storageKey);
+  await page.waitForFunction(() => {
+    const button = window.document.querySelector('[aria-label="创建串行 Agent 示例"]');
+    return button && !button.disabled && window.document.querySelector(".vue-flow");
+  });
+  const deadline = Date.now() + 10000;
+  while (!(await savedWorkbench())?.graph) {
+    assert.ok(Date.now() < deadline, "Workbench did not reach named local draft storage");
+    await page.waitForTimeout(30);
+  }
 }
 async function fresh() {
   await page.getByRole("button", { name: "新建工作流", exact: true }).click();
@@ -88,7 +105,8 @@ async function assertBinding(dialog, key, catalog) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   let extraTypes = [], geminiOnly = false;
   context.on("request", request => {
-    if (request.method() === "POST" && !["/api/graph/queries", "/api/graph/receipts/read"].includes(new URL(request.url()).pathname))
+    if (request.method() === "POST" && !["/api/graph/queries", "/api/graph/receipts/read"].includes(new URL(request.url()).pathname)
+      && request.postDataJSON()?.operation !== "draft.save")
       report.mutation_requests.push(request.postData());
   });
   context.on("response", response => {
@@ -99,7 +117,15 @@ async function assertBinding(dialog, key, catalog) {
     if (![base, backend].includes(url.origin)) return route.abort();
     const query = url.pathname === "/api/graph/queries" ? route.request().postDataJSON() : null;
     if (fixture) {
+      if (url.pathname === "/api/graph/commands" || url.pathname === "/api/graph/receipts/read") {
+        const body = route.request().postDataJSON();
+        assert.equal(body.operation, "draft.save", "Node editing must not run business operations");
+        return route.fulfill({ json: await localDrafts.operation(body.operation, body.parameters,
+          url.pathname === "/api/graph/receipts/read") });
+      }
       if (query) {
+        if (query.operation === "draft.read" || query.operation === "draft.list")
+          return route.fulfill({ json: await localDrafts.operation(query.operation, query.parameters) });
         if (query.operation === "catalog.node-types") {
           const value = JSON.parse(JSON.stringify(fixture));
           if (geminiOnly) value.node_types = value.node_types.filter(row =>
@@ -241,28 +267,29 @@ async function assertBinding(dialog, key, catalog) {
   if (fixture) {
     await page.setViewportSize({ width: 1440, height: 1000 });
     const retained = await document();
-    const retiredId = await page.evaluate(key => {
-      const value = JSON.parse(localStorage.getItem(key)), id = crypto.randomUUID();
-      const current = value.graph.entries[value.activeWorkflowId];
-      const retired = JSON.parse(JSON.stringify(current));
-      retired.document.workflow_definition_id = id;
-      retired.document.nodes.find(row => row.component_id === "models.source").component_version = "1";
-      value.catalog.push({ id, title: "Retired test graph", description: "", nodeCount: retired.document.nodes.length });
-      value.graph.entries[id] = retired;
-      value.activeWorkflowId = value.selectedWorkflowId = id;
-      localStorage.setItem(key, JSON.stringify(value));
-      return id;
-    }, storageKey);
+    const retainedWorkbench = await savedWorkbench();
+    const value = JSON.parse(JSON.stringify(retainedWorkbench)), retiredId = randomUUID();
+    const current = value.graph.entries[value.activeWorkflowId];
+    const retired = JSON.parse(JSON.stringify(current));
+    retired.document.workflow_definition_id = retiredId;
+    retired.document.nodes.find(row => row.component_id === "models.source").component_version = "1";
+    value.catalog.push({ id: retiredId, title: "Retired test graph", description: "", nodeCount: retired.document.nodes.length });
+    value.graph.entries[retiredId] = retired;
+    value.activeWorkflowId = value.selectedWorkflowId = retiredId;
+    const stored = await localDrafts.port.read(workbenchAddress);
+    await localDrafts.port.save({ address: workbenchAddress, format_version: 1, value,
+      expected_sequence: stored.sequence, idempotency_key: randomUUID() });
     await page.reload();
-    await ready();
-    assert.deepEqual(await page.evaluate(({ key, id }) =>
-      JSON.parse(localStorage.getItem(key)).graph.entries[id].document,
-    { key: storageKey, id: retained.workflow_definition_id }), retained);
-    assert.equal(await page.evaluate(({ key, id }) => {
-      const value = JSON.parse(localStorage.getItem(key));
-      return !!value.graph.entries[id] || value.catalog.some(row => row.id === id);
-    }, { key: storageKey, id: retiredId }), false);
-    report.scenarios.push("retired saved graph is removed on reopen while the current graph stays exact");
+    await page.getByText("本机工作台保存格式无效，原记录未覆盖", { exact: true }).waitFor();
+    const rejected = await savedWorkbench();
+    assert.deepEqual(rejected, value, "Incompatible local records must remain untouched");
+    assert.deepEqual(rejected.graph.entries[retained.workflow_definition_id].document, retained);
+    const invalidRecord = await localDrafts.port.read(workbenchAddress);
+    await localDrafts.port.save({ address: workbenchAddress, format_version: 1, value: retainedWorkbench,
+      expected_sequence: invalidRecord.sequence, idempotency_key: randomUUID() });
+    await page.reload(); await ready();
+    assert.deepEqual(await document(), retained);
+    report.scenarios.push("retired local graph is rejected explicitly without overwriting either graph; fixture restoration is explicit");
     extraTypes = ["7", "42"].map(version => ({ ...catalog.find(row => row.component_id === "tools.text"),
       component_id: "plugin.example", component_version: version, display_name: "External node" }));
     await page.getByRole("button", { name: "刷新目录和运行", exact: true }).click();
@@ -283,6 +310,7 @@ async function assertBinding(dialog, key, catalog) {
   assert.deepEqual(report.console_errors, []);
   assert.deepEqual(report.asset_errors, []);
   assert.deepEqual(report.mutation_requests, []);
+  assert.equal(await page.evaluate(() => localStorage.getItem("workflow-workbench:fixed-base:v1")), null);
   fs.writeFileSync(path.join(evidence, "result.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ scenarios: report.scenarios.length, screenshots: report.layouts.length, mutations: 0, errors: 0 }));
 })().catch(async error => {

@@ -8,6 +8,7 @@ import App from "../App.vue";
 import { graphClone } from "../domain/workflowGraph";
 import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
+import { memoryLocalDraftStorage } from "../testUtils/localDraftStorage";
 
 vi.mock("@vue-flow/core", () => ({ MarkerType: { ArrowClosed: "arrowclosed" },
   Position: { Left: "left", Right: "right" }, Handle: { render: () => null }, VueFlow: { render: () => null } }));
@@ -18,10 +19,11 @@ afterEach(() => { disposePinia(pinia); vi.clearAllTimers(); vi.useRealTimers(); 
 function elements(nodes: readonly TemplateChildNode[]): ElementNode[] {
   return nodes.flatMap(node => node.type === 1 ? [node, ...elements(node.children)] : []);
 }
-function fixture() {
+async function fixture() {
   let raw: string | null = null;
   const storage = { getItem: () => raw, setItem: vi.fn((_key: string, value: string) => { raw = value; }) };
-  useWorkbenchPersistenceStore().initialize(storage);
+  const drafts = memoryLocalDraftStorage();
+  await useWorkbenchPersistenceStore().initialize(storage, drafts.ports);
   const graph = useWorkflowGraphStore(); vi.spyOn(graph, "activate").mockResolvedValue();
   const creation = [vi.spyOn(graph, "createSession"), vi.spyOn(graph, "selectSession"), vi.spyOn(graph, "submitPrimary")];
   async function render() {
@@ -35,13 +37,13 @@ function fixture() {
 }
 describe("current-only App chat handoff", () => {
   it("disables an unsaved graph without creating a session or sending a request", async () => {
-    const f = fixture(), original = graphClone(f.graph.storeSnapshot()), anchor = await f.render();
+    const f = await fixture(), original = graphClone(f.graph.storeSnapshot()), anchor = await f.render();
     expect(anchor.href).toBeUndefined(); expect(anchor["aria-disabled"]).toBe("true");
     expect(anchor.title).toBe("保存工作流后打开聊天前端");
     expect(f.graph.storeSnapshot()).toEqual(original); f.passive();
   });
   it("opens the exact saved graph and selected session without changing state or outboxes", async () => {
-    const f = fixture(), entry = f.graph.active!, session = crypto.randomUUID();
+    const f = await fixture(), entry = f.graph.active!, session = crypto.randomUUID();
     entry.saved_revision = 1; entry.session_id = session;
     const original = graphClone(f.graph.storeSnapshot()), writes = f.storage.setItem.mock.calls.length;
     const anchor = await f.render(), url = new URL(anchor.href!);
@@ -49,7 +51,7 @@ describe("current-only App chat handoff", () => {
     expect(f.graph.storeSnapshot()).toEqual(original); expect(f.storage.setItem).toHaveBeenCalledTimes(writes); f.passive();
   });
   it("keeps the original pending body and disables the link until receipt reconciliation", async () => {
-    const f = fixture(), entry = f.graph.active!;
+    const f = await fixture(), entry = f.graph.active!;
     entry.saved_revision = 1; entry.pending = { action: "save", path: "/api/graph/definitions",
       body: { document: graphClone(entry.document), expected_revision: 1, idempotency_key: crypto.randomUUID() } };
     const pending = entry.pending, original = graphClone(pending), anchor = await f.render();
@@ -57,7 +59,7 @@ describe("current-only App chat handoff", () => {
     expect(entry.pending).toBe(pending); expect(entry.pending).toEqual(original); f.passive();
   });
   it.each(["definition", "session"] as const)("rejects an invalid %s identity", async field => {
-    const f = fixture(), entry = f.graph.active!; entry.saved_revision = 1;
+    const f = await fixture(), entry = f.graph.active!; entry.saved_revision = 1;
     if (field === "definition") entry.document.workflow_definition_id = "invalid"; else entry.session_id = "invalid";
     const anchor = await f.render();
     expect(anchor.href).toBeUndefined(); expect(anchor["aria-disabled"]).toBe("true"); f.passive();

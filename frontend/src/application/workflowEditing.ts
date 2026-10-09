@@ -12,7 +12,7 @@ export interface WorkflowEditingPorts {
   acceptDraft(workflowId: string, document: GraphDocument): void;
   stageCopy(sourceId: string, targetId: string, document: GraphDocument, baseline: GraphDocument, copying: boolean): void;
   open(workflowId: string): void;
-  persist(): boolean;
+  persist(): boolean | Promise<boolean>;
   dispatch(workflowId: string, command: GraphCommand): Promise<unknown>;
   copying(active: boolean): void;
   report(failure: unknown): void;
@@ -27,7 +27,7 @@ export function createWorkflowEditing(ports: WorkflowEditingPorts) {
       throw new WorkbenchApiError("rejected", "编辑结果超出文档范围，或执行根、控制依赖、对象权限不完整");
     if (ports.isDraft(workflowId)) {
       ports.acceptDraft(workflowId, graphClone(next));
-      ports.persist();
+      void Promise.resolve(ports.persist()).catch(ports.report);
       return workflowId;
     }
     const view = entry.session_id ? ports.observedSession(entry.session_id) : null;
@@ -41,7 +41,7 @@ export function createWorkflowEditing(ports: WorkflowEditingPorts) {
     ports.stageCopy(workflowId, targetId, graphClone(next), baseline, !!view);
     if (!view) {
       ports.open(targetId);
-      ports.persist();
+      void Promise.resolve(ports.persist()).catch(ports.report);
     } else {
       ports.copying(true);
       const command = createGraphCommand(`/api/graph/sessions/${view.workflow_session_id}/copy`, {

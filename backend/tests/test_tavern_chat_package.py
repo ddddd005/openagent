@@ -39,7 +39,11 @@ def test_chat_package_registers_only_new_chat_contracts_and_exact_workbench_decl
         assert source.registry.get("frontend.state.output", "1") is None
         assert source.registry.data_types.get("workflow.frontend-state", 1, scope="session") is None
     assert chat.registry.data_types.default(TAVERN_CHAT_STATE_TYPE, 1) == EMPTY_TAVERN_CHAT_STATE
-    assert len(CHAT_TAVERN_FRONTEND_EXTENSIONS) == len(GLOBAL_TAVERN_FRONTEND_EXTENSIONS) + 1
+    assert len(CHAT_TAVERN_FRONTEND_EXTENSIONS) == len(GLOBAL_TAVERN_FRONTEND_EXTENSIONS) + 2
+    assert CHAT_TAVERN_FRONTEND_EXTENSIONS[-1]["binding"] == {
+        "surface": "workbench", "slot": "node-fields",
+        "target": {"component_id": "tavern.chat.presentation", "component_version": "1"},
+    }
     declarations = [row for row in chat.frontend_extensions if row["package_id"] == "workflow.tavern"]
     assert declarations == sorted([{
         "schema_version": 2, "host_protocol_version": 1,

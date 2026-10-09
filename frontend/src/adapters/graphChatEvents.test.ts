@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
+import { consumerKeyFactory, memoryConsumerDraftPort } from "../testUtils/consumerDraftPort";
 
 const scope: Record<string, any> = {};
 runInNewContext(readFileSync(new URL("../../../backend/src/phase1_agent/static/graph-chat-core.js", import.meta.url), "utf8"), scope);
@@ -19,13 +20,9 @@ function packet() {
   return { schema_version: 1, kind: "workflow.event-bindings", workflow_definition_id: workflow, definition_revision: 1,
     workflow_session_id: session, session_revision: 1, can_submit: true, bindings: [binding] };
 }
-function storage() {
-  const values = new Map<string, string>();
-  return { getItem: (name: string) => values.get(name) ?? null,
-    setItem: (name: string, value: string) => { values.set(name, value); } };
-}
-function client(request: any, saved = storage()) {
-  const value = new GraphChatClient({ workflowId: workflow, sessionId: session, storage: saved, request, keyFactory: () => key });
+function client(request: any, saved = memoryConsumerDraftPort()) {
+  const value = new GraphChatClient({ workflowId: workflow, sessionId: session, draftPort: saved, request,
+    keyFactory: consumerKeyFactory(key) });
   value.accept(consumer()); return { value, saved };
 }
 function receipt(envelope: any) {
@@ -75,7 +72,8 @@ describe("public local event SDK", () => {
     });
     const { value, saved } = client(request);
     await expect(value.submitEvent(binding, { edit: "original" })).rejects.toThrow("lost response");
-    const recovered = new GraphChatClient({ workflowId: workflow, storage: saved, request, keyFactory: () => "must-not-use" });
+    const recovered = new GraphChatClient({ workflowId: workflow, draftPort: saved, request, keyFactory: consumerKeyFactory() });
+    await recovered.restoreLocalState();
     expect(recovered.pending.action).toBe("event"); await recovered.command();
     expect(commands[1]).toEqual(commands[0]); expect(recovered.pending).toBeNull();
     expect(request.mock.calls.filter(([path]) => path === "/api/graph/consumer/commands")).toHaveLength(1);
@@ -114,6 +112,7 @@ describe("public local event SDK", () => {
       ? packet() : new Promise((resolve, fail) => { complete = resolve; reject = fail; }));
     const { value } = client(request); await value.readEventBindings();
     const submit = value.submitEvent(binding, { edit: "original" });
+    await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
     value.generation++;
     if (outcome === "success") complete(receipt(JSON.parse(request.mock.calls[1][1].body)));
     else reject(httpFailure({ message: "stale" }, 409));

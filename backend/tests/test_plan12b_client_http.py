@@ -33,9 +33,7 @@ const scope = {};
 runInNewContext(readFileSync(process.argv[1], "utf8"), scope);
 const { GraphChatClient, httpFailure } = scope.GraphChat;
 const base = process.argv[2], workflowId = process.argv[3];
-const values = new Map(), calls = [], starts = [];
-const storage = { getItem: key => values.get(key) ?? null,
-  setItem: (key, value) => values.set(key, value) };
+const calls = [], starts = [];
 let loseStartReceipt = true;
 async function transport(path, options = {}) {
   const body = options.body ? JSON.parse(options.body) : null;
@@ -56,7 +54,7 @@ async function transport(path, options = {}) {
   return value;
 }
 (async () => {
-  const options = { workflowId, storage, request: transport, keyFactory: randomUUID };
+  const options = { workflowId, request: transport, keyFactory: randomUUID };
   const client = new GraphChatClient(options);
   await client.discover();
   const definition = await client.readDefinition();
@@ -68,11 +66,12 @@ async function transport(path, options = {}) {
   const originalKey = original.body.idempotency_key;
   assert.equal(starts.length, 1);
   assert.equal(starts[0].body.parameters.idempotency_key, originalKey);
-  const mutationCount = calls.filter(call => call.path === "/api/graph/consumer/commands").length;
+  const mutationCount = calls.filter(call => call.path === "/api/graph/consumer/commands"
+    && call.body?.operation !== "consumer.draft.save").length;
   const recovered = new GraphChatClient(options);
+  await recovered.discover();
   assert.equal(recovered.sessionId, sessionId);
   assert.deepEqual(JSON.parse(JSON.stringify(recovered.pending)), original);
-  await recovered.discover();
   await recovered.refresh();
   assert.deepEqual(JSON.parse(JSON.stringify(recovered.pending)), original);
   // A different intent must only reconcile the frozen unknown start.
@@ -82,7 +81,8 @@ async function transport(path, options = {}) {
   assert.deepEqual(reconciled.receipt, starts[0].response.result.receipt);
   assert.equal(recovered.pending, null);
   assert.equal(starts.length, 1, "receipt recovery resent the start mutation");
-  assert.equal(calls.filter(call => call.path === "/api/graph/consumer/commands").length, mutationCount);
+  assert.equal(calls.filter(call => call.path === "/api/graph/consumer/commands"
+    && call.body?.operation !== "consumer.draft.save").length, mutationCount);
   const reads = calls.filter(call => call.path === "/api/graph/consumer/receipts/read");
   assert.equal(reads.length, 1);
   assert.equal(reads[0].response.kind, "workflow.application-receipt-read");

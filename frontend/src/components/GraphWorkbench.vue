@@ -5,6 +5,7 @@ import { Background } from "@vue-flow/background";
 import { ArrowDown, ArrowUp, Copy, Crosshair, Database, Redo2, RefreshCw, Settings2, Trash2, Undo2, X } from "lucide-vue-next";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { useWorkspaceStore } from "../stores/workspace";
+import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 import { nodePorts, type GraphNode } from "../domain/workflowGraph";
 import { buildNodeFamilies, nodeDisplayTitle, nodeMenuGroups, nodeProfileLabel, nodeTypeLabel } from "../domain/nodeCatalog";
 import { captureNodeSelection, nodeSelectionAllowed, nodeSelectionIssue, type NodeSelectionRequest } from "../domain/nodeSelection";
@@ -20,8 +21,39 @@ import ThinkingSummary from "./ThinkingSummary.vue";
 import { modelPresentationJson } from "../domain/modelPresentation";
 import { useWorkbenchFrontendHost } from "../composables/useWorkbenchFrontendHost";
 import { useCanvasNodeMenu } from "../composables/useCanvasNodeMenu";
+import { useBoundFormDraft } from "../composables/useBoundFormDraft";
+import FormDraftNotice from "./FormDraftNotice.vue";
 const graph = useWorkflowGraphStore();
 const workspace = useWorkspaceStore();
+const persistence = useWorkbenchPersistenceStore();
+const navigationError = ref("");
+let navigationGeneration = 0;
+async function leaveEditor(change: () => void) {
+  const token = ++navigationGeneration, id = workspace.activeWorkflowId;
+  if (!await persistence.flushAll()) {
+    navigationError.value = "当前编辑尚未写入本机，保留此页面";
+    return;
+  }
+  if (token !== navigationGeneration || id !== workspace.activeWorkflowId) return;
+  navigationError.value = "";
+  change();
+}
+function selectNodes(ids: string[], edgeId: string | null = null, closePanels = false) {
+  void leaveEditor(() => {
+    if (closePanels) showEvents.value = showFrontend.value = showBindings.value = showInformation.value = false;
+    graph.selectedNodeIds = ids; graph.selectedEdgeId = edgeId;
+  });
+}
+function panel(name: "events" | "frontend" | "bindings" | "information") {
+  void leaveEditor(() => {
+    const previous = { events: showEvents.value, frontend: showFrontend.value,
+      bindings: showBindings.value, information: showInformation.value };
+    showEvents.value = name === "events" && !previous.events;
+    showFrontend.value = name === "frontend" && !previous.frontend;
+    showBindings.value = name === "bindings" && !previous.bindings;
+    showInformation.value = name === "information" && !previous.information;
+  });
+}
 const frontendHost = useWorkbenchFrontendHost();
 const frontendPanels = computed(() => frontendHost.extensions.value.filter(row => row.declaration.binding.slot === "panel"));
 const canvas = ref<HTMLElement | null>(null);
@@ -34,6 +66,25 @@ const showInformation = ref(false);
 const showFrontend = ref(false);
 const showEvents = ref(false);
 const selectedNode = computed(() => graph.document?.nodes.find(n => graph.selectedNodeIds.includes(n.node_binding_id)));
+const titleDraft = ref("");
+const titleBasis = () => ({ workflowId: graph.document?.workflow_definition_id ?? null,
+  nodeId: selectedNode.value?.node_binding_id ?? null, title: selectedNode.value?.title ?? "" });
+const titleStorage = useBoundFormDraft({
+  id: () => graph.document && selectedNode.value ? `node:${graph.document.workflow_definition_id}:${selectedNode.value.node_binding_id}:title` : "",
+  basis: titleBasis, capture: () => titleDraft.value,
+  reset: () => { titleDraft.value = selectedNode.value ? displayTitle(selectedNode.value) : ""; },
+  restore: value => {
+    if (typeof value !== "string") throw new Error("标题草稿格式不兼容，原文仍保留");
+    titleDraft.value = value;
+  },
+});
+async function changeTitle() {
+  const node = selectedNode.value, workflowId = graph.document?.workflow_definition_id, title = titleDraft.value;
+  if (!node || !workflowId || graph.locked || !await titleStorage.flush()) return;
+  if (graph.document?.workflow_definition_id !== workflowId || selectedNode.value?.node_binding_id !== node.node_binding_id) return;
+  const result = graph.patchNode(node.node_binding_id, { title });
+  if (result === workflowId) titleStorage.adoptBasis({ workflowId, nodeId: node.node_binding_id, title });
+}
 const selectedType = computed(() => selectedNode.value ? graph.typeFor(selectedNode.value) : undefined);
 const selectedState = computed(() => graph.session?.nodes.find(n => n.node_binding_id === selectedNode.value?.node_binding_id));
 const incoming = computed(() => graph.document?.edges.filter(e => e.target_node_id === selectedNode.value?.node_binding_id).sort((a,b) => a.order-b.order) ?? []);
@@ -53,7 +104,7 @@ const selectionContext = computed(() => ({ workflowId: workspace.activeWorkflowI
   packageLock: graph.executionPackageLock, locked: graph.locked, catalogLoading: graph.catalogLoading,
   catalogError: graph.catalogError }));
 const selectionIssue = computed(() => selectionRequest.value ? nodeSelectionIssue(selectionRequest.value, selectionContext.value) : null);
-const displayTitle = (node: GraphNode) => nodeDisplayTitle(node, graph.typeFor(node), graph.catalog);
+function displayTitle(node: GraphNode) { return nodeDisplayTitle(node, graph.typeFor(node), graph.catalog); }
 function titleForId(id: string) {
   const node = graph.document?.nodes.find(row => row.node_binding_id === id);
   return node ? displayTitle(node) : id;
@@ -87,17 +138,17 @@ function attach(instance: VueFlowStore) {
   flow.value = instance;
   const id = workspace.activeWorkflowId;
   const current = () => workspace.activeWorkflowId === id && flow.value === instance;
-  instance.onNodeClick(({ node }) => { if (current()) { showEvents.value = false; showFrontend.value = false; showBindings.value = false; showInformation.value = false; graph.selectedNodeIds = [node.id]; graph.selectedEdgeId = null; } });
+  instance.onNodeClick(({ node }) => { if (current()) selectNodes([node.id], null, true); });
   instance.onNodesChange(changes => {
     if (!current() || !changes.some(change => change.type === "select")) return;
     const selected = new Set(graph.selectedNodeIds);
     for (const change of changes) if (change.type === "select") {
       if (change.selected) selected.add(change.id); else selected.delete(change.id);
     }
-    graph.selectedNodeIds = [...selected];
+    selectNodes([...selected]);
   });
-  instance.onEdgeClick(({ edge }) => { if (current()) { graph.selectedEdgeId = edge.id; graph.selectedNodeIds = []; } });
-  instance.onPaneClick(() => { if (current()) { graph.selectedNodeIds = []; graph.selectedEdgeId = null; menu.close(); } });
+  instance.onEdgeClick(({ edge }) => { if (current()) selectNodes([], edge.id); });
+  instance.onPaneClick(() => { if (current()) { selectNodes([]); menu.close(); } });
   instance.onNodeDragStop(({ nodes }) => { if (current()) graph.moveNodes(nodes.map(node => ({ id: node.id, position: { ...node.position } }))); });
   instance.onConnect(connection => {
     if (current() && connection.sourceHandle && connection.targetHandle
@@ -106,13 +157,14 @@ function attach(instance: VueFlowStore) {
   });
   instance.onNodesInitialized(() => { if (current() && initialFit) { fit(); initialFit = false; } });
 }
-function add(familyId: string) {
+async function add(familyId: string) {
   if (!menu.menu.value) return;
   const position = flow.value?.screenToFlowCoordinate(menu.menu.value) ?? { x: 80, y: 80 };
   const family = families.value.find(row => row.id === familyId);
   const request = captureNodeSelection(selectionContext.value, familyId, { position });
   menu.close(true);
   if (!family || !request) return;
+  if (!await persistence.flushAll()) { navigationError.value = "当前编辑尚未写入本机"; return; }
   const only = family.profiles.length === 1 ? family.profiles[0] : undefined;
   if (only && family.preferredKey === only.key
     && nodeSelectionAllowed(request, selectionContext.value, only.key)) graph.addNode(only.key, position);
@@ -123,8 +175,9 @@ function changeProfile() {
   selectionRequest.value = captureNodeSelection(selectionContext.value, selectedNode.value.component_id,
     { nodeId: selectedNode.value.node_binding_id });
 }
-function confirmSelection(key: string, resetConfirmed: boolean) {
+async function confirmSelection(key: string, resetConfirmed: boolean) {
   const request = selectionRequest.value;
+  if (!await persistence.flushAll()) { navigationError.value = "当前编辑尚未写入本机"; return; }
   if (!request || !nodeSelectionAllowed(request, selectionContext.value, key, resetConfirmed)) return;
   if (request.nodeId) graph.replaceNode(request.nodeId, key);
   else if (request.position) graph.addNode(key, request.position);
@@ -133,15 +186,17 @@ function confirmSelection(key: string, resetConfirmed: boolean) {
 function keyboard(event: KeyboardEvent) {
   if (selectionRequest.value || menu.menu.value) return;
   if ((event.target as HTMLElement).closest("input,textarea,select,[contenteditable]")) return;
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); graph.undo(event.shiftKey); }
-  else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "d") { event.preventDefault(); graph.duplicateSelection(); }
-  else if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); graph.removeSelection(); }
-  else if (event.key === "Escape") { menu.close(); graph.selectedNodeIds = []; graph.selectedEdgeId = null; }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); void leaveEditor(() => graph.undo(event.shiftKey)); }
+  else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "d") { event.preventDefault(); void leaveEditor(() => graph.duplicateSelection()); }
+  else if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); void leaveEditor(() => graph.removeSelection()); }
+  else if (event.key === "Escape") { menu.close(); selectNodes([]); }
 }
 function locate(id?: string) {
   if (!id) return;
-  graph.selectedNodeIds = [id];
-  void nextTick(() => { void flow.value?.fitView({ nodes: [id], padding: 0.6, maxZoom: 1 }); });
+  void leaveEditor(() => {
+    graph.selectedNodeIds = [id];
+    void nextTick(() => { void flow.value?.fitView({ nodes: [id], padding: 0.6, maxZoom: 1 }); });
+  });
 }
 watch(() => workspace.activeWorkflowId, () => { flow.value = null; initialFit = true; menu.close(); selectionRequest.value = null; inspectorTab.value = "config"; showBindings.value = false; showInformation.value = false; showFrontend.value = false; showEvents.value = false; });
 </script>
@@ -152,18 +207,19 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; initialFit = 
       <span>{{ graph.document?.nodes.length ?? 0 }} 个节点</span>
       <span v-if="graph.session" class="graph-run-status" :title="graph.session.workflow_definition_id">{{ graph.session.status }} · 定义 {{ graph.session.workflow_definition_id.slice(0,8) }} r{{ graph.session.definition_revision }}</span>
       <div class="graph-toolbar-actions">
-        <button type="button" :aria-pressed="showEvents" :disabled="!graph.document" @click="showEvents = !showEvents; showFrontend = false; showBindings = false; showInformation = false">局部事件</button>
-        <button type="button" :aria-pressed="showFrontend" :disabled="!graph.document || !frontendPanels.length" @click="showFrontend = !showFrontend; showBindings = false; showInformation = false; showEvents = false">前端展示</button>
-        <button type="button" :aria-pressed="showBindings" :disabled="!graph.document" @click="showBindings = !showBindings; showInformation = false; showFrontend = false; showEvents = false">会话绑定</button>
-        <button type="button" title="统一登记目录" aria-label="统一登记目录" :aria-pressed="showInformation" @click="showInformation = !showInformation; showBindings = false; showFrontend = false; showEvents = false"><Database :size="15" /></button>
-        <button type="button" title="撤销" aria-label="撤销" :disabled="!graph.canUndo" @click="graph.undo()"><Undo2 :size="15" /></button>
-        <button type="button" title="重做" aria-label="重做" :disabled="!graph.canRedo" @click="graph.undo(true)"><Redo2 :size="15" /></button>
-        <button type="button" title="复制选中节点" aria-label="复制选中节点" :disabled="!graph.selectedNodeIds.length || graph.locked" @click="graph.duplicateSelection()"><Copy :size="15" /></button>
+        <button type="button" :aria-pressed="showEvents" :disabled="!graph.document" @click="panel('events')">局部事件</button>
+        <button type="button" :aria-pressed="showFrontend" :disabled="!graph.document || !frontendPanels.length" @click="panel('frontend')">前端展示</button>
+        <button type="button" :aria-pressed="showBindings" :disabled="!graph.document" @click="panel('bindings')">会话绑定</button>
+        <button type="button" title="统一登记目录" aria-label="统一登记目录" :aria-pressed="showInformation" @click="panel('information')"><Database :size="15" /></button>
+        <button type="button" title="撤销" aria-label="撤销" :disabled="!graph.canUndo" @click="leaveEditor(() => graph.undo())"><Undo2 :size="15" /></button>
+        <button type="button" title="重做" aria-label="重做" :disabled="!graph.canRedo" @click="leaveEditor(() => graph.undo(true))"><Redo2 :size="15" /></button>
+        <button type="button" title="复制选中节点" aria-label="复制选中节点" :disabled="!graph.selectedNodeIds.length || graph.locked" @click="leaveEditor(() => graph.duplicateSelection())"><Copy :size="15" /></button>
         <button type="button" title="定位全部节点" aria-label="定位全部节点" @click="fit"><Crosshair :size="15" /></button>
         <button type="button" title="刷新目录和运行" aria-label="刷新目录和运行" :disabled="graph.catalogLoading" @click="graph.loadCatalog(); graph.refresh()"><RefreshCw :size="15" /></button>
       </div>
     </header>
     <div v-if="graph.catalogError" class="graph-warning" role="status">{{ graph.catalogError }}</div>
+    <div v-if="navigationError" class="graph-warning" role="status">{{ navigationError }}</div>
     <div v-for="issue in frontendHost.issues.value" :key="issue" class="graph-warning" role="status">{{ issue }}</div>
     <div class="graph-body">
       <div ref="canvas" class="graph-canvas" tabindex="0" aria-label="工作流节点画布" @contextmenu="menu.contextMenu" @pointermove="menu.pointerMove" @pointerleave="menu.pointerLeave">
@@ -174,7 +230,7 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; initialFit = 
         <CanvasNodeMenu :state="menu.menu.value" :groups="menuGroups" @select="add" @add="menu.open('add', menu.menu.value ?? undefined)" @back="menu.open('context', menu.menu.value ?? undefined)" @dismiss="menu.close()" />
       </div>
       <aside class="graph-inspector" aria-label="节点详情">
-        <header><strong>{{ showEvents ? '局部事件' : showFrontend ? '前端展示接线' : showInformation ? '统一登记目录' : showBindings ? '会话对象绑定' : selectedNode ? displayTitle(selectedNode) : '运行结果' }}</strong><button v-if="!showEvents && !showFrontend && !showBindings && !showInformation && (selectedNode || graph.selectedEdgeId)" type="button" aria-label="删除选中" title="删除选中" :disabled="graph.locked" @click="graph.removeSelection()"><Trash2 :size="15" /></button></header>
+        <header><strong>{{ showEvents ? '局部事件' : showFrontend ? '前端展示接线' : showInformation ? '统一登记目录' : showBindings ? '会话对象绑定' : selectedNode ? displayTitle(selectedNode) : '运行结果' }}</strong><button v-if="!showEvents && !showFrontend && !showBindings && !showInformation && (selectedNode || graph.selectedEdgeId)" type="button" aria-label="删除选中" title="删除选中" :disabled="graph.locked" @click="leaveEditor(() => graph.removeSelection())"><Trash2 :size="15" /></button></header>
         <div v-if="showEvents" class="graph-inspector-content"><GraphEvents /></div>
         <div v-else-if="showFrontend" class="graph-inspector-content"><component v-for="panel in frontendPanels"
           :key="panel.declaration.extension_id" :is="panel.component" @connected="showFrontend = false; fit()" />
@@ -185,9 +241,11 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; initialFit = 
           <GraphSessionData />
         </div>
         <template v-else-if="selectedNode">
-          <div class="graph-tabs"><button type="button" :class="{ active: inspectorTab === 'config' }" @click="inspectorTab = 'config'">配置</button><button type="button" :class="{ active: inspectorTab === 'result' }" @click="inspectorTab = 'result'">状态与结果</button><button type="button" :class="{ active: inspectorTab === 'information' }" @click="inspectorTab = 'information'">信息</button></div>
+          <div class="graph-tabs"><button type="button" :class="{ active: inspectorTab === 'config' }" @click="leaveEditor(() => inspectorTab = 'config')">配置</button><button type="button" :class="{ active: inspectorTab === 'result' }" @click="leaveEditor(() => inspectorTab = 'result')">状态与结果</button><button type="button" :class="{ active: inspectorTab === 'information' }" @click="leaveEditor(() => inspectorTab = 'information')">信息</button></div>
           <div v-if="inspectorTab === 'config'" class="graph-inspector-content">
-            <label>标题<input :value="displayTitle(selectedNode)" :disabled="graph.locked" @change="graph.patchNode(selectedNode.node_binding_id, { title: ($event.target as HTMLInputElement).value })" /></label>
+            <FormDraftNotice v-if="titleStorage.message.value" :message="titleStorage.message.value"
+              :conflict="titleStorage.conflict.value" @restore="titleStorage.restoreConflict" @discard="titleStorage.discardConflict" />
+            <label>标题<input v-model="titleDraft" :disabled="graph.locked || titleStorage.loading.value || titleStorage.conflict.value" @change="changeTitle" /></label>
             <label>节点 UUID<input :value="selectedNode.node_binding_id" readonly @focus="($event.target as HTMLInputElement).select()" /></label>
             <label class="graph-checkbox"><input type="checkbox" :checked="graph.document?.execution_roots?.includes(selectedNode.node_binding_id)" :disabled="graph.locked" @change="graph.setExecutionRoot(selectedNode.node_binding_id, ($event.target as HTMLInputElement).checked)" />显式执行根</label>
             <fieldset><legend>前序节点（控制依赖）</legend>

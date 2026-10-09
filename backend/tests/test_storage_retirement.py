@@ -96,7 +96,7 @@ def test_v15_removes_retired_node_workflow_and_receipts_but_keeps_unrelated_curr
             (canonical_bytes({**DEFAULT_PACKAGES, "workflow.context-compression": "1.0.0"}).decode(),))
         connection.execute("PRAGMA user_version=14")
     with closing(SqliteStore(path)) as store:
-        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == 15
+        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == STORAGE_VERSION
         assert [tuple(row) for row in store._connection.execute(
             "SELECT * FROM records ORDER BY record_type,record_id")] == before
         assert [tuple(row) for row in store._connection.execute(

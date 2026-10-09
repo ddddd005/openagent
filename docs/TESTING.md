@@ -71,6 +71,7 @@ npm run build
 | 回执、未知结果、授权与身份 | `test_graph_receipt_http.py`、`test_graph_application_receipt_custody.py`、`test_graph_application_identity.py`；`adapters/workflowReceiptApi.test.ts`、`application/workflowClientBoundary.test.ts` |
 | 信息、公开摘要与消费者 | `test_graph_information_integration.py`、`test_plan12b_information_scope.py`、`test_tavern_chat_integration.py`；`application/workflowInformation.test.ts` |
 | 静态资产与启动分支 | `test_server_workbench.py`、`test_branch_launcher.py`；`test_dev_launcher.py` 中预检/静态用例 |
+| 本机草稿、无效原文和异步保管 | `test_graph_drafts.py`；`localDraftsApi`、`formDrafts`、`useBoundFormDraft`、`resourceOutbox`、`consumerLocalDrafts`、`consumerDraftBuffer` |
 
 表内后端文件在 `backend/tests/`。前端短名在 `frontend/src/` 下以 `.test.ts` 结尾，按确切路径运行。`test_dev_launcher.py` 的完整模块包含真实本机服务/浏览器场景，不能将其统称为“不启动服务”的离线组；需要静态检查时只指定已核对的用例，例如：
 
@@ -81,6 +82,8 @@ npm run build
 ## 浏览器与在线验收
 
 菜单的现行离线浏览器脚本为 `backend/tests/node_menu_browser.cjs`。以真实生产 `dist`、隔离 browser context 和显式 mock catalog 验证菜单及存档；静态资产和请求由脚本拦截，不监听端口。该结果不能代替真实后端启动、用户存档或整工作台移动适配。复现环境要求见脚本及 [节点目录证据](NODE-DIRECTORY-2026-10-09.md)。
+
+本次 `develop` 的 `backend/tests/frontend_drafts_browser.cjs` 同样不监听端口，使用具备 CAS/命名草稿契约的 fake 后端覆盖无效 JSON、长文本、未提交提示词的切换与冷重开、节点酒馆 URL、写失败和双窗口冲突。不能以原 localStorage mock 代替新本机草稿验收；命令和证据见 [P1/P2 记录](FRONTEND-P1-P2-2026-10-09.md)。
 
 真实调用只有在明确授权供应商、费用和范围后执行，使用隔离数据库，不使用正式会话：
 

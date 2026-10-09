@@ -7,6 +7,7 @@ import { useWorkbenchPersistenceStore } from "./workbenchPersistence";
 import { useWorkbenchNoticesStore } from "./workbenchNotices";
 import { graphClone, newGraph, type GraphDocument, type GraphNodeType, type GraphSession } from "../domain/workflowGraph";
 import { graphWorkbenchStorage } from "../testUtils/graphWorkbenchStorage";
+import { memoryLocalDraftStorage } from "../testUtils/localDraftStorage";
 
 const textType: GraphNodeType = { component_id: "workflow.text", component_version: "1", display_name: "text",
   category: "content", config_schema: { type: "object" }, default_config: {}, inputs: [], outputs: [],
@@ -82,7 +83,8 @@ describe("reviewed graph receipt and operation races", () => {
 
   it("blocks start during selection and restores the complete persisted workbench", async () => {
     const { graph, id, current } = setup();
-    const storage = memory(); const persistence = useWorkbenchPersistenceStore(); persistence.initialize(storage);
+    const storage = memory(), backend = memoryLocalDraftStorage(); const persistence = useWorkbenchPersistenceStore();
+    await persistence.initialize(storage, backend.ports);
     const next = view(graph.document!); const choice = deferred<Response>();
     const fetcher = vi.fn(path => path.endsWith(next.workflow_session_id) ? choice.promise
       : Promise.resolve(response(current)));
@@ -95,9 +97,9 @@ describe("reviewed graph receipt and operation races", () => {
     expect(graph.pending).toBeNull();
     choice.resolve(response(next)); await selecting;
     expect(graph.entries[id].session_id).toBe(next.workflow_session_id);
-    expect(persistence.save()).toBe(true);
+    expect(await persistence.save()).toBe(true);
     persistence.$dispose(); graph.$dispose(); setActivePinia(createPinia());
-    const restored = useWorkbenchPersistenceStore(); restored.initialize(storage);
+    const restored = useWorkbenchPersistenceStore(); await restored.initialize(storage, backend.ports);
     expect(restored.status).toBe("saved");
     expect(useWorkflowGraphStore().entries[id].session_id).toBe(next.workflow_session_id);
     expect(useWorkflowGraphStore().entries[id].pending).toBeNull();

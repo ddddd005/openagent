@@ -177,6 +177,15 @@ def _adopted_object(source, parameters, key):
 
 
 def _validate_result(operation, parameters, result):
+    if operation in ("draft.save", "consumer.draft.save"):
+        from .graph_drafts import validate_draft_record
+        validate_draft_record(result)
+        _check(_same(result["address"], parameters["address"])
+               and result["sequence"] == parameters["expected_sequence"] + 1
+               and result["format_version"] == parameters["format_version"]
+               and _same(result["value"], parameters["value"])
+               and result["deleted"] == (parameters["value"] is None))
+        return
     if operation.startswith("resource."):
         _resource_result(operation, parameters, result)
         return
@@ -379,7 +388,7 @@ def read_graph_application_receipt(database_path, operation, parameters, scope="
             _read_origin(connection, identity)
             result = _read_native(connection, identity)
             _validate_result(operation, request, result)
-            if spec.consumer:
+            if spec.consumer and operation != "consumer.draft.save":
                 result = _consumer_result(operation, request, result, connection)
             receipt = application_command_receipt(operation, operation_scope, request, result,
                                                   authority="service_receipt")

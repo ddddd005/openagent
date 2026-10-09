@@ -54,7 +54,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     : primaryAction.value === "resume" ? "继续" : "启动");
   const canUndo = computed(() => !!history.value[workspace.activeWorkflowId]?.past.length && !locked.value);
   const canRedo = computed(() => !!history.value[workspace.activeWorkflowId]?.future.length && !locked.value);
-  let persistence: (() => boolean) | null = null;
+  let persistence: (() => boolean | Promise<boolean>) | null = null;
   let alive = true;
   let viewGeneration = 0;
   let sessionSelectionGeneration = 0;
@@ -64,7 +64,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   onScopeDispose(() => { alive = false; frontendExtensions.value = []; viewGeneration++; sessionSelectionGeneration++; if (pollTimer) clearTimeout(pollTimer); });
   const isGeneric = (id: string) => !!entries.value[id];
-  function setPersistenceGuard(guard: () => boolean) { persistence = guard; }
+  function setPersistenceGuard(guard: () => boolean | Promise<boolean>) { persistence = guard; }
   function storeSnapshot(): { schema_version: 1; entries: Record<string, GraphEntry> } {
     return graphClone({ schema_version: 1, entries: entries.value });
   }
@@ -576,6 +576,17 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     catch (failure) { report(failure, "创建工作流会话"); return false; }
     finally { busy.value = null; }
   }
+  async function createSavedSession(workflowId: string, expectedDefinitionId: string, expectedRevision: number) {
+    if (locked.value || !entries.value[workflowId]) return false;
+    busy.value = "create";
+    try {
+      await management.commands.createSavedSession({ workflowId }, {
+        definitionId: expectedDefinitionId, definitionRevision: expectedRevision,
+      });
+      return true;
+    } catch (failure) { report(failure, "创建已保存修订会话"); return false; }
+    finally { busy.value = null; }
+  }
   async function selectSession(id: string) {
     if (mutationLocked.value || !active.value) return;
     const workflowId = workspace.activeWorkflowId;
@@ -590,7 +601,8 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     try {
       const row = await management.queries.session(id, entry.document.workflow_definition_id);
       if (!current() || mutationLocked.value) return;
-      entry.session_id = row.workflow_session_id; observe(row); persistence?.();
+      entry.session_id = row.workflow_session_id; observe(row);
+      if (!await (persistence?.() ?? false)) throw new Error("选中会话尚未写入本机");
       schedulePoll(workflowId, viewVersion);
     } catch (failure) { if (current()) report(failure, "切换会话"); }
     finally { if (generation === sessionSelectionGeneration) selectingSessionFor.value = null; }
@@ -769,6 +781,6 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     isGeneric, createWorkflow, createWorkflowDraft, createSerialAgentExample, createCompactingSerialAgentExample, typeFor, loadCatalog, setPersistenceGuard, storeSnapshot, restoreSnapshot,
     saveWorkflow, addNode, patchNode, patchNodeConfiguration, moveNodes, connect, removeSelection, reorderEdge, undo, duplicateSelection,
     replaceNode, setExecutionRoot, setControlDependencies, setObjectBindings, attachFrontendDisplay, patchFrontendSource,
-    activate, refresh, createSession, selectSession, submitPrimary, reconcile, canRetryRejectedCopy, retryRejectedCopy, discardDraft, discardRejectedCopy, writeData, closeRun, setInputs, resetPrivateState, submitAgentAction, loadCandidates, changeCandidate,
+    activate, refresh, createSession, createSavedSession, selectSession, submitPrimary, reconcile, canRetryRejectedCopy, retryRejectedCopy, discardDraft, discardRejectedCopy, writeData, closeRun, setInputs, resetPrivateState, submitAgentAction, loadCandidates, changeCandidate,
     management, editing };
 });

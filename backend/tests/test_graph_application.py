@@ -104,7 +104,7 @@ def test_discovery_reports_only_bound_operation_scope_and_idempotency(service):
     consumer = GraphApplication(service, scope="consumer").describe()
     assert {item["name"] for item in consumer["commands"]} == {
         "consumer.session.create", "consumer.run.start", "consumer.run.control",
-        "consumer.event.submit", "consumer.candidate.fork"}
+        "consumer.event.submit", "consumer.candidate.fork", "consumer.draft.save"}
     assert all(item["scope"] == "consumer" for item in consumer["queries"])
     assert consumer["boundary"]["caller"] == "trusted_local"
     assert consumer["boundary"]["remote_plugin_authentication"] is False

@@ -34,6 +34,7 @@
       <div id="run-actions"></div>
     </div>
     <div id="error" class="notice error" role="alert" hidden></div>
+    <button id="import-legacy" type="button" hidden>导入旧请求</button>
     <div id="adaptation" class="notice" role="status" hidden></div>
     <details id="run-detail" class="run-detail" hidden>
       <summary>运行详情</summary>
@@ -59,7 +60,7 @@
           <button id="reconcile" type="button" title="核实原请求" disabled><i data-lucide="search-check"></i><span>核实原请求</span></button>
         </div>
       </form>
-      <footer><span id="transcript-status" role="status"></span><a href="/tavern/legal.html" target="_blank" rel="noopener">来源与许可</a></footer>
+      <footer><span id="draft-status" role="status"></span><span id="transcript-status" role="status"></span><a href="/tavern/legal.html" target="_blank" rel="noopener">来源与许可</a></footer>
     </div>
   </main>
   <template id="message_template">

@@ -1,21 +1,30 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { Plus, RefreshCw, Save, X } from "lucide-vue-next";
+import { computed, onMounted, ref } from "vue";
+import { Import, Plus, RefreshCw, Save, X } from "lucide-vue-next";
 import { useProviderResources } from "../application/workflowResources";
 import { cloneProvider, newProvider, type CurrentProvider, type ProviderProtocol } from "../domain/workflowModelResources";
+import { useResourceFormDraft } from "../composables/useResourceFormDraft";
+import FormDraftNotice from "./FormDraftNotice.vue";
 
 const resources = useProviderResources();
-const records = resources.records, loading = resources.loading, locked = resources.locked;
+const records = resources.records, loading = resources.loading;
+const submitting = ref(false);
+const locked = computed(() => resources.locked.value || submitting.value || localDraft.loading.value || localDraft.conflict.value);
 const error = resources.error, pending = resources.pending, busy = resources.busy;
-const form = ref<CurrentProvider | null>(null), expectedSequence = ref(0);
+const editor = useResourceFormDraft<CurrentProvider>("provider", newProvider, record => record.value.name);
+const { form, expectedSequence, localDraft, choices } = editor;
 function edit(record: CurrentProvider | null) {
   if (locked.value) return;
-  form.value = record ? cloneProvider(record) : newProvider();
-  expectedSequence.value = record?.update_sequence ?? 0;
+  editor.edit(record);
 }
 async function save() {
   if (!form.value || locked.value) return;
-  if (await resources.save(cloneProvider(form.value), expectedSequence.value)) form.value = null;
+  submitting.value = true;
+  const record = cloneProvider(form.value), sequence = expectedSequence.value;
+  try {
+    if (!await localDraft.flush()) return;
+    if (await resources.save(record, sequence)) editor.close();
+  } finally { submitting.value = false; }
 }
 function changeProtocol(event: Event) {
   if (!form.value || locked.value || expectedSequence.value !== 0) return;
@@ -41,6 +50,11 @@ onMounted(() => { void resources.refresh(); });
     </header>
     <p v-if="loading" role="status">读取中</p>
     <p v-else-if="!records.length && !error">暂无供应商当前资源</p>
+    <FormDraftNotice v-if="localDraft.message.value" :message="localDraft.message.value" :conflict="localDraft.conflict.value" @restore="localDraft.restoreConflict" @discard="localDraft.discardConflict" />
+    <button v-if="resources.legacyRaw.value" type="button" :disabled="busy || submitting || localDraft.loading.value || localDraft.conflict.value" @click="resources.importLegacyPending()"><Import :size="14" />导入旧供应商请求</button>
+    <select v-if="choices.length" aria-label="未提交供应商草稿" value="" :disabled="locked" @change="editor.resume(($event.target as HTMLSelectElement).value)">
+      <option value="">未提交草稿</option><option v-for="choice in choices" :key="choice.id" :value="choice.id">{{ choice.label }}</option>
+    </select>
     <ul>
       <li v-for="record in records" :key="record.scope + record.resource_id">
         <button type="button" :disabled="locked" @click="edit(record)">
@@ -51,9 +65,9 @@ onMounted(() => { void resources.refresh(); });
     </ul>
     <form v-if="form" @submit.prevent="save">
       <header><strong>{{ expectedSequence ? '更新当前资源' : '新增当前资源' }}</strong>
-        <button type="button" title="取消编辑" aria-label="取消编辑" :disabled="locked" @click="form = null"><X :size="15" /></button>
+        <button type="button" title="取消编辑" aria-label="取消编辑" :disabled="locked" @click="editor.close()"><X :size="15" /></button>
       </header>
-      <fieldset :disabled="locked">
+      <fieldset :disabled="locked || localDraft.loading.value">
         <label>名称<input v-model="form.value.name" required maxlength="128" /></label>
         <label>协议<select :value="form.value.protocol" aria-label="供应商协议" :disabled="expectedSequence !== 0" @change="changeProtocol">
           <option value="chat">Chat Completions</option><option value="gemini">Gemini generateContent</option>

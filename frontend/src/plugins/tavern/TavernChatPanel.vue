@@ -1,13 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { ExternalLink, Plus } from "lucide-vue-next";
-import { chatUiUrl } from "../../adapters/chatUi";
+import { ref } from "vue";
+import { Plus } from "lucide-vue-next";
 import { useWorkflowGraphStore } from "../../stores/workflowGraph";
-import { tavernChatLaunch } from "./chatLaunch";
 import { createTavernDemo } from "./tavernDemo";
 
 const graph = useWorkflowGraphStore(), error = ref("");
-const launch = computed(() => tavernChatLaunch(chatUiUrl, graph.active, graph.catalog, graph.packageLock, graph.session));
 function create() {
   if (graph.locked || graph.catalogLoading || graph.catalogError) return;
   error.value = "";
@@ -23,10 +20,7 @@ function create() {
     <div class="chat-actions">
       <button type="button" title="创建酒馆示例" aria-label="创建酒馆示例"
         :disabled="graph.locked || graph.catalogLoading || !!graph.catalogError" @click="create"><Plus :size="14" />新建</button>
-      <a :href="launch.href ?? undefined" :aria-disabled="!launch.href" :title="launch.diagnosis"
-        aria-label="打开酒馆前端" target="_blank" rel="noopener noreferrer"><ExternalLink :size="14" />打开酒馆</a>
     </div>
-    <p v-if="!launch.href" role="status">{{ launch.diagnosis }}</p>
     <p v-if="error" class="warning" role="status">{{ error }}</p>
   </section>
 </template>

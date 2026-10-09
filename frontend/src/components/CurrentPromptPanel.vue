@@ -1,28 +1,44 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { ArrowDown, ArrowUp, Copy, Plus, RefreshCw, Save, Trash2, X } from "lucide-vue-next";
+import { computed, onMounted, ref, watch } from "vue";
+import { ArrowDown, ArrowUp, Copy, Import, Plus, RefreshCw, Save, Trash2, X } from "lucide-vue-next";
 import { usePromptResources } from "../application/promptResources";
 import { clonePromptResource, duplicatePromptResource, isCurrentPromptResource, movePromptMember, newPromptMember, newPromptResource,
   promptIdentity, promptResourceLabel, type CurrentPromptResource,
   type PromptMember, type PromptPresentation } from "../domain/workflowPromptResources";
+import { useResourceFormDraft } from "../composables/useResourceFormDraft";
+import FormDraftNotice from "./FormDraftNotice.vue";
+import RawNumberInput from "./RawNumberInput.vue";
+import { useFormDraftsStore } from "../stores/formDrafts";
 
 const resources = usePromptResources();
-const records = resources.records, loading = resources.loading, locked = resources.locked;
+const records = resources.records, loading = resources.loading;
+const submitting = ref(false);
+const locked = computed(() => resources.locked.value || submitting.value || localDraft.loading.value || localDraft.conflict.value);
 const error = resources.error, pending = resources.pending, busy = resources.busy;
-const form = ref<CurrentPromptResource | null>(null), expectedSequence = ref(0), formError = ref("");
+const editor = useResourceFormDraft<CurrentPromptResource>("prompt", () => newPromptResource(2), promptResourceLabel);
+const { form, expectedSequence, localDraft, choices } = editor;
+const formError = ref("");
+const numericValidity = ref<Record<string, boolean>>({});
+const forms = typeof window === "undefined" ? null : useFormDraftsStore();
+const numberScope = (member: PromptMember, field: string) =>
+  `resource:prompt:${form.value?.scope}:${form.value?.resource_id}:member:${member.id}:${field}`;
+const numberBasis = computed(() => ({ resourceId: form.value?.resource_id ?? null,
+  scope: form.value?.scope ?? null, sequence: expectedSequence.value, format: form.value?.data_schema_version ?? null }));
+const numbersValid = computed(() => form.value?.value.members.every(member =>
+  numericValidity.value[numberScope(member, "order")] !== false
+  && (member.presentation.placement !== "middle" || numericValidity.value[numberScope(member, "depth")] !== false)) ?? true);
+watch(() => form.value?.resource_id, () => { numericValidity.value = {}; });
 const identityKey = (record: CurrentPromptResource) => JSON.stringify(promptIdentity(record));
 function edit(record: CurrentPromptResource | null) {
   if (locked.value) return;
-  form.value = record ? clonePromptResource(record) : newPromptResource(2);
-  expectedSequence.value = record?.update_sequence ?? 0;
+  editor.edit(record);
   formError.value = "";
 }
 function duplicate(record: CurrentPromptResource) {
   if (locked.value) return;
   formError.value = "";
   try {
-    form.value = duplicatePromptResource(record);
-    expectedSequence.value = 0;
+    editor.edit(duplicatePromptResource(record), true);
   } catch { formError.value = "提示词组字段无效，未创建副本"; }
 }
 function addMember() {
@@ -37,6 +53,7 @@ function addMember() {
 }
 function moveMember(index: number, offset: number) {
   if (!form.value || locked.value) return;
+  if (!numbersValid.value) { formError.value = "数字字段不完整，原文已保留，尚未提交"; return; }
   if (movePromptMember(form.value.value.members, index, offset)) formError.value = "";
 }
 function removeMember(index: number) {
@@ -61,15 +78,26 @@ function changeRole(member: PromptMember, role: PromptPresentation["role"]) {
 }
 async function save() {
   if (!form.value || locked.value) return;
+  if (!numbersValid.value) { formError.value = "数字字段不完整，原文已保留，尚未提交"; return; }
   if (!isCurrentPromptResource(form.value)) {
     formError.value = "提示词正文、呈现字段或成员身份无效，尚未提交";
     return;
   }
   formError.value = "";
-  if (await resources.save(clonePromptResource(form.value), expectedSequence.value)) form.value = null;
+  submitting.value = true;
+  const record = clonePromptResource(form.value), sequence = expectedSequence.value;
+  const originalNumberBasis = numberBasis.value;
+  const scopes = record.value.members.flatMap(member => [numberScope(member, "order"), numberScope(member, "depth")]);
+  try {
+    if (!await localDraft.flush() || forms && !await forms.flushAll()) return;
+    if (await resources.save(record, sequence)) {
+      if (forms) for (const scope of scopes) if (forms.statuses[scope]) await forms.remove(scope, originalNumberBasis);
+      editor.close();
+    }
+  } finally { submitting.value = false; }
 }
 async function reconcile() {
-  if (await resources.reconcile()) form.value = null;
+  if (await resources.reconcile()) editor.close();
 }
 onMounted(() => { void resources.refresh(); });
 </script>
@@ -85,6 +113,11 @@ onMounted(() => { void resources.refresh(); });
     </header>
     <p v-if="loading" role="status">读取中</p>
     <p v-else-if="!records.length">暂无提示词当前资源</p>
+    <FormDraftNotice v-if="localDraft.message.value" :message="localDraft.message.value" :conflict="localDraft.conflict.value" @restore="localDraft.restoreConflict" @discard="localDraft.discardConflict" />
+    <button v-if="resources.legacyRaw.value" type="button" :disabled="busy || submitting || localDraft.loading.value || localDraft.conflict.value" @click="resources.importLegacyPending()"><Import :size="14" />导入旧提示词请求</button>
+    <select v-if="choices.length" aria-label="未提交提示词草稿" value="" :disabled="locked" @change="editor.resume(($event.target as HTMLSelectElement).value)">
+      <option value="">未提交草稿</option><option v-for="choice in choices" :key="choice.id" :value="choice.id">{{ choice.label }}</option>
+    </select>
     <ul>
       <li v-for="record in records" :key="identityKey(record)">
         <button type="button" class="resource-edit" :disabled="locked" @click="edit(record)">
@@ -101,9 +134,9 @@ onMounted(() => { void resources.refresh(); });
       <header>
         <strong>{{ expectedSequence ? '更新当前资源' : '新增当前资源' }}</strong>
         <button type="button" title="取消提示词编辑" aria-label="取消提示词编辑" :disabled="locked"
-          @click="form = null"><X :size="15" /></button>
+          @click="editor.close()"><X :size="15" /></button>
       </header>
-      <fieldset :disabled="locked">
+      <fieldset :disabled="locked || localDraft.loading.value">
         <label>范围<output>{{ form.scope }}</output></label>
         <label>资源 UUID<output>{{ form.resource_id }}</output></label>
         <label class="enabled"><input v-model="form.value.enabled" type="checkbox" />启用资源</label>
@@ -155,11 +188,15 @@ onMounted(() => { void resources.refresh(); });
           </div>
           <div class="presentation-row">
             <label v-if="member.presentation.placement === 'middle'">深度
-              <input v-model.number="member.presentation.depth" type="number" min="0" step="1"
-                :aria-label="`条目 ${index + 1} 中区深度`" />
+              <RawNumberInput v-model="member.presentation.depth" :min="0" integer
+                :disabled="locked" :draft-scope="numberScope(member, 'depth')" :draft-basis="numberBasis"
+                :aria-label="`条目 ${index + 1} 中区深度`"
+                @validity="numericValidity[numberScope(member, 'depth')] = $event" />
             </label>
-            <label>顺序<input v-model.number="member.presentation.order" type="number" step="1"
-              :aria-label="`条目 ${index + 1} 装配顺序`" /></label>
+            <label>顺序<RawNumberInput v-model="member.presentation.order" integer
+              :disabled="locked" :draft-scope="numberScope(member, 'order')" :draft-basis="numberBasis"
+              :aria-label="`条目 ${index + 1} 装配顺序`"
+              @validity="numericValidity[numberScope(member, 'order')] = $event" /></label>
           </div>
         </section>
         <button type="button" :disabled="form.value.members.length >= 1024" @click="addMember">
@@ -167,7 +204,7 @@ onMounted(() => { void resources.refresh(); });
         </button>
       </fieldset>
       <p v-if="formError" class="warning" role="status">{{ formError }}</p>
-      <button type="submit" :disabled="locked"><Save :size="14" />保存当前资源</button>
+      <button type="submit" :disabled="locked || !numbersValid"><Save :size="14" />保存当前资源</button>
     </form>
     <div v-if="pending" class="warning" role="status">
       <p>提示词资源提交结果待核实</p>

@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { RefreshCw, Save } from "lucide-vue-next";
-import { graphClone, type GraphDocument, type GraphNode } from "../../domain/workflowGraph";
+import { graphClone, graphObject, type GraphDocument, type GraphNode } from "../../domain/workflowGraph";
 import { lorebookBindingErrors, lorebookVariableBindings } from "../../domain/lorebook";
 import { useWorkflowFrontendSdk, type WorkflowNodeConfigurationRequest } from "../workflowFrontendSdk";
 import { tavernExtensionsFor } from "../tavernFrontendManifest";
 import { useLorebookResources } from "./lorebookResourceController";
 import { isLorebookActivationConfig, isLorebookReferenceConfig, lorebookIdentity, lorebookIdentityKey,
   lorebookResourceLabel } from "./lorebookResources";
+import { useBoundFormDraft } from "../../composables/useBoundFormDraft";
+import FormDraftNotice from "../../components/FormDraftNotice.vue";
 
 const props = defineProps<{ node: GraphNode; document: GraphDocument; disabled?: boolean }>();
 const sdk = useWorkflowFrontendSdk(), resources = useLorebookResources();
@@ -18,7 +20,7 @@ const selected = ref(""), objectKeys = ref<string[] | null>(null), status = ref(
 const basis = ref<WorkflowNodeConfigurationRequest | null>(null);
 const chosen = computed(() => records.value.find(row => lorebookIdentityKey(lorebookIdentity(row)) === selected.value));
 const disabled = computed(() => !!props.disabled || sdk.locked.value || !basis.value
-  || (isReference.value ? !reference.value : !objectKeys.value));
+  || (isReference.value ? !reference.value : !objectKeys.value) || localDraft.loading.value || localDraft.conflict.value);
 const bindings = computed(() => lorebookVariableBindings(props.document, props.node.node_binding_id));
 const missingKeys = computed(() => objectKeys.value?.filter(key => !bindings.value.some(row => row.object_key === key)) ?? []);
 const bindingErrors = computed(() => lorebookBindingErrors(props.document, props.node.node_binding_id, objectKeys.value ?? []));
@@ -27,6 +29,18 @@ const diagnosis = computed(() => {
   const row = records.value.find(value => lorebookIdentityKey(lorebookIdentity(value)) === lorebookIdentityKey(reference.value!));
   if (!row) return "所选 Lorebook 资源缺失或尚未读取";
   return row.value.enabled ? `当前资源 · ${row.scope} · s${row.update_sequence}` : "所选 Lorebook 资源已停用";
+});
+const localDraft = useBoundFormDraft({
+  id: () => `node:${props.document.workflow_definition_id}:${props.node.node_binding_id}:global-lorebook`,
+  basis: () => ({ workflowId: props.document.workflow_definition_id, nodeId: props.node.node_binding_id,
+    component: props.node.component_id, version: props.node.component_version, config: props.node.config }),
+  capture: () => ({ selected: selected.value, objectKeys: objectKeys.value }),
+  restore: value => {
+    if (!graphObject(value) || typeof value.selected !== "string"
+      || value.objectKeys !== null && (!Array.isArray(value.objectKeys) || !value.objectKeys.every(key => typeof key === "string")))
+      throw new Error("世界书引用草稿格式不兼容，原文仍保留");
+    selected.value = value.selected; objectKeys.value = value.objectKeys;
+  },
 });
 watch(() => [sdk.workflowId.value, sdk.lifecycle.value, sdk.packages.value, props.node.node_binding_id,
   props.node.component_id, props.node.component_version, props.node.config], () => {
@@ -46,13 +60,18 @@ function binding(key: string, checked: boolean) {
   if (disabled.value || !objectKeys.value) return;
   objectKeys.value = checked ? [...new Set([...objectKeys.value, key])] : objectKeys.value.filter(value => value !== key);
 }
-function apply() {
+async function apply() {
   if (disabled.value || !basis.value) { status.value = "Lorebook 配置无效或当前不可编辑"; return; }
   if (isReference.value && !chosen.value) { status.value = "请先选择已有 Lorebook 资源"; return; }
   if (!isReference.value && bindingErrors.value.length) { status.value = bindingErrors.value.join("；"); return; }
   const patch = isReference.value ? { reference: lorebookIdentity(chosen.value!) } : { object_keys: [...objectKeys.value!] };
-  const result = sdk.configureNode({ ...graphClone(basis.value), patch });
-  status.value = result ? result.workflowId === basis.value.workflowId ? "Lorebook 配置已更新" : "Lorebook 配置已写入新副本"
+  const request = { ...graphClone(basis.value), patch };
+  if (!await localDraft.flush()) { status.value = "Lorebook 表单尚未写入本机"; return; }
+  const result = sdk.configureNode(request);
+  if (result && result.workflowId === request.workflowId)
+    localDraft.adoptBasis({ workflowId: props.document.workflow_definition_id, nodeId: props.node.node_binding_id,
+      component: props.node.component_id, version: props.node.component_version, config: patch });
+  status.value = result ? result.workflowId === request.workflowId ? "Lorebook 配置已更新" : "Lorebook 配置已写入新副本"
     : "配置依据已变化或当前不可编辑，请重新选择节点";
 }
 onMounted(() => { if (isReference.value) void resources.refresh(); });
@@ -60,6 +79,8 @@ onMounted(() => { if (isReference.value) void resources.refresh(); });
 
 <template>
   <form class="global-lorebook-fields" aria-label="全局 Lorebook 节点配置" @submit.prevent="apply">
+    <FormDraftNotice :message="localDraft.message.value" :conflict="localDraft.conflict.value"
+      @restore="localDraft.restoreConflict" @discard="localDraft.discardConflict" />
     <template v-if="isReference">
       <label>全局 Lorebook
         <div class="resource-row">

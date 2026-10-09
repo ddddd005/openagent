@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import CurrentPromptPanel from "./CurrentPromptPanel.vue";
 import PromptReferenceFields from "./PromptReferenceFields.vue";
 import GraphNodeConfiguration from "./GraphNodeConfiguration.vue";
+import RawNumberInput from "./RawNumberInput.vue";
 import { createPromptResources, promptResourceControllerKey } from "../application/promptResources";
 import { createWorkbenchFrontendHost } from "../application/workflowFrontendPackage";
 import { workbenchFrontendHostKey } from "../application/workbenchFrontendHost";
@@ -116,7 +117,12 @@ function button(root: HostNode, text: string) {
   return find(root, node => node.tag === "button" && elements(node).map(child => child.text).join("").trim() === text);
 }
 function model(node: HostNode, value: unknown) {
-  (node.props["onUpdate:modelValue"] as (value: unknown) => void)(value);
+  if (typeof node.props["onUpdate:modelValue"] === "function")
+    (node.props["onUpdate:modelValue"] as (value: unknown) => void)(value);
+  else {
+    node.value = String(value);
+    (node.props.onInput as (event: unknown) => void)({ target: node });
+  }
 }
 async function trigger(node: HostNode, event: "Click" | "Submit" | "Change") {
   await (node.props[`on${event}`] as (event: { preventDefault(): void }) => unknown)({ preventDefault() {} });
@@ -126,6 +132,14 @@ async function mount(component: typeof CurrentPromptPanel | typeof PromptReferen
   vi.stubGlobal("document", { activeElement: null });
   vi.stubGlobal("Document", class {});
   vi.stubGlobal("ShadowRoot", class {});
+  const numeric = parseSfc(readFileSync(new URL("RawNumberInput.vue", import.meta.url), "utf8")).descriptor;
+  const numericScript = compileScript(numeric, { id: "raw-number-prompt" });
+  const numericTemplate = compileTemplate({ source: numeric.template!.content, filename: "RawNumberInput.vue",
+    id: "raw-number-prompt", compilerOptions: { mode: "function", bindingMetadata: numericScript.bindings } });
+  expect(numericTemplate.errors).toEqual([]);
+  Object.assign(RawNumberInput, { render: new Function("Vue", transpileModule(numericTemplate.code, {
+    compilerOptions: { target: ScriptTarget.ES2022, module: ModuleKind.None },
+  }).outputText)(Vue) });
   const filename = component === CurrentPromptPanel ? "CurrentPromptPanel.vue" : "PromptReferenceFields.vue";
   const { descriptor } = parseSfc(readFileSync(new URL(filename, import.meta.url), "utf8"));
   const script = compileScript(descriptor, { id: "current-prompt-interactions" });
@@ -152,6 +166,17 @@ function renderFields(f: ReturnType<typeof fixture>) {
 afterEach(() => { apps.splice(0).forEach(app => app.unmount()); vi.unstubAllGlobals(); });
 
 describe("current prompt panel form interactions", () => {
+  it("keeps the explicit legacy import action available while ordinary editing is locked", async () => {
+    const f = fixture();
+    f.resources.legacyRaw.value = "retained original request";
+    const importRequest = vi.spyOn(f.resources, "importLegacyPending").mockResolvedValue(true);
+    const root = await mount(CurrentPromptPanel, f);
+    expect(label(root, "新增提示词资源").props.disabled).toBe(true);
+    const action = button(root, "导入旧提示词请求");
+    expect(action.props.disabled).toBe(false);
+    await trigger(action, "Click");
+    expect(importRequest).toHaveBeenCalledOnce(); expect(f.save).not.toHaveBeenCalled();
+  });
   it("saves an empty enabled workspace resource with read-only identity and no schema-1 name or kind fields", async () => {
     const f = fixture([]), root = await mount(CurrentPromptPanel, f);
     await trigger(label(root, "新增提示词资源"), "Click");
@@ -234,8 +259,8 @@ describe("current prompt panel form interactions", () => {
     expect(label(root, "条目 2 下移").props.disabled).toBe(true);
     await trigger(label(root, "条目 2 上移"), "Click");
     expect(label(root, "条目 1 正文").value).toBe(second.text);
-    expect(label(root, "条目 1 装配顺序").value).toBe(-8);
-    expect(label(root, "条目 2 装配顺序").value).toBe(4);
+    expect(label(root, "条目 1 装配顺序").value).toBe("-8");
+    expect(label(root, "条目 2 装配顺序").value).toBe("4");
     expect(f.resources.records.value).toEqual([record]);
     await trigger(label(root, "提示词当前资源表单"), "Submit");
     expect(f.save.mock.calls[0]![0].record.value.members).toEqual([
@@ -338,9 +363,22 @@ describe("current prompt panel form interactions", () => {
     await trigger(label(root, "新增提示词资源"), "Click");
     await trigger(button(root, "新增条目"), "Click");
     model(label(root, "条目 1 装配顺序"), 1.5);
+    await flush();
+    expect(label(root, "条目 1 装配顺序").props["aria-invalid"]).toBe(true);
+    expect(button(root, "保存当前资源").props.disabled).toBe(true);
     await trigger(label(root, "提示词当前资源表单"), "Submit");
     expect(f.save).not.toHaveBeenCalled();
-    expect(elements(root).some(node => node.text.includes("呈现字段或成员身份无效"))).toBe(true);
+    expect(elements(root).some(node => node.text.includes("数字字段不完整"))).toBe(true);
+  });
+  it.each(["-", "1e"])("does not submit an older valid numeric value for partial text %s", async raw => {
+    const f = fixture([]), root = await mount(CurrentPromptPanel, f);
+    await trigger(label(root, "新增提示词资源"), "Click");
+    await trigger(button(root, "新增条目"), "Click");
+    model(label(root, "条目 1 装配顺序"), raw); await flush();
+    expect(label(root, "条目 1 装配顺序").value).toBe(raw);
+    await trigger(label(root, "提示词当前资源表单"), "Submit");
+    expect(f.save).not.toHaveBeenCalled();
+    expect(label(root, "条目 1 装配顺序").value).toBe(raw);
   });
 
   it("freezes an unknown request independently of SDK locking and reconciles the unchanged body/key explicitly", async () => {

@@ -35,6 +35,10 @@ def operation(name, method, required=(), optional=(), **options):
 
 
 COMMANDS = (
+    operation("draft.save", "save_draft",
+              ("address", "format_version", "value", "expected_sequence", "idempotency_key")),
+    operation("consumer.draft.save", "save_consumer_draft",
+              ("address", "format_version", "value", "expected_sequence", "idempotency_key"), consumer=True),
     operation("definition.save", "save_definition",
               ("document", "expected_revision", "idempotency_key"), status=201),
     operation("session.create", "create_session",
@@ -83,6 +87,11 @@ COMMANDS = (
 )
 
 QUERIES = (
+    operation("draft.read", "read_draft", ("address",)),
+    operation("draft.list", "list_drafts", optional=("kind", "workflow_definition_id")),
+    operation("consumer.draft.read", "read_consumer_draft", ("address",), consumer=True),
+    operation("consumer.draft.list", "list_consumer_drafts", ("workflow_definition_id",),
+              ("kind",), consumer=True),
     operation("receipt.read", "_receipt_read", ("operation", "parameters"), consumer=True),
     operation("catalog.node-types", "node_types", optional=("protocol_version",)),
     operation("platform", "platform_capabilities"),
@@ -135,6 +144,14 @@ def validate_parameters(spec, parameters):
     required = spec.required | ({"session_id"} if spec.session else set())
     require(type(parameters) is dict and required <= set(parameters) <= required | spec.optional,
             "invalid_request", "Application operation fields differ")
+    if spec.name in ("draft.read", "draft.save", "consumer.draft.read", "consumer.draft.save"):
+        from .graph_drafts import validate_draft_address, validate_draft_value
+        address = validate_draft_address(parameters["address"], "consumer" if spec.consumer else "management")
+        if spec.name.endswith(".save"):
+            validate_draft_value(address, parameters["format_version"], parameters["value"])
+            require(type(parameters["expected_sequence"]) is int
+                    and 0 <= parameters["expected_sequence"] <= 2**53 - 1,
+                    "invalid_request", "Draft expected sequence is invalid")
     if spec.session:
         require(uuid_value(parameters["session_id"]), "not_found", "Session not found", 404)
     for field, value in parameters.items():

@@ -1,12 +1,20 @@
 <script setup lang="ts">
+import { computed, ref, watch } from "vue";
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-vue-next";
 import RolePlacementFields from "../../components/RolePlacementFields.vue";
 import LorebookKeywordFields from "../../components/LorebookKeywordFields.vue";
 import { graphClone } from "../../domain/workflowGraph";
 import { lorebookLimits, moveLorebookEntry, newLorebookEntry, type LorebookEntry } from "../../domain/lorebook";
+import RawNumberInput from "../../components/RawNumberInput.vue";
 
-const props = defineProps<{ modelValue: LorebookEntry[]; disabled?: boolean }>();
-const emit = defineEmits<{ "update:modelValue": [value: LorebookEntry[]] }>();
+const props = defineProps<{ modelValue: LorebookEntry[]; disabled?: boolean; draftScope?: string; draftBasis?: unknown }>();
+const emit = defineEmits<{ "update:modelValue": [value: LorebookEntry[]]; validity: [value: boolean] }>();
+const numericValidity = ref<Record<string, boolean>>({});
+const valid = computed(() => props.modelValue.every(entry => numericValidity.value[`${entry.id}:scan`] !== false
+  && (!entry.probability_enabled || numericValidity.value[`${entry.id}:probability`] !== false)
+  && numericValidity.value[`${entry.id}:presentation`] !== false));
+watch(valid, value => emit("validity", value), { immediate: true, flush: "sync" });
+const fieldScope = (id: string, field: string) => props.draftScope ? `${props.draftScope}:entry:${id}:${field}` : undefined;
 function patch(index: number, value: Partial<LorebookEntry>) {
   if (props.disabled || !props.modelValue[index]) return;
   const entries = graphClone(props.modelValue);
@@ -50,9 +58,10 @@ function move(index: number, offset: number) {
           @change="patch(index, { mode: ($event.target as HTMLSelectElement).value as LorebookEntry['mode'] })">
           <option value="keyword">关键词触发</option><option value="constant">常驻</option>
         </select></label>
-        <label>扫描深度<input :value="entry.scan_depth" type="number" min="0" :max="lorebookLimits.scanDepth"
-          step="1" :aria-label="`条目 ${index + 1} 扫描深度`"
-          @input="patch(index, { scan_depth: ($event.target as HTMLInputElement).valueAsNumber })" /></label>
+        <label>扫描深度<RawNumberInput :model-value="entry.scan_depth" :min="0" :max="lorebookLimits.scanDepth"
+          integer :disabled="disabled" :draft-scope="fieldScope(entry.id, 'scan')" :draft-basis="draftBasis"
+          :aria-label="`条目 ${index + 1} 扫描深度`" @update:model-value="patch(index, { scan_depth: $event })"
+          @validity="numericValidity[`${entry.id}:scan`] = $event" /></label>
       </div>
       <template v-if="entry.mode === 'keyword'">
         <LorebookKeywordFields :model-value="entry.primary_keywords" label="主关键词" :label-prefix="`条目 ${index + 1}`"
@@ -74,12 +83,16 @@ function move(index: number, offset: number) {
       <div class="field-row">
         <label class="toggle"><input :checked="entry.probability_enabled" type="checkbox" :aria-label="`条目 ${index + 1} 概率开关`"
           @change="patch(index, { probability_enabled: ($event.target as HTMLInputElement).checked })" />概率开启</label>
-        <label>概率 %<input :value="entry.probability" type="number" min="0" max="100" step="any"
-          :disabled="disabled || !entry.probability_enabled" :aria-label="`条目 ${index + 1} 概率值`"
-          @input="patch(index, { probability: ($event.target as HTMLInputElement).valueAsNumber })" /></label>
+        <label>概率 %<RawNumberInput :model-value="entry.probability" :min="0" :max="100"
+          :disabled="disabled || !entry.probability_enabled" :draft-scope="fieldScope(entry.id, 'probability')"
+          :draft-basis="draftBasis" :aria-label="`条目 ${index + 1} 概率值`"
+          @update:model-value="patch(index, { probability: $event })"
+          @validity="numericValidity[`${entry.id}:probability`] = $event" /></label>
       </div>
       <RolePlacementFields :model-value="entry.presentation" label="注入呈现" depth-label="插入深度"
-        :label-prefix="`条目 ${index + 1}`" @update:model-value="patch(index, { presentation: $event })" />
+        :disabled="disabled" :draft-scope="fieldScope(entry.id, 'presentation')" :draft-basis="draftBasis"
+        :label-prefix="`条目 ${index + 1}`" @update:model-value="patch(index, { presentation: $event })"
+        @validity="numericValidity[`${entry.id}:presentation`] = $event" />
     </section>
     <button type="button" :disabled="disabled || modelValue.length >= lorebookLimits.entries" @click="add">
       <Plus :size="14" />新增条目

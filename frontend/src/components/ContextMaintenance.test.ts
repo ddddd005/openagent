@@ -13,7 +13,7 @@ describe("compaction controls and evidence", () => {
     }));
     expect(html).toMatch(/<output[^>]*>未启用<\/output>/);
     expect(html.match(/<textarea/g)).toHaveLength(1);
-    expect(html).toContain('type="number"'); expect(html).toContain('min="0"');
+    expect(html).toContain('type="text"'); expect(html).toContain('inputmode="decimal"');
   });
   it("displays maintenance evidence while keeping the original facts available", async () => {
     const item = { kind: "context_compaction_finished", created_at: "2026-10-07T00:00:00Z",

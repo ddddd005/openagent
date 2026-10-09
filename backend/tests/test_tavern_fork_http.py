@@ -146,8 +146,7 @@ const vm = require("node:vm");
 const { randomUUID } = require("node:crypto");
 const [corePath, base, workflow, parent, candidateId] = process.argv.slice(1);
 vm.runInThisContext(fs.readFileSync(corePath, "utf8"), { filename: corePath });
-const storageData = new Map(), requests = [];
-const storage = { getItem: key => storageData.get(key) ?? null, setItem: (key, value) => storageData.set(key, value) };
+const requests = [];
 let loseNextFork = false;
 async function request(path, options = {}) {
   const body = options.body ? JSON.parse(options.body) : null;
@@ -164,7 +163,7 @@ async function request(path, options = {}) {
   return value;
 }
 function client() {
-  return new GraphChat.GraphChatClient({ workflowId: workflow, sessionId: parent, storage, request, keyFactory: randomUUID });
+  return new GraphChat.GraphChatClient({ workflowId: workflow, sessionId: parent, request, keyFactory: randomUUID });
 }
 (async () => {
   const first = client();
@@ -198,6 +197,7 @@ function client() {
     && row.body?.operation === "consumer.candidate.fork").length;
   assert.equal(commandCount, 2);
   const reopened = client();
+  await reopened.restoreLocalState();
   assert.deepEqual(reopened.pending, pending);
   const matched = await reopened.command("fork");
   assert.equal(matched.receipt.idempotency_key, pending.body.idempotency_key);

@@ -17,7 +17,8 @@
   const actions = new Set(["pause", "resume", "close", "extend_budget", "retry_archive", "retry_acceptance", "retry_failed_node"]);
   const consumerQueries = new Set(["consumer.definition", "consumer.sessions", "consumer.read", "consumer.actions",
     "output.list", "output.read", "output.history", "output.artifact.read", "registration.list", "information.read",
-    "frontend.extensions.read", "consumer.event.bindings", "consumer.event.read", "consumer.candidate.list", "receipt.read"]);
+    "frontend.extensions.read", "consumer.event.bindings", "consumer.event.read", "consumer.candidate.list",
+    "consumer.draft.read", "consumer.draft.list", "receipt.read"]);
   const bounded = value => typeof value === "string" && value.length > 0 && value.length <= 128 && value.trim() === value;
   const cursor = value => value === null || typeof value === "string" && value.length > 0 && value.length <= 4096;
   const same = (left, right) => {
@@ -564,10 +565,77 @@
     }
     return value;
   }
+  function createDraftBuffer({ write, onState = () => {}, delay = 200 }) {
+    const entries = new Map();
+    let disposed = false;
+    function notify(entry, status, failure = null) {
+      entry.status = status; entry.error = failure?.message ?? "";
+      if (!disposed) onState(clone(entry.address), { status, error: entry.error });
+    }
+    async function flushEntry(entry) {
+      clearTimeout(entry.timer); entry.timer = null;
+      if (entry.writing) return entry.writing;
+      if (entry.savedGeneration === entry.generation) return;
+      const writing = (async () => {
+        while (entry.savedGeneration !== entry.generation) {
+          const generation = entry.generation, value = clone(entry.value);
+          notify(entry, "saving");
+          try { await write(clone(entry.address), value); }
+          catch (failure) { notify(entry, "blocked", failure); throw failure; }
+          entry.savedGeneration = generation;
+          notify(entry, generation === entry.generation ? "saved" : "pending");
+        }
+      })();
+      entry.writing = writing;
+      try { await writing; }
+      finally { if (entry.writing === writing) entry.writing = null; }
+    }
+    function stage(address, value) {
+      require(!disposed && strictJson(address) && strictJson(value), "原始草稿无法暂存");
+      const key = JSON.stringify(address);
+      let entry = entries.get(key);
+      if (!entry) {
+        entry = { address: clone(address), value: null, generation: 0, savedGeneration: 0,
+          timer: null, writing: null, status: "saved", error: "" };
+        entries.set(key, entry);
+      } else if (same(entry.value, value)) {
+        if (entry.savedGeneration === entry.generation) notify(entry, "saved");
+        return;
+      }
+      entry.value = clone(value); entry.generation++;
+      clearTimeout(entry.timer);
+      notify(entry, "pending");
+      entry.timer = setTimeout(() => {
+        entry.timer = null;
+        void flushEntry(entry).catch(() => {});
+      }, delay);
+    }
+    async function flush(address) {
+      if (address) {
+        const entry = entries.get(JSON.stringify(address));
+        if (entry) await flushEntry(entry);
+      } else await Promise.all([...entries.values()].map(flushEntry));
+    }
+    function status(address) {
+      const entry = entries.get(JSON.stringify(address));
+      return entry ? { status: entry.status, error: entry.error } : { status: "saved", error: "" };
+    }
+    function hasUnsaved() {
+      return [...entries.values()].some(entry => entry.savedGeneration !== entry.generation);
+    }
+    function dispose() {
+      disposed = true;
+      for (const entry of entries.values()) { clearTimeout(entry.timer); entry.timer = null; }
+    }
+    return { stage, flush, status, hasUnsaved, dispose };
+  }
+
   class GraphChatClient {
-    constructor({ workflowId, sessionId = null, storage, request, keyFactory }) {
+    constructor({ workflowId, sessionId = null, request, keyFactory, draftNamespace = "generic", draftPort, legacyStorage }) {
       require(uuid(workflowId) && (sessionId === null || uuid(sessionId)), "工作流入口身份无效");
-      this.workflowId = workflowId; this.sessionId = sessionId; this.storage = storage;
+      require(bounded(draftNamespace), "本机草稿命名空间无效");
+      this.workflowId = workflowId; this.sessionId = sessionId; this.requestedSession = sessionId;
+      this.draftNamespace = draftNamespace; this.draftPort = draftPort; this.legacyStorage = legacyStorage;
       this.request = request; this.keyFactory = keyFactory; this.consumer = null; this.pending = null;
       this.generation = 0; this.busy = false; this.revisions = new Map();
       this.application = null; this.registrationGeneration = 0; this.informationGeneration = 0; this.sessionGeneration = 0;
@@ -576,24 +644,140 @@
       this.frontendRequests = new Map();
       this.eventBindings = null; this.eventGeneration = 0;
       this.forkCandidates = null; this.candidateContext = null; this.candidateGeneration = 0;
-      this.storageKey = "workflow-chat:v1:" + workflowId;
-      const raw = storage.getItem(this.storageKey);
-      if (raw) {
-        const value = JSON.parse(raw);
-        require(exact(value, ["schema_version", "kind", "workflow_definition_id", "workflow_session_id", "pending"])
-          && value.schema_version === 1 && value.kind === "workflow.chat-client" && value.workflow_definition_id === workflowId
-          && (value.workflow_session_id === null || uuid(value.workflow_session_id)), "本机聊天记录无效");
-        if (value.pending) {
-          this.pending = validateCommand(value.pending, workflowId);
-          require(this.pending.action === "create" || this.pending.workflow_session_id === value.workflow_session_id,
-            "待核实请求与本机会话不匹配");
-        }
-        if (this.pending || !sessionId) this.sessionId = this.pending?.workflow_session_id ?? value.workflow_session_id;
-      }
+      this.draftRecords = new Map(); this.draftIntents = new Map(); this.draftWrites = new Map();
+      this.localStateReady = false; this.localConflict = null; this.legacyPending = null;
     }
-    persist() {
-      this.storage.setItem(this.storageKey, JSON.stringify({ schema_version: 1, kind: "workflow.chat-client",
-        workflow_definition_id: this.workflowId, workflow_session_id: this.sessionId, pending: this.pending }));
+    draftAddress(kind, key, sessionId = null) {
+      require(["chat-client", "chat-input"].includes(kind) && typeof key === "string" && key.length > 0 && key.length <= 512
+        && this.draftNamespace.length + key.length + 1 <= 512
+        && (sessionId === null || uuid(sessionId)) && (kind !== "chat-input" || sessionId !== null), "本机草稿归属无效");
+      return { scope: "consumer", kind, key: this.draftNamespace + ":" + key,
+        workflow_definition_id: this.workflowId, workflow_session_id: sessionId };
+    }
+    validateDraft(record, address) {
+      require(record === null || exact(record, ["schema_version", "kind", "address", "format_version",
+        "sequence", "updated_at", "value", "deleted"]) && record.schema_version === 1
+        && record.kind === "workflow.local-draft" && same(record.address, address)
+        && record.format_version === 1 && positive(record.sequence) && typeof record.updated_at === "string"
+        && Number.isFinite(Date.parse(record.updated_at))
+        && typeof record.deleted === "boolean" && record.deleted === (record.value === null)
+        && strictJson(record.value), "本机草稿回执归属或格式无效");
+      return record;
+    }
+    async readDraft(address) {
+      const record = this.validateDraft(await (this.draftPort ? this.draftPort.read(clone(address))
+        : this.query("consumer.draft.read", { address })), address);
+      this.draftRecords.set(JSON.stringify(address), record);
+      return record?.deleted ? null : clone(record?.value ?? null);
+    }
+    async saveDraft(address, value) {
+      require(strictJson(value), "本机草稿需要严格 JSON");
+      const key = JSON.stringify(address), previous = this.draftWrites.get(key) ?? Promise.resolve();
+      const writing = previous.catch(() => {}).then(async () => {
+        if (!this.draftRecords.has(key)) await this.readDraft(address);
+        const old = this.draftRecords.get(key), intent = this.draftIntents.get(key);
+        if (intent) {
+          const reconciled = await this.writeDraftRecord(intent, true);
+          this.draftRecords.set(key, reconciled); this.draftIntents.delete(key);
+          if (same(intent.value, value)) return reconciled;
+        }
+        const request = { address: clone(address), format_version: 1, value: clone(value),
+          expected_sequence: this.draftRecords.get(key)?.sequence ?? old?.sequence ?? 0, idempotency_key: this.keyFactory() };
+        this.draftIntents.set(key, request);
+        try {
+          const record = await this.writeDraftRecord(request, false);
+          this.draftRecords.set(key, record); this.draftIntents.delete(key);
+          return record;
+        } catch (error) {
+          if (error.definite) this.draftIntents.delete(key);
+          throw error;
+        }
+      });
+      this.draftWrites.set(key, writing);
+      try { return await writing; }
+      finally { if (this.draftWrites.get(key) === writing) this.draftWrites.delete(key); }
+    }
+    async writeDraftRecord(parameters, reconcile) {
+      let record;
+      if (this.draftPort) record = await this.draftPort.save(clone(parameters), reconcile);
+      else {
+        const envelope = { operation: "consumer.draft.save", parameters: clone(parameters) };
+        const response = await this.request(reconcile ? "/api/graph/consumer/receipts/read" : "/api/graph/consumer/commands",
+          { method: "POST", body: JSON.stringify(envelope) });
+        require(exact(response, reconcile ? ["schema_version", "kind", "outcome", "reason_code", "receipt", "result"]
+          : ["schema_version", "kind", "receipt", "result"])
+          && response.schema_version === 1 && response.kind === (reconcile
+            ? "workflow.application-receipt-read" : "workflow.application-command")
+          && (!reconcile || response.outcome === "matched" && response.reason_code === "receipt_matched"),
+          "本机草稿请求结果待核实");
+        const receipt = response.receipt;
+        require(exact(receipt, ["schema_version", "kind", "operation", "operation_scope", "idempotency_key",
+          "request_sha256", "authority", "target", "accepted"]) && receipt.schema_version === 1
+          && receipt.kind === "workflow.application-receipt" && receipt.operation === "consumer.draft.save"
+          && receipt.operation_scope === "consumer" && receipt.idempotency_key === parameters.idempotency_key
+          && /^[0-9a-f]{64}$/.test(receipt.request_sha256) && receipt.authority === "service_receipt"
+          && same(receipt.target, {})
+          && same(receipt.accepted, { draft_address: parameters.address,
+            draft_sequence: parameters.expected_sequence + 1, draft_format_version: 1, deleted: parameters.value === null }),
+          "本机草稿回执与原请求不匹配");
+        record = response.result;
+      }
+      this.validateDraft(record, parameters.address);
+      require(record && record.sequence === parameters.expected_sequence + 1
+        && same(record.value, parameters.value) && record.deleted === (parameters.value === null),
+        "本机草稿保存回执不匹配");
+      return record;
+    }
+    validateClientRecord(value) {
+      require(exact(value, ["schema_version", "kind", "workflow_definition_id", "workflow_session_id", "pending"])
+        && value.schema_version === 1 && value.kind === "workflow.chat-client"
+        && value.workflow_definition_id === this.workflowId
+        && (value.workflow_session_id === null || uuid(value.workflow_session_id)), "本机聊天记录无效");
+      if (value.pending) {
+        validateCommand(value.pending, this.workflowId);
+        require(value.pending.action === "create" || value.pending.workflow_session_id === value.workflow_session_id,
+          "待核实请求与本机会话不匹配");
+      }
+      return value;
+    }
+    async restoreLocalState() {
+      if (this.localStateReady) return;
+      const address = this.draftAddress("chat-client", "state");
+      const value = await this.readDraft(address);
+      this.localConflict = null; this.legacyPending = null;
+      if (value) {
+        this.validateClientRecord(value);
+        if (value.pending && this.requestedSession && value.workflow_session_id !== this.requestedSession) {
+          this.localConflict = clone(value);
+          throw new Error("另一会话有原请求待核实：" + (value.workflow_session_id ?? "新建会话") + "；当前入口未改绑");
+        }
+        if (value.pending) this.pending = clone(value.pending);
+        if (!this.requestedSession) this.sessionId = value.workflow_session_id;
+      }
+      const raw = this.legacyStorage?.getItem("workflow-chat:v1:" + this.workflowId);
+      if (raw) {
+        const legacy = this.validateClientRecord(JSON.parse(raw));
+        if (legacy.pending && !value?.pending) {
+          this.legacyPending = clone(legacy);
+          throw new Error("浏览器保留旧请求，请明确导入后核实；当前入口未改绑");
+        }
+      }
+      this.localStateReady = true;
+    }
+    async importLegacyPending() {
+      require(this.legacyPending && !this.pending && !this.busy, "没有可导入的旧请求");
+      const record = this.legacyPending;
+      require(!this.requestedSession || record.workflow_session_id === this.requestedSession,
+        "旧请求属于另一会话，请明确打开该会话后导入");
+      await this.saveDraft(this.draftAddress("chat-client", "state"), record);
+      this.legacyStorage?.removeItem?.("workflow-chat:v1:" + this.workflowId);
+      this.pending = clone(record.pending);
+      if (!this.requestedSession) this.sessionId = record.workflow_session_id;
+      this.legacyPending = null; this.localStateReady = true;
+    }
+    async persist() {
+      await this.saveDraft(this.draftAddress("chat-client", "state"), { schema_version: 1, kind: "workflow.chat-client",
+        workflow_definition_id: this.workflowId, workflow_session_id: this.sessionId, pending: clone(this.pending) });
     }
     accept(value) {
       validateConsumer(value, this.workflowId, this.sessionId);
@@ -633,7 +817,11 @@
     }
     async selectSession(session) {
       require(!this.pending && !this.busy && uuid(session), "待核实原请求完成后才能切换会话");
-      this.generation++; this.sessionId = session; this.consumer = null; this.persist();
+      await this.restoreLocalState();
+      const original = this.sessionId;
+      this.sessionId = session;
+      try { await this.persist(); } catch (error) { this.sessionId = original; throw error; }
+      this.generation++; this.consumer = null;
       this.eventBindings = null; this.eventGeneration++;
       this.invalidateInformation();
       return this.refresh();
@@ -641,6 +829,7 @@
     async discover() {
       const value = validateApplication(await this.request("/api/graph/consumer/application"));
       this.application = value;
+      await this.restoreLocalState();
       return value;
     }
     async query(operation, parameters = {}) {
@@ -868,7 +1057,12 @@
     }
     async command(action, fields = {}) {
       require(!this.busy, "请求正在提交");
-      const reconciling = this.pending !== null;
+      this.busy = true;
+      let reconciling;
+      try {
+        await this.restoreLocalState();
+        require(!this.localConflict && !this.legacyPending, "原请求归属需要先核实");
+        reconciling = this.pending !== null;
       if (!this.pending) {
         const create = action === "create";
         const fork = action === "fork";
@@ -906,9 +1100,10 @@
         this.pending = validateCommand({ action, workflow_session_id: create ? null : this.sessionId,
           path: create ? "/api/graph/consumer/sessions" : `/api/graph/sessions/${this.sessionId}/consumer/${fork ? "candidates/fork" : action === "start" ? "runs" : action === "event" ? "events/submit" : "control"}`, body,
           ...(fork ? { candidate: clone(fields.candidate) } : {}) }, this.workflowId);
-        try { this.persist(); } catch (error) { this.pending = null; throw error; }
+        try { await this.persist(); } catch (error) { this.pending = null; throw error; }
       }
-      const command = clone(this.pending); this.busy = true;
+      } catch (error) { this.busy = false; throw error; }
+      const command = clone(this.pending);
       const generation = this.generation, session = this.sessionId;
       const current = () => generation === this.generation && session === this.sessionId && same(this.pending, command);
       try {
@@ -919,7 +1114,7 @@
           require(current(), "核实依据已变化，迟到回执未覆盖当前会话；原请求待核实");
           this.sessionId = value.receipt.workflow_session_id;
           this.pending = null;
-          try { this.persist(); } catch (error) { this.sessionId = session; this.pending = command; throw error; }
+          try { await this.persist(); } catch (error) { this.sessionId = session; this.pending = command; throw error; }
           this.generation++;
           if (session !== this.sessionId) {
             this.consumer = null;
@@ -935,7 +1130,7 @@
         this.generation++; this.sessionId = value.receipt.workflow_session_id;
         this.invalidateInformation();
         this.accept(value.consumer); this.pending = null;
-        try { this.persist(); } catch (error) {
+        try { await this.persist(); } catch (error) {
           this.pending = command;
           if (command.action === "fork") {
             this.sessionId = session; this.consumer = parentView; this.invalidateInformation();
@@ -946,7 +1141,7 @@
       } catch (error) {
         if (!reconciling && error.definite && current()) {
           this.pending = null;
-          try { this.persist(); } catch (storageError) { this.pending = command; throw storageError; }
+          try { await this.persist(); } catch (storageError) { this.pending = command; throw storageError; }
         }
         throw error;
       } finally { this.busy = false; }
@@ -956,5 +1151,6 @@
     modelPresentation, thinkingSummaries, httpFailure, parseExternalInput,
     validateConsumer, validateReceipt, validateCommand, commandEnvelope, validateApplicationReceipt, validateApplicationReceiptRead, validateApplication,
     validateHistory, validateRegistrations, validateInformationPage, validatePublicArtifact,
-    validateEventBinding, validateEventBindings, validateEventRun, validateCandidate, validateCandidates, strictJson, GraphChatClient };
+    validateEventBinding, validateEventBindings, validateEventRun, validateCandidate, validateCandidates, strictJson,
+    createDraftBuffer, GraphChatClient };
 })(globalThis);

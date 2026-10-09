@@ -7,6 +7,7 @@ import { useWorkbenchPersistenceStore } from "./workbenchPersistence";
 import { useWorkbenchNoticesStore } from "./workbenchNotices";
 import { graphClone, newGraph, type GraphDocument, type GraphSession } from "../domain/workflowGraph";
 import { graphWorkbenchStorage } from "../testUtils/graphWorkbenchStorage";
+import { memoryLocalDraftStorage } from "../testUtils/localDraftStorage";
 
 const json = (value: unknown) => new Response(JSON.stringify(value));
 function deferred<T>() {
@@ -56,8 +57,8 @@ afterEach(() => {
 describe("workflow application coordination", () => {
   it("restores a parent checkpoint definition, persists its distinct workspace identity and starts that exact version", async () => {
     const { graph, id, old, selected, directory, candidateId } = fixture();
-    const storage = memory();
-    const persistence = useWorkbenchPersistenceStore(); persistence.initialize(storage);
+    const storage = memory(), backend = memoryLocalDraftStorage();
+    const persistence = useWorkbenchPersistenceStore(); await persistence.initialize(storage, backend.ports);
     const paths: string[] = [];
     stubGraphApplicationFetch( vi.fn(async (path, init) => {
       paths.push(path);
@@ -77,9 +78,9 @@ describe("workflow application coordination", () => {
     expect(graph.entries[id].saved_document).toEqual(old);
     expect(useWorkspaceStore().activeWorkflow).toMatchObject({ id, title: old.name, nodeCount: old.nodes.length, state: "saved" });
     expect(id).not.toBe(old.workflow_definition_id);
-    expect(persistence.save()).toBe(true);
+    expect(await persistence.save()).toBe(true);
     persistence.$dispose(); graph.$dispose(); setActivePinia(createPinia());
-    const restored = useWorkbenchPersistenceStore(); restored.initialize(storage);
+    const restored = useWorkbenchPersistenceStore(); await restored.initialize(storage, backend.ports);
     const reopened = useWorkflowGraphStore();
     expect(restored.status).toBe("saved");
     expect(reopened.entries[id].document).toEqual(old);
@@ -95,14 +96,15 @@ describe("workflow application coordination", () => {
 
   it("retains the frozen candidate target and original body after reload and a lost receipt", async () => {
     const { graph, id, old, selected, candidateId } = fixture();
-    const storage = memory(), persistence = useWorkbenchPersistenceStore(); persistence.initialize(storage);
+    const storage = memory(), backend = memoryLocalDraftStorage(), persistence = useWorkbenchPersistenceStore();
+    await persistence.initialize(storage, backend.ports);
     stubGraphApplicationFetch( vi.fn().mockRejectedValue(new Error("lost receipt")));
     expect(await graph.changeCandidate(candidateId)).toBe(false);
     const request = graphClone(graph.entries[id].pending!);
     expect(request.expected_definition_id).toBe(old.workflow_definition_id);
     expect(request.expected_definition_revision).toBe(old.revision);
     persistence.$dispose(); graph.$dispose(); setActivePinia(createPinia());
-    const restored = useWorkbenchPersistenceStore(); restored.initialize(storage);
+    const restored = useWorkbenchPersistenceStore(); await restored.initialize(storage, backend.ports);
     const reopened = useWorkflowGraphStore();
     expect(reopened.entries[id].pending).toEqual(request);
     const sent: unknown[] = [];

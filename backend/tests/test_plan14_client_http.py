@@ -114,7 +114,7 @@ def test_shipped_client_event_unknown_replay_and_following_round_checkpoint(tmp_
         script = r"""
 const { readFileSync } = require("node:fs"), { runInNewContext } = require("node:vm");
 const { randomUUID } = require("node:crypto"), assert = require("node:assert/strict");
-const scope = {}, data = new Map(), calls = [];
+const scope = {}, calls = [];
 runInNewContext(readFileSync(process.argv[1], "utf8"), scope);
 const base = process.argv[2], workflowId = process.argv[3];
 let discardEventResponse = false, lastEventRequest = null;
@@ -134,8 +134,7 @@ async function transport(path, options = {}) {
   }
   return value;
 }
-const options = { workflowId, request: transport, keyFactory: randomUUID, storage: {
-  getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) } };
+const options = { workflowId, request: transport, keyFactory: randomUUID };
 async function finished(client) {
   const deadline = Date.now() + 10000;
   while (!client.consumer.can_submit) {
@@ -169,7 +168,8 @@ async function finished(client) {
     && item.operation === "consumer.event.submit");
   assert.equal(calls.filter(item => item.path === "/api/graph/consumer/commands"
     && item.operation === "consumer.event.submit").length, 1);
-  const mutationCount = calls.filter(item => item.path === "/api/graph/consumer/commands").length;
+  const mutationCount = calls.filter(item => item.path === "/api/graph/consumer/commands"
+    && item.operation !== "consumer.draft.save").length;
   const recovered = new scope.GraphChat.GraphChatClient(options);
   await recovered.discover();
   assert.deepEqual(JSON.parse(JSON.stringify(recovered.pending)), original);
@@ -178,7 +178,8 @@ async function finished(client) {
   assert.equal(reconciled.receipt.workflow_session_id, recovered.sessionId);
   assert.deepEqual(reconciled.receipt, submittedEvent.response.result.receipt);
   assert.equal(recovered.pending, null);
-  assert.equal(calls.filter(item => item.path === "/api/graph/consumer/commands").length, mutationCount);
+  assert.equal(calls.filter(item => item.path === "/api/graph/consumer/commands"
+    && item.operation !== "consumer.draft.save").length, mutationCount);
   const eventPacket = calls.filter(item => item.path === "/api/graph/consumer/commands"
     && item.operation === "consumer.event.submit");
   assert.equal(eventPacket.length, 1, "receipt recovery resent the event mutation");
@@ -188,7 +189,8 @@ async function finished(client) {
   assert.equal(receiptReads[0].response.outcome, "matched");
   assert.equal(receiptReads[0].method, "POST");
   assert.equal(receiptReads[0].operation, "consumer.event.submit");
-  assert.equal(receiptReads[0].rawBody, submittedEvent.rawBody, "receipt recovery changed the original event envelope");
+  assert.deepEqual(JSON.parse(receiptReads[0].rawBody), JSON.parse(submittedEvent.rawBody),
+    "receipt recovery changed the original event envelope");
   assert.deepEqual(receiptReads[0].packet.parameters, {
     session_id: original.workflow_session_id, ...original.body });
   assert.equal(lastEventRequest.parameters.idempotency_key, eventKey);

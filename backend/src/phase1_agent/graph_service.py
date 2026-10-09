@@ -28,6 +28,7 @@ from .graph_resource_host import GraphResourceHost
 from .graph_information import GraphInformation
 from .graph_events import GraphEvents
 from .graph_failed_retry import GraphFailedRetry
+from .graph_editing_host import GraphEditingHost
 
 
 def _uid() -> str:
@@ -68,7 +69,7 @@ class _GraphLease:
         self.file.close()
 
 
-class GraphWorkflowService(GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost, GraphResourceHost, GraphPlatform, GraphPublic, GraphCandidateHost):
+class GraphWorkflowService(GraphEditingHost, GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost, GraphResourceHost, GraphPlatform, GraphPublic, GraphCandidateHost):
     def __init__(self, database_path: str | Path, *, registry=None, fault_injector=None,
                  capability_packages=(), enabled_packages=None, trusted_package_entrypoints=(),
                  public_model_factory=None):

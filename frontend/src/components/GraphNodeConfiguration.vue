@@ -20,7 +20,10 @@ function sourceChange(edgeId: string | null, source: { nodeId: string; portId: s
 </script>
 <template>
   <section class="graph-node-configuration">
-    <GraphSchemaFields :schema="schema" :value="node.config" :disabled="disabled" @change="emit('change', $event)" />
+    <GraphSchemaFields :schema="schema" :value="node.config" :disabled="disabled"
+      :draft-scope="`node:${document.workflow_definition_id}:${node.node_binding_id}:schema:${node.component_id}@${node.component_version}`"
+      :draft-basis="{ workflowId: document.workflow_definition_id, nodeId: node.node_binding_id }"
+      @change="emit('change', $event)" />
     <component v-for="editor in editors" :key="editor.declaration.extension_id" :is="editor.component"
       :node="node" :document="document" :catalog="catalog ?? []" :disabled="disabled"
       @change="sourceChange" />

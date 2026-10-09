@@ -1,31 +1,54 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { Plus, RefreshCw, Save, X } from "lucide-vue-next";
+import { computed, onMounted, ref, watch } from "vue";
+import { Import, Plus, RefreshCw, Save, X } from "lucide-vue-next";
 import LorebookEntries from "./LorebookEntries.vue";
 import { useLorebookResources } from "./lorebookResourceController";
 import { cloneLorebookResource, isCurrentLorebookResource, lorebookIdentity, lorebookIdentityKey,
   lorebookResourceLabel, newLorebookResource, type CurrentLorebookResource } from "./lorebookResources";
+import { useResourceFormDraft } from "../../composables/useResourceFormDraft";
+import FormDraftNotice from "../../components/FormDraftNotice.vue";
+import { useFormDraftsStore } from "../../stores/formDrafts";
 
 const resources = useLorebookResources();
-const records = resources.records, loading = resources.loading, locked = resources.locked;
+const records = resources.records, loading = resources.loading;
+const submitting = ref(false);
+const locked = computed(() => resources.locked.value || submitting.value || localDraft.loading.value || localDraft.conflict.value);
 const error = resources.error, pending = resources.pending, busy = resources.busy;
-const form = ref<CurrentLorebookResource | null>(null), expectedSequence = ref(0), formError = ref("");
+const editor = useResourceFormDraft<CurrentLorebookResource>("lorebook", newLorebookResource, lorebookResourceLabel);
+const { form, expectedSequence, localDraft, choices } = editor;
+const formError = ref("");
+const numbersValid = ref(true);
+const forms = typeof window === "undefined" ? null : useFormDraftsStore();
+const numberScope = computed(() => `resource:lorebook:${form.value?.scope}:${form.value?.resource_id}`);
+const numberBasis = computed(() => ({ resourceId: form.value?.resource_id ?? null,
+  scope: form.value?.scope ?? null, sequence: expectedSequence.value, format: 1 }));
+watch(() => form.value?.resource_id, () => { numbersValid.value = true; });
 function edit(record: CurrentLorebookResource | null) {
   if (locked.value) return;
-  form.value = record ? cloneLorebookResource(record) : newLorebookResource();
-  expectedSequence.value = record?.update_sequence ?? 0;
+  editor.edit(record);
   formError.value = "";
 }
 async function save() {
   if (!form.value || locked.value) return;
+  if (!numbersValid.value) { formError.value = "数字字段不完整，原文已保留，尚未提交"; return; }
   if (!isCurrentLorebookResource(form.value)) {
     formError.value = "Lorebook 条目、字段或资源大小无效，尚未提交"; return;
   }
   formError.value = "";
-  if (await resources.save(cloneLorebookResource(form.value), expectedSequence.value)) form.value = null;
+  submitting.value = true;
+  const record = cloneLorebookResource(form.value), sequence = expectedSequence.value;
+  const originalNumberBasis = numberBasis.value, prefix = numberScope.value + ":";
+  try {
+    if (!await localDraft.flush() || forms && !await forms.flushAll()) return;
+    if (await resources.save(record, sequence)) {
+      if (forms) for (const scope of Object.keys(forms.statuses).filter(key => key.startsWith(prefix)))
+        await forms.remove(scope, originalNumberBasis);
+      editor.close();
+    }
+  } finally { submitting.value = false; }
 }
 async function reconcile() {
-  if (await resources.reconcile()) form.value = null;
+  if (await resources.reconcile()) editor.close();
 }
 onMounted(() => { void resources.refresh(); });
 </script>
@@ -41,6 +64,11 @@ onMounted(() => { void resources.refresh(); });
     </header>
     <p v-if="loading" role="status">读取中</p>
     <p v-else-if="!records.length">暂无全局 Lorebook</p>
+    <FormDraftNotice v-if="localDraft.message.value" :message="localDraft.message.value" :conflict="localDraft.conflict.value" @restore="localDraft.restoreConflict" @discard="localDraft.discardConflict" />
+    <button v-if="resources.legacyRaw.value" type="button" :disabled="busy || submitting || localDraft.loading.value || localDraft.conflict.value" @click="resources.importLegacyPending()"><Import :size="14" />导入旧 Lorebook 请求</button>
+    <select v-if="choices.length" aria-label="未提交世界书草稿" value="" :disabled="locked" @change="editor.resume(($event.target as HTMLSelectElement).value)">
+      <option value="">未提交草稿</option><option v-for="choice in choices" :key="choice.id" :value="choice.id">{{ choice.label }}</option>
+    </select>
     <ul>
       <li v-for="record in records" :key="lorebookIdentityKey(lorebookIdentity(record))">
         <button type="button" :disabled="locked" @click="edit(record)">
@@ -54,17 +82,18 @@ onMounted(() => { void resources.refresh(); });
       <header>
         <strong>{{ expectedSequence ? '更新全局 Lorebook' : '新增全局 Lorebook' }}</strong>
         <button type="button" title="取消 Lorebook 编辑" aria-label="取消 Lorebook 编辑" :disabled="locked"
-          @click="form = null"><X :size="15" /></button>
+          @click="editor.close()"><X :size="15" /></button>
       </header>
-      <fieldset :disabled="locked">
+      <fieldset :disabled="locked || localDraft.loading.value">
         <label>范围<output>{{ form.scope }}</output></label>
         <label>资源 UUID<output>{{ form.resource_id }}</output></label>
         <label>名称<input v-model="form.value.name" type="text" maxlength="128" aria-label="Lorebook 资源名称" /></label>
         <label class="toggle"><input v-model="form.value.enabled" type="checkbox" />启用资源</label>
-        <LorebookEntries v-model="form.value.entries" :disabled="locked" />
+        <LorebookEntries v-model="form.value.entries" :disabled="locked"
+          :draft-scope="numberScope" :draft-basis="numberBasis" @validity="numbersValid = $event" />
       </fieldset>
       <p v-if="formError" class="warning" role="status">{{ formError }}</p>
-      <button type="submit" :disabled="locked"><Save :size="14" />保存全局 Lorebook</button>
+      <button type="submit" :disabled="locked || !numbersValid"><Save :size="14" />保存全局 Lorebook</button>
     </form>
     <div v-if="pending" class="warning" role="status">
       <p>Lorebook 资源提交结果待核实</p>

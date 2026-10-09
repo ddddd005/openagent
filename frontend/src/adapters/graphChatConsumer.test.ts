@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
+import { consumerDraftStateAddress, consumerKeyFactory, memoryConsumerDraftPort } from "../testUtils/consumerDraftPort";
 
 const scope: Record<string, any> = {};
 runInNewContext(readFileSync(new URL("../../../backend/src/phase1_agent/static/graph-chat-core.js", import.meta.url), "utf8"), scope);
@@ -41,11 +42,11 @@ function receiptRead(command: any, revision = 2) {
     reason_code: "receipt_matched", receipt: value.receipt, result: { receipt: value.result.receipt } };
 }
 function storage() {
-  const values = new Map<string, string>();
-  return { getItem: (name: string) => values.get(name) ?? null, setItem: vi.fn((name: string, value: string) => { values.set(name, value); }) };
+  return memoryConsumerDraftPort();
 }
 function client(request: any, saved = storage()) {
-  const value = new GraphChatClient({ workflowId: workflow, sessionId: session, storage: saved, request, keyFactory: () => key });
+  const value = new GraphChatClient({ workflowId: workflow, sessionId: session, draftPort: saved, request,
+    keyFactory: consumerKeyFactory(key) });
   value.accept(consumer()); return { value, saved };
 }
 function application() {
@@ -112,7 +113,7 @@ describe("optional graph chat consumer", () => {
     expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({ operation: "frontend.extensions.read", parameters: {
       session_id: session, workflow_definition_id: workflow, definition_revision: 1, node_id: node, port_id: "output" } });
     expect(request.mock.calls[0][0]).toBe("/api/graph/consumer/queries");
-    expect(JSON.stringify(value.consumer)).toBe(before); expect(saved.setItem).not.toHaveBeenCalled();
+    expect(JSON.stringify(value.consumer)).toBe(before); expect(saved.save).not.toHaveBeenCalled();
     await expect(value.readFrontendExtensions({ ...output, port_id: "private" })).rejects.toThrow("来源");
     expect(request).toHaveBeenCalledTimes(1);
   });
@@ -150,7 +151,7 @@ describe("optional graph chat consumer", () => {
       session_id: session, workflow_definition_id: workflow, definition_revision: 1,
       node_id: node, port_id: "output", run_id: run, reference: { scope: "artifact", output_id: key } } });
     expect(JSON.stringify(value.consumer)).toBe(before); expect(value.pending).toBeNull();
-    expect(saved.setItem).not.toHaveBeenCalled();
+    expect(saved.save).not.toHaveBeenCalled();
   });
 
   it.each(["duplicate", "role", "reference", "extra", "capacity"])("rejects an invalid display %s", field => {
@@ -278,11 +279,11 @@ describe("optional graph chat consumer", () => {
       source_ref: { scope: "artifact", output_id: run } });
     value.accept(second);
     expect(value.consumer.outputs[0].payload.entries.map((entry: any) => entry.entry_id)).toEqual([key, run]);
-    const reopened = new GraphChatClient({ workflowId: workflow, sessionId: session, storage: saved,
+    const reopened = new GraphChatClient({ workflowId: workflow, sessionId: session, draftPort: saved,
       request: vi.fn().mockResolvedValue(second), keyFactory: () => key });
     await reopened.refresh();
     expect(reopened.consumer.outputs[0].payload.entries).toEqual(value.consumer.outputs[0].payload.entries);
-    expect(saved.setItem).not.toHaveBeenCalled(); expect(reopened.pending).toBeNull();
+    expect(saved.save).not.toHaveBeenCalled(); expect(reopened.pending).toBeNull();
   });
 
   it("discards display reads after a source is revoked and then reappears in the same session revision", async () => {
@@ -370,7 +371,8 @@ describe("optional graph chat consumer", () => {
       .mockImplementationOnce(async (_path, options) => receiptRead(JSON.parse(options.body)));
     const { value, saved } = client(request);
     await expect(value.command("start", { inputs: { text: "original", other: "" } })).rejects.toThrow("unknown");
-    const recovered = new GraphChatClient({ workflowId: workflow, sessionId: session, storage: saved, request, keyFactory: () => "different" });
+    const recovered = new GraphChatClient({ workflowId: workflow, sessionId: session, draftPort: saved, request,
+      keyFactory: consumerKeyFactory() });
     await recovered.command("start", { inputs: { text: "edited" } });
     expect(request.mock.calls[1][1]).toEqual(request.mock.calls[0][1]);
     expect(request.mock.calls[1][0]).toBe("/api/graph/consumer/receipts/read");
@@ -389,8 +391,8 @@ describe("optional graph chat consumer", () => {
     const original = JSON.parse(request.mock.calls[0][1].body);
     expect(original).toEqual({ operation: "consumer.run.control",
       parameters: { session_id: session, action, expected_revision: 2, idempotency_key: key } });
-    const recovered = new GraphChatClient({ workflowId: workflow, sessionId: session, storage: saved,
-      request, keyFactory: () => "different" });
+    const recovered = new GraphChatClient({ workflowId: workflow, sessionId: session, draftPort: saved,
+      request, keyFactory: consumerKeyFactory() });
     await recovered.command("start", { inputs: { text: "replacement" } });
     expect(request.mock.calls[1][1]).toEqual(request.mock.calls[0][1]);
     expect(request.mock.calls[1][0]).toBe("/api/graph/consumer/receipts/read");
@@ -408,7 +410,9 @@ describe("optional graph chat consumer", () => {
     const { value, saved } = client(request);
     value.accept({ ...consumer(), inputs: [declaration] });
     await expect(value.command("start", { inputs: { prompt: parseExternalInput("PROMPT", JSON.stringify(payload)) } })).rejects.toThrow("unknown");
-    const recovered = new GraphChatClient({ workflowId: workflow, sessionId: session, storage: saved, request, keyFactory: () => "different" });
+    const recovered = new GraphChatClient({ workflowId: workflow, sessionId: session, draftPort: saved, request,
+      keyFactory: consumerKeyFactory() });
+    await recovered.restoreLocalState();
     expect(recovered.pending.body.inputs.prompt).toEqual(payload);
     await recovered.command("start", { inputs: { prompt: "edited" } });
     expect(request.mock.calls[1][1]).toEqual(request.mock.calls[0][1]);
@@ -423,7 +427,7 @@ describe("optional graph chat consumer", () => {
     await expect(value.command("start", { inputs: { prompt: { schema_version: 1, kind: "workflow.prompt",
       stage: "assembled", items: [], assembly: null } } })).rejects.toThrow("PROMPT");
     expect(request).not.toHaveBeenCalled();
-    expect(saved.setItem).not.toHaveBeenCalled();
+    expect(saved.save).not.toHaveBeenCalled();
     expect(value.pending).toBeNull();
   });
 
@@ -520,8 +524,8 @@ describe("optional graph chat consumer", () => {
       .mockImplementationOnce(async (_path, options) => receiptRead(JSON.parse(options.body)));
     const { value, saved } = client(request); value.accept({ ...consumer(), inputs: [declaration] });
     await expect(value.command("start", { inputs: { prompt: parseExternalInput("PROMPT", JSON.stringify(payload)) } })).rejects.toThrow("unknown");
-    const reopened = new GraphChatClient({ workflowId: workflow, sessionId: session, storage: saved, request,
-      keyFactory: () => "must-not-replace-original-key" });
+    const reopened = new GraphChatClient({ workflowId: workflow, sessionId: session, draftPort: saved, request,
+      keyFactory: consumerKeyFactory() });
     await reopened.command("start", { inputs: { prompt: "edited" } });
     expect(request.mock.calls[1][1]).toEqual(request.mock.calls[0][1]);
     expect(request.mock.calls[1][0]).toBe("/api/graph/consumer/receipts/read");
@@ -549,7 +553,8 @@ describe("optional graph chat consumer", () => {
     const saved = storage();
     const request = vi.fn(async (_path, options) => receipt(JSON.parse(options.body)));
     const { value } = client(request, saved);
-    saved.setItem.mockImplementationOnce(() => {}).mockImplementationOnce(() => { throw new Error("storage full"); });
+    saved.save.mockImplementationOnce(saved.save.getMockImplementation()!)
+      .mockRejectedValueOnce(new Error("storage full"));
     await expect(value.command("start")).rejects.toThrow("storage full");
     expect(value.pending.body.idempotency_key).toBe(key);
   });
@@ -596,14 +601,26 @@ describe("optional graph chat consumer", () => {
     expect(value.pending.body.inputs.text).toBe("kept");
   });
 
-  it("maps a previously frozen pending request to the same consumer authority without changing its identity", async () => {
-    const saved = storage();
+  it("explicitly imports a legacy pending request without silently replacing the requested session", async () => {
+    const saved = storage(), storageKey = `workflow-chat:v1:${workflow}`;
     const pending = { path: `/api/graph/sessions/${session}/consumer/runs`, action: "start",
       workflow_session_id: session, body: { expected_revision: 7, idempotency_key: key, inputs: { prompt: "frozen" } } };
-    saved.setItem(`workflow-chat:v1:${workflow}`, JSON.stringify({ schema_version: 1, kind: "workflow.chat-client",
-      workflow_definition_id: workflow, workflow_session_id: session, pending }));
+    const raw = JSON.stringify({ schema_version: 1, kind: "workflow.chat-client",
+      workflow_definition_id: workflow, workflow_session_id: session, pending });
+    const legacy = new Map([[storageKey, raw]]);
+    const legacyStorage = { getItem: (name: string) => legacy.get(name) ?? null,
+      removeItem: (name: string) => legacy.delete(name) };
     const request = vi.fn(async (_path, options) => receiptRead(JSON.parse(options.body), 8));
-    const reopened = new GraphChatClient({ workflowId: workflow, sessionId: node, storage: saved, request, keyFactory: vi.fn() });
+    const foreign = new GraphChatClient({ workflowId: workflow, sessionId: node, draftPort: saved, legacyStorage,
+      request, keyFactory: consumerKeyFactory() });
+    await expect(foreign.restoreLocalState()).rejects.toThrow("当前入口未改绑");
+    await expect(foreign.importLegacyPending()).rejects.toThrow("另一会话");
+    expect(foreign.sessionId).toBe(node); expect(foreign.pending).toBeNull();
+    expect(legacy.get(storageKey)).toBe(raw); expect(saved.save).not.toHaveBeenCalled();
+    const reopened = new GraphChatClient({ workflowId: workflow, sessionId: session, draftPort: saved, legacyStorage,
+      request, keyFactory: consumerKeyFactory() });
+    await expect(reopened.restoreLocalState()).rejects.toThrow("明确导入");
+    await reopened.importLegacyPending();
     const original = JSON.stringify(reopened.pending);
     await reopened.command("close", { expected_revision: 99 });
     expect(JSON.parse(original)).toEqual(pending);
@@ -611,19 +628,21 @@ describe("optional graph chat consumer", () => {
       parameters: { ...pending.body, session_id: session } });
     expect(request.mock.calls[0][0]).toBe("/api/graph/consumer/receipts/read");
     expect(reopened.sessionId).toBe(session);
+    expect(legacy.size).toBe(0);
   });
 
-  it("rejects an unknown saved command without rewriting the original record or sending a request", () => {
+  it("rejects an unknown saved command without rewriting the original record or sending a request", async () => {
     const saved = storage(), request = vi.fn();
-    const raw = JSON.stringify({ schema_version: 1, kind: "workflow.chat-client", workflow_definition_id: workflow,
+    const address = consumerDraftStateAddress(workflow);
+    const raw = { schema_version: 1, kind: "workflow.chat-client", workflow_definition_id: workflow,
       workflow_session_id: session, pending: { action: "force_latest", workflow_session_id: session,
         path: `/api/graph/sessions/${session}/consumer/control`,
-        body: { action: "force_latest", expected_revision: 1, idempotency_key: key } } });
-    saved.setItem(`workflow-chat:v1:${workflow}`, raw);
-    saved.setItem.mockClear();
-    expect(() => new GraphChatClient({ workflowId: workflow, storage: saved, request, keyFactory: vi.fn() })).toThrow();
-    expect(saved.getItem(`workflow-chat:v1:${workflow}`)).toBe(raw);
-    expect(saved.setItem).not.toHaveBeenCalled();
+        body: { action: "force_latest", expected_revision: 1, idempotency_key: key } } };
+    saved.seed(address, raw);
+    const reopened = new GraphChatClient({ workflowId: workflow, draftPort: saved, request, keyFactory: consumerKeyFactory() });
+    await expect(reopened.restoreLocalState()).rejects.toThrow();
+    expect(saved.value(address)).toEqual(raw);
+    expect(saved.save).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
   });
 
@@ -661,7 +680,7 @@ describe("optional graph chat consumer", () => {
 
   it("does not dispatch when persistence fails before sending the named command", async () => {
     const request = vi.fn(), saved = storage(), { value } = client(request, saved);
-    saved.setItem.mockImplementationOnce(() => { throw new Error("storage full"); });
+    saved.save.mockRejectedValueOnce(new Error("storage full"));
     await expect(value.command("start")).rejects.toThrow("storage full");
     expect(request).not.toHaveBeenCalled();
     expect(value.pending).toBeNull();
@@ -719,7 +738,7 @@ describe("optional graph chat consumer", () => {
     expect((await value.readInformation(directory.items[0], { cursor: "provider-opaque" })).status).toBe("reset");
     expect(JSON.stringify(value.consumer)).toBe(before);
     expect(value.pending).toBeNull();
-    expect(saved.setItem).not.toHaveBeenCalled();
+    expect(saved.save).not.toHaveBeenCalled();
     expect(request.mock.calls.every(([path]) => path === "/api/graph/consumer/queries")).toBe(true);
     await expect(value.readInformation(directory.items[0], { limit: 3 })).rejects.toThrow("登记边界");
     expect(request).toHaveBeenCalledTimes(4);

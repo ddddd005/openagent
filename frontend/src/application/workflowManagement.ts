@@ -11,6 +11,7 @@ import { readGraphInformation, readGraphRegistrations } from "./workflowInformat
 import { assertEventPayload, readWorkflowEvent, readWorkflowEventBindings } from "./workflowEvents";
 
 export interface WorkflowTarget { workflowId: string }
+export interface SavedWorkflowBasis { definitionId: string; definitionRevision: number }
 export type WorkflowControlAction = "pause" | "resume" | "close" | "extend_budget" | "retry_archive" | "retry_acceptance" | "retry_failed_node";
 export interface WorkflowControlParameters { add_model_requests?: number; add_model_attempts?: number }
 export interface WorkflowManagementPorts {
@@ -18,7 +19,7 @@ export interface WorkflowManagementPorts {
   observedSession(sessionId: string): GraphSession | undefined;
   observe(session: GraphSession): GraphSession;
   dispatch(workflowId: string, request: GraphCommand): Promise<unknown>;
-  commitSaved(workflowId: string): boolean;
+  commitSaved(workflowId: string): boolean | Promise<boolean>;
   canSubmit(workflowId: string): boolean;
   commandState?(active: boolean): void;
 }
@@ -86,7 +87,7 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
   }
   async function save(target: WorkflowTarget) {
     await publishAndBind(target);
-    if (!ports.commitSaved(target.workflowId))
+    if (!await ports.commitSaved(target.workflowId))
       throw new WorkbenchApiError("unavailable", "工作流已保存，当前本机目录状态尚未保存");
   }
   async function createSession(target: WorkflowTarget) {
@@ -94,6 +95,16 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
     const entry = entryFor(target);
     await ports.dispatch(target.workflowId, createGraphCommand("/api/graph/sessions", {
       workflow_definition_id: entry.document.workflow_definition_id, definition_revision: entry.saved_revision,
+    }, "create"));
+  }
+  async function createSavedSession(target: WorkflowTarget, basis: SavedWorkflowBasis) {
+    const entry = entryFor(target), saved = entry.saved_document;
+    if (!saved || entry.session_id || entry.saved_revision !== basis.definitionRevision
+      || saved.revision !== basis.definitionRevision || saved.workflow_definition_id !== basis.definitionId
+      || entry.document.workflow_definition_id !== basis.definitionId)
+      throw new WorkbenchApiError("unavailable", "已保存定义或所选会话已变化，未创建会话");
+    await ports.dispatch(target.workflowId, createGraphCommand("/api/graph/sessions", {
+      workflow_definition_id: basis.definitionId, definition_revision: basis.definitionRevision,
     }, "create"));
   }
   async function start(target: WorkflowTarget) {
@@ -164,6 +175,8 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
     commands: {
       save: (target: WorkflowTarget) => execute(target, fixed => save(fixed)),
       createSession: (target: WorkflowTarget) => execute(target, fixed => createSession(fixed)),
+      createSavedSession: (target: WorkflowTarget, basis: SavedWorkflowBasis) =>
+        execute(target, fixed => createSavedSession(fixed, { ...basis })),
       start: (target: WorkflowTarget) => execute(target, fixed => start(fixed)),
       submitEvent: (target: WorkflowTarget, eventId: string, eventVersion: number, payload: Record<string, unknown>) =>
         execute(target, fixed => submitEvent(fixed, eventId, eventVersion, payload)),

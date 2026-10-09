@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Download, FolderPlus } from "lucide-vue-next";
+import { Download, Import } from "lucide-vue-next";
 import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 
 const persistence = useWorkbenchPersistenceStore();
@@ -17,12 +17,12 @@ function exportRecord() {
 }
 </script>
 <template>
-  <div v-if="persistence.error || persistence.isolated" class="workbench-save-error storage-recovery" role="status">
-    <span>{{ persistence.error ?? "独立本机工作区 · 原记录未覆盖" }}</span>
+  <div v-if="persistence.error || persistence.legacyImportError || persistence.hasRawRecord" class="workbench-save-error storage-recovery" role="status">
+    <span>{{ persistence.error || persistence.legacyImportError || (persistence.isolated ? "浏览器原记录已保留" : "检测到旧浏览器记录，尚未导入本机") }}</span>
     <button v-if="persistence.hasRawRecord" type="button" title="导出原始浏览器存档，不改写保存记录"
       aria-label="导出原记录" @click="exportRecord()"><Download :size="14" />导出原记录</button>
-    <button v-if="persistence.canRecover" type="button" title="使用独立保存位置，保留原记录和原请求"
-      aria-label="另建本机工作区" @click="persistence.recoverWorkspace()"><FolderPlus :size="14" />另建本机工作区</button>
+    <button v-if="persistence.canImportLegacy" type="button" title="将可验证的浏览器记录导入本机，保留原始记录，不执行待核实请求"
+      aria-label="导入浏览器原记录" :disabled="persistence.importing" @click="persistence.importLegacy()"><Import :size="14" />{{ persistence.importing ? '导入中' : '导入浏览器记录' }}</button>
   </div>
 </template>
 <style scoped>

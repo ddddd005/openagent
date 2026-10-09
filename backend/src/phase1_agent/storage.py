@@ -13,7 +13,7 @@ from .contract_json import canonical_bytes, loads_strict
 from .graph_records import GRAPH_VERSIONS, is_graph_record, require, validate_graph_transition
 
 
-STORAGE_VERSION = 15
+STORAGE_VERSION = 16
 _IDENTITIES = {
     "node_definition": ("component_id", "component_version"),
     "node_binding": ("workflow_definition_id", "workflow_definition_revision", "node_binding_id"),
@@ -79,10 +79,12 @@ class SqliteStore:
             from .session_objects import initialize_object_tables
             from .global_resources import initialize_global_resource_tables
             from .type_contract_store import initialize_type_contract_tables
+            from .graph_drafts import initialize_draft_tables
             initialize_object_tables(self._connection)
             initialize_global_resource_tables(self._connection)
             initialize_type_contract_tables(self._connection)
-            if 0 < version < STORAGE_VERSION:
+            initialize_draft_tables(self._connection)
+            if 0 < version < 15:
                 from .storage_retirement import remove_retired_test_data
                 remove_retired_test_data(self._connection)
             self._connection.execute(f"PRAGMA user_version = {STORAGE_VERSION}")

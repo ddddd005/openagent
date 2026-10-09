@@ -11,6 +11,7 @@
     return {
       getItem: key => storage.getItem(namespace + key),
       setItem: (key, value) => storage.setItem(namespace + key, value),
+      removeItem: key => storage.removeItem(namespace + key),
     };
   }
   function textInput(view) {
@@ -179,8 +180,9 @@
       return value;
     };
   }
-  function createClient({ storage, fetcher, ...options }) {
-    return new GraphChat.GraphChatClient({ ...options, storage: storageForTavern(storage),
+  function createClient({ legacyStorage, fetcher, ...options }) {
+    return new GraphChat.GraphChatClient({ ...options, draftNamespace: "tavern",
+      legacyStorage: legacyStorage ? storageForTavern(legacyStorage) : undefined,
       request: createRequest(fetcher) });
   }
   root.TavernAdapter = { MAX_TEXT, type, namespace, storageForTavern, textInput, inputsFor,

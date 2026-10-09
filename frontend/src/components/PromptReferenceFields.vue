@@ -7,6 +7,8 @@ import { isCurrentPromptResource, isPromptIdentity, promptIdentity, promptResour
   samePromptIdentity, type PromptIdentity } from "../domain/workflowPromptResources";
 import { useWorkflowFrontendSdk, type WorkflowNodeConfigurationRequest } from "../plugins/workflowFrontendSdk";
 import { promptFrontendExtensions } from "../plugins/promptFrontendManifest";
+import { useBoundFormDraft } from "../composables/useBoundFormDraft";
+import FormDraftNotice from "./FormDraftNotice.vue";
 
 const props = defineProps<{ node: GraphNode; document: GraphDocument; disabled?: boolean }>();
 const sdk = useWorkflowFrontendSdk(), resources = usePromptResources();
@@ -20,7 +22,8 @@ const reference = computed(() => graphObject(props.node.config) && Object.keys(p
   && isPromptIdentity(props.node.config.reference) ? props.node.config.reference : null);
 const chosen = computed(() => supportedRecords.value.find(record => isCurrentPromptResource(record)
   && identityKey(promptIdentity(record)) === selected.value));
-const disabled = computed(() => !!props.disabled || sdk.locked.value || !basis.value || !reference.value);
+const disabled = computed(() => !!props.disabled || sdk.locked.value || !basis.value || !reference.value
+  || localDraft.loading.value || localDraft.conflict.value);
 const diagnosis = computed(() => {
   if (!reference.value) return "提示词引用配置无效";
   const record = records.value.find(row => isCurrentPromptResource(row)
@@ -29,6 +32,13 @@ const diagnosis = computed(() => {
   if (record.data_schema_version !== 2) return "提示词资源版本与节点不匹配";
   if (!record.value.enabled) return "所选提示词资源已停用";
   return `当前资源 · ${record.scope} · s${record.update_sequence}`;
+});
+const localDraft = useBoundFormDraft({
+  id: () => `node:${props.document.workflow_definition_id}:${props.node.node_binding_id}:prompt-reference`,
+  basis: () => ({ workflowId: props.document.workflow_definition_id, nodeId: props.node.node_binding_id,
+    version: props.node.component_version, config: props.node.config }),
+  capture: () => ({ selected: selected.value }),
+  restore: value => { if (typeof value?.selected !== "string") throw new Error("提示词引用草稿格式不兼容"); selected.value = value.selected; },
 });
 watch(() => [sdk.workflowId.value, sdk.lifecycle.value, props.node.node_binding_id,
   props.node.component_id, props.node.component_version, props.node.config], () => {
@@ -42,13 +52,16 @@ watch(() => [sdk.workflowId.value, sdk.lifecycle.value, props.node.node_binding_
     lifecycle: sdk.lifecycle.value,
   };
 }, { immediate: true, deep: true });
-function apply() {
+async function apply() {
   if (disabled.value || !basis.value) { status.value = "提示词引用配置无效或当前不可编辑"; return; }
   if (!chosen.value) { status.value = "请先选择已有提示词资源"; return; }
-  const result = sdk.configureNode({
-    ...graphClone(basis.value), patch: { reference: promptIdentity(chosen.value) },
-  });
-  status.value = result ? result.workflowId === basis.value.workflowId ? "提示词引用已更新" : "提示词引用已写入新副本"
+  const request = { ...graphClone(basis.value), patch: { reference: promptIdentity(chosen.value) } };
+  if (!await localDraft.flush()) { status.value = "提示词表单尚未写入本机"; return; }
+  const result = sdk.configureNode(request);
+  if (result && result.workflowId === request.workflowId)
+    localDraft.adoptBasis({ workflowId: props.document.workflow_definition_id, nodeId: props.node.node_binding_id,
+      version: props.node.component_version, config: { reference: request.patch.reference } });
+  status.value = result ? result.workflowId === request.workflowId ? "提示词引用已更新" : "提示词引用已写入新副本"
     : "配置依据已变化或当前不可编辑，请重新选择节点";
 }
 onMounted(() => { void resources.refresh(); });
@@ -56,6 +69,8 @@ onMounted(() => { void resources.refresh(); });
 
 <template>
   <form class="prompt-reference-fields" aria-label="提示词引用配置" @submit.prevent="apply">
+    <FormDraftNotice :message="localDraft.message.value" :conflict="localDraft.conflict.value"
+      @restore="localDraft.restoreConflict" @discard="localDraft.discardConflict" />
     <label>提示词当前资源
       <div class="resource-row">
         <select v-model="selected" :disabled="disabled" aria-label="提示词当前资源">

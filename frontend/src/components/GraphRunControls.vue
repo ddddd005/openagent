@@ -3,23 +3,60 @@ import { MoreHorizontal, Pause, Play, RefreshCw, RotateCcw, SquarePen, X } from 
 import { computed, ref, watch } from "vue";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { graphObject } from "../domain/workflowGraph";
+import { useBoundFormDraft } from "../composables/useBoundFormDraft";
+import FormDraftNotice from "./FormDraftNotice.vue";
 const graph = useWorkflowGraphStore();
 const editing = ref(false);
 const input = ref("");
 const menuOpen = ref(false);
-const additionalRequests = ref(1);
-const additionalAttempts = ref(4);
+const additionalRequests = ref("1");
+const additionalAttempts = ref("4");
+const applying = ref(false), error = ref("");
+const localDraft = useBoundFormDraft({
+  id: () => graph.document ? `run-input:${graph.document.workflow_definition_id}:${graph.active?.session_id ?? "none"}` : "",
+  basis: () => ({ workflowId: graph.document?.workflow_definition_id ?? null,
+    sessionId: graph.active?.session_id ?? null, inputs: graph.active?.external_inputs ?? {} }),
+  capture: () => ({ input: input.value, additionalRequests: additionalRequests.value, additionalAttempts: additionalAttempts.value }),
+  reset: () => { input.value = ""; additionalRequests.value = "1"; additionalAttempts.value = "4"; },
+  restore: value => {
+    if (typeof value?.input !== "string" || typeof value.additionalRequests !== "string"
+      || typeof value.additionalAttempts !== "string") throw new Error("运行输入草稿格式不兼容");
+    input.value = value.input; additionalRequests.value = value.additionalRequests; additionalAttempts.value = value.additionalAttempts;
+  },
+});
 const agentActions = computed(() => graph.session?.available_actions?.filter(action => ["extend_budget", "retry_archive", "retry_acceptance", "retry_failed_node"].includes(action)) ?? []);
 const activeAgent = computed(() => graph.session?.nodes.find(node => node.budget
   && ["paused", "budget_exhausted", "archive_failed"].includes(node.status)));
 watch(() => graph.session?.workflow_session_id, () => { editing.value = false; menuOpen.value = false; });
-function openInput() { input.value = JSON.stringify(graph.active?.external_inputs ?? {}, null, 2); editing.value = true; }
-function apply(event: Event) {
+function openInput() { if (!input.value) input.value = JSON.stringify(graph.active?.external_inputs ?? {}, null, 2); editing.value = true; }
+async function apply(event: Event) {
+  if (applying.value || graph.locked) return;
   const form = event.target as HTMLFormElement;
   const text = form.querySelector("textarea")!;
+  applying.value = true;
+  const context = localDraft.context.value;
   try { const value = JSON.parse(input.value); if (!graphObject(value)) throw new Error();
+    if (!await localDraft.flush()) throw new Error("本次输入尚未写入本机");
+    if (context !== localDraft.context.value || graph.locked) return;
     graph.setInputs(value); text.setCustomValidity(""); editing.value = false; }
-  catch { text.setCustomValidity("输入须为 JSON 对象"); text.reportValidity(); }
+  catch (failure) { text.setCustomValidity(failure instanceof SyntaxError ? "输入须为 JSON 对象"
+    : failure instanceof Error && failure.message ? failure.message : "输入须为 JSON 对象"); text.reportValidity(); }
+  finally { applying.value = false; }
+}
+async function extendBudget() {
+  if (graph.locked || applying.value) return;
+  const requests = Number(additionalRequests.value), attempts = Number(additionalAttempts.value);
+  if (!additionalRequests.value.trim() || !additionalAttempts.value.trim()
+    || !Number.isSafeInteger(requests) || requests < 0 || requests > 64
+    || !Number.isSafeInteger(attempts) || attempts < 0 || attempts > 256) {
+    error.value = "预算增额须为范围内的完整整数"; return;
+  }
+  applying.value = true;
+  try {
+    if (!await localDraft.flush()) { error.value = "预算草稿尚未写入本机"; return; }
+    error.value = "";
+    await graph.submitAgentAction("extend_budget", requests, attempts);
+  } finally { applying.value = false; }
 }
 </script>
 <template>
@@ -34,14 +71,14 @@ function apply(event: Event) {
     <button v-if="graph.pending" type="button" title="核实原请求" aria-label="核实原请求" :disabled="!!graph.busy" @click="graph.reconcile()"><RotateCcw :size="14" /></button>
     <div v-if="agentActions.length" class="graph-agent-menu-anchor"><button type="button" title="运行操作" aria-label="运行操作" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen"><MoreHorizontal :size="15" /></button>
       <section v-if="menuOpen" class="graph-agent-menu" aria-label="运行操作"><strong v-if="activeAgent">{{ activeAgent.label }} · {{ activeAgent.run_id?.slice(0,8) }}</strong>
-        <template v-if="agentActions.includes('extend_budget')"><label>请求增额<input v-model.number="additionalRequests" type="number" min="0" max="64" step="1" /></label><label>尝试增额<input v-model.number="additionalAttempts" type="number" min="0" max="256" step="1" /></label><button type="button" :disabled="graph.locked" @click="graph.submitAgentAction('extend_budget', additionalRequests, additionalAttempts)">增加预算</button></template>
+        <template v-if="agentActions.includes('extend_budget')"><label>请求增额<input v-model="additionalRequests" type="text" inputmode="numeric" :disabled="applying || localDraft.loading.value || localDraft.conflict.value" /></label><label>尝试增额<input v-model="additionalAttempts" type="text" inputmode="numeric" :disabled="applying || localDraft.loading.value || localDraft.conflict.value" /></label><button type="button" :disabled="graph.locked || applying" @click="extendBudget">增加预算</button><p v-if="error" role="status">{{ error }}</p></template>
         <button v-if="agentActions.includes('retry_archive')" type="button" :disabled="graph.locked" @click="graph.submitAgentAction('retry_archive')">归档重试</button>
         <button v-if="agentActions.includes('retry_acceptance')" type="button" :disabled="graph.locked" @click="graph.submitAgentAction('retry_acceptance')">结果接纳重试</button>
         <button v-if="agentActions.includes('retry_failed_node')" type="button" :disabled="graph.locked" title="使用本次运行的原输入重试失败节点，保留已成功结果" @click="graph.submitAgentAction('retry_failed_node')">重试失败节点</button>
       </section>
     </div>
   </div>
-  <Teleport to="body"><div v-if="editing" class="graph-input-shade" @click.self="editing = false"><form class="graph-input-dialog" @submit.prevent="apply"><header><strong>本次输入</strong><button type="button" title="关闭" aria-label="关闭输入" @click="editing = false"><X :size="16" /></button></header><textarea v-model="input" rows="8" aria-label="具名输入 JSON" /><footer><button type="submit">应用</button></footer></form></div></Teleport>
+  <Teleport to="body"><div v-if="editing" class="graph-input-shade" @click.self="!applying && (editing = false)"><form class="graph-input-dialog" @submit.prevent="apply"><header><strong>本次输入</strong><button type="button" title="关闭" aria-label="关闭输入" :disabled="applying" @click="editing = false"><X :size="16" /></button></header><FormDraftNotice :message="localDraft.message.value" :conflict="localDraft.conflict.value" @restore="localDraft.restoreConflict" @discard="localDraft.discardConflict" /><textarea v-model="input" rows="8" aria-label="具名输入 JSON" :disabled="applying || localDraft.loading.value || localDraft.conflict.value" /><footer><button type="submit" :disabled="applying">应用</button></footer></form></div></Teleport>
 </template>
 <style scoped>
 .graph-run-controls { display:flex; align-items:center; gap:5px; }

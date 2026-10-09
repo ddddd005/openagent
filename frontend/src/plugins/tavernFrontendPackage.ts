@@ -4,6 +4,7 @@ import { chatTavernFrontendExtensions, globalTavernFrontendExtensions, tavernFro
 import CurrentLorebookPanel from "./tavern/CurrentLorebookPanel.vue";
 import GlobalLorebookFields from "./tavern/GlobalLorebookFields.vue";
 import TavernChatPanel from "./tavern/TavernChatPanel.vue";
+import TavernPresentationFields from "./tavern/TavernPresentationFields.vue";
 
 export const tavernFrontendPackage: WorkbenchFrontendPackageModule = {
   implementations: [
@@ -30,5 +31,6 @@ export const tavernFrontendPackage: WorkbenchFrontendPackageModule = {
     { declaration: chatTavernFrontendExtensions[4]!, implementation: GlobalLorebookFields,
       configurationFields: ["object_keys"] },
     { declaration: chatTavernFrontendExtensions[5]!, implementation: TavernChatPanel },
+    { declaration: chatTavernFrontendExtensions[6]!, implementation: TavernPresentationFields },
   ],
 };

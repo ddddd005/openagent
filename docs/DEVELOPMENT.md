@@ -4,6 +4,8 @@
 
 本文描述 2026-10-09 现行主干的工程边界。入口见 [文档索引](README.md)，操作见 [使用手册](USER-GUIDE.md)；历史记录不作为当前节点目录、部署状态或 API 的替代说明。
 
+本次 `develop` 包含尚未晋升 `main` 的前端用户化 P1/P2。稳定 BAT 不变；新增草稿契约、入口和验收见 [P1/P2 记录](FRONTEND-P1-P2-2026-10-09.md)。
+
 ## 分支与启动
 
 唯一产品仓库为 `openagent`。仓库外旧 `step1` 及 vendored 第三方源码只作历史/来源参考，不作为产品开发工作区。
@@ -59,6 +61,7 @@ git ls-remote --heads origin main
 | 原生上下文装配与写回 | `context_package.py`、`context_v4_nodes.py`、`context_v4.py`、`context_prompt_v6.py`、`context_receipt.py` |
 | 前端对象与酒馆 | `frontend_package.py`、`frontend_business.py`、`tavern/` |
 | 定义、会话、对象、事实与存储升级 | `storage.py`、`graph_store.py`、`graph_records.py`、`session_objects.py`、`runtime_fact_store.py`、`storage_retirement.py` |
+| 本机编辑仓库 | `graph_drafts.py`、`graph_editing_host.py`；经 GraphApplication 分离管理与消费草稿权限 |
 | 信息源与事实读取 | `graph_information.py`、`runtime_information.py` |
 | 独立聊天客户端 | `static/graph-chat.js`、`static/graph-chat-core.js` |
 
@@ -70,7 +73,7 @@ git ls-remote --heads origin main
 | 图契约与串行示例 | `domain/workflowGraph.ts`、`domain/serialAgentDemo.ts` |
 | 二级节点目录与协议选择 | `domain/nodeCatalog.ts`、`domain/nodeSelection.ts`、`components/NodeProfileDialog.vue` |
 | 图、会话与工作区状态 | `stores/workflowGraph.ts`、`stores/workspace.ts` |
-| 浏览器持久化与精确退役 | `adapters/browserStorage.ts`、`adapters/workbenchPersistence.ts`、`stores/workbenchPersistence.ts` |
+| 本机草稿、原始表单及旧浏览器导入 | `adapters/localDraftsApi.ts`、`stores/workbenchPersistence.ts`、`stores/formDrafts.ts`、`composables/useBoundFormDraft.ts`；旧读取器 `adapters/workbenchPersistence.ts` 只用于显式导入 |
 | 应用命令、编辑及信息读取 | `application/workflowCommands.ts`、`application/workflowEditing.ts`、`application/workflowInformation.ts` |
 | HTTP 适配 | `adapters/workflowApplicationApi.ts`、`adapters/workflowGraphApi.ts`、`adapters/workflowResourcesApi.ts` |
 | 供应商与模型编辑 | `components/CurrentProviderPanel.vue`、`components/ModelSourceFields.vue`、`application/workflowResources.ts` |
@@ -139,9 +142,9 @@ Gemini 普通响应及 `agent_message@5` 分离回答正文、可见 `thinking_s
 
 ## 数据退役
 
-SQLite `STORAGE_VERSION = 15` 在单笔升级事务内按确切旧节点 ID/版本、退役包或旧资源身份识别旧路线，沿明确归属/引用形成闭包，整组删除相关定义、会话、运行、产物、事实、对象、manifest 及回执。包括旧 `workflow.prompt-resource@1` 及明确关联内容；当前 schema2 提示词与供应商资源、无关联现行记录保留。
+本次源码 `STORAGE_VERSION = 16` 添加独立本机草稿仓库。v15 到 v16 是加表升级，不重复执行退役清理。`0 < old_version < 15` 的既有退役规则仍在单笔升级事务内按确切旧节点 ID/版本、退役包或旧资源身份识别旧路线，沿明确归属/引用形成闭包，整组删除关联记录。包括旧 `workflow.prompt-resource@1`；当前 schema2 提示词与供应商资源、无关联现行记录保留。
 
-浏览器 `workbenchPersistence.ts` 对草稿、已保存图与 pending 请求中的旧声明实行对应整图删除。不迁移旧图、不静默换节点版本、不重发 pending；未知插件/未知版本或正文提及旧名称不作为退役依据。节点整理及主干晋升验收只在隔离数据上验证；正常 BAT 首次打开原稳定库时才执行其适用升级。
+旧浏览器记录的显式导入继续使用 `adapters/workbenchPersistence.ts`，对草稿、已保存图与 pending 请求中的旧声明实行对应整图剔除，但浏览器原始字节保留。不迁移旧图、不静默换节点版本、不重发 pending；未知插件/未知版本或正文提及旧名称不作为退役依据。节点整理及主干晋升验收只在隔离数据上验证；正常 BAT 首次打开原稳定库时才执行其适用升级。
 
 旧固定宿主、兼容工厂、旧上下文/Agent 路线和专用测试已删除。当前包选择为 `current-execution`，没有旧运行 fallback 或旧存储 API 门面。存储版本、数据 schema、节点版本、能力包版本和应用 `0.2.0` 是不同契约，不应混称“软件版本”。
 

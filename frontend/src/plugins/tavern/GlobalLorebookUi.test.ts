@@ -12,6 +12,7 @@ import { newLorebookEntry } from "../../domain/lorebook";
 import { graphClone, newGraph, type GraphDocument, type GraphNode } from "../../domain/workflowGraph";
 import LorebookKeywordFields from "../../components/LorebookKeywordFields.vue";
 import RolePlacementFields from "../../components/RolePlacementFields.vue";
+import RawNumberInput from "../../components/RawNumberInput.vue";
 import LorebookFields from "../../components/LorebookFields.vue";
 import ContentSidebar from "../../components/ContentSidebar.vue";
 import { useWorkflowGraphStore } from "../../stores/workflowGraph";
@@ -126,6 +127,7 @@ async function mount(component: Component, f: ReturnType<typeof fixture>) {
   vi.stubGlobal("ShadowRoot", class {});
   installRender(LorebookKeywordFields, "../../components/LorebookKeywordFields.vue");
   installRender(RolePlacementFields, "../../components/RolePlacementFields.vue");
+  installRender(RawNumberInput, "../../components/RawNumberInput.vue");
   installRender(LorebookFields, "../../components/LorebookFields.vue");
   installRender(LorebookEntries, "LorebookEntries.vue");
   installRender(CurrentLorebookPanel, "CurrentLorebookPanel.vue");
@@ -227,16 +229,17 @@ describe("global lorebook workbench UI", () => {
     const builder = vi.spyOn(tavernDemo, "createTavernDemo").mockReturnValue(doc);
     try {
       const root = await mount(TavernChatPanel, f);
-      expect(label(root, "打开酒馆前端").props.href).toBeUndefined();
+      expect(elements(root).some(node => node.props["aria-label"] === "打开酒馆前端")).toBe(false);
       await trigger(label(root, "创建酒馆示例"), "Click");
       expect(builder).toHaveBeenCalledOnce(); expect(graph.active!.document.workflow_definition_id).toBe(doc.workflow_definition_id);
       expect(graph.entries[originalId]).toEqual(before); expect(graph.active!.saved_revision).toBe(0);
-      expect(label(root, "打开酒馆前端").props.href).toBeUndefined(); expect(fetcher).not.toHaveBeenCalled();
+      expect(elements(root).some(node => node.props["aria-label"] === "打开酒馆前端")).toBe(false);
+      expect(fetcher).not.toHaveBeenCalled();
       graph.active!.saved_document = graphClone(doc); graph.active!.saved_revision = 1; await flush();
-      expect(label(root, "打开酒馆前端").props.href).toContain("/tavern/?graph_workflow=");
+      expect(elements(root).some(node => node.props["aria-label"] === "打开酒馆前端")).toBe(false);
       graph.active!.pending = { path: "/api/graph/definitions", action: "save", body: { idempotency_key: crypto.randomUUID() } };
       await flush();
-      expect(label(root, "打开酒馆前端").props.href).toBeUndefined();
+      expect(elements(root).some(node => node.props["aria-label"] === "打开酒馆前端")).toBe(false);
       await trigger(label(root, "创建酒馆示例"), "Click");
       expect(builder).toHaveBeenCalledOnce(); expect(fetcher).not.toHaveBeenCalled();
       expect(graph.entries[originalId]).toEqual(before);
@@ -272,7 +275,7 @@ describe("global lorebook workbench UI", () => {
     const f = fixture([]), root = await mount(CurrentLorebookPanel, f);
     await trigger(label(root, "新增 Lorebook 资源"), "Click");
     await trigger(button(root, "新增条目"), "Click");
-    await trigger(label(root, "条目 1 扫描深度"), "Input", { valueAsNumber: 0.5 });
+    await trigger(label(root, "条目 1 扫描深度"), "Input", { value: "0.5" });
     await trigger(label(root, "全局 Lorebook 表单"), "Submit");
     expect(f.save).not.toHaveBeenCalled();
     await trigger(label(root, "条目 1 移除"), "Click");

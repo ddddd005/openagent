@@ -158,7 +158,19 @@ const expectedApi = new Set(["/api/graph/consumer/application", "/api/graph/cons
 function operation(request) {
   try { return request.method() === "POST" ? request.postDataJSON() : null; } catch { return null; }
 }
-function journalKey() { return "workflow.tavern:workflow-chat:v1:" + workflow; }
+async function readJournal(page) {
+  return page.evaluate(async workflow => {
+    const response = await fetch("/api/graph/consumer/queries", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        operation: "consumer.draft.read", parameters: { address: {
+          scope: "consumer", kind: "chat-client", key: "tavern:state",
+          workflow_definition_id: workflow, workflow_session_id: null,
+        } },
+      }) });
+    if (!response.ok) throw new Error("Local draft read failed: " + response.status);
+    return (await response.json())?.value ?? null;
+  }, workflow);
+}
 (async () => {
   const browser = await chromium.launch({ headless: true,
     ...(process.env.TAVERN_CHROMIUM_EXECUTABLE ? { executablePath: process.env.TAVERN_CHROMIUM_EXECUTABLE } : {}) });
@@ -299,8 +311,8 @@ function journalKey() { return "workflow.tavern:workflow-chat:v1:" + workflow; }
       && document.querySelectorAll(".mes_create_branch:not([hidden])").length === 4);
     assert.ok((await page.locator("#chat").textContent()).includes(texts.second));
     assert.ok(!(await page.locator("#chat").textContent()).includes(texts.child));
-    const parentJournal = await page.evaluate(key => localStorage.getItem(key), journalKey());
-    assert.equal(JSON.parse(parentJournal).workflow_session_id, parent);
+    const parentJournal = await readJournal(page);
+    assert.equal(parentJournal.workflow_session_id, parent);
     loseFork = true;
     await page.getByRole("button", { name: "从第 1 个完成回合检查点分叉", exact: true }).last().click();
     await page.waitForFunction(() => !document.querySelector("#pending").hidden
@@ -309,8 +321,8 @@ function journalKey() { return "workflow.tavern:workflow-chat:v1:" + workflow; }
     const realLostChild = lostAcceptance.result.receipt.workflow_session_id;
     assert.notEqual(realLostChild, firstChild);
     assert.notEqual(realLostChild, parent);
-    const pending = await page.evaluate(key => localStorage.getItem(key), journalKey());
-    const frozen = JSON.parse(pending).pending;
+    const pending = await readJournal(page);
+    const frozen = pending.pending;
     assert.equal(frozen.workflow_session_id, parent);
     assert.equal(frozen.candidate.candidate_id, firstCandidate.candidate_id);
     assert.equal(frozen.candidate.chain_run_id, firstCandidate.chain_run_id);
@@ -321,14 +333,22 @@ function journalKey() { return "workflow.tavern:workflow-chat:v1:" + workflow; }
     assert.equal(await page.locator(".mes_create_branch:visible").count(), 0);
     const countForks = () => requests.filter(row => row.body?.operation === "consumer.candidate.fork"
       && row.pathname === "/api/graph/consumer/commands").length;
-    const countReceipts = () => requests.filter(row => row.pathname === "/api/graph/consumer/receipts/read").length;
+    const countReceipts = () => requests.filter(row => row.pathname === "/api/graph/consumer/receipts/read"
+      && row.body?.operation === "consumer.candidate.fork").length;
     assert.equal(countForks(), 2);
     assert.equal(countReceipts(), 0);
     await page.goto(`${base}/tavern/?graph_workflow=${workflow}&graph_session=${firstChild}`);
+    await page.waitForFunction(() => document.querySelector("#error").textContent.includes("当前入口未改绑"));
+    assert.equal(new URL(page.url()).searchParams.get("graph_session"), firstChild);
+    assert.equal(await page.locator("#pending").isHidden(), true);
+    assert.deepEqual(await readJournal(page), pending);
+    assert.equal(countForks(), 2);
+    assert.equal(countReceipts(), 0, "a foreign entry must not reconcile or rebind automatically");
+    await page.goto(`${base}/tavern/?graph_workflow=${workflow}&graph_session=${parent}`);
     await page.waitForFunction(() => !document.querySelector("#pending").hidden
       && document.querySelector("#transcript-status").textContent === "4 条展示记录");
     assert.equal(new URL(page.url()).searchParams.get("graph_session"), parent);
-    assert.equal(await page.evaluate(key => localStorage.getItem(key), journalKey()), pending);
+    assert.deepEqual(await readJournal(page), pending);
     assert.equal(countForks(), 2);
     assert.equal(countReceipts(), 0, "reopen must not reconcile or mutate automatically");
     await page.getByRole("button", { name: "核实原请求", exact: true }).click();
@@ -337,11 +357,13 @@ function journalKey() { return "workflow.tavern:workflow-chat:v1:" + workflow; }
       && !document.querySelector("#send_textarea").disabled, realLostChild);
     assert.equal(countForks(), 2);
     assert.equal(countReceipts(), 1);
-    const reconciliation = requests.filter(row => row.pathname === "/api/graph/consumer/receipts/read")[0].body;
+    const reconciliation = requests.filter(row => row.pathname === "/api/graph/consumer/receipts/read"
+      && row.body?.operation === "consumer.candidate.fork")[0].body;
     const original = requests.filter(row => row.pathname === "/api/graph/consumer/commands"
       && row.body?.operation === "consumer.candidate.fork").at(-1).body;
     assert.deepEqual(reconciliation, original);
-    assert.equal(JSON.parse(await page.evaluate(key => localStorage.getItem(key), journalKey())).pending, null);
+    assert.equal((await readJournal(page)).pending, null);
+    assert.equal(await page.evaluate(() => localStorage.length), 0, "consumer drafts must not use browser storage");
     assert.equal(await page.locator("#error").textContent(), "");
     assert.ok(!(await page.locator("#chat").textContent()).includes(texts.second));
     assert.ok(!(await page.locator("#chat").textContent()).includes(texts.child));

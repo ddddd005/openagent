@@ -15,7 +15,21 @@
   let client = null, definition = null, localBusy = false, reading = false, timer = null;
   let directory = [], contextKey = null, historyKey = null, transcriptGeneration = 0, disposed = false;
   let transcriptMessages = [];
+  let draftReady = false, draftFailure = "";
   const cache = new Map(), drafts = new Map();
+  const dirtyDrafts = new Set();
+  const draftBuffer = GraphChat.createDraftBuffer({
+    write: (address, value) => client.saveDraft(address, value),
+    onState: (address, state) => {
+      const revision = Number(address.key.split(":").at(-1));
+      const key = JSON.stringify([address.workflow_session_id, revision]);
+      if (state.status === "saved") dirtyDrafts.delete(key);
+      if (contextKey === key) {
+        draftFailure = state.error;
+        renderDraftStatus();
+      }
+    },
+  });
   const renderer = new TavernChat.ChatRenderer({
     chatElement: $("chat"), messageTemplate: $("message_template"),
     onFork: entryId => forkEntry(entryId),
@@ -30,31 +44,49 @@
   function error(message) { $("error").textContent = message || ""; $("error").hidden = !message; }
   function diagnostics(message) { $("adaptation").textContent = message || ""; $("adaptation").hidden = !message; }
   function draftKey(view) {
-    return view ? `workflow.tavern:draft:v1:${workflowId}:${view.workflow_session_id}:${view.definition_revision}` : null;
+    return view ? JSON.stringify([view.workflow_session_id, view.definition_revision]) : null;
   }
-  function rememberDraft() {
-    if (!contextKey) return;
-    const value = $("send_textarea").value;
-    drafts.set(contextKey, value);
-    try { localStorage.setItem(contextKey, value); } catch { /* Drafts remain available for this page. */ }
+  function stageDraft() {
+    if (!contextKey || !draftReady) return;
+    const key = contextKey, value = $("send_textarea").value, [session, revision] = JSON.parse(key);
+    drafts.set(key, value); dirtyDrafts.add(key);
+    draftBuffer.stage(client.draftAddress("chat-input", "message:" + revision, session), value);
+  }
+  async function rememberDraft() {
+    if (contextKey && dirtyDrafts.has(contextKey)) stageDraft();
+    await draftBuffer.flush();
+  }
+  function renderDraftStatus() {
+    const [session, revision] = contextKey ? JSON.parse(contextKey) : [];
+    const state = contextKey ? draftBuffer.status(client.draftAddress("chat-input", "message:" + revision, session)) : null;
+    const failure = draftFailure || state?.error;
+    $("draft-status").textContent = failure ? "尚未写入本机：" + failure
+      : state?.status === "saving" ? "正在写入本机" : state?.status === "pending" ? "等待写入本机"
+        : draftReady ? "已写入本机" : "";
   }
   function context() {
     const view = client?.consumer, key = draftKey(view);
     if (key === contextKey) return;
-    rememberDraft(); contextKey = key; cache.clear(); historyKey = null;
+    if (contextKey) void rememberDraft().catch(failure => error(failure.message));
+    contextKey = key; draftReady = false; draftFailure = ""; cache.clear(); historyKey = null;
     transcriptGeneration++; transcriptMessages = []; renderer.clear();
     const empty = document.createElement("p"); empty.className = "empty-chat"; empty.textContent = "暂无聊天记录";
     $("chat").append(empty);
-    let draft = key ? drafts.get(key) : "";
-    if (key && draft === undefined) {
-      try { draft = localStorage.getItem(key) ?? ""; } catch { draft = ""; }
-    }
-    $("send_textarea").value = typeof draft === "string" && draft.length <= TavernAdapter.MAX_TEXT ? draft : "";
-    const pending = client?.pending;
-    if (pending?.action === "start" && pending.workflow_session_id === view?.workflow_session_id) {
-      const values = Object.values(pending.body.inputs);
-      if (values.length === 1 && typeof values[0] === "string") $("send_textarea").value = values[0];
-    }
+    $("send_textarea").value = "";
+    if (!key) return;
+    const pending = client?.pending, [session, revision] = JSON.parse(key);
+    client.readDraft(client.draftAddress("chat-input", "message:" + revision, session)).then(saved => {
+      if (contextKey !== key || disposed) return;
+      const draft = dirtyDrafts.has(key) ? drafts.get(key) ?? saved ?? "" : saved ?? "";
+      if (typeof draft !== "string" || draft.length > TavernAdapter.MAX_TEXT) throw new Error("消息草稿格式无效");
+      $("send_textarea").value = draft;
+      drafts.set(key, draft);
+      if (pending?.action === "start" && pending.workflow_session_id === session) {
+        const values = Object.values(pending.body.inputs);
+        if (values.length === 1 && typeof values[0] === "string") $("send_textarea").value = values[0];
+      }
+      draftReady = true; render();
+    }).catch(failure => { if (contextKey === key && !disposed) { draftFailure = failure.message; error(failure.message); renderDraftStatus(); } });
   }
   function renderDirectory() {
     const selector = $("sessions"); selector.replaceChildren();
@@ -89,8 +121,9 @@
     $("sessions").disabled = locked || !directory.length;
     $("new-session").disabled = locked || !definition;
     $("refresh").disabled = localBusy || reading || client?.busy || !client?.sessionId;
-    $("send_textarea").disabled = locked || !adaptation.input || ports.length !== 1 || !view?.can_submit;
-    $("send_but").disabled = locked || !adaptation.input || ports.length !== 1 || !view?.can_submit;
+    $("send_textarea").disabled = locked || !draftReady || !adaptation.input || ports.length !== 1 || !view?.can_submit;
+    $("send_but").disabled = locked || !draftReady || !adaptation.input || ports.length !== 1 || !view?.can_submit;
+    renderDraftStatus();
     $("pending").hidden = !client?.pending;
     $("pending-text").textContent = client?.pending?.action === "fork"
       ? `分叉待核实 · 父会话 ${client.pending.workflow_session_id.slice(0, 8)} · 检查点 ${client.pending.candidate.candidate_id.slice(0, 8)} · ${client.pending.body.idempotency_key}`
@@ -211,9 +244,10 @@
     if (!reconcile && action === "close" && !confirm("结束当前运行？已接纳的结果保留。")) return;
     if (!reconcile && action === "retry_failed_node"
       && !confirm("重新调用失败节点？已接纳的结果保留，本次调用可能消耗模型额度。")) return;
-    localBusy = true; clearTimeout(timer); error(""); rememberDraft(); render();
+    localBusy = true; clearTimeout(timer); error(""); render();
     let original = client.pending ? GraphChat.clone(client.pending) : null;
     try {
+      await rememberDraft();
       const fields = reconcile ? {} : action === "start"
         ? { inputs: TavernAdapter.inputsFor(client.consumer, $("send_textarea").value) }
         : action === "create" ? { definition_revision: definition.definition_revision }
@@ -223,7 +257,7 @@
       if (!reconcile && action === "fork") await client.forkCandidate(target.candidate);
       else await client.command(reconcile ? original.action : action, fields);
       if ((original?.action ?? action) === "start" && typeof submitted === "string" && $("send_textarea").value === submitted) {
-        $("send_textarea").value = ""; rememberDraft();
+        $("send_textarea").value = ""; dirtyDrafts.add(contextKey); await rememberDraft();
       }
       updateUrl(); await loadDirectory(); await client.refresh(); render();
       await loadTranscript(true); await loadCandidates();
@@ -231,31 +265,46 @@
     finally { localBusy = false; render(); schedule(); }
   }
   $("send_form").addEventListener("submit", event => { event.preventDefault(); void perform("start"); });
-  $("send_textarea").addEventListener("input", rememberDraft);
+  $("send_textarea").addEventListener("input", () => {
+    stageDraft();
+  });
   $("new-session").onclick = () => void perform("create");
   $("refresh").onclick = () => void refresh();
   $("reconcile").onclick = () => void perform(client?.pending?.action, true);
   $("sessions").onchange = async event => {
     const session = event.target.value;
     if (!session || localBusy || reading || client.busy || client.pending) return;
-    localBusy = true; rememberDraft(); clearTimeout(timer); transcriptGeneration++;
+    localBusy = true; clearTimeout(timer); transcriptGeneration++; render();
     try {
+      await rememberDraft();
       await client.selectSession(session); updateUrl(); error(""); render();
       await loadTranscript(true); await loadCandidates();
     } catch (failure) { error(failure.message); }
     finally { localBusy = false; render(); schedule(); }
   };
   window.addEventListener("pagehide", () => {
-    disposed = true; clearTimeout(timer); rememberDraft(); renderer.clear(); transcriptGeneration++;
+    disposed = true; clearTimeout(timer); draftBuffer.dispose(); renderer.clear(); transcriptGeneration++;
     if (client) { client.generation++; client.invalidateInformation(); }
+  });
+  window.addEventListener("beforeunload", event => {
+    if (!draftBuffer.hasUnsaved() && !client?.draftIntents.size) return;
+    event.preventDefault(); event.returnValue = "";
   });
   try {
     TavernChat.icons(document);
     if (!GraphChat.uuid(workflowId) || requestedSession !== null && !GraphChat.uuid(requestedSession))
       throw new Error("酒馆入口需要有效的工作流和会话身份");
-    client = TavernAdapter.createClient({ workflowId, sessionId: requestedSession, storage: localStorage,
+    client = TavernAdapter.createClient({ workflowId, sessionId: requestedSession, legacyStorage: localStorage,
       fetcher: fetch.bind(window), keyFactory: () => crypto.randomUUID() });
     await client.discover(); definition = await client.readDefinition(); await loadDirectory();
     await client.refresh(); updateUrl(); render(); await loadTranscript(); await loadCandidates(); schedule();
-  } catch (failure) { error(failure.message); }
+  } catch (failure) { error(failure.message); $("import-legacy").hidden = !client?.legacyPending; }
+  $("import-legacy").onclick = async () => {
+    if (!confirm("将浏览器保留的原请求写入本机并核实？不会再次执行请求。")) return;
+    try {
+      await client.importLegacyPending(); $("import-legacy").hidden = true;
+      definition = await client.readDefinition(); await loadDirectory(); await client.refresh(); render();
+      await loadTranscript(); await loadCandidates(); error("");
+    } catch (failure) { error(failure.message); }
+  };
 })();

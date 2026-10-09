@@ -81,7 +81,8 @@ All files below are under `src/phase1_agent/`.
 | `graph_execution.py`, `graph_runtime_host.py` | Compilation and hosted execution |
 | `agent_package.py`, `agent_executor.py`, `runtime.py`, `runtime_hosting.py` | Native Agent execution, tool boundaries and same-process continuation |
 | `capability_registry.py`, `capability_packages.py`, `builtin_packages.py` | Exact package selection and current declarations |
-| `storage.py`, `graph_store.py`, `runtime_fact_store.py`, `storage_retirement.py` | Records, facts and precise storage-v15 retirement |
+| `storage.py`, `graph_store.py`, `runtime_fact_store.py`, `storage_retirement.py` | Records, facts, additive storage-v16 drafts and the bounded pre-v15 retirement |
+| `graph_drafts.py`, `graph_editing_host.py` | Local editing drafts, CAS, non-secret intents and management/consumer scope checks |
 | `model_service.py`, `model_host_service.py`, `model_package.py` | Frozen provider resources, capacity-aware bindings and model calls |
 | `adapter.py`, `gemini_adapter.py`, `gemini_capabilities.py`, `provider_metadata.py` | Protocol conversion, thinking validation and original signed parts |
 | `context_v4.py`, `context_v4_nodes.py`, `context_receipt.py` | Native context, verified writeback and CAS receipts |

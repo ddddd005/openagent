@@ -51,6 +51,8 @@ def native_command_request(operation, parameters):
         "candidate.fork": "graph.candidate.fork",
         "object.write": "graph.objects.update",
         "context.adopt": "graph.context.adopt",
+        "draft.save": "graph.draft.save",
+        "consumer.draft.save": "graph.consumer.draft.save",
     }
     if name in native_operations:
         if "session_id" in request:
@@ -137,6 +139,9 @@ def application_accepted_result(result):
         return {}
     if type(result.get("receipt")) is dict:
         return deepcopy(result["receipt"])
+    if result.get("kind") == "workflow.local-draft":
+        return {"draft_address": deepcopy(result["address"]), "draft_sequence": result["sequence"],
+                "draft_format_version": result["format_version"], "deleted": result["deleted"]}
     source = result.get("session", result)
     fields = ("workflow_definition_id", "definition_revision", "workflow_session_id",
               "revision", "data_revision", "head_revision", "head_commit_id", "status",

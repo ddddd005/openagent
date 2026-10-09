@@ -37,11 +37,22 @@ const workspace = useWorkspaceStore();
 const persistence = useWorkbenchPersistenceStore();
 const graph = useWorkflowGraphStore();
 const { sidebarCollapsed, toggleSidebar, expandSidebar } = useWorkbenchSidebar();
-function openSidebarSection(section: typeof workspace.sidebarSection) {
-  workspace.sidebarSection = section;
-  expandSidebar();
+const navigationError = ref("");
+let navigationGeneration = 0;
+async function leaveEditor(change: () => void) {
+  const token = ++navigationGeneration, workflowId = workspace.activeWorkflowId;
+  if (!await persistence.flushAll()) {
+    navigationError.value = "当前编辑尚未写入本机，保留此页面";
+    return;
+  }
+  if (token !== navigationGeneration || workflowId !== workspace.activeWorkflowId) return;
+  navigationError.value = "";
+  change();
 }
-persistence.initialize();
+async function openSidebarSection(section: typeof workspace.sidebarSection) {
+  await leaveEditor(() => { workspace.sidebarSection = section; expandSidebar(); });
+}
+void persistence.initialize();
 const workspaceView = ref<"canvas" | "history">("canvas");
 const dirty = computed(
   () => workspace.activeWorkflow.state === "draft",
@@ -61,14 +72,17 @@ const chatInterfaceTitle = computed(() => {
   if (!userInterfaceUrl.value) return "聊天入口地址或工作流身份不可用";
   return graph.active?.pending ? "核实原请求后打开聊天前端" : "保存工作流后打开聊天前端";
 });
-function changeWorkspaceView(view: "canvas" | "history") {
-  workspaceView.value = view;
+async function changeWorkspaceView(view: "canvas" | "history") {
+  await leaveEditor(() => { workspaceView.value = view; });
+}
+async function openWorkflow(id: string) {
+  await leaveEditor(() => workspace.openWorkflow(id));
 }
 
 watch(
-  () => workspace.activeWorkflowId,
-  (workflowId) => {
-    void graph.activate(workflowId);
+  () => [persistence.ready, workspace.activeWorkflowId] as const,
+  ([ready, workflowId]) => {
+    if (ready && persistence.status !== "blocked") void graph.activate(workflowId);
   },
   { immediate: true },
 );
@@ -128,9 +142,9 @@ watch(
           <header class="workbench-panel-heading">
             <h1 id="workflow-heading">工作流</h1>
             <span class="workbench-workflow-count">{{ workspace.workflows.length }}</span>
-            <button class="workbench-tool-button" type="button" title="新建工作流" aria-label="新建工作流" @click="graph.createWorkflow()"><Plus :size="15" /></button>
-            <button class="workbench-tool-button" type="button" title="创建串行 Agent 示例（模型资源与模型名待选择，配置后运行）" aria-label="创建串行 Agent 示例" :disabled="graph.catalogLoading || !graph.catalog.length" @click="graph.createSerialAgentExample()"><GitBranch :size="15" /></button>
-            <button class="workbench-tool-button" type="button" title="创建上下文精简串行示例" aria-label="创建上下文精简串行示例" :disabled="graph.catalogLoading || !graph.catalog.length" @click="graph.createCompactingSerialAgentExample()"><Minimize2 :size="15" /></button>
+            <button class="workbench-tool-button" type="button" title="新建工作流" aria-label="新建工作流" @click="leaveEditor(() => graph.createWorkflow())"><Plus :size="15" /></button>
+            <button class="workbench-tool-button" type="button" title="创建串行 Agent 示例（模型资源与模型名待选择，配置后运行）" aria-label="创建串行 Agent 示例" :disabled="graph.catalogLoading || !graph.catalog.length" @click="leaveEditor(() => graph.createSerialAgentExample())"><GitBranch :size="15" /></button>
+            <button class="workbench-tool-button" type="button" title="创建上下文精简串行示例" aria-label="创建上下文精简串行示例" :disabled="graph.catalogLoading || !graph.catalog.length" @click="leaveEditor(() => graph.createCompactingSerialAgentExample())"><Minimize2 :size="15" /></button>
           </header>
 
           <ul class="workbench-workflow-list" aria-label="工作流列表">
@@ -147,8 +161,8 @@ watch(
                 :aria-current="workspace.activeWorkflowId === workflow.id ? 'page' : undefined"
                 :title="workflow.title"
                 @click="workspace.selectWorkflow(workflow.id)"
-                @dblclick="workspace.openWorkflow(workflow.id)"
-                @keydown.enter.prevent="workspace.openWorkflow(workflow.id)"
+                @dblclick="openWorkflow(workflow.id)"
+                @keydown.enter.prevent="openWorkflow(workflow.id)"
               >
                 <span class="workbench-workflow-icon" aria-hidden="true">
                   <Workflow v-if="workflow.nodeCount > 0" :size="18" />
@@ -224,6 +238,7 @@ watch(
         </div>
       </header>
       <WorkbenchStorageRecovery />
+      <div v-if="navigationError" class="workbench-save-error" role="status">{{ navigationError }}</div>
       <div v-if="persistence.pendingCopy" class="workbench-save-error model-pending-banner" role="status">
         <span>工作流编辑副本等待会话复制确认</span>
         <button v-if="graph.entries[persistence.pendingCopy.id]?.pending" type="button" :disabled="!!graph.busy" @click="persistence.reconcileCopy()">核实复制</button>

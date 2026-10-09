@@ -5,10 +5,14 @@ import * as Vue from "vue";
 import { computed, createRenderer, createSSRApp, nextTick, reactive, ref, type App } from "vue";
 import { renderToString } from "@vue/server-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createPinia, setActivePinia, type Pinia } from "pinia";
 import LorebookFields from "./LorebookFields.vue";
 import LorebookKeywordFields from "./LorebookKeywordFields.vue";
 import LorebookEvaluationFacts from "./LorebookEvaluationFacts.vue";
 import RolePlacementFields from "./RolePlacementFields.vue";
+import RawNumberInput from "./RawNumberInput.vue";
+import { useFormDraftsStore } from "../stores/formDrafts";
+import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 import GraphNodeConfiguration from "./GraphNodeConfiguration.vue";
 import { createWorkbenchFrontendHost } from "../application/workflowFrontendPackage";
 import { workbenchFrontendHostKey } from "../application/workbenchFrontendHost";
@@ -98,16 +102,18 @@ function installRender(component: object, filename: string) {
   const code = transpileModule(template.code, { compilerOptions: { target: ScriptTarget.ES2022, module: ModuleKind.None } }).outputText;
   Object.assign(component, { render: new Function("Vue", code)(Vue) });
 }
-async function mount(f: ReturnType<typeof fixture>) {
+async function mount(f: ReturnType<typeof fixture>, pinia?: Pinia) {
   installRender(LorebookKeywordFields, "LorebookKeywordFields.vue");
   installRender(RolePlacementFields, "RolePlacementFields.vue");
+  installRender(RawNumberInput, "RawNumberInput.vue");
   installRender(LorebookFields, "LorebookFields.vue");
   const root = new HostNode("root");
   const app = renderer.createApp(LorebookFields, { node: f.node, document: f.document })
     .provide(workflowFrontendSdkKey, f.sdk).provide(Vue.ssrContextKey, { modules: new Set() });
+  if (pinia) app.use(pinia);
   apps.push(app); app.mount(root); await flush(); return root;
 }
-afterEach(() => { apps.splice(0).forEach(app => app.unmount()); vi.unstubAllGlobals(); });
+afterEach(() => { apps.splice(0).forEach(app => app.unmount()); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const renderFields = (f: ReturnType<typeof fixture>) => renderToString(createSSRApp(LorebookFields,
   { node: f.node, document: f.document }).provide(workflowFrontendSdkKey, f.sdk));
 
@@ -155,8 +161,8 @@ describe("lorebook trusted workbench fields", () => {
     await trigger(label(root, "条目 1 组合规则"), "Change", { value: "primary_and_secondary" });
     await trigger(label(root, "条目 1 递归触发"), "Change", { checked: true });
     await trigger(label(root, "条目 1 概率开关"), "Change", { checked: true });
-    await trigger(label(root, "条目 1 概率值"), "Input", { valueAsNumber: 42.5 });
-    await trigger(label(root, "条目 1 扫描深度"), "Input", { valueAsNumber: 20 });
+    await trigger(label(root, "条目 1 概率值"), "Input", { value: "42.5" });
+    await trigger(label(root, "条目 1 扫描深度"), "Input", { value: "20" });
     await trigger(label(root, "Lorebook 配置"), "Submit");
     expect(f.configureNode).toHaveBeenCalledWith({
       workflowId: f.document.workflow_definition_id, nodeId: f.node.node_binding_id,
@@ -172,11 +178,11 @@ describe("lorebook trusted workbench fields", () => {
     const f = fixture(), root = await mount(f);
     await trigger(label(root, "条目 1 模式"), "Change", { value: "constant" });
     expect(elements(root).some(node => node.props["aria-label"] === "条目 1 新增主关键词")).toBe(false);
-    await trigger(label(root, "条目 1 扫描深度"), "Input", { valueAsNumber: 7 });
+    await trigger(label(root, "条目 1 扫描深度"), "Input", { value: "7" });
     const middle = find(root, node => node.tag === "button" && node.text === "上下文中");
     await trigger(middle, "Click");
-    await trigger(label(root, "条目 1 插入深度"), "Input", { valueAsNumber: 2 });
-    await trigger(label(root, "条目 1 装配顺序"), "Input", { valueAsNumber: -3 });
+    await trigger(label(root, "条目 1 插入深度"), "Input", { value: "2" });
+    await trigger(label(root, "条目 1 装配顺序"), "Input", { value: "-3" });
     await trigger(label(root, "条目 1 启用"), "Change", { checked: false });
     await trigger(label(root, "Lorebook 配置"), "Submit");
     expect(f.configureNode.mock.calls[0]![0].patch).toMatchObject({
@@ -225,7 +231,7 @@ describe("lorebook trusted workbench fields", () => {
   });
   it("rejects invalid draft numbers and keeps invalid source contracts unchanged", async () => {
     const f = fixture(), root = await mount(f);
-    await trigger(label(root, "条目 1 扫描深度"), "Input", { valueAsNumber: 1.5 });
+    await trigger(label(root, "条目 1 扫描深度"), "Input", { value: "1.5" });
     await trigger(label(root, "Lorebook 配置"), "Submit");
     expect(f.configureNode).not.toHaveBeenCalled();
     expect(elements(root).some(node => node.text.includes("尚未应用"))).toBe(true);
@@ -235,6 +241,27 @@ describe("lorebook trusted workbench fields", () => {
     const other = await mount(invalid);
     await trigger(label(other, "Lorebook 配置"), "Submit");
     expect(invalid.configureNode).not.toHaveBeenCalled(); expect(invalid.node.config).toEqual(original);
+  });
+  it("retains partial numeric text, blocks stale numbers, and keeps drafts with their entry after reordering", async () => {
+    const entries = [newLorebookEntry(), newLorebookEntry()], f = fixture(true, entries), root = await mount(f);
+    await trigger(label(root, "条目 1 装配顺序"), "Input", { value: "-" });
+    expect(label(root, "条目 1 装配顺序").props.value).toBe("-");
+    await trigger(label(root, "Lorebook 配置"), "Submit");
+    expect(f.configureNode).not.toHaveBeenCalled();
+    await trigger(label(root, "条目 2 上移"), "Click");
+    expect(label(root, "条目 2 装配顺序").props.value).toBe("-");
+    await trigger(label(root, "Lorebook 配置"), "Submit");
+    expect(f.configureNode).not.toHaveBeenCalled();
+    await trigger(label(root, "条目 2 装配顺序"), "Input", { value: "-3" });
+    await trigger(label(root, "条目 1 扫描深度"), "Input", { value: "1e" });
+    expect(label(root, "条目 1 扫描深度").props.value).toBe("1e");
+    await trigger(label(root, "Lorebook 配置"), "Submit");
+    expect(f.configureNode).not.toHaveBeenCalled();
+    await trigger(label(root, "条目 1 扫描深度"), "Input", { value: "1e1" });
+    await trigger(label(root, "Lorebook 配置"), "Submit");
+    expect(f.configureNode.mock.calls[0]![0].patch.entries).toMatchObject([
+      { id: entries[1]!.id, scan_depth: 10 }, { id: entries[0]!.id, presentation: { order: -3 } },
+    ]);
   });
   it("uses current lifecycle/config and refuses mutation while locked or stale", async () => {
     const f = fixture(), root = await mount(f);
@@ -252,6 +279,25 @@ describe("lorebook trusted workbench fields", () => {
     f.configureNode.mockReturnValueOnce(null as unknown as ReturnType<typeof f.configureNode>);
     await trigger(label(root, "Lorebook 配置"), "Submit");
     expect(elements(root).some(node => node.text.includes("配置依据已变化"))).toBe(true);
+  });
+  it("flushes all child drafts and refuses a changed node basis while local persistence is pending", async () => {
+    vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
+    const pinia = createPinia(); setActivePinia(pinia);
+    const forms = useFormDraftsStore();
+    vi.spyOn(forms, "load").mockResolvedValue({ value: null, conflict: false, record: null });
+    vi.spyOn(forms, "stage").mockReturnValue(true);
+    let finish!: (value: boolean) => void;
+    const persistence = useWorkbenchPersistenceStore();
+    const flushAll = vi.spyOn(persistence, "flushAll").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const f = fixture(), root = await mount(f, pinia);
+    const applying = trigger(label(root, "Lorebook 配置"), "Submit");
+    await flush();
+    expect(flushAll).toHaveBeenCalledOnce();
+    f.node.config = { ...f.node.config, entry: { ...f.node.config.entry as LorebookEntry, text: "external" } };
+    await flush();
+    finish(true); await applying;
+    expect(f.configureNode).not.toHaveBeenCalled();
+    expect(elements(root).some(node => node.text.includes("依据或输入已变化"))).toBe(true);
   });
 });
 

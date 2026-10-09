@@ -9,7 +9,7 @@ export type GraphReceipt =
   | { kind: "definition"; document: GraphDocument }
   | { kind: "session"; session: GraphSession; observation?: GraphSession; historicalDocument?: GraphDocument };
 export interface GraphCommandPorts {
-  persist(): boolean;
+  persist(): boolean | Promise<boolean>;
   request(path: string, body: Record<string, unknown>): Promise<unknown>;
   readReceipt(path: string, body: Record<string, unknown>): Promise<unknown>;
   readDefinition(id: string, revision: number): Promise<GraphDocument>;
@@ -74,7 +74,7 @@ export async function dispatchGraphCommand(entry: GraphEntry, command: GraphComm
     savedRevision: entry.saved_revision, sessionId: entry.session_id };
   const samePending = () => entry.pending !== null && JSON.stringify(entry.pending) === JSON.stringify(request);
   const current = () => ports.current() && samePending();
-  const persist = () => { try { return ports.persist(); } catch { return false; } };
+  const persist = async () => { try { return await ports.persist(); } catch { return false; } };
   if (reconcile) {
     if (entry.pending === null) unknown("未保留原工作流请求");
     if (entry.pending !== null && !samePending()) unknown("待核实请求已变化");
@@ -84,11 +84,12 @@ export async function dispatchGraphCommand(entry: GraphEntry, command: GraphComm
     const rejectedCopy = entry.rejected_copy;
     entry.pending = graphClone(request);
     delete entry.rejected_copy;
-    if (!persist()) {
+    if (!await persist()) {
       if (samePending()) entry.pending = null;
       if (rejectedCopy) entry.rejected_copy = rejectedCopy;
       throw new WorkbenchApiError("unavailable", "原工作流请求无法保存，未提交");
     }
+    if (!current()) unknown("工作流已关闭或原请求已变化，尚未提交");
   }
   let value: unknown;
   try {
@@ -101,7 +102,7 @@ export async function dispatchGraphCommand(entry: GraphEntry, command: GraphComm
         : [{ reason_code: failure.code ?? "graph_request_rejected", message: failure.reason }];
       if (request.action === "copy") entry.rejected_copy = graphClone(request);
       entry.pending = null;
-      if (!persist() && ports.current() && entry.pending === null) entry.pending = graphClone(request);
+      if (!await persist() && ports.current() && entry.pending === null) entry.pending = graphClone(request);
     }
     throw failure;
   }
@@ -113,9 +114,10 @@ export async function dispatchGraphCommand(entry: GraphEntry, command: GraphComm
   delete entry.rejected_copy;
   entry.diagnostics = [];
   if (["copy", "rebind"].includes(request.action)) entry.state_mappings = [];
-  if (!persist()) {
+  if (!await persist()) {
     if (ports.current() && entry.pending === null) entry.pending = graphClone(request);
     unknown("后端已处理请求，本机回执保存失败");
   }
+  if (!ports.current() || entry.pending !== null) unknown("本机保存期间工作流已关闭或请求状态已变化");
   return value;
 }

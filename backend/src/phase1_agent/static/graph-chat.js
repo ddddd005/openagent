@@ -10,6 +10,7 @@
     <div class="run-toolbar"><span id="graph-status" role="status"></span><div class="graph-actions"><div id="graph-actions" class="graph-actions"></div><button id="graph-refresh" type="button" disabled>刷新</button></div></div>
     <div id="graph-budget" class="budget-controls" hidden><label for="graph-requests">逻辑请求 +</label><input id="graph-requests" type="number" min="0" max="64" step="1" value="1"><label for="graph-attempts">传输尝试 +</label><input id="graph-attempts" type="number" min="0" max="256" step="1" value="4"></div>
     <div id="graph-error" class="error" role="alert" hidden></div>
+    <button id="graph-import-legacy" type="button" hidden>导入旧请求</button>
     <section class="graph-node-progress" aria-label="节点状态"><div id="graph-node-list"></div></section>
     <section class="public-exposures" aria-label="公开结果"><h2>公开结果</h2><div id="graph-outputs"></div></section>
     <section class="public-exposures graph-history" aria-label="公开历史"><h2>公开历史</h2><select id="graph-history-port" aria-label="公开历史端口"></select><div id="graph-history-list"></div></section>
@@ -20,11 +21,11 @@
       <div class="session-bar"><select id="graph-information-source" aria-label="公开信息调用"></select><select id="graph-information-scope" aria-label="信息来源作用域"></select><button id="graph-information-read" type="button" disabled>读取</button><button id="graph-information-next" type="button" disabled>下一页</button></div>
       <div id="graph-information-status" role="status"></div><div id="graph-information-items"></div>
     </section>
-    <form id="graph-composer"><div id="graph-inputs"></div><div class="submit-row"><span id="graph-pending" class="mode" role="status"></span><button id="graph-submit" type="submit" disabled>启动</button></div></form>
+    <form id="graph-composer"><div id="graph-inputs"></div><div class="submit-row"><span id="graph-draft-status" role="status"></span><span id="graph-pending" class="mode" role="status"></span><button id="graph-submit" type="submit" disabled>启动</button></div></form>
     <section class="public-exposures" aria-label="局部事件"><h2>局部事件</h2>
       <div class="session-bar"><select id="graph-events" aria-label="事件版本"></select><button id="graph-event-refresh" type="button" disabled>刷新事件</button></div>
       <form id="graph-event-composer"><label for="graph-event-payload">事件载荷 JSON</label><textarea id="graph-event-payload" rows="6" maxlength="4000000" spellcheck="false">{}</textarea>
-        <div class="submit-row"><span id="graph-event-status" role="status"></span><button id="graph-event-submit" type="submit" disabled>提交局部事件</button></div>
+        <div class="submit-row"><span id="graph-event-status" role="status"></span><span id="graph-event-draft-status" role="status"></span><button id="graph-event-submit" type="submit" disabled>提交局部事件</button></div>
       </form><details><summary>事件载荷 schema</summary><pre id="graph-event-schema"></pre></details>
     </section>`;
   const $ = id => document.getElementById(id);
@@ -48,10 +49,29 @@
   let registrationCursor = null, informationCursor = null, registrationBusy = false, informationBusy = false;
   let informationViewGeneration = 0;
   let frontendHost = null;
+  let inputReady = false, eventDraftKey = null, eventDraftReady = false;
   const outputMounts = [], historyMounts = [];
   function disposeMounts(mounts) { for (const mount of mounts.splice(0)) mount.dispose(); }
   function clearHistory() { disposeMounts(historyMounts); $("graph-history-list").replaceChildren(); }
   const inputDrafts = new Map();
+  const dirtyInputDrafts = new Set();
+  const eventDrafts = new Map(), dirtyEventDrafts = new Set();
+  const draftBuffer = GraphChat.createDraftBuffer({
+    write: (address, value) => client.saveDraft(address, value),
+    onState: (address, state) => {
+      const revision = Number(address.key.split(":").at(-1));
+      const key = JSON.stringify([address.workflow_session_id, revision]);
+      const message = state.error ? "尚未写入本机：" + state.error : state.status === "saving" ? "正在写入本机"
+        : state.status === "pending" ? "等待写入本机" : "已写入本机";
+      if (address.key.startsWith("generic:inputs:")) {
+        if (state.status === "saved") dirtyInputDrafts.delete(key);
+        if (key === JSON.stringify([inputSession, inputRevision])) $("graph-draft-status").textContent = message;
+      } else {
+        if (state.status === "saved") dirtyEventDrafts.delete(key);
+        if (key === eventDraftKey) $("graph-event-draft-status").textContent = message;
+      }
+    },
+  });
   function error(message) { $("graph-error").textContent = message || ""; $("graph-error").hidden = !message; }
   async function request(path, options = {}) {
     const mutation = options.method === "POST" && path === "/api/graph/consumer/commands";
@@ -63,20 +83,36 @@
     if (!response.ok) throw httpFailure(value, response.status);
     return value;
   }
-  function rememberInputs() {
-    if (inputSession) inputDrafts.set(inputSession, Object.fromEntries(formInputs.map(row => [row.name, row.element.value])));
+  function stageInputs() {
+    if (!inputSession || !inputReady) return;
+    const session = inputSession, revision = inputRevision, key = JSON.stringify([session, revision]);
+    const value = Object.fromEntries(formInputs.map(row => [row.name, row.element.value]));
+    inputDrafts.set(key, value); dirtyInputDrafts.add(key);
+    draftBuffer.stage(client.draftAddress("chat-input", "inputs:" + revision, session), value);
+  }
+  async function rememberInputs() {
+    if (dirtyInputDrafts.has(JSON.stringify([inputSession, inputRevision]))) stageInputs();
+    await draftBuffer.flush();
   }
   function renderInputs(view) {
     const session = view?.workflow_session_id ?? null;
     if (session === inputSession && view?.definition_revision === inputRevision) {
-      for (const row of formInputs) row.element.disabled = localBusy || client.busy || !!client.pending;
+      for (const row of formInputs) row.element.disabled = localBusy || client.busy || !!client.pending || !inputReady;
       return;
     }
-    rememberInputs(); inputSession = session; inputRevision = view?.definition_revision ?? null;
+    if (inputReady) void rememberInputs().catch(failure => error(failure.message));
+    inputSession = session; inputRevision = view?.definition_revision ?? null; inputReady = false;
+    $("graph-draft-status").textContent = "";
     formInputs = []; const container = $("graph-inputs"); container.replaceChildren();
     const pendingInputs = client.pending?.action === "start" && client.pending.workflow_session_id === session
       ? client.pending.body.inputs : null;
-    const draft = pendingInputs ?? inputDrafts.get(session) ?? {};
+    if (!session) return;
+    const key = JSON.stringify([session, inputRevision]), revision = inputRevision;
+    client.readDraft(client.draftAddress("chat-input", "inputs:" + revision, session)).then(saved => {
+    if (session !== inputSession || revision !== inputRevision) return;
+    const draft = pendingInputs ?? (dirtyInputDrafts.has(key) ? inputDrafts.get(key) : null) ?? saved ?? {};
+    if (!GraphChat.strictJson(draft) || draft === null || typeof draft !== "object" || Array.isArray(draft))
+      throw new Error("运行输入草稿格式无效");
     const declarations = (view?.inputs ?? []).map(input => ({ ...input,
       ...(pendingInputs && Object.hasOwn(pendingInputs, input.name)
         ? { data_type: typeof pendingInputs[input.name] === "string" ? "TEXT" : "PROMPT" } : {}) }));
@@ -92,8 +128,14 @@
         : declaration.data_type === "PROMPT" ? { schema_version: 1, kind: "workflow.prompt", stage: "materials", items: [], assembly: null } : "";
       element.value = typeof value === "string" ? value : JSON.stringify(value, null, 2);
       element.disabled = localBusy || client.busy || !!client.pending;
+      element.addEventListener("input", () => {
+        stageInputs();
+      });
       formInputs.push({ name: declaration.name, data_type: declaration.data_type, element }); container.append(label, element);
     }
+    inputDrafts.set(key, Object.fromEntries(formInputs.map(row => [row.name, row.element.value])));
+    inputReady = true; render();
+    }).catch(failure => { if (session === inputSession && revision === inputRevision) { error(failure.message); $("graph-draft-status").textContent = "尚未读取本机草稿"; } });
   }
   function renderEvents() {
     const packet = client?.eventBindings ?? null, selector = $("graph-events");
@@ -105,16 +147,47 @@
         option.textContent = `${binding.display_name} · ${binding.event_id}@${binding.schema_version}`; selector.append(option);
       }
       if ([...selector.options].some(option => option.value === selected)) selector.value = selected;
-      else $("graph-event-payload").value = "{}";
       eventPacket = packet;
     }
     const binding = packet?.bindings.find(row => JSON.stringify([row.event_id, row.schema_version]) === selector.value);
     $("graph-event-schema").textContent = binding ? JSON.stringify(binding.payload_schema, null, 2) : "";
     const locked = localBusy || client?.busy || !!client?.pending || eventsBusy;
     selector.disabled = locked || !packet?.bindings.length;
-    $("graph-event-payload").disabled = locked;
+    $("graph-event-payload").disabled = locked || !eventDraftReady;
     $("graph-event-refresh").disabled = locked || !client?.consumer;
-    $("graph-event-submit").disabled = locked || !binding || !packet?.can_submit;
+    $("graph-event-submit").disabled = locked || !eventDraftReady || !binding || !packet?.can_submit;
+    const view = client?.consumer, key = view ? JSON.stringify([view.workflow_session_id, view.definition_revision]) : null;
+    if (key !== eventDraftKey) {
+      void draftBuffer.flush().catch(failure => error(failure.message));
+      eventDraftKey = key; eventDraftReady = false; $("graph-event-payload").value = "{}";
+      $("graph-event-draft-status").textContent = "";
+      if (key) {
+        const [session, revision] = JSON.parse(key);
+        client.readDraft(client.draftAddress("chat-input", "events:" + revision, session)).then(saved => {
+          if (eventDraftKey !== key) return;
+          const draft = dirtyEventDrafts.has(key) ? eventDrafts.get(key) ?? saved : saved;
+          if (draft) {
+            if (typeof draft.payload !== "string" || typeof draft.selected !== "string") throw new Error("事件草稿格式无效");
+            $("graph-event-payload").value = draft.payload;
+            if ([...selector.options].some(row => row.value === draft.selected)) selector.value = draft.selected;
+          }
+          eventDrafts.set(key, { payload: $("graph-event-payload").value, selected: selector.value });
+          eventDraftReady = true;
+          renderEvents();
+        }).catch(failure => { if (eventDraftKey === key) error(failure.message); });
+      }
+    }
+  }
+  function stageEvent() {
+    if (!eventDraftKey || !eventDraftReady) return;
+    const [session, revision] = JSON.parse(eventDraftKey);
+    const value = { payload: $("graph-event-payload").value, selected: $("graph-events").value };
+    eventDrafts.set(eventDraftKey, value); dirtyEventDrafts.add(eventDraftKey);
+    draftBuffer.stage(client.draftAddress("chat-input", "events:" + revision, session), value);
+  }
+  async function rememberEvent() {
+    if (eventDraftKey && dirtyEventDrafts.has(eventDraftKey)) stageEvent();
+    await draftBuffer.flush();
   }
   async function loadEvents() {
     if (!client?.consumer || eventsBusy) { renderEvents(); return; }
@@ -133,6 +206,7 @@
     if (!binding) return;
     localBusy = true; clearTimeout(timer); error(""); render();
     try {
+      await rememberEvent();
       const payload = JSON.parse($("graph-event-payload").value);
       await client.submitEvent(binding, payload); await client.refresh(); await loadEvents();
     } catch (failure) { error(failure.message); }
@@ -176,7 +250,7 @@
     $("graph-new-session").disabled = locked || !definition;
     $("graph-refresh").disabled = localBusy || client?.busy || !client?.sessionId;
     $("graph-status").textContent = view ? `${labels[view.status] ?? view.status} · 定义 r${view.definition_revision} · 会话 ${view.workflow_session_id}` : "选择或新建会话";
-    $("graph-submit").disabled = localBusy || client?.busy || !client?.pending && !view?.can_submit;
+    $("graph-submit").disabled = localBusy || client?.busy || !client?.pending && (!inputReady || !view?.can_submit);
     $("graph-submit").textContent = client?.pending ? "核实原请求" : "启动";
     $("graph-pending").textContent = client?.pending ? `待核实 · ${client.pending.body.idempotency_key}` : "";
     renderInputs(view);
@@ -251,8 +325,9 @@
   }
   async function perform(action) {
     if (localBusy || client?.busy) return;
-    localBusy = true; error(""); rememberInputs(); render();
+    localBusy = true; error(""); render();
     try {
+      await rememberInputs();
       const fields = action === "start" && !client.pending ? { inputs: Object.fromEntries(formInputs.map(row => [row.name,
         parseExternalInput(row.data_type, row.element.value)])) }
         : action === "create" ? { definition_revision: definition.definition_revision }
@@ -374,7 +449,8 @@
   }
   $("graph-composer").addEventListener("submit", event => { event.preventDefault(); void perform("start"); });
   $("graph-event-composer").addEventListener("submit", event => { event.preventDefault(); void performEvent(); });
-  $("graph-events").onchange = renderEvents;
+  $("graph-events").onchange = () => { renderEvents(); stageEvent(); };
+  $("graph-event-payload").addEventListener("input", stageEvent);
   $("graph-event-refresh").onclick = () => void loadEvents();
   $("graph-new-session").onclick = () => void perform("create");
   $("graph-refresh").onclick = () => void refresh();
@@ -387,15 +463,20 @@
   $("graph-information-next").onclick = () => void readInformation(true);
   $("graph-sessions").onchange = async event => {
     if (!event.target.value || localBusy || client.busy || client.pending) return;
-    localBusy = true; rememberInputs(); clearTimeout(timer); historyGeneration++; clearHistory(); disposeMounts(outputMounts);
-    try { await client.selectSession(event.target.value); query.set("graph_session", client.sessionId); history.replaceState(null, "", `${location.pathname}?${query}${location.hash}`); error(""); await loadRegistrations(); await loadEvents(); }
+    const session = event.target.value;
+    localBusy = true; clearTimeout(timer); historyGeneration++; clearHistory(); disposeMounts(outputMounts); render();
+    try { await rememberInputs(); await rememberEvent(); await client.selectSession(session); query.set("graph_session", client.sessionId); history.replaceState(null, "", `${location.pathname}?${query}${location.hash}`); error(""); await loadRegistrations(); await loadEvents(); }
     catch (failure) { error(failure.message); }
     finally { localBusy = false; render(); schedule(); }
   };
-  window.addEventListener("pagehide", () => { clearTimeout(timer); frontendHost?.dispose(); if (client) { client.generation++; client.invalidateInformation(); } historyGeneration++; resetInformation(); });
+  window.addEventListener("pagehide", () => { clearTimeout(timer); draftBuffer.dispose(); frontendHost?.dispose(); if (client) { client.generation++; client.invalidateInformation(); } historyGeneration++; resetInformation(); });
+  window.addEventListener("beforeunload", event => {
+    if (!draftBuffer.hasUnsaved() && !client?.draftIntents.size) return;
+    event.preventDefault(); event.returnValue = "";
+  });
   try {
     if (!uuid(workflowId) || requestedSession !== null && !uuid(requestedSession)) throw new Error("工作流入口身份无效");
-    client = new GraphChatClient({ workflowId, sessionId: requestedSession, storage: localStorage, request, keyFactory: () => crypto.randomUUID() });
+    client = new GraphChatClient({ workflowId, sessionId: requestedSession, legacyStorage: localStorage, request, keyFactory: () => crypto.randomUUID() });
     if (typeof WorkflowFrontendHost !== "undefined") {
       frontendHost = new WorkflowFrontendHost.ConsumerFrontendHost(client);
       if (typeof WorkflowFrontendPackage !== "undefined") WorkflowFrontendPackage.install(frontendHost);
@@ -404,5 +485,11 @@
     $("graph-name").textContent = definition.name; await loadDirectory(); await client.refresh(); render(); schedule();
     await loadRegistrations();
     await loadEvents();
-  } catch (failure) { error(failure.message); }
+  } catch (failure) { error(failure.message); $("graph-import-legacy").hidden = !client?.legacyPending; }
+  $("graph-import-legacy").onclick = async () => {
+    if (!confirm("将浏览器保留的原请求写入本机并核实？不会再次执行请求。")) return;
+    try { await client.importLegacyPending(); $("graph-import-legacy").hidden = true; definition = await client.readDefinition();
+      $("graph-name").textContent = definition.name; await loadDirectory(); await client.refresh(); render(); error(""); }
+    catch (failure) { error(failure.message); }
+  };
 })();

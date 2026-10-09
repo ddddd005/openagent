@@ -42,6 +42,8 @@ const bare = { schema_version: 1, kind: "workflow.consumer", workflow_definition
   definition_revision: 1, workflow_session_id: session, session_revision: 1, status: "idle",
   can_submit: true, available_actions: [], inputs: [input], nodes: [], outputs: [], history: [], diagnostics: [] };
 const raw = new Map(), storage = { getItem: key => raw.get(key) ?? null, setItem: (key, value) => raw.set(key, value) };
+const { createLocalDraftPort } = require(path.resolve(shell, "../../../../tests/local_draft_port.cjs"));
+const localDrafts = createLocalDraftPort(), draftPort = localDrafts.port;
 const response = value => ({ ok: true, status: 200, json: async () => copy(value) });
 const entry = (number, role) => ({ entry_id: id(number), role,
   source_ref: { scope: "artifact", output_id: id(number + 100) } });
@@ -122,7 +124,7 @@ def test_tavern_public_transcript_deduplicates_and_preserves_artifact_producer()
     return response(publicArtifact(output, envelope.parameters.reference));
   };
   const client = TavernAdapter.createClient({ workflowId: workflow, sessionId: session,
-    storage, fetcher, keyFactory: randomUUID });
+    draftPort, fetcher, keyFactory: randomUUID });
   client.accept(view);
   const cache = new Map(), rows = await TavernAdapter.transcript(client, cache);
   assert.equal(rows.length, 4);
@@ -177,10 +179,16 @@ def test_tavern_unknown_result_survives_reopen_without_reposting():
         accepted: receipt }, result: { receipt } });
   };
   raw.set("workflow-chat:v1:" + workflow, "generic journal must not be consumed");
-  const options = { workflowId: workflow, sessionId: session, storage, fetcher, keyFactory: randomUUID };
+  const options = { workflowId: workflow, sessionId: session, draftPort, fetcher, keyFactory: randomUUID };
   const original = TavernAdapter.createClient(options); original.accept(bare);
   await assert.rejects(original.command("start", { inputs: { message: "immutable original" } }), /未知/);
-  const pending = copy(original.pending), reopened = TavernAdapter.createClient({ ...options, sessionId: id(3) });
+  const pending = copy(original.pending), conflicting = TavernAdapter.createClient({ ...options, sessionId: id(3) });
+  await assert.rejects(conflicting.restoreLocalState(), /当前入口未改绑/);
+  assert.equal(conflicting.sessionId, id(3));
+  assert.equal(conflicting.pending, null);
+  assert.deepEqual(conflicting.localConflict.pending, pending);
+  const reopened = TavernAdapter.createClient(options);
+  await reopened.restoreLocalState();
   assert.equal(reopened.sessionId, session);
   assert.deepEqual(reopened.pending, pending);
   await assert.rejects(reopened.selectSession(id(3)), /核实/);
@@ -297,7 +305,7 @@ def test_tavern_fork_adopts_actual_child_old_definition_and_keeps_parent():
     return response(forkEnvelope(body));
   };
   const client = TavernAdapter.createClient({ workflowId: workflow, sessionId: session,
-    storage, fetcher, keyFactory: randomUUID });
+    draftPort, fetcher, keyFactory: randomUUID });
   client.accept(parent);
   await assert.rejects(client.forkCandidate(candidate), /动作当前不可用/);
   await client.readCandidates();
@@ -310,7 +318,8 @@ def test_tavern_fork_adopts_actual_child_old_definition_and_keeps_parent():
   assert.equal(client.pending, null);
   assert.deepEqual(parent, before);
   assert.equal(calls.filter(row => row.url.endsWith("/commands")).length, 1);
-  const reopened = TavernAdapter.createClient({ workflowId: workflow, storage, fetcher, keyFactory: randomUUID });
+  const reopened = TavernAdapter.createClient({ workflowId: workflow, draftPort, fetcher, keyFactory: randomUUID });
+  await reopened.restoreLocalState();
   assert.equal(reopened.sessionId, id(3));
   assert.equal(reopened.pending, null);
 })().catch(error => { console.error(error); process.exitCode = 1; });
@@ -335,13 +344,18 @@ def test_tavern_fork_unknown_reopen_receipt_only_and_strict_source():
     }
     return response(result);
   };
-  const options = { workflowId: workflow, sessionId: session, storage, fetcher, keyFactory: randomUUID };
+  const options = { workflowId: workflow, sessionId: session, draftPort, fetcher, keyFactory: randomUUID };
   const client = TavernAdapter.createClient(options); client.accept(parent); await client.readCandidates();
   await assert.rejects(client.forkCandidate(candidate), /未知/);
   const pending = copy(client.pending);
   assert.deepEqual(pending.candidate, candidate);
   assert.equal(pending.workflow_session_id, session);
-  const reopened = TavernAdapter.createClient({ ...options, sessionId: id(3) });
+  const conflicting = TavernAdapter.createClient({ ...options, sessionId: id(3) });
+  await assert.rejects(conflicting.restoreLocalState(), /当前入口未改绑/);
+  assert.equal(conflicting.sessionId, id(3));
+  assert.equal(conflicting.pending, null);
+  const reopened = TavernAdapter.createClient(options);
+  await reopened.restoreLocalState();
   assert.deepEqual(reopened.pending, pending);
   assert.equal(reopened.sessionId, session, "unknown fork retains parent, not guessed child");
   await assert.rejects(reopened.selectSession(id(3)), /核实/);
@@ -368,15 +382,16 @@ def test_tavern_fork_late_responses_stale_catalog_and_storage_failure():
     if (url.endsWith("/queries")) return response(packet);
     return new Promise(resolve => { finish = () => resolve(response(forkEnvelope(body))); });
   };
-  const client = TavernAdapter.createClient({ workflowId: workflow, sessionId: session, storage, fetcher, keyFactory: randomUUID });
+  const client = TavernAdapter.createClient({ workflowId: workflow, sessionId: session, draftPort, fetcher, keyFactory: randomUUID });
   client.accept(parent); await client.readCandidates();
   const delayed = client.forkCandidate(candidate);
+  while (!finish) await new Promise(resolve => setTimeout(resolve, 0));
   client.generation++; finish();
   await assert.rejects(delayed, /迟到回执/);
   assert.equal(client.sessionId, session);
   assert.ok(client.pending); assert.equal(client.pending.workflow_session_id, session);
   const fresh = TavernAdapter.createClient({ workflowId: workflow, sessionId: session,
-    storage: { getItem: () => null, setItem: () => {} }, fetcher: async () => new Promise(resolve => {
+    draftPort: createLocalDraftPort().port, fetcher: async () => new Promise(resolve => {
       finish = () => resolve(response(packet)); }), keyFactory: randomUUID });
   fresh.accept(parent);
   const catalog = fresh.readCandidates();
@@ -384,12 +399,10 @@ def test_tavern_fork_late_responses_stale_catalog_and_storage_failure():
   finish(); assert.equal(await catalog, null);
   assert.equal(fresh.forkCandidates, null);
   let writes = 0, original = null, posts = 0;
-  const failedStorage = { getItem: key => raw.get(key) ?? null, setItem: (key, value) => {
+  const failedDrafts = createLocalDraftPort({ beforeSave() {
     writes++; if (writes === 2) throw new Error("journal full");
-    raw.set(key, value);
-  }};
-  raw.clear();
-  const options = { workflowId: workflow, sessionId: session, storage: failedStorage,
+  }});
+  const options = { workflowId: workflow, sessionId: session, draftPort: failedDrafts.port,
     keyFactory: randomUUID, fetcher: async (url, options) => {
       const body = JSON.parse(options.body);
       if (url.endsWith("/queries")) return response(packet);
@@ -403,13 +416,17 @@ def test_tavern_fork_late_responses_stale_catalog_and_storage_failure():
   assert.equal(blocked.sessionId, session);
   assert.equal(blocked.consumer.workflow_session_id, session);
   assert.equal(blocked.pending.workflow_session_id, session);
-  const recovered = TavernAdapter.createClient({ ...options, sessionId: id(3) });
+  const conflicting = TavernAdapter.createClient({ ...options, sessionId: id(3) });
+  await assert.rejects(conflicting.restoreLocalState(), /当前入口未改绑/);
+  assert.equal(conflicting.sessionId, id(3));
+  const recovered = TavernAdapter.createClient(options);
+  await recovered.restoreLocalState();
   assert.equal(recovered.sessionId, session);
   await recovered.command("fork");
   assert.equal(recovered.sessionId, id(3));
   assert.equal(posts, 1);
   const savingFailedFirst = TavernAdapter.createClient({ ...options,
-    storage: { getItem: () => null, setItem: () => { throw new Error("cannot journal"); } } });
+    draftPort: createLocalDraftPort({ beforeSave() { throw new Error("cannot journal"); } }).port });
   savingFailedFirst.accept(parent); await savingFailedFirst.readCandidates();
   await assert.rejects(savingFailedFirst.forkCandidate(candidate), /cannot journal/);
   assert.equal(savingFailedFirst.pending, null);
@@ -473,8 +490,9 @@ const destination = process.argv[3], calls = [], violations = [], browserErrors 
 const forkMode = process.argv[4] === "fork";
 const definition = { schema_version: 1, kind: "workflow.consumer-definition",
   workflow_definition_id: workflow, definition_revision: 1, name: "两轮离线聊天" };
-const queries = ["consumer.definition", "consumer.sessions", "consumer.read", "output.history", "output.artifact.read"];
-const commands = ["consumer.session.create", "consumer.run.start", "consumer.run.control"];
+const queries = ["consumer.definition", "consumer.sessions", "consumer.read", "output.history", "output.artifact.read",
+  "consumer.draft.read", "consumer.draft.list"];
+const commands = ["consumer.session.create", "consumer.run.start", "consumer.run.control", "consumer.draft.save"];
 if (forkMode) { queries.push("consumer.candidate.list"); commands.push("consumer.candidate.fork"); }
 const operation = (name, kind) => ({ name, kind, scope: "consumer", required_fields: [],
   optional_fields: [], idempotency: kind === "command" ? "service_receipt" : "none",
@@ -544,7 +562,9 @@ function forkBrowserReceipt(body, whichSession) {
         if (pathname === "/api/graph/consumer/application") value = application;
         else if (pathname === "/api/graph/consumer/queries") {
           const { operation, parameters } = body;
-          if (operation === "consumer.definition") value = definition;
+          if (operation === "consumer.draft.read" || operation === "consumer.draft.list")
+            value = await localDrafts.operation(operation, parameters);
+          else if (operation === "consumer.definition") value = definition;
           else if (operation === "consumer.sessions") value = directories();
           else if (operation === "consumer.read") {
             activeSession = parameters.session_id;
@@ -564,8 +584,10 @@ function forkBrowserReceipt(body, whichSession) {
               value.value.text = "**加粗**\n\n`{{literal}}`\n\n<script>window.pwned=1</script><img src='https://evil.test/pixel' onerror='window.pwned=2'><a href='javascript:alert(1)' onclick='window.pwned=3'>恶意链接</a><style>body{display:none}</style>\n\n[正常链接](https://example.test)";
           } else throw new Error("Unauthorized mock query: " + operation);
         } else if (pathname === "/api/graph/consumer/commands") {
-          posted++;
-          if (body.operation === "consumer.session.create") value = receiptEnvelope(body, emptyView(id(3)), "create");
+          if (body.operation !== "consumer.draft.save") posted++;
+          if (body.operation === "consumer.draft.save")
+            value = await localDrafts.operation(body.operation, body.parameters);
+          else if (body.operation === "consumer.session.create") value = receiptEnvelope(body, emptyView(id(3)), "create");
           else if (body.operation === "consumer.candidate.fork") {
             assert.equal(body.parameters.session_id, session);
             assert.equal(body.parameters.candidate_id, firstCandidate.candidate_id);
@@ -585,13 +607,18 @@ function forkBrowserReceipt(body, whichSession) {
             return route.abort("failed");
           } else throw new Error("Unauthorized mock command");
         } else if (pathname === "/api/graph/consumer/receipts/read") {
-          if (forkMode) assert.deepEqual(body, acceptedFork);
-          if (forkMode && forkStage === "matched") {
+          if (body.operation === "consumer.draft.save")
+            value = await localDrafts.operation(body.operation, body.parameters, true);
+          else if (forkMode && forkStage === "matched") {
+            assert.deepEqual(body, acceptedFork);
             const receipt = forkBrowserReceipt(body, id(9));
             value = { schema_version: 1, kind: "workflow.application-receipt-read", outcome: "matched",
               reason_code: "receipt_matched", receipt: receipt.application, result: { receipt: receipt.accepted } };
-          } else value = { schema_version: 1, kind: "workflow.application-receipt-read",
-            outcome: "unresolved", reason_code: "request_outcome_unknown" };
+          } else {
+            if (forkMode) assert.deepEqual(body, acceptedFork);
+            value = { schema_version: 1, kind: "workflow.application-receipt-read",
+              outcome: "unresolved", reason_code: "request_outcome_unknown" };
+          }
         }
         else { violations.push(pathname); return route.abort(); }
         return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
@@ -663,16 +690,21 @@ function forkBrowserReceipt(body, whichSession) {
       assert.equal(await page.locator("#new-session").isDisabled(), true);
       assert.equal(await page.locator("#send_but").isDisabled(), true);
       assert.equal(await page.locator(".mes_create_branch:visible").count(), 0);
-      const pending = await page.evaluate(() => localStorage.getItem("workflow.tavern:workflow-chat:v1:" + new URL(location.href).searchParams.get("graph_workflow")));
-      assert.equal(JSON.parse(pending).workflow_session_id, session);
-      assert.equal(JSON.parse(pending).pending.candidate.candidate_id, firstCandidate.candidate_id);
+      const pending = localDrafts.value("tavern:state", workflow);
+      assert.equal(pending.workflow_session_id, session);
+      assert.equal(pending.pending.candidate.candidate_id, firstCandidate.candidate_id);
       await page.goto(`https://tavern.test/tavern/?graph_workflow=${workflow}&graph_session=${id(3)}`);
+      await page.waitForFunction(() => document.querySelector("#error").textContent.includes("当前入口未改绑"));
+      assert.equal(new URL(page.url()).searchParams.get("graph_session"), id(3));
+      assert.equal(await page.locator("#pending").isHidden(), true);
+      assert.deepEqual(localDrafts.value("tavern:state", workflow), pending);
+      await page.goto(`https://tavern.test/tavern/?graph_workflow=${workflow}&graph_session=${session}`);
       await page.waitForFunction(() => !document.querySelector("#pending").hidden
         && document.querySelectorAll("#chat .mes").length === 4);
       assert.equal(new URL(page.url()).searchParams.get("graph_session"), session);
       await page.getByRole("button", { name: "核实原请求", exact: true }).click();
       await page.waitForFunction(() => document.querySelector("#error").textContent.includes("保留原请求"));
-      assert.equal(await page.evaluate(() => localStorage.getItem("workflow.tavern:workflow-chat:v1:" + new URL(location.href).searchParams.get("graph_workflow"))), pending);
+      assert.deepEqual(localDrafts.value("tavern:state", workflow), pending);
       assert.equal(forkCreates, 2);
       forkStage = "matched";
       await page.getByRole("button", { name: "核实原请求", exact: true }).click();
@@ -699,19 +731,20 @@ function forkBrowserReceipt(body, whichSession) {
     await page.locator("#send_textarea").fill("浏览器原始消息 {{macro}}");
     await page.getByRole("button", { name: "发送消息", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector("#pending").hidden);
-    const pendingBefore = await page.evaluate(() => localStorage.getItem("workflow.tavern:workflow-chat:v1:" + new URL(location.href).searchParams.get("graph_workflow")));
+    const pendingBefore = localDrafts.value("tavern:state", workflow);
     assert.equal(await page.locator("#sessions").isDisabled(), true);
     assert.equal(await page.locator("#new-session").isDisabled(), true);
     await page.reload(); await page.waitForFunction(() => !document.querySelector("#pending").hidden);
     assert.equal(await page.locator("#send_textarea").inputValue(), "浏览器原始消息 {{macro}}");
     await page.getByRole("button", { name: "核实原请求", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("#error").textContent.includes("保留原请求"));
-    assert.equal(await page.evaluate(() => localStorage.getItem("workflow.tavern:workflow-chat:v1:" + new URL(location.href).searchParams.get("graph_workflow"))), pendingBefore);
+    assert.deepEqual(localDrafts.value("tavern:state", workflow), pendingBefore);
     assert.equal(posted, 2, "create once and start once; reopen/reconcile must not repost");
     assert.equal(await page.locator("#chat .mes").count(), 4, "unknown message must not become a fact");
     }
     assert.deepEqual(violations, []);
     assert.deepEqual(browserErrors, []);
+    assert.equal(await page.evaluate(() => localStorage.length), 0, "consumer drafts must not use browser storage");
     assert.ok(calls.every(call => ["/api/graph/consumer/application", "/api/graph/consumer/queries",
       "/api/graph/consumer/commands", "/api/graph/consumer/receipts/read"].includes(call.pathname)));
     console.log(JSON.stringify({ desktop: "tavern-desktop.png", mobile: "tavern-mobile.png", calls: calls.length }));
