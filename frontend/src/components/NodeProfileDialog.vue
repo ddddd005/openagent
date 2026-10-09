@@ -71,7 +71,7 @@ onBeforeUnmount(() => {
       @cancel.prevent="emit('cancel')" @keydown.stop="keyboard" @pointerdown.stop>
       <form @submit.prevent="confirm">
         <header>
-          <h2 id="node-profile-title">{{ currentKey ? '切换节点配置' : `添加${family?.label ?? '节点'}` }}</h2>
+          <h2 id="node-profile-title">{{ currentKey ? '替换节点 / 切换模型协议' : `添加${family?.label ?? '节点'}` }}</h2>
           <button type="button" aria-label="关闭节点配置" title="关闭节点配置" @click="emit('cancel')"><X :size="17" /></button>
         </header>
         <div class="node-profile-content">

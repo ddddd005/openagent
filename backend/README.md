@@ -12,10 +12,13 @@ implementations and their test graphs are retired rather than silently upgraded.
 Application metadata remains `0.2.0`; the current mainline is not a new release
 tag or a claim that the entire backend suite is green.
 
-The current `develop` additionally implements frontend-userization P1-P4,
-not yet promoted to stable `main`. P4 adds management-only private credentials
-and bounded model discovery; see the [P3/P4 record](../docs/FRONTEND-P3-P4-2026-10-09.md).
-BAT startup and stable code remain unchanged.
+The current `develop` has locally committed frontend-userization P1-P4
+(`8743787` for P3/P4), with P5/P6 implemented but uncommitted in the workspace.
+None is promoted to stable `main`. P4 adds management-only private credentials
+and bounded model discovery; P5 adds read-only draft input declarations.
+See the [P3/P4 record](../docs/FRONTEND-P3-P4-2026-10-09.md) and
+[P5/P6 record](../docs/FRONTEND-P5-P6-2026-10-09.md).
+BAT startup and stable code remain unchanged; no product service was started.
 
 ## Start Here
 
@@ -82,6 +85,7 @@ All files below are under `src/phase1_agent/`.
 | --- | --- |
 | `server.py`, `graph_http.py` | Loopback HTTP and application routing |
 | `graph_application.py`, `graph_application_contracts.py` | Command/query boundary and identity checks |
+| `graph_input_declarations.py` | Management-only `definition.inputs`, editable declarations for incomplete graphs and separate active required inputs |
 | `workflow_host.py`, `graph_platform.py`, `graph_service.py` | Host composition, graph/session operations and object adoption |
 | `graph_execution.py`, `graph_runtime_host.py` | Compilation and hosted execution |
 | `agent_package.py`, `agent_executor.py`, `runtime.py`, `runtime_hosting.py` | Native Agent execution, tool boundaries and same-process continuation |
@@ -101,6 +105,17 @@ Schemas are checked in under `backend/schemas/`; exporters are under
 Thinking summaries are display data, not private protocol state. Gemini
 signatures remain opaque and preserve original part order and tool bindings;
 they must not be forged, removed or exposed as answer text.
+
+Draft input discovery reads each node declaration independently and returns
+compile diagnostics instead of hiding all fields when a graph is incomplete.
+`required_for_run` is `null` when compilation fails; editable declarations are
+not automatically required by the current execution roots. Consumer permission
+is not expanded. Prompt group fields are an exact frontend extension, not a new
+node or data schema. Display names and directory archive metadata remain
+management editing records, separate from runtime facts and resource bodies.
+
+The P5/P6 targeted backend group passed 286 tests in 14 files using isolated
+databases and mock transports, not a full backend rerun or live BAT acceptance.
 
 Private credentials use a separate `<database>.credentials.sqlite` protected
 with Windows current-user DPAPI and path-bound entropy. No plaintext fallback

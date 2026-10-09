@@ -139,7 +139,6 @@ async function apply() {
             <button type="button" title="移除条目" :aria-label="`条目 ${index + 1} 移除`" :disabled="disabled" @click="remove(index)"><Trash2 :size="14" /></button>
           </template>
         </header>
-        <small :title="entry.id" class="entry-id">{{ entry.id }}</small>
         <label>名称<input :value="entry.name" type="text" :aria-label="`条目 ${index + 1} 名称`" @input="patchEntry(index, { name: ($event.target as HTMLInputElement).value })" /></label>
         <label>正文<textarea :value="entry.text" rows="4" :aria-label="`条目 ${index + 1} 正文`" @input="patchEntry(index, { text: ($event.target as HTMLTextAreaElement).value })" /></label>
         <div class="field-row">
@@ -177,6 +176,7 @@ async function apply() {
           :disabled="disabled" :draft-scope="`${draftScope}:entry:${entry.id}:presentation`" :draft-basis="draftBasis"
           :label-prefix="`条目 ${index + 1}`" @update:model-value="presentation(index, $event)"
           @validity="numericValidity[`${entry.id}:presentation`] = $event" />
+        <details><summary>条目技术详情</summary><small class="entry-id">{{ entry.id }}</small></details>
       </section>
       <button v-if="group" type="button" class="add-entry" :disabled="disabled || entries.length >= lorebookLimits.entries" @click="add"><Plus :size="14" />新增条目</button>
       <section v-if="draft" class="variable-bindings" aria-label="只读变量绑定">

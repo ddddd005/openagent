@@ -4,8 +4,15 @@ import { computed, ref, watch } from "vue";
 import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { useWorkspaceStore } from "../stores/workspace";
+import { useManagementLabelsStore } from "../stores/managementLabels";
+import ManagementLabelFields from "./ManagementLabelFields.vue";
+import { resultStatusLabel } from "../domain/resultPresentation";
 const graph = useWorkflowGraphStore();
 const workspace = useWorkspaceStore();
+const labels = useManagementLabelsStore();
+watch(() => graph.sessions[workspace.activeWorkflowId]?.map(row => row.workflow_session_id) ?? [], ids => {
+  if (typeof window !== "undefined") for (const id of ids) void labels.load({ kind: "session", id });
+}, { immediate: true });
 const persistence = useWorkbenchPersistenceStore(), confirming = ref(false);
 const mismatch = computed(() => !!graph.session && (graph.session.definition_revision !== graph.active?.saved_revision
   || graph.session.workflow_definition_id !== graph.document?.workflow_definition_id));
@@ -33,7 +40,8 @@ async function adopt() {
         <button type="button" aria-label="取消采用修订" @click="confirming = false"><X :size="13" /></button>
       </div>
     </div>
-    <div class="graph-session-list"><button v-for="session in graph.sessions[workspace.activeWorkflowId] ?? []" :key="session.workflow_session_id" class="graph-session-row" :class="{ active: graph.active?.session_id === session.workflow_session_id }" type="button" :disabled="graph.locked" @click="graph.selectSession(session.workflow_session_id)"><code>{{ session.workflow_session_id.slice(0,8) }}</code><small :title="session.workflow_definition_id">{{ session.status }} · 定义 {{ session.workflow_definition_id.slice(0,8) }} r{{ session.definition_revision }}</small></button><p v-if="!graph.sessions[workspace.activeWorkflowId]?.length">暂无会话</p></div>
+    <div class="graph-session-list"><button v-for="(session, index) in graph.sessions[workspace.activeWorkflowId] ?? []" :key="session.workflow_session_id" class="graph-session-row" :class="{ active: graph.active?.session_id === session.workflow_session_id }" type="button" :disabled="graph.locked" @click="graph.selectSession(session.workflow_session_id)"><strong>{{ labels.label({ kind: 'session', id: session.workflow_session_id }, `会话 ${index + 1}`) }}</strong><small>{{ resultStatusLabel(session.status) }} · r{{ session.definition_revision }}</small></button><p v-if="!graph.sessions[workspace.activeWorkflowId]?.length">暂无会话</p></div>
+    <details v-if="graph.session" class="session-details"><summary>会话名称与技术详情</summary><ManagementLabelFields :target="{ kind: 'session', id: graph.session.workflow_session_id }" :disabled="graph.locked" fallback="当前会话" /><code>{{ graph.session.workflow_session_id }}</code><code>{{ graph.session.workflow_definition_id }} · r{{ graph.session.definition_revision }}</code></details>
   </section>
 </template>
 <style scoped>
@@ -47,6 +55,7 @@ button:not(:disabled):hover { background:#36363e; }
 .graph-session-row { display:flex; flex-direction:column; align-items:flex-start; width:100%; gap:5px; padding:8px; margin-bottom:3px; text-align:left; border:1px solid transparent; }
 .graph-session-row.active { background:#35423b; border-color:#52675a; }
 code { font-size:11px; }
+.graph-session-row strong { font-size:11px; overflow-wrap:anywhere; } .session-details { padding:8px 10px; font-size:11px; display:grid; gap:7px; } .session-details code { display:block; overflow-wrap:anywhere; padding:5px 0; }
 small,p { font-size:10px; color:#a1a1ac; }
 p { padding:3px 5px; }
 .revision-state { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:5px 10px; font-size:10px; color:#b9bec6; }

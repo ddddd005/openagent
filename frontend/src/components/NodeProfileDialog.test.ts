@@ -31,7 +31,7 @@ describe("node profile selection", () => {
   it("requires reset confirmation when switching current protocol", async () => {
     const families = buildNodeFamilies([definition("agents.execute", "8", 6), definition("agents.execute", "4", 6)]);
     const html = await render({ families, familyId: "agents.execute", currentKey: "agents.execute@4" });
-    expect(html).toContain("切换节点配置");
+    expect(html).toContain("替换节点 / 切换模型协议");
     expect(html).toContain("agents.execute@4");
     expect(html).toContain("PROMPT@6");
     expect(html).toContain("确认重置配置与公开输出");

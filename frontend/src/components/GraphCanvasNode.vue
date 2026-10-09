@@ -4,8 +4,10 @@ import { Handle, Position } from "@vue-flow/core";
 import { AlertCircle, Box, Flag } from "lucide-vue-next";
 import { nodePorts, type GraphNode, type GraphNodeType, type GraphPort } from "../domain/workflowGraph";
 import { nodeDisplayTitle, nodeProfileLabel, nodeTypeLabel } from "../domain/nodeCatalog";
+import { resultStatusLabel } from "../domain/resultPresentation";
 const props = defineProps<{ selected?: boolean; data: { node: GraphNode; definition?: GraphNodeType;
-  displayTitle?: string; status: string; inputs: string[]; outputs: string[]; error: boolean; executionRoot?: boolean } }>();
+  displayTitle?: string; status: string; inputs: string[]; outputs: string[]; error: boolean; executionRoot?: boolean;
+  inputIssues?: Record<string, string | null>; outputIssues?: Record<string, string | null> } }>();
 function ports(direction: "inputs" | "outputs"): GraphPort[] {
   const known = nodePorts(props.data.definition, props.data.node, direction);
   return [...known, ...[...new Set(props.data[direction])].filter(id => !known.some(port => port.port_id === id))
@@ -28,18 +30,22 @@ const profile = computed(() => props.data.definition ? nodeProfileLabel(props.da
     <div class="ports">
       <div class="port-column">
         <div v-for="port in inputs" :key="port.port_id" class="port-row input">
-          <Handle :id="port.port_id" type="target" :position="Position.Left" />
+          <Handle :id="port.port_id" type="target" :position="Position.Left"
+            :class="{ compatible: data.inputIssues?.[port.port_id] === null, incompatible: !!data.inputIssues?.[port.port_id] }"
+            :title="data.inputIssues?.[port.port_id] ?? `${port.port_id} · ${port.data_type}`" />
           <span>{{ port.port_id }}</span><small>{{ port.data_type }}</small>
         </div>
       </div>
       <div class="port-column">
         <div v-for="port in outputs" :key="port.port_id" class="port-row output">
           <small>{{ port.data_type }}</small><span>{{ port.port_id }}</span>
-          <Handle :id="port.port_id" type="source" :position="Position.Right" />
+          <Handle :id="port.port_id" type="source" :position="Position.Right"
+            :class="{ compatible: data.outputIssues?.[port.port_id] === null, incompatible: !!data.outputIssues?.[port.port_id] }"
+            :title="data.outputIssues?.[port.port_id] ?? `${port.port_id} · ${port.data_type}`" />
         </div>
       </div>
     </div>
-    <footer>{{ data.status }}<span v-if="data.executionRoot">执行根</span><span v-if="data.definition && !data.definition.executable">未接入执行器</span><span v-if="!data.definition">类型缺失</span></footer>
+    <footer>{{ resultStatusLabel(data.status) }}<span v-if="data.executionRoot">运行目标</span><span v-if="data.definition && !data.definition.executable">未接入执行器</span><span v-if="!data.definition">类型缺失</span></footer>
   </article>
 </template>
 
@@ -53,11 +59,16 @@ header { display:flex; align-items:center; gap:7px; min-height:34px; padding:0 1
 strong { flex:1; min-width:0; overflow-wrap:anywhere; font-weight:500; padding:6px 0; }
 p { margin:9px 11px; color:#aab4b0; height:32px; overflow:hidden; white-space:pre-line; overflow-wrap:anywhere; line-height:16px; }
 .node-profile { margin:0 11px 8px; font-size:10px; color:#b8b5a4; overflow-wrap:anywhere; line-height:15px; }
-.ports { display:flex; justify-content:space-between; min-height:28px; }
-.port-column { max-width:50%; }
+.ports { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); min-height:28px; }
+.port-column { min-width:0; }
 .port-row { display:flex; position:relative; align-items:center; gap:5px; min-height:27px; padding:0 11px; }
-.port-row small { font-size:9px; color:#89978e; }
+.port-row span { min-width:0; overflow-wrap:anywhere; }
+.port-row small { display:none; }
 .output { justify-content:flex-end; }
-.vue-flow__handle { width:8px; height:8px; background:#8bc4aa; border-color:#26382d; }
+.vue-flow__handle:not(.control-anchor) { width:24px; height:24px; box-sizing:border-box; background:transparent; border:0; border-radius:50%; }
+.vue-flow__handle:not(.control-anchor)::after { content:""; position:absolute; inset:8px; border-radius:50%; background:#8bc4aa; border:1px solid #26382d; pointer-events:none; }
+.vue-flow__handle:not(.control-anchor):hover { outline:2px solid #c4dfd2; outline-offset:0; }
+.vue-flow__handle.compatible { outline:2px solid #77c6a0; }
+.vue-flow__handle.incompatible { outline:2px solid #bf7777; }
 footer { display:flex; justify-content:space-between; gap:4px; padding:5px 11px; border-top:1px solid #45454d; font-size:10px; color:#9999a3; }
 </style>

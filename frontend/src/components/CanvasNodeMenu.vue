@@ -9,7 +9,10 @@ const props = defineProps<{ state: CanvasMenuState | null; groups: CanvasMenuGro
 const emit = defineEmits<{ select: [id: string]; add: []; back: []; dismiss: [] }>();
 const root = ref<HTMLElement | null>(null), submenu = ref<HTMLElement | null>(null);
 const position = ref({ x: 8, y: 8 }), childPosition = ref({ x: 8, y: 8 });
-const activeId = ref<string | null>(null), compact = ref(false);
+const activeId = ref<string | null>(null), compact = ref(false), search = ref("");
+const matches = computed(() => props.groups.flatMap(group => group.items.filter(item =>
+  `${group.label} ${item.label} ${item.id}`.toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase()))
+  .map(item => ({ ...item, category: group.label }))));
 let layoutGeneration = 0;
 const key = (group: CanvasMenuGroup, index: number) => group.id ?? group.label ?? String(index);
 const activeGroup = computed(() => props.groups.find((group, index) => key(group, index) === activeId.value));
@@ -28,6 +31,7 @@ function alignRoot(state: CanvasMenuState) {
 watch(() => props.state, async state => {
   layoutGeneration++;
   activeId.value = null;
+  search.value = "";
   compact.value = false;
   if (!state) return;
   position.value = { x: state.x, y: state.y };
@@ -77,6 +81,7 @@ function closeGroup(focus = false) {
   });
 }
 function keyboard(event: KeyboardEvent) {
+  if ((event.target as HTMLElement).tagName === "INPUT" && !["ArrowDown", "Escape"].includes(event.key)) return;
   if (event.key === "Tab") { emit("dismiss"); return; }
   if (!["ArrowDown", "ArrowUp", "Home", "End", "ArrowRight", "ArrowLeft"].includes(event.key)) return;
   event.preventDefault();
@@ -121,7 +126,12 @@ function keyboard(event: KeyboardEvent) {
             @click="compact ? closeGroup(true) : emit('back')"><ChevronLeft :size="15" /></button>
           <strong>{{ compact ? activeGroup?.label : '添加节点' }}</strong>
         </header>
-        <div v-if="compact && activeGroup" class="canvas-node-menu-list" data-node-submenu
+        <input v-model="search" class="node-search" aria-label="搜索节点" placeholder="搜索节点" @input="activeId = null; compact = false" />
+        <div v-if="search.trim()" class="canvas-node-menu-list">
+          <button v-for="item in matches" :key="item.id" type="button" role="menuitem" :disabled="item.disabled" @click="emit('select', item.id)"><span>{{ item.label }}</span><small>{{ item.category }}</small></button>
+          <p v-if="!matches.length" role="status">没有匹配节点</p>
+        </div>
+        <div v-else-if="compact && activeGroup" class="canvas-node-menu-list" data-node-submenu
           role="menu" :aria-label="`${activeGroup.label ?? '节点'}节点`">
           <button v-for="item in activeGroup.items" :key="item.id" type="button" role="menuitem"
             :disabled="item.disabled" :title="item.label" @click="emit('select', item.id)"><span>{{ item.label }}</span></button>
@@ -172,4 +182,5 @@ function keyboard(event: KeyboardEvent) {
 .canvas-node-menu header strong { font-size:12px; font-weight:500; padding:6px 8px; overflow-wrap:anywhere; }
 .canvas-node-menu-list { max-height:min(420px, calc(100vh - 66px)); overflow-y:auto; }
 .canvas-node-submenu { z-index:101; width:230px; }
+.node-search { box-sizing:border-box; width:100%; min-width:0; padding:7px; margin-bottom:5px; border:1px solid #535359; border-radius:3px; color:inherit; background:#222226; font:inherit; }
 </style>

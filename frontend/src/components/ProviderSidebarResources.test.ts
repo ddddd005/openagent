@@ -119,7 +119,7 @@ function expectSharedProvider(html: string, record: CurrentProvider) {
   const fields = html.slice(html.indexOf('class="model-source-fields"'));
   expect(fields).toContain(record.value.name);
   expect(fields).toContain(record.resource_id);
-  expect(fields).toContain(`s${record.update_sequence}`);
+  expect(fields).not.toContain(` · s${record.update_sequence}`);
   expect(fields).not.toContain("\u7f3a\u5931\u5f15\u7528");
 }
 

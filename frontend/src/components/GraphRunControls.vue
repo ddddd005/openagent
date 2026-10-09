@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { MoreHorizontal, Pause, Play, RefreshCw, RotateCcw, SquarePen, X } from "lucide-vue-next";
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { graphObject } from "../domain/workflowGraph";
 import { useBoundFormDraft } from "../composables/useBoundFormDraft";
 import FormDraftNotice from "./FormDraftNotice.vue";
+import { readGraphInputDeclarations, type GraphInputDeclarations } from "../adapters/graphInputDeclarationsApi";
 const graph = useWorkflowGraphStore();
 const editing = ref(false);
 const input = ref("");
@@ -12,12 +13,35 @@ const menuOpen = ref(false);
 const additionalRequests = ref("1");
 const additionalAttempts = ref("4");
 const applying = ref(false), error = ref("");
+const declarations = ref<GraphInputDeclarations | null>(null), loadingInputs = ref(false), inputError = ref("");
+const parsedInput = computed(() => { try { const value = JSON.parse(input.value); return graphObject(value) ? value : null; } catch { return null; } });
+function plainText(name: string) {
+  const value = parsedInput.value?.[name];
+  return value === undefined || typeof value === "string" ? value ?? ""
+    : graphObject(value) && value.kind === "workflow.text" && value.schema_version === 2 && typeof value.text === "string" ? value.text : null;
+}
+function editText(name: string, event: Event) {
+  if (!parsedInput.value) return;
+  const text = (event.target as HTMLTextAreaElement).value, old = parsedInput.value[name];
+  input.value = JSON.stringify({ ...parsedInput.value, [name]: graphObject(old) ? { ...old, text } : text }, null, 2);
+}
+let inputGeneration = 0;
+watch(() => [editing.value, graph.document, graph.active?.session_id] as const, async ([open, document]) => {
+  const token = ++inputGeneration;
+  declarations.value = null; inputError.value = ""; loadingInputs.value = false;
+  if (!open || !document) return;
+  loadingInputs.value = true;
+  try { const value = await readGraphInputDeclarations(document); if (token === inputGeneration) declarations.value = value; }
+  catch (failure) { if (token === inputGeneration) inputError.value = failure instanceof Error ? failure.message : "输入声明读取失败"; }
+  finally { if (token === inputGeneration) loadingInputs.value = false; }
+});
+onBeforeUnmount(() => { inputGeneration++; });
 const localDraft = useBoundFormDraft({
   id: () => graph.document ? `run-input:${graph.document.workflow_definition_id}:${graph.active?.session_id ?? "none"}` : "",
   basis: () => ({ workflowId: graph.document?.workflow_definition_id ?? null,
     sessionId: graph.active?.session_id ?? null, inputs: graph.active?.external_inputs ?? {} }),
   capture: () => ({ input: input.value, additionalRequests: additionalRequests.value, additionalAttempts: additionalAttempts.value }),
-  reset: () => { input.value = ""; additionalRequests.value = "1"; additionalAttempts.value = "4"; },
+  reset: () => { input.value = JSON.stringify(graph.active?.external_inputs ?? {}, null, 2); additionalRequests.value = "1"; additionalAttempts.value = "4"; },
   restore: value => {
     if (typeof value?.input !== "string" || typeof value.additionalRequests !== "string"
       || typeof value.additionalAttempts !== "string") throw new Error("运行输入草稿格式不兼容");
@@ -30,17 +54,19 @@ const activeAgent = computed(() => graph.session?.nodes.find(node => node.budget
 watch(() => graph.session?.workflow_session_id, () => { editing.value = false; menuOpen.value = false; });
 function openInput() { if (!input.value) input.value = JSON.stringify(graph.active?.external_inputs ?? {}, null, 2); editing.value = true; }
 async function apply(event: Event) {
-  if (applying.value || graph.locked) return;
-  const form = event.target as HTMLFormElement;
-  const text = form.querySelector("textarea")!;
+  if (applying.value || graph.editorLocked) return;
   applying.value = true;
   const context = localDraft.context.value;
   try { const value = JSON.parse(input.value); if (!graphObject(value)) throw new Error();
     if (!await localDraft.flush()) throw new Error("本次输入尚未写入本机");
-    if (context !== localDraft.context.value || graph.locked) return;
-    graph.setInputs(value); text.setCustomValidity(""); editing.value = false; }
-  catch (failure) { text.setCustomValidity(failure instanceof SyntaxError ? "输入须为 JSON 对象"
-    : failure instanceof Error && failure.message ? failure.message : "输入须为 JSON 对象"); text.reportValidity(); }
+    if (context !== localDraft.context.value || graph.editorLocked) return;
+    graph.setInputs(value);
+    if (!localDraft.adoptBasis({ workflowId: graph.document?.workflow_definition_id ?? null,
+      sessionId: graph.active?.session_id ?? null, inputs: value })) inputError.value = "输入已应用，表单草稿依据尚未同步";
+    else inputError.value = "";
+    editing.value = false; }
+  catch (failure) { inputError.value = failure instanceof SyntaxError ? "输入须为 JSON 对象"
+    : failure instanceof Error && failure.message ? failure.message : "输入须为 JSON 对象"; }
   finally { applying.value = false; }
 }
 async function extendBudget() {
@@ -61,8 +87,8 @@ async function extendBudget() {
 </script>
 <template>
   <div class="graph-run-controls">
-    <span v-if="graph.session" :title="graph.session.workflow_session_id">{{ graph.session.workflow_session_id.slice(0,8) }}</span>
-    <button type="button" title="本次输入" aria-label="编辑本次输入" :disabled="graph.locked" @click="openInput"><SquarePen :size="14" /></button>
+    <span v-if="graph.session">当前会话</span>
+    <button type="button" title="本次输入" aria-label="编辑本次输入" :disabled="graph.editorLocked" @click="openInput"><SquarePen :size="14" /></button>
     <button type="button" class="graph-primary" :class="{ paused: graph.primaryAction === 'pause' }" :disabled="graph.locked || !!graph.session && !graph.session.can_submit && graph.primaryAction === 'start'" @click="graph.submitPrimary()">
       <Pause v-if="graph.primaryAction === 'pause'" :size="14" fill="currentColor" /><Play v-else :size="14" fill="currentColor" />{{ graph.statusLabel }}
     </button>
@@ -78,7 +104,16 @@ async function extendBudget() {
       </section>
     </div>
   </div>
-  <Teleport to="body"><div v-if="editing" class="graph-input-shade" @click.self="!applying && (editing = false)"><form class="graph-input-dialog" @submit.prevent="apply"><header><strong>本次输入</strong><button type="button" title="关闭" aria-label="关闭输入" :disabled="applying" @click="editing = false"><X :size="16" /></button></header><FormDraftNotice :message="localDraft.message.value" :conflict="localDraft.conflict.value" @restore="localDraft.restoreConflict" @discard="localDraft.discardConflict" /><textarea v-model="input" rows="8" aria-label="具名输入 JSON" :disabled="applying || localDraft.loading.value || localDraft.conflict.value" /><footer><button type="submit" :disabled="applying">应用</button></footer></form></div></Teleport>
+  <Teleport to="body"><div v-if="editing" class="graph-input-shade" @click.self="!applying && (editing = false)"><form class="graph-input-dialog" @submit.prevent="apply"><header><strong>本次输入</strong><button type="button" title="关闭" aria-label="关闭输入" :disabled="applying" @click="editing = false"><X :size="16" /></button></header><FormDraftNotice :message="localDraft.message.value" :conflict="localDraft.conflict.value" @restore="localDraft.restoreConflict" @discard="localDraft.discardConflict" />
+    <p v-if="loadingInputs" role="status">读取输入字段中</p>
+    <label v-for="field in declarations?.inputs ?? []" :key="field.name" class="named-input">{{ field.name }}<small>{{ field.conflict ? '声明冲突' : declarations?.required_for_run?.includes(field.name) ? '本次运行必填' : '可编辑字段' }}</small>
+      <textarea v-if="field.data_type === 'TEXT' && plainText(field.name) !== null" :value="plainText(field.name) ?? ''" rows="4" :aria-label="`运行输入 ${field.name}`" :disabled="field.conflict || graph.editorLocked || applying || localDraft.loading.value || localDraft.conflict.value" @input="editText(field.name, $event)" />
+      <small v-else>复杂输入保留在高级 JSON 中。</small>
+    </label>
+    <p v-for="(issue, index) in declarations?.diagnostics ?? []" :key="index" role="status">{{ issue.message }}</p>
+    <p v-if="inputError" role="status">{{ inputError }}</p>
+    <details :open="!!inputError || !parsedInput || !declarations?.inputs.length"><summary>高级 JSON / 未声明输入</summary><textarea v-model="input" rows="8" aria-label="具名输入 JSON" :disabled="graph.editorLocked || applying || localDraft.loading.value || localDraft.conflict.value" /></details>
+    <footer><button type="submit" :disabled="graph.editorLocked || applying || localDraft.loading.value || localDraft.conflict.value">应用</button></footer></form></div></Teleport>
 </template>
 <style scoped>
 .graph-run-controls { display:flex; align-items:center; gap:5px; }
@@ -93,7 +128,9 @@ button { display:inline-flex; align-items:center; justify-content:center; gap:5p
 .graph-agent-menu input { width:60px; padding:4px; color:#dedee4; background:#222226; border:1px solid #505059; border-radius:3px; }
 :disabled { opacity:.5; }
 .graph-input-shade { position:fixed; inset:0; z-index:150; display:grid; place-items:center; background:#11111166; }
-.graph-input-dialog { width:440px; padding:15px; border:1px solid #54545b; border-radius:5px; background:#2c2c32; color:#dedee5; }
+.graph-input-dialog { width:440px; max-width:calc(100vw - 32px); max-height:calc(100dvh - 48px); overflow:auto; box-sizing:border-box; padding:15px; border:1px solid #54545b; border-radius:5px; background:#2c2c32; color:#dedee5; }
+.named-input { display:grid; gap:5px; font-size:12px; margin-bottom:12px; min-width:0; overflow-wrap:anywhere; }
+small,summary { font-size:11px; color:#b8c4be; } p { font-size:11px; color:#e4b59b; overflow-wrap:anywhere; }
 header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; font-size:13px; }
 textarea { width:100%; box-sizing:border-box; padding:8px; border:1px solid #52525a; background:#202024; color:#dedee5; font:12px Consolas,monospace; resize:vertical; }
 footer { display:flex; justify-content:flex-end; margin-top:8px; }

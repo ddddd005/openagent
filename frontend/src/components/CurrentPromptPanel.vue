@@ -1,33 +1,36 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { ArrowDown, ArrowUp, Copy, Import, Plus, RefreshCw, Save, Trash2, X } from "lucide-vue-next";
+import { Copy, Import, Plus, RefreshCw, Save, X } from "lucide-vue-next";
 import { usePromptResources } from "../application/promptResources";
-import { clonePromptResource, duplicatePromptResource, isCurrentPromptResource, movePromptMember, newPromptMember, newPromptResource,
+import { clonePromptResource, duplicatePromptResource, isCurrentPromptResource, newPromptResource,
   promptIdentity, promptResourceLabel, type CurrentPromptResource,
-  type PromptMember, type PromptPresentation } from "../domain/workflowPromptResources";
+  type PromptMember } from "../domain/workflowPromptResources";
 import { useResourceFormDraft } from "../composables/useResourceFormDraft";
 import FormDraftNotice from "./FormDraftNotice.vue";
-import RawNumberInput from "./RawNumberInput.vue";
+import PromptMembersEditor from "./PromptMembersEditor.vue";
 import { useFormDraftsStore } from "../stores/formDrafts";
+import { useManagementLabelsStore } from "../stores/managementLabels";
+import ManagementLabelFields from "./ManagementLabelFields.vue";
 
 const resources = usePromptResources();
 const records = resources.records, loading = resources.loading;
+const labels = useManagementLabelsStore();
+watch(records, values => { if (typeof window !== "undefined") for (const record of values)
+  void labels.load({ kind: "prompt", id: record.resource_id, scope: record.scope }); }, { immediate: true });
+const resourceLabel = (record: CurrentPromptResource) => labels.label({ kind: "prompt", id: record.resource_id, scope: record.scope }, promptResourceLabel(record));
 const submitting = ref(false);
 const locked = computed(() => resources.locked.value || submitting.value || localDraft.loading.value || localDraft.conflict.value);
 const error = resources.error, pending = resources.pending, busy = resources.busy;
 const editor = useResourceFormDraft<CurrentPromptResource>("prompt", () => newPromptResource(2), promptResourceLabel);
 const { form, expectedSequence, localDraft, choices } = editor;
 const formError = ref("");
-const numericValidity = ref<Record<string, boolean>>({});
+const membersValid = ref(true);
 const forms = typeof window === "undefined" ? null : useFormDraftsStore();
 const numberScope = (member: PromptMember, field: string) =>
   `resource:prompt:${form.value?.scope}:${form.value?.resource_id}:member:${member.id}:${field}`;
 const numberBasis = computed(() => ({ resourceId: form.value?.resource_id ?? null,
   scope: form.value?.scope ?? null, sequence: expectedSequence.value, format: form.value?.data_schema_version ?? null }));
-const numbersValid = computed(() => form.value?.value.members.every(member =>
-  numericValidity.value[numberScope(member, "order")] !== false
-  && (member.presentation.placement !== "middle" || numericValidity.value[numberScope(member, "depth")] !== false)) ?? true);
-watch(() => form.value?.resource_id, () => { numericValidity.value = {}; });
+const numbersValid = computed(() => membersValid.value);
 const identityKey = (record: CurrentPromptResource) => JSON.stringify(promptIdentity(record));
 function edit(record: CurrentPromptResource | null) {
   if (locked.value) return;
@@ -40,41 +43,6 @@ function duplicate(record: CurrentPromptResource) {
   try {
     editor.edit(duplicatePromptResource(record), true);
   } catch { formError.value = "提示词组字段无效，未创建副本"; }
-}
-function addMember() {
-  if (!form.value || locked.value || form.value.value.members.length >= 1024) return;
-  const members = form.value.value.members;
-  const order = members.length ? Math.max(...members.map(member => member.presentation.order)) + 1 : 0;
-  if (!Number.isSafeInteger(order)) { formError.value = "条目顺序已达上限，先调整顺序"; return; }
-  const member = newPromptMember("", form.value.data_schema_version);
-  member.presentation.order = order;
-  members.push(member);
-  formError.value = "";
-}
-function moveMember(index: number, offset: number) {
-  if (!form.value || locked.value) return;
-  if (!numbersValid.value) { formError.value = "数字字段不完整，原文已保留，尚未提交"; return; }
-  if (movePromptMember(form.value.value.members, index, offset)) formError.value = "";
-}
-function removeMember(index: number) {
-  if (!form.value || locked.value) return;
-  form.value.value.members.splice(index, 1);
-  formError.value = "";
-}
-function changePlacement(member: PromptMember, placement: PromptPresentation["placement"]) {
-  if (locked.value) return;
-  member.presentation.placement = placement;
-  member.presentation.depth = placement === "middle" ? member.presentation.depth ?? 0 : null;
-}
-function changeLifecycle(member: PromptMember, lifecycle: "per_request" | "context_once") {
-  if (locked.value) return;
-  member.lifecycle = lifecycle;
-  if (lifecycle === "per_request") member.compaction = "never";
-}
-function changeRole(member: PromptMember, role: PromptPresentation["role"]) {
-  if (locked.value) return;
-  member.presentation.role = role;
-  if (role === "system" && member.compaction) member.compaction = "never";
 }
 async function save() {
   if (!form.value || locked.value) return;
@@ -121,9 +89,9 @@ onMounted(() => { void resources.refresh(); });
     <ul>
       <li v-for="record in records" :key="identityKey(record)">
         <button type="button" class="resource-edit" :disabled="locked" @click="edit(record)">
-          <strong :title="promptResourceLabel(record)">{{ promptResourceLabel(record) }}</strong>
+          <strong :title="resourceLabel(record)">{{ resourceLabel(record) }}</strong>
           <span>{{ record.value.enabled ? '启用' : '已停用' }} · v{{ record.data_schema_version }} · s{{ record.update_sequence }}</span>
-          <small :title="record.resource_id">{{ record.scope }} · {{ record.resource_id.slice(0, 8) }} · {{ record.value.members.length }} 个条目</small>
+          <small>{{ record.value.members.length }} 个条目</small>
         </button>
         <button type="button" class="resource-copy" title="复制为新提示词组"
           :aria-label="`复制提示词组 ${record.scope} ${record.resource_id}`" :disabled="locked"
@@ -137,71 +105,12 @@ onMounted(() => { void resources.refresh(); });
           @click="editor.close()"><X :size="15" /></button>
       </header>
       <fieldset :disabled="locked || localDraft.loading.value">
-        <label>范围<output>{{ form.scope }}</output></label>
-        <label>资源 UUID<output>{{ form.resource_id }}</output></label>
+        <ManagementLabelFields :target="{ kind: 'prompt', id: form.resource_id, scope: form.scope }" :disabled="locked" :fallback="promptResourceLabel(form)" />
         <label class="enabled"><input v-model="form.value.enabled" type="checkbox" />启用资源</label>
-        <section v-for="(member, index) in form.value.members" :key="member.id" class="prompt-member">
-          <header>
-            <strong>条目 {{ index + 1 }}</strong>
-            <button type="button" title="上移条目" :aria-label="`条目 ${index + 1} 上移`"
-              :disabled="locked || index === 0" @click="moveMember(index, -1)"><ArrowUp :size="15" /></button>
-            <button type="button" title="下移条目" :aria-label="`条目 ${index + 1} 下移`"
-              :disabled="locked || index === form.value.members.length - 1" @click="moveMember(index, 1)"><ArrowDown :size="15" /></button>
-            <button type="button" title="移除草稿条目" aria-label="移除草稿条目"
-              @click="removeMember(index)"><Trash2 :size="15" /></button>
-          </header>
-          <small class="member-id">{{ member.id }}</small>
-          <label>正文<textarea v-model="member.text" rows="5" :aria-label="`条目 ${index + 1} 正文`"></textarea></label>
-          <div class="presentation-row">
-            <label>Role<select v-model="member.presentation.role" :aria-label="`条目 ${index + 1} Role`"
-              @change="changeRole(member, member.presentation.role)">
-              <option value="system">system</option>
-              <option value="user">user</option>
-              <option value="assistant">assistant</option>
-            </select></label>
-            <label class="enabled"><input v-model="member.presentation.enabled" type="checkbox" />启用条目</label>
-          </div>
-          <div v-if="form.data_schema_version === 2" class="presentation-row">
-            <label>进入上下文
-              <select v-model="member.lifecycle" :aria-label="`条目 ${index + 1} 生命周期`"
-                @change="changeLifecycle(member, member.lifecycle ?? 'per_request')">
-                <option value="per_request">每次装配</option>
-                <option value="context_once">仅一次</option>
-              </select>
-            </label>
-            <label>精简许可
-              <select v-model="member.compaction" :aria-label="`条目 ${index + 1} 精简许可`"
-                :disabled="member.lifecycle !== 'context_once' || member.presentation.role === 'system'">
-                <option value="never">保留原文</option>
-                <option value="allowed">允许精简</option>
-              </select>
-            </label>
-          </div>
-          <div class="presentation-position">
-            <span>位置</span>
-            <div class="presentation-segmented" role="group" :aria-label="`条目 ${index + 1} 装配位置`">
-              <button v-for="option in ([['before', '上下文前'], ['middle', '上下文中'], ['after', '上下文后']] as const)"
-                :key="option[0]" type="button" :class="{ active: member.presentation.placement === option[0] }"
-                :aria-pressed="member.presentation.placement === option[0]"
-                @click="changePlacement(member, option[0])">{{ option[1] }}</button>
-            </div>
-          </div>
-          <div class="presentation-row">
-            <label v-if="member.presentation.placement === 'middle'">深度
-              <RawNumberInput v-model="member.presentation.depth" :min="0" integer
-                :disabled="locked" :draft-scope="numberScope(member, 'depth')" :draft-basis="numberBasis"
-                :aria-label="`条目 ${index + 1} 中区深度`"
-                @validity="numericValidity[numberScope(member, 'depth')] = $event" />
-            </label>
-            <label>顺序<RawNumberInput v-model="member.presentation.order" integer
-              :disabled="locked" :draft-scope="numberScope(member, 'order')" :draft-basis="numberBasis"
-              :aria-label="`条目 ${index + 1} 装配顺序`"
-              @validity="numericValidity[numberScope(member, 'order')] = $event" /></label>
-          </div>
-        </section>
-        <button type="button" :disabled="form.value.members.length >= 1024" @click="addMember">
-          <Plus :size="14" />新增条目
-        </button>
+        <PromptMembersEditor :members="form.value.members" :version="form.data_schema_version" :disabled="locked"
+          :draft-scope="`resource:prompt:${form.scope}:${form.resource_id}`" :draft-basis="numberBasis"
+          @validity="membersValid = $event" />
+        <details><summary>技术详情</summary><label>范围<output>{{ form.scope }}</output></label><label>资源 UUID<output>{{ form.resource_id }}</output></label></details>
       </fieldset>
       <p v-if="formError" class="warning" role="status">{{ formError }}</p>
       <button type="submit" :disabled="locked || !numbersValid"><Save :size="14" />保存当前资源</button>

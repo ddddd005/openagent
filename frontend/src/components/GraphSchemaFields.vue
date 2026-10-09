@@ -21,7 +21,8 @@ const localDraft = useBoundFormDraft({
   },
 });
 const fields = computed(() => Object.entries(graphObject(props.schema.properties) ? props.schema.properties : {})
-  .map(([key, definition]) => ({ key, definition: graphObject(definition) ? definition : {} })));
+  .map(([key, definition]) => ({ key, definition: graphObject(definition) ? definition : {} }))
+  .sort((a, b) => Number(["text", "content", "body"].includes(b.key)) - Number(["text", "content", "body"].includes(a.key))));
 const locked = computed(() => props.disabled || localDraft.loading.value || localDraft.conflict.value);
 function patch(key: string, value: unknown) {
   if (locked.value) return;
@@ -74,6 +75,11 @@ function presentation(value: unknown): value is RolePlacement {
         <GraphSchemaFields :schema="field.definition" :value="objectValue(value[field.key])" :disabled="disabled"
           :draft-scope="draftScope ? draftScope + ':' + field.key : undefined" :draft-basis="draftBasis" @change="patch(field.key, $event)" />
       </fieldset>
+      <details v-else-if="['array', 'object'].includes(String(field.definition.type)) && !enums(field.definition).length">
+        <summary>{{ field.definition.title ?? field.key }} · 高级 JSON</summary>
+        <textarea :aria-label="`${field.key} 高级 JSON`" :value="text(field.key, true)" rows="4" :disabled="locked"
+          @input="remember(field.key, $event)" @change="json(field.key, $event)" />
+      </details>
       <label v-else>
         <span>{{ field.definition.title ?? field.key }}</span>
         <output v-if="field.definition.readOnly === true || field.definition.type === 'null'">{{ value[field.key] === null ? '未启用' : String(value[field.key] ?? '') }}</output>
@@ -98,4 +104,5 @@ textarea { resize:vertical; }
 fieldset { min-width:0; margin:0; padding:10px; border:1px solid #44444b; }
 legend { font-size:12px; padding:0 4px; }
 :disabled { opacity:.55; }
+details { min-width:0; font-size:12px; } summary { color:#b4beb9; cursor:pointer; margin-bottom:5px; overflow-wrap:anywhere; }
 </style>

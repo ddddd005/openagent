@@ -4,7 +4,7 @@
 
 本文描述 2026-10-09 现行主干的工程边界。入口见 [文档索引](README.md)，操作见 [使用手册](USER-GUIDE.md)；历史记录不作为当前节点目录、部署状态或 API 的替代说明。
 
-本次 `develop` 的前端用户化 P1/P2 已提交，P3/P4 已继续实现，均尚未晋升 `main`。稳定 BAT 不变；范围和验收分别见 [P1/P2 记录](FRONTEND-P1-P2-2026-10-09.md)和 [P3/P4 记录](FRONTEND-P3-P4-2026-10-09.md)。
+本次 `develop` 的前端用户化 P1/P2 和 P3/P4（`8743787`）已本地提交，P5/P6 已在工作区实现但未提交；均未推送或晋升 `main`。稳定 BAT 不变；范围见 [P1/P2](FRONTEND-P1-P2-2026-10-09.md)、[P3/P4](FRONTEND-P3-P4-2026-10-09.md)和 [P5/P6 记录](FRONTEND-P5-P6-2026-10-09.md)。
 
 ## 分支与启动
 
@@ -51,6 +51,7 @@ git ls-remote --heads origin main
 | 服务启动与 HTTP | `server.py`、`graph_http.py` |
 | 统一应用命令、查询及身份 | `graph_application.py`、`graph_application_contracts.py`、`graph_application_identity.py`、`graph_receipts.py` |
 | 图服务、编译及执行 | `graph_service.py`、`graph_contracts.py`、`graph_execution.py`、`graph_runtime_host.py` |
+| 草稿输入声明 | `graph_input_declarations.py`；管理只读 `definition.inputs`，完整编译失败不丢可编辑声明 |
 | 公共资源预检与冻结 | `graph_resource_host.py`、`resource_contracts.py`、`prepared_request.py` |
 | 公共 Runtime 与控制 | `runtime.py`、`runtime_hosting.py`、`runtime_control.py`、`runtime_executor_contracts.py` |
 | 能力声明、包选择与注册 | `host_sdk.py`、`capability_packages.py`、`builtin_packages.py`、`capability_registry.py`、`graph_package_selection.py` |
@@ -73,12 +74,15 @@ git ls-remote --heads origin main
 | 应用与工作台 | `App.vue`、`components/GraphWorkbench.vue` |
 | 图契约与串行示例 | `domain/workflowGraph.ts`、`domain/serialAgentDemo.ts` |
 | 二级节点目录与协议选择 | `domain/nodeCatalog.ts`、`domain/nodeSelection.ts`、`components/NodeProfileDialog.vue` |
+| 连线检查与反馈 | `domain/graphConnections.ts`；画布与 store 共用动态端口、schema、基数和组合环检查 |
 | 图、会话与工作区状态 | `stores/workflowGraph.ts`、`stores/workspace.ts` |
 | 本机草稿、原始表单及旧浏览器导入 | `adapters/localDraftsApi.ts`、`stores/workbenchPersistence.ts`、`stores/formDrafts.ts`、`composables/useBoundFormDraft.ts`；旧读取器 `adapters/workbenchPersistence.ts` 只用于显式导入 |
 | 应用命令、编辑及信息读取 | `application/workflowCommands.ts`、`application/workflowEditing.ts`、`application/workflowInformation.ts` |
 | HTTP 适配 | `adapters/workflowApplicationApi.ts`、`adapters/workflowGraphApi.ts`、`adapters/workflowResourcesApi.ts` |
 | 供应商与模型编辑 | `components/CurrentProviderPanel.vue`、`components/ModelSourceFields.vue`、`application/workflowResources.ts` |
 | 私有 Key 编辑和模型列表 | `components/ProviderCredentialFields.vue`、`application/providerCredentialEditing.ts`、`adapters/providerConfigurationApi.ts` |
+| 提示词成员和运行输入 | `components/PromptMembersEditor.vue`、`components/PromptGroupFields.vue`、`adapters/graphInputDeclarationsApi.ts` |
+| 正文、冻结历史与本机标签 | `components/GraphResult.vue`、`domain/resultPresentation.ts`、`components/GraphHistory.vue`、`stores/managementLabels.ts` |
 | 可信本地扩展 | `plugins/workflowFrontendSdk.ts`、`plugins/modelFrontendPackage.ts`、`plugins/workflowFrontendPackage.ts` |
 | 观察与控制 | `components/GraphInformation.vue`、`components/GraphRunControls.vue`、`components/GraphHistory.vue` |
 
@@ -129,6 +133,10 @@ Gemini 普通响应及 `agent_message@5` 分离回答正文、可见 `thinking_s
 模型服务保留受控环境路线；开发 P4 增加私有 `local:<UUID>` 路线及 broker factory，每次运行冻结凭据代次。公开 provider 新增 schema 3，原 schema 1/2 不重定义。Key 只进独立当前用户保护库，普通草稿、资源、事实及公开身份存档不持有正文；查询原凭据回执不需要 Key。通用 Runtime 不解释 Agent 私有工具语义，也不直接暴露供应商凭据。
 
 编辑文档、草稿发布基准、最新已发布修订和会话采用修订独立维护；`session_document` 仅保管恢复会话的精确历史定义。保存不自动重绑，历史接纳不重写编辑图。模型列表按已保存供应商身份和序号查询，派发前后检查资源和凭据，发现未知 Gemini 不授予能力。
+
+P5/P6 显示层按精确 kind/schema 读取正文，签名仍经既有过滤器隐藏而不修改 facts。历史节点标题通过该次 run 的 `definition.read(identity, revision)` 获得，不回退到当前编辑图。本机名称和目录归档仅是管理表单 metadata，不加入资源 value 或 session facts；归档不删除定义、会话或共享资源。
+
+输入声明将“全部可编辑字段”和“当前运行必填集合”分开，节点逐个读取后再尝试编译；失败返回诊断与 `required_for_run: null`。消费端继续使用原受限输入查询，不开放管理草稿。UI 折叠不改变公开输出权限，`editorLocked` 保留不稳定会话限制。
 
 ## 修改规则
 

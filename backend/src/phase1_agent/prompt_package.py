@@ -23,6 +23,11 @@ PROMPT_FRONTEND_EXTENSIONS = (
      "component_id": "prompts.global-reference", "component_version": "2",
      "binding": {"surface": "workbench", "slot": "node-fields",
                  "target": {"component_id": "prompts.global-reference", "component_version": "2"}}},
+    {"extension_id": "workflow.prompts.group-fields-v2", "kind": "field-editor",
+     "entrypoint": "workflow.prompts.workbench.group-fields-v2",
+     "component_id": "prompts.group", "component_version": "2",
+     "binding": {"surface": "workbench", "slot": "node-fields",
+                 "target": {"component_id": "prompts.group", "component_version": "2"}}},
 )
 
 

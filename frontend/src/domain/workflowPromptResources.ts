@@ -116,5 +116,5 @@ export function movePromptMember(members: PromptMember[], index: number, offset:
 }
 export function promptResourceLabel(value: CurrentPromptResource): string {
   const text = value.value.members.find(member => member.text.trim())?.text.trim();
-  return text ? text.split(/\r\n?|\n/, 1)[0]! : value.resource_id;
+  return text ? text.split(/\r\n?|\n/, 1)[0]! : "空提示词组";
 }

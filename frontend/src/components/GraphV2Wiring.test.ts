@@ -69,14 +69,14 @@ describe("v2 workflow controls and object presentation", () => {
     const nodeId = graph.addNode("plugin.register@1", { x: 0, y: 0 })!;
     graph.setExecutionRoot(nodeId, true);
     const html = await renderToString(createSSRApp(GraphWorkbench).use(pinia));
-    expect(html).toContain("显式执行根"); expect(html).toContain("控制依赖");
+    expect(html).toContain("作为运行目标"); expect(html).toContain("前序节点");
     expect(html).toContain("会话绑定"); expect(html).toContain(nodeId);
     expect(html).toContain("会话对象访问契约"); expect(html).toContain("plugin.state");
     const nodeHtml = await renderToString(createSSRApp(GraphCanvasNode, {
       data: { node: graph.document!.nodes[0], definition, status: "idle", inputs: [], outputs: [],
         error: false, executionRoot: true },
     }).use(pinia));
-    expect(nodeHtml).toContain("执行根");
+    expect(nodeHtml).toContain("运行目标");
     expect(nodeHtml).not.toContain("TEXT"); expect(nodeHtml).not.toContain("PROMPT");
     graph.$dispose(); useWorkspaceStore(pinia).$dispose();
   });

@@ -9,7 +9,7 @@ describe("current independent prompt resource contracts", () => {
       data_schema_version: 2, update_sequence: 1, value: { enabled: true, members: [] } });
     expect(isCurrentPromptResource(record)).toBe(true);
     expect(isPromptIdentity(promptIdentity(record))).toBe(true);
-    expect(promptResourceLabel(record)).toBe(record.resource_id);
+    expect(promptResourceLabel(record)).toBe("空提示词组");
     expect(Object.keys(record.value)).toEqual(["enabled", "members"]);
     expect(newPromptMember()).toMatchObject({ text: "", metadata: {},
       presentation: { role: "system", placement: "before", depth: null, order: 0, enabled: true } });

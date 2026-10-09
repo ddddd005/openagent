@@ -54,7 +54,7 @@ describe("local package composition lifecycle", () => {
     expect(host.extensions.value).toEqual([]);
     packages.value = [{ package_id: "workflow.prompts", version: "1.0.0" }];
     declarations.value[1]!.binding.target.component_version = "99";
-    expect(host.extensions.value.map(row => row.declaration.binding.slot)).toEqual(["panel"]);
+    expect(host.extensions.value.map(row => row.declaration.binding.slot)).toEqual(["panel", "node-fields"]);
     expect(host.issues.value).not.toEqual([]);
   });
 

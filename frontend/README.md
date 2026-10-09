@@ -2,7 +2,7 @@
 
 Vue 3、TypeScript、Pinia 和 Vue Flow 工作台，负责当前 Graph 的编辑、资源配置、会话操作和结果观察。定义、资源、运行事实与已接纳数据以 Python 后端为权威；本机编辑草稿写入独立后端仓库，不是运行档案。
 
-本次 `develop` 的 P1/P2 已提交，P3/P4 已继续实现，均尚未晋升稳定 `main`，BAT 不变。范围与验收见 [P1/P2 记录](../docs/FRONTEND-P1-P2-2026-10-09.md)和 [P3/P4 记录](../docs/FRONTEND-P3-P4-2026-10-09.md)。
+本次 `develop` 的 P1/P2 和 P3/P4（`8743787`）已本地提交，P5/P6 已在工作区实现但未提交；均未推送或晋升稳定 `main`，BAT 不变。范围见 [P1/P2](../docs/FRONTEND-P1-P2-2026-10-09.md)、[P3/P4](../docs/FRONTEND-P3-P4-2026-10-09.md)和 [P5/P6 记录](../docs/FRONTEND-P5-P6-2026-10-09.md)。
 
 当前默认目录有 44 个声明、41 个家族，按 9 个分类的二级菜单添加。单一现行路线直接添加；模型来源、模型调用与 Agent 选择 DeepSeek/Gemini 协议，不提供历史版本选择器。Gemini 思考摘要独立显示，协议签名不作为正文。
 
@@ -55,6 +55,7 @@ npm run preview
 | `src/components/GraphWorkbench.vue` | 画布、节点详情、绑定、结果与信息目录 |
 | `src/domain/nodeCatalog.ts` | 现行家族、分类、协议显示策略 |
 | `src/domain/nodeSelection.ts` | 节点选择与配置依据保护 |
+| `src/domain/graphConnections.ts` | 画布/store 共用连接拒绝检查，不覆盖旧线 |
 | `src/components/NodeProfileDialog.vue` | 协议选择、契约预览与重置确认 |
 | `src/components/ModelSourceFields.vue` | 供应商引用、模型、容量与 Gemini 思考配置 |
 | `src/application/providerCredentialEditing.ts`, `src/adapters/providerConfigurationApi.ts` | 私有 Key 生命周期、非秘密 intent、严校回执与模型列表 |
@@ -63,6 +64,10 @@ npm run preview
 | `src/application/` | UI 动作和应用边界 |
 | `src/adapters/` | HTTP、异步本机草稿、原请求保管、旧浏览器显式导入与聊天交接 |
 | `src/stores/formDrafts.ts`, `src/composables/useBoundFormDraft.ts` | 未应用表单、原文、依据冲突及切换前落盘 |
+| `src/components/PromptMembersEditor.vue`, `src/components/PromptGroupFields.vue` | 全局/图内提示词共享条目编辑，保留身份和原始数字 |
+| `src/adapters/graphInputDeclarationsApi.ts`, `src/components/GraphRunControls.vue` | 管理只读输入声明，TEXT 表单和高级 JSON |
+| `src/domain/resultPresentation.ts`, `src/components/GraphResult.vue`, `src/components/GraphHistory.vue` | 严格 kind/schema 正文展示及冻结定义历史 |
+| `src/stores/managementLabels.ts`, `src/components/ManagementLabelFields.vue` | 独立本机名称和目录状态，不改变资源或运行事实 |
 | `src/plugins/` | 可信前端扩展，酒馆入口与全局资源 UI |
 | `vite.config.ts` | loopback 开发代理和 Vitest 配置 |
 
@@ -73,5 +78,7 @@ npm run preview
 本次 P1/P2 开发源码为 80 文件、1023 项前端测试及生产构建通过；真实 dist 的离线草稿与菜单浏览器场景通过，详见开发记录。稳定主干此前的 67 文件、928 项记录不累加为本次结果。窄屏菜单/弹窗检查不等于整个工作台支持移动端，工作台保留 1024px 最小宽度；完整移动端、无限长会话或全面人工验收未承诺。跨前后端契约测试依赖同仓库 `../backend`。
 
 P3/P4 的最新定向结果见单独开发记录，不把先前批次数字相加。离线浏览器脚本 `../backend/tests/frontend_p34_browser.cjs` 拦截全部请求和资产，不启动产品服务，不调用真实模型。
+
+P5/P6 已通过前端全量 87 文件/1075 项、类型和生产构建。`../backend/tests/frontend_p56_browser.cjs` 覆盖 12 个离线浏览器场景，包含真实 Handle 拖动、已有数据/控制线绘制、半输入数字恢复、冻结标题、签名隐藏和可逆归档；不监听端口或访问产品库。正文和常用配置优先，运行设置/技术详情折叠，本机名称及归档使用原管理草稿 CAS。具体证据和未执行项见 P5/P6 记录。
 
 来源和第三方许可见根目录 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。

@@ -7,6 +7,7 @@ import { createWorkflowManagement, workflowManagementQueries } from "../applicat
 import { createWorkflowEditing } from "../application/workflowEditing";
 import { editFrontendSource, wireFrontendDisplay, type FrontendWiringRequest } from "../domain/frontendWiring";
 import { newerGraphObservation } from "../domain/graphObservation";
+import { graphConnectionIssue } from "../domain/graphConnections";
 import { graphClone, graphObject, graphUuid, isGraphDocument, newGraph,
   isGraphObjectBindings, isGraphEventBindings, isGraphJsonValue, graphSignature, upgradeGraph,
   type GraphCommand, type GraphDocument, type GraphEdge, type GraphEntry, type GraphNode,
@@ -54,6 +55,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     : primaryAction.value === "resume" ? "继续" : "启动");
   const editorStable = computed(() => !active.value?.session_id || !!session.value?.can_submit
     && !["prepared", "running", "pausing", "paused"].includes(session.value.status));
+  const editorLocked = computed(() => locked.value || !editorStable.value);
   const canUndo = computed(() => !!history.value[workspace.activeWorkflowId]?.past.length && !locked.value && editorStable.value);
   const canRedo = computed(() => !!history.value[workspace.activeWorkflowId]?.future.length && !locked.value && editorStable.value);
   let persistence: (() => boolean | Promise<boolean>) | null = null;
@@ -407,10 +409,8 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   }
   function connect(edge: Omit<GraphEdge, "edge_id" | "order">) {
     return editable(workspace.activeWorkflowId, doc => {
-      if (!doc.nodes.some(n => n.node_binding_id === edge.source_node_id)
-        || !doc.nodes.some(n => n.node_binding_id === edge.target_node_id)) return false;
-      if (doc.edges.some(e => e.source_node_id === edge.source_node_id && e.target_node_id === edge.target_node_id
-        && e.source_port_id === edge.source_port_id && e.target_port_id === edge.target_port_id)) return false;
+      const issue = graphConnectionIssue(doc, catalog.value, edge);
+      if (issue) { notices.notify("rejected", issue, "添加连线"); return false; }
       const incoming = doc.edges.filter(e => e.target_node_id === edge.target_node_id && e.target_port_id === edge.target_port_id);
       doc.edges.push({ ...edge, edge_id: crypto.randomUUID(), order: incoming.length ? Math.max(...incoming.map(e => e.order)) + 1 : 0 });
       return true;
@@ -826,7 +826,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     finally { busy.value = null; }
   }
   function setInputs(value: Record<string, unknown>) {
-    if (!active.value || locked.value) return;
+    if (!active.value || editorLocked.value) return;
     active.value.external_inputs = graphClone(value); persistence?.();
   }
   function resetPrivateState(id: string, nodeId: string) {
@@ -837,7 +837,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     persistence?.();
   }
   return { entries, catalog, frontendExtensions, packageLock, executionPackageLock, dataTypes, catalogLoading, catalogError, sessions, views, candidates, history, busy, active, document,
-    session, pending, locked, primaryAction, statusLabel, selectedNodeIds, selectedEdgeId, canUndo, canRedo, setEventBindings, submitEvent,
+    session, pending, locked, editorLocked, primaryAction, statusLabel, selectedNodeIds, selectedEdgeId, canUndo, canRedo, setEventBindings, submitEvent,
     isGeneric, createWorkflow, createWorkflowDraft, createSerialAgentExample, createCompactingSerialAgentExample, typeFor, loadCatalog, setPersistenceGuard, storeSnapshot, restoreSnapshot,
     saveWorkflow, adoptRevision, copyWorkflow, renameWorkflow, refreshPublishedRevision, addNode, patchNode, patchNodeConfiguration, moveNodes, connect, removeSelection, reorderEdge, undo, duplicateSelection,
     replaceNode, setExecutionRoot, setControlDependencies, setObjectBindings, attachFrontendDisplay, patchFrontendSource,

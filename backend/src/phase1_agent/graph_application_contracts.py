@@ -104,6 +104,7 @@ QUERIES = (
     operation("catalog.node-types", "node_types", optional=("protocol_version",)),
     operation("platform", "platform_capabilities"),
     operation("definition.read", "get_definition", ("identity",), ("revision",)),
+    operation("definition.inputs", "_editor_inputs", ("document",)),
     operation("definition.sessions", "list_sessions", ("workflow_definition_id",)),
     operation("session.read", "get_session", session=True),
     operation("session.actions", "_management_actions", session=True),

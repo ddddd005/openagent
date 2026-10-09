@@ -58,6 +58,7 @@ class GraphApplication:
         target = self if spec.method in (
             "_management_actions", "_consumer_actions", "_registration_list", "_information_read",
             "_receipt_read",
+            "_editor_inputs",
         ) else self._service
         callback = getattr(target, spec.method)
         positional = []
@@ -100,6 +101,10 @@ class GraphApplication:
     def _receipt_read(self, operation, parameters):
         from .graph_receipts import read_graph_application_receipt
         return read_graph_application_receipt(self._service.database, operation, parameters, scope=self.scope)
+
+    def _editor_inputs(self, document):
+        from .graph_input_declarations import editor_input_declarations
+        return editor_input_declarations(self._service.registry, document)
 
     def _actions(self, session_id, *, consumer):
         view = self._service.get_consumer(session_id) if consumer else self._service.get_session(session_id)

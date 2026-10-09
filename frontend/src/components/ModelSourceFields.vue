@@ -197,7 +197,7 @@ async function apply() {
             {{ chosen ? '协议不匹配' : '缺失引用' }} · {{ sourceConfig?.reference.resource_id }}
           </option>
           <option v-for="record in compatibleRecords" :key="identityKey(record)" :value="identityKey(record)">
-            {{ record.value.name }} · {{ record.scope }} · s{{ record.update_sequence }}{{ record.value.enabled ? '' : '（已停用）' }}
+            {{ record.value.name }}{{ record.value.enabled ? '' : '（已停用）' }}
           </option>
         </select>
         <button type="button" title="刷新当前资源" aria-label="刷新当前资源" :disabled="loading" @click="resources.refresh()"><RefreshCw :size="14" /></button>

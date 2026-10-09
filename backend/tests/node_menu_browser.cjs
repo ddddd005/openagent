@@ -183,8 +183,8 @@ async function assertBinding(dialog, key, catalog) {
   assert.ok(demo.object_bindings.filter(row => row.type_id === "workflow.effective-context").every(row => row.schema_version === 4));
   const agent = demo.nodes.find(row => row.title === "Agent A");
   await selectNode(agent.node_binding_id);
-  await page.getByRole("button", { name: "切换节点配置", exact: true }).click();
-  let dialog = page.getByRole("dialog", { name: "切换节点配置", exact: true });
+  await page.getByRole("button", { name: "替换节点或切换模型协议", exact: true }).click();
+  let dialog = page.getByRole("dialog", { name: "替换节点 / 切换模型协议", exact: true });
   await assertBinding(dialog, "agents.execute@4", catalog);
   await layout("current-agent");
   await page.keyboard.press("Escape");
@@ -216,8 +216,8 @@ async function assertBinding(dialog, key, catalog) {
 
   const source = (await document()).nodes.find(row => row.component_id === "models.source");
   await selectNode(source.node_binding_id);
-  await page.getByRole("button", { name: "切换节点配置", exact: true }).click();
-  dialog = page.getByRole("dialog", { name: "切换节点配置", exact: true });
+  await page.getByRole("button", { name: "替换节点或切换模型协议", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "替换节点 / 切换模型协议", exact: true });
   await dialog.getByRole("button", { name: "DeepSeek", exact: true }).click();
   assert.equal(await dialog.getByRole("button", { name: "确认切换", exact: true }).isDisabled(), true);
   await dialog.getByRole("checkbox", { name: "确认重置配置与公开输出", exact: true }).check();

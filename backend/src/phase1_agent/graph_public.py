@@ -113,35 +113,13 @@ class GraphPublic:
         return result
 
     def _consumer_inputs(self, document):
+        from .graph_input_declarations import collect_input_declarations, input_diagnostics
         try:
             plan = GraphCompiler(self.registry).compile(document)
-            declarations = {}
             nodes = {node["node_binding_id"]: node for node in document["nodes"]}
-            for node_id in plan.ordered_node_ids:
-                node = nodes[node_id]
-                entry = self.registry.get(node["component_id"], node["component_version"])
-                callback = entry.external_inputs_declaration
-                require(callback is not None or entry.external_inputs_validator is None,
-                        "consumer_input_undeclared", "External inputs have no consumer declaration", 409, node_id=node_id)
-                for value in callback(deepcopy(node["config"])) if callback else []:
-                    require(type(value) is dict and set(value) == {"name", "data_type", "required"}
-                            and type(value["name"]) is str and 0 < len(value["name"]) <= 128
-                            and value["name"] != "_workflow_frozen_resources"
-                            and value["data_type"] in ("TEXT", "PROMPT") and type(value["required"]) is bool,
-                            "consumer_input_invalid", "Invalid external input declaration", 409, node_id=node_id)
-                    previous = declarations.get(value["name"])
-                    require(previous is None or previous["data_type"] == value["data_type"],
-                            "consumer_input_conflict", "External input declarations differ", 409, node_id=node_id)
-                    if previous is None:
-                        declarations[value["name"]] = {**value, "node_ids": [node_id]}
-                    else:
-                        previous["required"] = previous["required"] or value["required"]
-                        previous["node_ids"].append(node_id)
-            return list(declarations.values()), []
+            return collect_input_declarations(self.registry, [nodes[node_id] for node_id in plan.ordered_node_ids]), []
         except Exception as error:
-            return [], [{**deepcopy(value), "reason_code": value.get("reason_code", value.get("code", "graph_invalid_config"))}
-                        for value in getattr(error, "diagnostics", [{"reason_code": getattr(error, "reason_code", "consumer_input_invalid"),
-                                                                      "message": str(error)}])]
+            return [], input_diagnostics(error)
 
     def _consumer_view(self, repo, sid):
         session, document = self._consumer_scope(repo, sid)

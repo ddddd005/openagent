@@ -153,6 +153,27 @@ describe("generic workbench execution and document transactions", () => {
     graph.selectedNodeIds = [copies[0].node_binding_id]; graph.removeSelection();
     expect(graph.document!.edges).toEqual(original.edges);
   });
+  it.each(["single-source", "schema", "missing-port", "combined-cycle"])(
+    "rejects %s connections without changing the graph, undo history or persisted state", issue => {
+      const { graph, id, text, output } = fixture();
+      const other = graph.addNode("workflow.text@1", { x: 0, y: 200 })!;
+      graph.catalog = graphClone([source, sink]);
+      if (issue === "schema") graph.catalog[1]!.inputs[0]!.data_schema_version = 2;
+      if (issue === "combined-cycle") {
+        graph.catalog[1]!.inputs[0]!.multiple = true;
+        graph.document!.control_edges = [{ edge_id: crypto.randomUUID(), source_node_id: output, target_node_id: other }];
+      }
+      graph.patchNode(text, { title: "Undoable title" }); graph.undo();
+      const document = graphClone(graph.document!), history = graphClone(graph.history[id]);
+      const persist = vi.fn(() => true), fetcher = vi.fn();
+      graph.setPersistenceGuard(persist); vi.stubGlobal("fetch", fetcher);
+      expect(graph.connect({ source_node_id: other, source_port_id: issue === "missing-port" ? "missing" : "output",
+        target_node_id: output, target_port_id: "input" })).toBeNull();
+      expect(graph.document).toEqual(document); expect(graph.history[id]).toEqual(history);
+      expect(useWorkspaceStore().activeWorkflowId).toBe(id);
+      expect(persist).not.toHaveBeenCalled(); expect(fetcher).not.toHaveBeenCalled();
+      expect(useWorkbenchNoticesStore().error).toMatchObject({ kind: "rejected" });
+    });
   it("saves exact definitions and starts with empty external inputs and no legacy endpoints", async () => {
     const { graph } = fixture();
     let document: GraphDocument; let view: GraphSession;

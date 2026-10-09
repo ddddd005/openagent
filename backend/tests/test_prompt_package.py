@@ -114,12 +114,13 @@ def test_prompt_package_declares_exact_current_panel_and_reference_editor_withou
     assert {(row["extension_id"], row["entrypoint"]) for row in expected} == {
         ("workflow.prompts.workbench-panel", "workflow.prompts.workbench.panel"),
         ("workflow.prompts.node-fields-v2", "workflow.prompts.workbench.node-fields-v2"),
+        ("workflow.prompts.group-fields-v2", "workflow.prompts.workbench.group-fields-v2"),
     }
     manifest = package.manifest.to_dict()
     assert manifest["schema_version"] == 1
     assert manifest["exports"]["frontend_extensions"] == [
         {"extension_id": row["extension_id"]} for row in PROMPT_FRONTEND_EXTENSIONS]
-    assert next(row for row in expected if row["kind"] == "field-editor")["binding"]["target"] == {
+    assert next(row for row in expected if row["extension_id"] == "workflow.prompts.node-fields-v2")["binding"]["target"] == {
         "component_id": "prompts.global-reference", "component_version": "2"}
     loaded_manifest = next(row for row in capabilities.package_manifests
                            if row["package_id"] == "workflow.prompts")

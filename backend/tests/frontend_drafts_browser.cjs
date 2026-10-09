@@ -104,8 +104,10 @@ async function ready() {
 async function select(id) {
   await page.getByRole("button", { name: "定位全部节点", exact: true }).click();
   await page.locator(`.vue-flow__node[data-id="${id}"]`).click();
-  await page.locator('.graph-inspector').getByLabel("节点 UUID", { exact: true }).waitFor();
+  await page.locator('.graph-inspector').getByLabel("节点 UUID", { exact: true }).waitFor({ state: "attached" });
   await page.waitForFunction(id => window.document.querySelector(".graph-inspector input[readonly]")?.value === id, id);
+  const advanced = page.locator(".graph-schema-fields details").filter({ has: page.getByLabel("flags 高级 JSON", { exact: true }) });
+  if (await advanced.count() && !await advanced.evaluate(element => element.open)) await advanced.locator("summary").click();
 }
 async function openWorkflow(name) {
   await page.getByRole("button", { name: "工作流", exact: true }).click();
@@ -189,16 +191,16 @@ async function screenshot(name) {
 
   await select(regexId);
   const invalid = '["unfinished';
-  await page.locator(".graph-inspector").getByLabel("flags", { exact: true }).fill(invalid);
+  await page.locator(".graph-inspector").getByLabel("flags 高级 JSON", { exact: true }).fill(invalid);
   await waitFor(() => form(regexKey)?.value?.raw?.flags === invalid, "Invalid JSON did not reach local draft storage");
   await select(textId);
   const longText = "Unsubmitted long node text {{literal}}\n".repeat(400);
   await page.locator(".graph-inspector").getByLabel("text", { exact: true }).fill(longText);
   await waitFor(() => form(textKey)?.value?.raw?.text === longText, "Long node text did not reach local draft storage");
   await select(regexId);
-  assert.equal(await page.getByLabel("flags", { exact: true }).inputValue(), invalid);
+  assert.equal(await page.getByLabel("flags 高级 JSON", { exact: true }).inputValue(), invalid);
   await openWorkflow("Drafts B"); await openWorkflow("Drafts A"); await select(regexId);
-  assert.equal(await page.getByLabel("flags", { exact: true }).inputValue(), invalid);
+  assert.equal(await page.getByLabel("flags 高级 JSON", { exact: true }).inputValue(), invalid);
   assert.deepEqual(workbench().graph.entries[workflowA].document.nodes.find(row => row.node_binding_id === regexId).config.flags, []);
   await select(textId);
   assert.equal(await page.getByLabel("text", { exact: true }).inputValue(), longText);
@@ -237,7 +239,7 @@ async function screenshot(name) {
 
   await openWorkflow("Drafts A"); await select(regexId);
   refuseForm = true;
-  await page.getByLabel("flags", { exact: true }).fill('["write failure');
+  await page.getByLabel("flags 高级 JSON", { exact: true }).fill('["write failure');
   await page.getByRole("button", { name: "工作流", exact: true }).click();
   await page.locator(".workbench-workflow-item").filter({ has: page.getByText("Drafts B", { exact: true }) }).dblclick();
   await page.getByText(/draft_write_failed/).first().waitFor();
@@ -246,14 +248,14 @@ async function screenshot(name) {
   refuseForm = false;
   await openWorkflow("Drafts B");
   await openWorkflow("Drafts A"); await select(regexId);
-  assert.equal(await page.getByLabel("flags", { exact: true }).inputValue(), '["write failure');
+  assert.equal(await page.getByLabel("flags 高级 JSON", { exact: true }).inputValue(), '["write failure');
   report.scenarios.push("A rejected local form write prevents workflow navigation; an explicit later retry preserves the editor contents");
 
   const original = clone(form(regexKey));
   const foreignValue = clone(original.value); foreignValue.raw.flags = '["other page"]';
   seed(original.address, foreignValue, original.sequence + 1);
   const localConflict = '["local conflict';
-  await page.getByLabel("flags", { exact: true }).fill(localConflict);
+  await page.getByLabel("flags 高级 JSON", { exact: true }).fill(localConflict);
   await waitFor(() => [...records.values()].some(row => row.address.key.startsWith(regexKey + ":conflict:")
     && row.value?.raw?.flags === localConflict), "CAS conflict copy was not preserved");
   assert.equal(form(regexKey).value.raw.flags, '["other page"]');

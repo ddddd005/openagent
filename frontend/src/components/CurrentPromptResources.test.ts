@@ -10,6 +10,8 @@ import CurrentPromptPanel from "./CurrentPromptPanel.vue";
 import PromptReferenceFields from "./PromptReferenceFields.vue";
 import GraphNodeConfiguration from "./GraphNodeConfiguration.vue";
 import RawNumberInput from "./RawNumberInput.vue";
+import PromptMembersEditor from "./PromptMembersEditor.vue";
+import ManagementLabelFields from "./ManagementLabelFields.vue";
 import { createPromptResources, promptResourceControllerKey } from "../application/promptResources";
 import { createWorkbenchFrontendHost } from "../application/workflowFrontendPackage";
 import { workbenchFrontendHostKey } from "../application/workbenchFrontendHost";
@@ -140,6 +142,16 @@ async function mount(component: typeof CurrentPromptPanel | typeof PromptReferen
   Object.assign(RawNumberInput, { render: new Function("Vue", transpileModule(numericTemplate.code, {
     compilerOptions: { target: ScriptTarget.ES2022, module: ModuleKind.None },
   }).outputText)(Vue) });
+  for (const [name, component] of [["PromptMembersEditor.vue", PromptMembersEditor], ["ManagementLabelFields.vue", ManagementLabelFields]] as const) {
+    const descriptor = parseSfc(readFileSync(new URL(name, import.meta.url), "utf8")).descriptor;
+    const script = compileScript(descriptor, { id: name });
+    const template = compileTemplate({ source: descriptor.template!.content, filename: name, id: name,
+      compilerOptions: { mode: "function", bindingMetadata: script.bindings } });
+    expect(template.errors).toEqual([]);
+    Object.assign(component, { render: new Function("Vue", transpileModule(template.code, {
+      compilerOptions: { target: ScriptTarget.ES2022, module: ModuleKind.None },
+    }).outputText)(Vue) });
+  }
   const filename = component === CurrentPromptPanel ? "CurrentPromptPanel.vue" : "PromptReferenceFields.vue";
   const { descriptor } = parseSfc(readFileSync(new URL(filename, import.meta.url), "utf8"));
   const script = compileScript(descriptor, { id: "current-prompt-interactions" });
@@ -152,6 +164,7 @@ async function mount(component: typeof CurrentPromptPanel | typeof PromptReferen
   const clientComponent = { ...component, render: new Function("Vue", code)(Vue) };
   const root = new HostNode("root");
   const app = renderer.createApp(clientComponent, component === PromptReferenceFields ? { node: f.node, document: f.document } : {});
+  app.use(createPinia());
   app.provide(promptResourceControllerKey, f.resources).provide(workflowFrontendSdkKey, f.sdk);
   app.provide(Vue.ssrContextKey, {});
   apps.push(app);
@@ -161,6 +174,7 @@ async function mount(component: typeof CurrentPromptPanel | typeof PromptReferen
 }
 function renderFields(f: ReturnType<typeof fixture>) {
   return renderToString(createSSRApp(PromptReferenceFields, { node: f.node, document: f.document })
+    .use(createPinia())
     .provide(promptResourceControllerKey, f.resources).provide(workflowFrontendSdkKey, f.sdk));
 }
 afterEach(() => { apps.splice(0).forEach(app => app.unmount()); vi.unstubAllGlobals(); });
@@ -439,7 +453,7 @@ describe("current prompt reference configuration", () => {
         .provide(workbenchFrontendHostKey, host).provide(workflowFrontendSdkKey, f.sdk)
         .provide(promptResourceControllerKey, f.resources));
       expect(host.extensions.value.map(row => row.declaration.extension_id))
-        .toEqual(["workflow.prompts.workbench-panel", "workflow.prompts.node-fields-v2"]);
+        .toEqual(promptFrontendExtensions.map(row => row.extension_id));
       expect(host.extensions.value[1]!.configurationFields).toEqual(["reference"]);
       expect(html).toContain('aria-label="提示词引用配置"');
       expect(html).not.toContain("<textarea");

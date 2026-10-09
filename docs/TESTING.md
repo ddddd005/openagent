@@ -72,6 +72,9 @@ npm run build
 | 信息、公开摘要与消费者 | `test_graph_information_integration.py`、`test_plan12b_information_scope.py`、`test_tavern_chat_integration.py`；`application/workflowInformation.test.ts` |
 | 静态资产与启动分支 | `test_server_workbench.py`、`test_branch_launcher.py`；`test_dev_launcher.py` 中预检/静态用例 |
 | 本机草稿、无效原文和异步保管 | `test_graph_drafts.py`；`localDraftsApi`、`formDrafts`、`useBoundFormDraft`、`resourceOutbox`、`consumerLocalDrafts`、`consumerDraftBuffer` |
+| 输入声明、提示词专用表单及不完整图 | `test_graph_input_declarations.py`、`test_prompt_package.py`；`graphInputDeclarationsApi`、`CurrentPromptResources` |
+| 连线拒绝与撤销记录 | `domain/graphConnections.test.ts`、`stores/workflowGraph.test.ts`；真实拖线用 `frontend_p56_browser.cjs` |
+| 正文/签名展示、本机名称和目录归档 | `resultPresentation`、`managementLabels`；冻结历史、确认取消及其他暂停会话用 `frontend_p56_browser.cjs` |
 
 表内后端文件在 `backend/tests/`。前端短名在 `frontend/src/` 下以 `.test.ts` 结尾，按确切路径运行。`test_dev_launcher.py` 的完整模块包含真实本机服务/浏览器场景，不能将其统称为“不启动服务”的离线组；需要静态检查时只指定已核对的用例，例如：
 
@@ -86,6 +89,8 @@ npm run build
 本次 `develop` 的 `backend/tests/frontend_drafts_browser.cjs` 同样不监听端口，使用具备 CAS/命名草稿契约的 fake 后端覆盖无效 JSON、长文本、未提交提示词的切换与冷重开、节点酒馆 URL、写失败和双窗口冲突。不能以原 localStorage mock 代替新本机草稿验收；命令和证据见 [P1/P2 记录](FRONTEND-P1-P2-2026-10-09.md)。
 
 P3/P4 用 `backend/tests/frontend_p34_browser.cjs` 验证显式切换、同身份发布、确认采用修订、Key 丢响应后重开核实、双协议模板及发现列表；全部资产和请求拦截，无真实 Key、产品库或模型派发。凭据后端测试用临时私有库及假 Key；Windows 案例实际调用当前用户 DPAPI。范围和复现命令见 [P3/P4 记录](FRONTEND-P3-P4-2026-10-09.md)。
+
+P5/P6 用 `backend/tests/frontend_p56_browser.cjs` 验证正文置前、提示词身份/metadata、半输入数字冷恢复、具名输入保留复杂字段、真实拖线命中与吸附、冻结历史、摘要/签名隐藏、本机名称及可逆归档。恢复/分叉取消没有业务 mutation；另一个已知暂停会话阻止目录归档。全部请求和资产拦截，不监听端口。范围、fixture 和命令见 [P5/P6 记录](FRONTEND-P5-P6-2026-10-09.md)；390px 仅验证弹窗，工作台仍保留 1024px 最小宽度。
 
 真实调用只有在明确授权供应商、费用和范围后执行，使用隔离数据库，不使用正式会话：
 
@@ -110,6 +115,8 @@ P3/P4 用 `backend/tests/frontend_p34_browser.cjs` 验证显式切换、同身�
 | 全量后最后修改补测 | 191 项通过；包含全量开始后新增/修改的案例 |
 | 菜单离线浏览器 | 9 场景 / 11 截图通过，0 后端变更、0 页面/控制台/资产错误 |
 | 共用类型声明 | 33 个共同声明在原版本下无重定义 |
+| P5/P6 开发工作区 | 前端全量 87 文件/1075 项、类型/构建及后端定向 14 文件/286 项通过；尚未提交或晋升 |
+| P5/P6 离线浏览器 | 12 场景/7 截图；另复核草稿 7 场景、P3/P4 7 场景及菜单 9 场景，不累加为独立覆盖 |
 
 50 项失败的测试身份全部在旧稳定基线对照中出现，未发现基线外失败，但仍属于未解决测试债务。集中于 `test_execution_facts.py` 的已删除固定 `save_bundle/get_record` API、`test_frontend_controls.py` 缺失脚本及 `test_host_sdk.py` 的既有预期。不恢复退役 API、不删除通用测试来宣称全绿。最终补测与各轮集中范围有重叠，不相加为独立覆盖数；全量第二轮也不是最后所有源码修改后的完整重跑。
 

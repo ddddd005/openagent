@@ -74,7 +74,7 @@ onMounted(() => { void resources.refresh(); });
         <button type="button" :disabled="locked" @click="edit(record)">
           <strong :title="lorebookResourceLabel(record)">{{ lorebookResourceLabel(record) }}</strong>
           <span>{{ record.value.enabled ? '启用' : '已停用' }} · s{{ record.update_sequence }}</span>
-          <small>{{ record.scope }} · {{ record.resource_id.slice(0, 8) }} · {{ record.value.entries.length }} 个条目</small>
+          <small>{{ record.value.entries.length }} 个条目</small>
         </button>
       </li>
     </ul>
@@ -85,8 +85,7 @@ onMounted(() => { void resources.refresh(); });
           @click="editor.close()"><X :size="15" /></button>
       </header>
       <fieldset :disabled="locked || localDraft.loading.value">
-        <label>范围<output>{{ form.scope }}</output></label>
-        <label>资源 UUID<output>{{ form.resource_id }}</output></label>
+        <details><summary>技术详情</summary><label>范围<output>{{ form.scope }}</output></label><label>资源 UUID<output>{{ form.resource_id }}</output></label></details>
         <label>名称<input v-model="form.value.name" type="text" maxlength="128" aria-label="Lorebook 资源名称" /></label>
         <label class="toggle"><input v-model="form.value.enabled" type="checkbox" />启用资源</label>
         <LorebookEntries v-model="form.value.entries" :disabled="locked"

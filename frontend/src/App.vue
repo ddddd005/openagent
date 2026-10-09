@@ -21,6 +21,8 @@ import {
   ArrowRight,
   Copy,
   Pencil,
+  Archive,
+  ArchiveRestore,
 } from "lucide-vue-next";
 import ErrorToast from "./components/ErrorToast.vue";
 import ProviderSidebar from "./components/ProviderSidebar.vue";
@@ -38,10 +40,42 @@ import { useWorkbenchSidebar } from "./composables/useWorkbenchSidebar";
 import { useBoundFormDraft } from "./composables/useBoundFormDraft";
 import FormDraftNotice from "./components/FormDraftNotice.vue";
 import { graphObject } from "./domain/workflowGraph";
+import { useManagementLabelsStore } from "./stores/managementLabels";
 
 const workspace = useWorkspaceStore();
 const persistence = useWorkbenchPersistenceStore();
 const graph = useWorkflowGraphStore();
+const labels = useManagementLabelsStore(), showArchived = ref(false);
+const listedWorkflows = computed(() => workspace.workflows.filter(row => showArchived.value
+  || !labels.archived({ kind: "workflow", id: row.id })));
+watch(() => workspace.workflows.map(row => row.id), ids => {
+  if (typeof window !== "undefined") for (const id of ids) void labels.load({ kind: "workflow", id });
+}, { immediate: true });
+function archiveState(id: string) {
+  const entry = graph.entries[id], selected = entry?.session_id ? graph.views[entry.session_id] : null;
+  const sessions = [...(graph.sessions[id] ?? []), ...(selected ? [selected] : [])];
+  return {
+    blocked: !entry || graph.locked || !!entry.pending || !!entry.session_id && !selected
+      || sessions.some(session => !session.can_submit || ["prepared", "running", "pausing", "paused"].includes(session.status)),
+    basis: JSON.stringify([entry?.session_id, entry?.pending, labels.archived({ kind: "workflow", id }),
+      sessions.map(session => [session.workflow_session_id, session.revision, session.status, session.can_submit])]),
+  };
+}
+async function archiveWorkflow(id: string) {
+  const target = { kind: "workflow" as const, id }, state = archiveState(id);
+  if (state.blocked) {
+    navigationError.value = "会话未稳定或原请求待核实，暂不能归档"; return;
+  }
+  const archived = labels.archived(target);
+  if (!archived && !window.confirm("仅从本机工作流目录归档。定义、会话、未应用草稿和共享资源均保留；不执行永久删除。")) return;
+  if (!await persistence.flushAll()) { navigationError.value = "当前内容尚未写入本机"; return; }
+  const latest = archiveState(id);
+  if (latest.blocked || state.basis !== latest.basis) {
+    navigationError.value = "归档依据已变化，未修改目录"; return;
+  }
+  if (!await labels.update(target, { archived: !archived })) navigationError.value = labels.error(target) || "目录归档未保存";
+  else navigationError.value = "";
+}
 const { sidebarCollapsed, toggleSidebar, expandSidebar } = useWorkbenchSidebar();
 const navigationError = ref("");
 let navigationGeneration = 0;
@@ -172,14 +206,15 @@ watch(
         <section v-show="workspace.sidebarSection === 'workflows'" class="workbench-workflow-panel" aria-labelledby="workflow-heading">
           <header class="workbench-panel-heading">
             <h1 id="workflow-heading">工作流</h1>
-            <span class="workbench-workflow-count">{{ workspace.workflows.length }}</span>
+            <span class="workbench-workflow-count">{{ listedWorkflows.length }}</span>
+            <button class="workbench-tool-button" type="button" title="显示已归档工作流" aria-label="显示已归档工作流" :aria-pressed="showArchived" @click="showArchived = !showArchived"><Archive :size="14" /></button>
             <button class="workbench-tool-button" type="button" title="新建工作流" aria-label="新建工作流" @click="leaveEditor(() => graph.createWorkflow())"><Plus :size="15" /></button>
             <button class="workbench-tool-button" type="button" title="创建串行 Agent 示例（模型资源与模型名待选择，配置后运行）" aria-label="创建串行 Agent 示例" :disabled="graph.catalogLoading || !graph.catalog.length" @click="leaveEditor(() => graph.createSerialAgentExample())"><GitBranch :size="15" /></button>
             <button class="workbench-tool-button" type="button" title="创建上下文精简串行示例" aria-label="创建上下文精简串行示例" :disabled="graph.catalogLoading || !graph.catalog.length" @click="leaveEditor(() => graph.createCompactingSerialAgentExample())"><Minimize2 :size="15" /></button>
           </header>
 
           <ul class="workbench-workflow-list" aria-label="工作流列表">
-            <li v-for="workflow in workspace.workflows" :key="workflow.id" class="workflow-row">
+            <li v-for="workflow in listedWorkflows" :key="workflow.id" class="workflow-row">
               <button
                 class="workbench-workflow-item"
                 :class="{
@@ -203,6 +238,7 @@ watch(
                   <strong>{{ workflow.title }}</strong>
                   <span class="workbench-workflow-meta">
                     <span>{{ nodeCount(workflow.id) }} 个节点</span>
+                    <span v-if="labels.archived({ kind: 'workflow', id: workflow.id })">已归档</span>
                     <span v-if="workflow.copyPending">复制待核实</span>
                     <span
                       v-if="workspace.activeWorkflowId === workflow.id"
@@ -214,6 +250,12 @@ watch(
                   </span>
                 </span>
               </button>
+              <button v-if="workspace.selectedWorkflowId === workflow.id" class="workbench-tool-button workflow-archive" type="button"
+                :title="labels.archived({ kind: 'workflow', id: workflow.id }) ? '恢复到本机目录' : '归档到本机目录'"
+                :aria-label="labels.archived({ kind: 'workflow', id: workflow.id }) ? '恢复到本机目录' : '归档到本机目录'"
+                :disabled="workflow.copyPending || graph.locked" @click.stop="archiveWorkflow(workflow.id)">
+                <ArchiveRestore v-if="labels.archived({ kind: 'workflow', id: workflow.id })" :size="13" /><Archive v-else :size="13" />
+              </button>
               <button v-if="workspace.selectedWorkflowId === workflow.id && workspace.activeWorkflowId !== workflow.id"
                 class="workflow-switch" type="button" :disabled="workflow.copyPending || graph.locked"
                 :aria-label="`切换到 ${workflow.title}`" @click.stop="openWorkflow(workflow.id)">
@@ -221,6 +263,7 @@ watch(
               </button>
             </li>
           </ul>
+          <p v-for="workflow in workspace.workflows.filter(row => labels.error({ kind: 'workflow', id: row.id }))" :key="workflow.id" class="navigation-warning" role="status">{{ workflow.title }}：{{ labels.error({ kind: 'workflow', id: workflow.id }) }}</p>
           <GraphSessions />
         </section>
         <ProviderSidebar v-if="workspace.sidebarSection === 'providers'" />
@@ -233,6 +276,7 @@ watch(
         <div class="workbench-current-workflow">
           <Workflow :size="15" aria-hidden="true" />
           <h2>{{ workspace.activeWorkflow.title }}</h2>
+          <span v-if="labels.archived({ kind: 'workflow', id: workspace.activeWorkflowId })" class="workflow-unsaved">已归档</span>
           <button class="workbench-tool-button" type="button" title="工作流名称" aria-label="编辑工作流名称" :disabled="graph.locked || !graph.document" @click="openRename"><Pencil :size="13" /></button>
           <span
             v-if="!dirty"
@@ -321,8 +365,12 @@ watch(
 .model-pending-banner button { flex-shrink:0; font-size: 11px; text-decoration: underline; }
 .workflow-unsaved { display:flex;align-items:center;gap:6px;color:#e4c85f;font-size:11px;white-space:nowrap; }
 .workflow-row { position:relative; }
-.workflow-row:has(.workflow-switch) .workbench-workflow-item { padding-right:76px; }
+.workflow-row:has(.workflow-archive) .workbench-workflow-item { padding-right:42px; }
+.workflow-row:has(.workflow-switch) .workbench-workflow-item { padding-right:104px; }
 .workflow-switch { position:absolute; right:10px; top:24px; display:flex; align-items:center; gap:4px; padding:5px; font-size:11px; }
+.workflow-row:has(.workflow-archive) .workflow-switch { right:39px; }
+.workflow-archive { position:absolute; right:8px; top:22px; }
+.navigation-warning { padding:6px 10px; margin:0; font-size:11px; color:#e4a0a0; overflow-wrap:anywhere; }
 .workflow-rename { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid #505059; font-size:12px; }
 .workflow-rename label { display:flex; align-items:center; gap:8px; min-width:0; }
 .workflow-rename input { min-width:0; padding:5px; background:#222226; border:1px solid #505059; color:inherit; }

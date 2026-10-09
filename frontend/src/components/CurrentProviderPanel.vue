@@ -79,7 +79,6 @@ onMounted(() => { void resources.refresh(); });
         <label>协议<select :value="form.value.protocol" aria-label="供应商协议" :disabled="expectedSequence !== 0" @change="changeProtocol">
           <option value="chat">Chat Completions</option><option value="gemini">Gemini generateContent</option>
         </select></label>
-        <label>范围<output>{{ form.scope }}</output></label>
         <label>服务地址<input v-model="form.value.base_url" type="url" required maxlength="2048" autocomplete="off" /></label>
         <label>后端凭据引用<select v-model="form.value.credential_ref" aria-label="后端凭据引用">
           <option :value="null">未配置</option>
@@ -88,6 +87,7 @@ onMounted(() => { void resources.refresh(); });
           <option v-else value="env:GEMINI_API_KEY">env:GEMINI_API_KEY</option>
         </select></label>
         <label class="enabled"><input v-model="form.value.enabled" type="checkbox" />启用</label>
+        <details><summary>技术详情</summary><label>范围<output>{{ form.scope }}</output></label><label>资源 UUID<output>{{ form.resource_id }}</output></label></details>
       </fieldset>
       <ProviderCredentialFields :key="form.scope + ':' + form.resource_id" :owner="form.scope + ':' + form.resource_id"
         :reference="form.value.credential_ref" :disabled="locked" @saved="bindCredential"
