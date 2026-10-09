@@ -78,6 +78,14 @@ class GraphApplication:
         # Keep the original request fixed even if a service callback mutates its copy.
         request = deepcopy(validate_parameters(spec, parameters))
         operation_scope = "consumer" if spec.consumer else "management"
+        if name in ("credential.save", "credential.delete"):
+            result = self._invoke(spec, request)
+            public_request = {key: value for key, value in request.items() if key != "secret"}
+            receipt = application_command_receipt(name, operation_scope, public_request, result,
+                                                  authority="service_receipt")
+            receipt["accepted"] = deepcopy(result)
+            return {"schema_version": 1, "kind": "workflow.application-command",
+                    "receipt": receipt, "result": result}
         with bind_application_command(name, operation_scope, request):
             result = self._invoke(spec, request)
         receipt = application_command_receipt(name, operation_scope, request, result,

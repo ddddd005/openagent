@@ -55,8 +55,8 @@ afterEach(() => {
 });
 
 describe("workflow application coordination", () => {
-  it("restores a parent checkpoint definition, persists its distinct workspace identity and starts that exact version", async () => {
-    const { graph, id, old, selected, directory, candidateId } = fixture();
+  it("restores a parent checkpoint without replacing the editor or silently starting its different workflow", async () => {
+    const { graph, id, current, old, selected, directory, candidateId } = fixture();
     const storage = memory(), backend = memoryLocalDraftStorage();
     const persistence = useWorkbenchPersistenceStore(); await persistence.initialize(storage, backend.ports);
     const paths: string[] = [];
@@ -74,28 +74,29 @@ describe("workflow application coordination", () => {
       return json(selected);
     }));
     expect(await graph.changeCandidate(candidateId)).toBe(true);
-    expect(graph.document).toEqual(old);
-    expect(graph.entries[id].saved_document).toEqual(old);
-    expect(useWorkspaceStore().activeWorkflow).toMatchObject({ id, title: old.name, nodeCount: old.nodes.length, state: "saved" });
+    expect(graph.document).toEqual(current);
+    expect(graph.entries[id].saved_document).toEqual(current);
+    expect(graph.entries[id].session_document).toEqual(old);
+    expect(useWorkspaceStore().activeWorkflow).toMatchObject({ id, title: "新工作流", state: "draft" });
     expect(id).not.toBe(old.workflow_definition_id);
     expect(await persistence.save()).toBe(true);
     persistence.$dispose(); graph.$dispose(); setActivePinia(createPinia());
     const restored = useWorkbenchPersistenceStore(); await restored.initialize(storage, backend.ports);
     const reopened = useWorkflowGraphStore();
     expect(restored.status).toBe("saved");
-    expect(reopened.entries[id].document).toEqual(old);
-    expect(reopened.entries[id].saved_revision).toBe(1);
+    expect(reopened.entries[id].document).toEqual(current);
+    expect(reopened.entries[id].saved_revision).toBe(2);
+    expect(reopened.entries[id].session_document).toEqual(old);
     reopened.views[selected.workflow_session_id] = selected;
     paths.length = 0;
     await reopened.submitPrimary();
-    expect(paths).toEqual([`/api/graph/sessions/${selected.workflow_session_id}`,
-      `/api/graph/sessions/${selected.workflow_session_id}/runs`]);
+    expect(paths.some(path => path.endsWith("/runs"))).toBe(false);
     expect(reopened.entries[id].pending).toBeNull();
     expect(reopened.session?.workflow_definition_id).toBe(old.workflow_definition_id);
   });
 
   it("retains the frozen candidate target and original body after reload and a lost receipt", async () => {
-    const { graph, id, old, selected, candidateId } = fixture();
+    const { graph, id, current, old, selected, candidateId } = fixture();
     const storage = memory(), backend = memoryLocalDraftStorage(), persistence = useWorkbenchPersistenceStore();
     await persistence.initialize(storage, backend.ports);
     stubGraphApplicationFetch( vi.fn().mockRejectedValue(new Error("lost receipt")));
@@ -125,7 +126,8 @@ describe("workflow application coordination", () => {
     await reopened.reconcile(id);
     expect(sent).toEqual([request.body]);
     expect(reopened.entries[id].pending).toBeNull();
-    expect(reopened.entries[id].document).toEqual(old);
+    expect(reopened.entries[id].document).toEqual(current);
+    expect(reopened.entries[id].session_document).toEqual(old);
   });
 
   it("keeps an accepted original request unknown when a later definition arrives during exact definition lookup", async () => {
@@ -152,7 +154,8 @@ describe("workflow application coordination", () => {
     stubGraphApplicationFetch( vi.fn(async path => path.includes("/revisions/") ? json(old) : json(selected)));
     expect(await graph.changeCandidate(candidateId)).toBe(false);
     const original = graphClone(graph.entries[id].pending!);
-    expect(graph.document).toEqual(old);
+    expect(graph.document).toEqual(current);
+    expect(graph.entries[id].session_document).toEqual(old);
     const later = { ...view, revision: 8, data_revision: 5, head_revision: 6 };
     graph.views[view.workflow_session_id] = later;
     const requests: unknown[] = [];
@@ -237,21 +240,23 @@ describe("workflow application coordination", () => {
     graph.undo(); expect(graph.document).toEqual(current);
   });
 
-  it("coordinates a full first-edit copy against the original session even when another workflow is displayed", async () => {
+  it("coordinates an explicit full copy against the original session even when another workflow is displayed", async () => {
     const { graph, id, current, old, view } = fixture();
     useWorkspaceStore().markWorkflowSaved(id);
     const displayed = graph.createWorkflow();
     stubGraphApplicationFetch( vi.fn().mockRejectedValue(new Error("lost copy receipt")));
-    const target = graph.editing.edit({ workflowId: id }, document => {
+    graph.editing.edit({ workflowId: id }, document => {
       document.nodes = graphClone(old.nodes); return true;
-    })!;
+    });
+    const edited = graphClone(graph.entries[id].document);
+    const target = graph.editing.copy({ workflowId: id })!;
     await vi.waitFor(() => expect(graph.busy).toBeNull());
     const request = graph.entries[target].pending!;
     expect(request.path).toBe(`/api/graph/sessions/${view.workflow_session_id}/copy`);
     expect(request.body).toMatchObject({ expected_session_revision: view.revision,
       expected_data_revision: view.data_revision, expected_definition_revision: view.definition_revision,
       expected_head_revision: view.head_revision, document: { workflow_definition_id: target, nodes: old.nodes } });
-    expect(graph.entries[id].document).toEqual(current);
+    expect(graph.entries[id].document).toEqual(edited);
     expect(graph.entries[id].saved_document).toEqual(current);
     expect(useWorkspaceStore().activeWorkflowId).toBe(displayed);
     expect(useWorkspaceStore().workflows.find(row => row.id === target)?.copyPending).toBe(true);

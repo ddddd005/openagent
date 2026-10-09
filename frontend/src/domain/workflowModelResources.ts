@@ -6,6 +6,7 @@ export const capacityModelFieldsExtensionId = "workflow.models.node-fields-v2";
 export const geminiModelFieldsExtensionId = "workflow.models.node-fields-v3";
 export const capacityGeminiModelFieldsExtensionId = "workflow.models.node-fields-v4";
 export type ProviderProtocol = "chat" | "gemini";
+export type CredentialReference = "env:DEEPSEEK_API_KEY" | "env:GEMINI_API_KEY" | `local:${string}`;
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high";
 export type ModelThinking = "disabled"
   | { mode: "budget"; budget: number; include_summary: boolean }
@@ -15,9 +16,9 @@ export interface ProviderIdentity {
 }
 export interface CurrentProvider {
   envelope_version: 1; scope: string; type_id: typeof chatProviderType; resource_id: string;
-  data_schema_version: 1 | 2; update_sequence: number;
+  data_schema_version: 1 | 2 | 3; update_sequence: number;
   value: { name: string; protocol: ProviderProtocol; base_url: string;
-    credential_ref: null | "env:DEEPSEEK_API_KEY" | "env:GEMINI_API_KEY"; enabled: boolean };
+    credential_ref: null | CredentialReference; enabled: boolean };
 }
 export interface ModelParameters {
   model: string; thinking: ModelThinking; stream: false; max_tokens?: number; temperature?: number;
@@ -80,6 +81,7 @@ export function isProviderValue(value: unknown): value is CurrentProvider["value
     || typeof value.name !== "string" || !value.name.trim() || value.name.length > 128 || /[\u0000-\u001f\u007f]/.test(value.name)
     || !["chat", "gemini"].includes(String(value.protocol)) || typeof value.enabled !== "boolean"
     || value.credential_ref !== null && value.credential_ref !== (value.protocol === "gemini" ? "env:GEMINI_API_KEY" : "env:DEEPSEEK_API_KEY")
+      && !(typeof value.credential_ref === "string" && value.credential_ref.startsWith("local:") && graphUuid(value.credential_ref.slice(6)))
     || typeof value.base_url !== "string" || value.base_url.length > 2048 || /[\s\\?#\u0000-\u001f\u007f]/.test(value.base_url)) return false;
   try {
     const url = new URL(value.base_url);
@@ -91,9 +93,10 @@ export function isCurrentProvider(value: unknown): value is CurrentProvider {
   return graphObject(value) && keysAre(value, ["envelope_version", "scope", "type_id", "resource_id",
     "data_schema_version", "update_sequence", "value"])
     && isProviderIdentity(Object.fromEntries(["envelope_version", "scope", "type_id", "resource_id"].map(key => [key, value[key]])))
-    && [1, 2].includes(Number(value.data_schema_version)) && Number.isSafeInteger(value.update_sequence)
+    && [1, 2, 3].includes(Number(value.data_schema_version)) && Number.isSafeInteger(value.update_sequence)
     && Number(value.update_sequence) > 0 && isProviderValue(value.value)
-    && value.data_schema_version === (value.value.protocol === "gemini" ? 2 : 1);
+    && (value.data_schema_version === 3 || value.data_schema_version === (value.value.protocol === "gemini" ? 2 : 1)
+      && !value.value.credential_ref?.startsWith("local:"));
 }
 export function isModelParameters(value: unknown): value is ModelParameters {
   return graphObject(value) && Object.keys(value).every(key => ["model", "thinking", "stream", "max_tokens", "temperature"].includes(key))

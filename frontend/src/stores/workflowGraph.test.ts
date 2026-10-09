@@ -113,6 +113,7 @@ describe("generic workbench execution and document transactions", () => {
     const text = graph.addNode("workflow.text@1", { x: 0, y: 0 })!;
     const output = graph.addNode("workflow.output@1", { x: 300, y: 0 })!;
     graph.connect({ source_node_id: text, source_port_id: "output", target_node_id: output, target_port_id: "input" });
+    await graph.saveWorkflow();
     await graph.submitPrimary();
     expect(saved).toMatchObject({ schema_version: 2, package_lock: [], execution_roots: [], control_edges: [] });
     expect(saved!.nodes).toHaveLength(2); expect(saved!.edges).toHaveLength(1);
@@ -162,10 +163,10 @@ describe("generic workbench execution and document transactions", () => {
       if (path === "/api/graph/sessions") { view = session(document!); return new Response(JSON.stringify(view)); }
       view = { ...view!, status: "succeeded", revision: 2 }; return new Response(JSON.stringify(view));
     }));
-    await graph.submitPrimary();
+    await graph.saveWorkflow(); await graph.submitPrimary();
     expect(calls.map(call => call.path)).toEqual(["/api/graph/definitions", "/api/graph/sessions", `/api/graph/sessions/${graph.session?.workflow_session_id}/runs`]);
     expect(calls[2].body.inputs).toEqual({}); expect(graph.session?.status).toBe("succeeded");
-    expect(useWorkspaceStore().activeWorkflow.state).toBe("draft");
+    expect(useWorkspaceStore().activeWorkflow.state).toBe("saved");
   });
   it("keeps a lost copy command across reload and reads its same UUID and body", async () => {
     const { graph, id, text } = fixture(); const workspace = useWorkspaceStore();
@@ -174,6 +175,7 @@ describe("generic workbench execution and document transactions", () => {
     workspace.activeWorkflow.state = "saved";
     stubGraphApplicationFetch( vi.fn().mockRejectedValue(new Error("lost")));
     graph.patchNode(text, { config: { text: "changed" } });
+    graph.copyWorkflow();
     await vi.waitFor(() => expect(graph.busy).toBeNull());
     const target = workspace.workflows.find(w => w.sourceId === id)!;
     const original = graphClone(graph.entries[target.id].pending);
@@ -206,6 +208,7 @@ describe("generic workbench execution and document transactions", () => {
       return new Response(JSON.stringify({ error: { reason_code: "stale_revision" } }), { status: 409 });
     }));
     graph.patchNode(text, { config: { text: "new copy" } });
+    graph.copyWorkflow();
     await vi.waitFor(() => expect(graph.busy).toBeNull());
     const target = workspace.workflows.find(row => row.sourceId === id)!;
     expect(graph.entries[target.id].pending).toBeNull(); expect(target.copyPending).toBe(true);
@@ -236,6 +239,7 @@ describe("generic workbench execution and document transactions", () => {
     workspace.activeWorkflow.state = "saved";
     stubGraphApplicationFetch(vi.fn().mockRejectedValue(new Error("unknown copy outcome")));
     graph.patchNode(text, { title: "retained incomplete copy" });
+    graph.copyWorkflow();
     await vi.waitFor(() => expect(graph.busy).toBeNull());
     const target = workspace.workflows.find(row => row.sourceId === id)!;
     const snapshot = graph.storeSnapshot();
@@ -256,6 +260,7 @@ describe("generic workbench execution and document transactions", () => {
     workspace.activeWorkflow.state = "saved";
     stubGraphApplicationFetch(vi.fn().mockRejectedValue(new Error("unknown copy outcome")));
     graph.patchNode(text, { title: "unknown copy" });
+    graph.copyWorkflow();
     await vi.waitFor(() => expect(graph.busy).toBeNull());
     const target = workspace.workflows.find(row => row.sourceId === id)!;
     const original = graphClone(graph.entries[target.id].pending!), paths: string[] = [];
@@ -275,6 +280,7 @@ describe("generic workbench execution and document transactions", () => {
     stubGraphApplicationFetch(vi.fn(async () =>
       new Response(JSON.stringify({ error: { reason_code: "stale_revision" } }), { status: 409 })));
     graph.patchNode(text, { title: "rejected copy" });
+    graph.copyWorkflow();
     await vi.waitFor(() => expect(graph.busy).toBeNull());
     const target = workspace.workflows.find(row => row.sourceId === id)!, query = deferred<Response>();
     const paths: string[] = [];
@@ -292,7 +298,7 @@ describe("generic workbench execution and document transactions", () => {
       `/api/graph/sessions/${view.workflow_session_id}/copy`]);
     expect(target.copyPending).toBe(false); expect(graph.entries[target.id].pending).toBeNull();
   });
-  it("rebinds a copied session after later edits before starting another run", async () => {
+  it("requires an explicit save and explicit adoption before starting edited definitions", async () => {
     const { graph, id, text } = fixture(); const view = session(graph.document!);
     graph.entries[id].saved_revision = 1; graph.entries[id].saved_document = graphClone(graph.document!);
     graph.entries[id].session_id = view.workflow_session_id; graph.views[view.workflow_session_id] = view;
@@ -305,17 +311,25 @@ describe("generic workbench execution and document transactions", () => {
       if (path.endsWith("/runs")) return new Response(JSON.stringify({ ...view, definition_revision:2, revision:3, status:"succeeded" }));
       return new Response(JSON.stringify(view));
     }));
+    await graph.submitPrimary(); expect(calls).toEqual([]);
+    expect(await graph.saveWorkflow()).toBe(true);
+    expect(graph.session!.definition_revision).toBe(1);
     await graph.submitPrimary();
-    expect(calls).toEqual(["/api/graph/definitions", `/api/graph/sessions/${view.workflow_session_id}`, `/api/graph/sessions/${view.workflow_session_id}/rebind`, `/api/graph/sessions/${view.workflow_session_id}/runs`]);
+    expect(calls.some(path => path.endsWith("/rebind"))).toBe(false);
+    calls.length = 0;
+    expect(await graph.adoptRevision()).toBe(true);
+    await graph.submitPrimary();
+    expect(calls).toEqual([`/api/graph/sessions/${view.workflow_session_id}`, `/api/graph/sessions/${view.workflow_session_id}/rebind`,
+      `/api/graph/sessions/${view.workflow_session_id}`, `/api/graph/sessions/${view.workflow_session_id}/runs`]);
   });
   it("preserves definitive graph diagnostics and blocks mutations when request persistence fails", async () => {
     const { graph } = fixture(); graph.setPersistenceGuard(() => false);
-    const fetcher = vi.fn(); stubGraphApplicationFetch( fetcher); await graph.submitPrimary();
+    const fetcher = vi.fn(); stubGraphApplicationFetch( fetcher); await graph.saveWorkflow();
     expect(fetcher).not.toHaveBeenCalled(); expect(graph.pending).toBeNull();
     graph.setPersistenceGuard(() => true);
     stubGraphApplicationFetch( vi.fn(async () => new Response(JSON.stringify({ error: { code:"graph_no_outputs",
       diagnostic: { reason_code:"graph_no_outputs", message:"No output" } } }), { status:400 })));
-    await graph.submitPrimary(); expect(graph.active?.diagnostics?.[0].reason_code).toBe("graph_no_outputs");
+    await graph.saveWorkflow(); expect(graph.active?.diagnostics?.[0].reason_code).toBe("graph_no_outputs");
   });
   it("accepts the closed control receipt and allows a later fresh run", async () => {
     const { graph,id } = fixture(); const view = session(graph.document!);

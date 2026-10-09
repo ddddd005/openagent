@@ -2,13 +2,15 @@
 import { computed, onMounted, ref } from "vue";
 import { Import, Plus, RefreshCw, Save, X } from "lucide-vue-next";
 import { useProviderResources } from "../application/workflowResources";
-import { cloneProvider, newProvider, type CurrentProvider, type ProviderProtocol } from "../domain/workflowModelResources";
+import { cloneProvider, newProvider, type CurrentProvider, type ProviderProtocol, type CredentialReference } from "../domain/workflowModelResources";
 import { useResourceFormDraft } from "../composables/useResourceFormDraft";
 import FormDraftNotice from "./FormDraftNotice.vue";
+import ProviderCredentialFields from "./ProviderCredentialFields.vue";
 
 const resources = useProviderResources();
 const records = resources.records, loading = resources.loading;
 const submitting = ref(false);
+const credentialBlocked = ref(false), credentialDirty = ref(false), credentialMutating = ref(false);
 const locked = computed(() => resources.locked.value || submitting.value || localDraft.loading.value || localDraft.conflict.value);
 const error = resources.error, pending = resources.pending, busy = resources.busy;
 const editor = useResourceFormDraft<CurrentProvider>("provider", newProvider, record => record.value.name);
@@ -18,7 +20,7 @@ function edit(record: CurrentProvider | null) {
   editor.edit(record);
 }
 async function save() {
-  if (!form.value || locked.value) return;
+  if (!form.value || locked.value || credentialBlocked.value || credentialDirty.value) return;
   submitting.value = true;
   const record = cloneProvider(form.value), sequence = expectedSequence.value;
   try {
@@ -38,6 +40,11 @@ function changeProtocol(event: Event) {
   if (value.credential_ref) value.credential_ref = protocol === "gemini" ? "env:GEMINI_API_KEY" : "env:DEEPSEEK_API_KEY";
   value.protocol = protocol;
   form.value.data_schema_version = protocol === "gemini" ? 2 : 1;
+}
+function bindCredential(reference: CredentialReference) {
+  if (!form.value) return;
+  form.value.data_schema_version = 3;
+  form.value.value.credential_ref = reference;
 }
 onMounted(() => { void resources.refresh(); });
 </script>
@@ -67,7 +74,7 @@ onMounted(() => { void resources.refresh(); });
       <header><strong>{{ expectedSequence ? '更新当前资源' : '新增当前资源' }}</strong>
         <button type="button" title="取消编辑" aria-label="取消编辑" :disabled="locked" @click="editor.close()"><X :size="15" /></button>
       </header>
-      <fieldset :disabled="locked || localDraft.loading.value">
+      <fieldset :disabled="locked || localDraft.loading.value || credentialMutating || credentialDirty">
         <label>名称<input v-model="form.value.name" required maxlength="128" /></label>
         <label>协议<select :value="form.value.protocol" aria-label="供应商协议" :disabled="expectedSequence !== 0" @change="changeProtocol">
           <option value="chat">Chat Completions</option><option value="gemini">Gemini generateContent</option>
@@ -76,13 +83,16 @@ onMounted(() => { void resources.refresh(); });
         <label>服务地址<input v-model="form.value.base_url" type="url" required maxlength="2048" autocomplete="off" /></label>
         <label>后端凭据引用<select v-model="form.value.credential_ref" aria-label="后端凭据引用">
           <option :value="null">未配置</option>
+          <option v-if="form.value.credential_ref?.startsWith('local:')" :value="form.value.credential_ref">本机私有 Key</option>
           <option v-if="form.value.protocol === 'chat'" value="env:DEEPSEEK_API_KEY">env:DEEPSEEK_API_KEY</option>
           <option v-else value="env:GEMINI_API_KEY">env:GEMINI_API_KEY</option>
         </select></label>
         <label class="enabled"><input v-model="form.value.enabled" type="checkbox" />启用</label>
       </fieldset>
-      <p>凭据由启动后端的环境提供；引用可用性在运行准备时核实。</p>
-      <button type="submit" :disabled="locked"><Save :size="14" />保存当前资源</button>
+      <ProviderCredentialFields :key="form.scope + ':' + form.resource_id" :owner="form.scope + ':' + form.resource_id"
+        :reference="form.value.credential_ref" :disabled="locked" @saved="bindCredential"
+        @blocked="credentialBlocked = $event" @dirty="credentialDirty = $event" @mutation="credentialMutating = $event" />
+      <button type="submit" :disabled="locked || credentialBlocked || credentialDirty"><Save :size="14" />保存当前资源</button>
     </form>
     <div v-if="pending" class="warning" role="status">
       <p>资源提交结果待核实</p>

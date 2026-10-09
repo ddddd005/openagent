@@ -29,6 +29,7 @@ from .graph_information import GraphInformation
 from .graph_events import GraphEvents
 from .graph_failed_retry import GraphFailedRetry
 from .graph_editing_host import GraphEditingHost
+from .graph_provider_host import GraphProviderHost
 
 
 def _uid() -> str:
@@ -69,10 +70,10 @@ class _GraphLease:
         self.file.close()
 
 
-class GraphWorkflowService(GraphEditingHost, GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost, GraphResourceHost, GraphPlatform, GraphPublic, GraphCandidateHost):
+class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost, GraphResourceHost, GraphPlatform, GraphPublic, GraphCandidateHost):
     def __init__(self, database_path: str | Path, *, registry=None, fault_injector=None,
                  capability_packages=(), enabled_packages=None, trusted_package_entrypoints=(),
-                 public_model_factory=None):
+                 public_model_factory=None, credential_protector=None, provider_discovery_client_factory=None):
         self.database = Path(database_path).resolve()
         self.database.parent.mkdir(parents=True, exist_ok=True)
         self._lease = _GraphLease(self.database)
@@ -147,9 +148,13 @@ class GraphWorkflowService(GraphEditingHost, GraphFailedRetry, GraphEvents, Grap
         self._failed_retry_candidates = {}
         self._service_runs = {}
         self._service_options = {}
+        from .credential_store import PrivateCredentialStore
+        from .model_host_service import MODEL_SERVICE_REF
+        self._credentials = PrivateCredentialStore(str(self.database) + ".credentials.sqlite", credential_protector)
+        self._discovery_client_factory = provider_discovery_client_factory
+        self._service_options[MODEL_SERVICE_REF] = {"credential_broker_factory": self._new_credential_broker}
         if public_model_factory is not None:
-            from .model_host_service import MODEL_SERVICE_REF
-            self._service_options[MODEL_SERVICE_REF] = {"transport_factory": public_model_factory}
+            self._service_options[MODEL_SERVICE_REF]["transport_factory"] = public_model_factory
         self._closed = False
         try:
             self._recover()

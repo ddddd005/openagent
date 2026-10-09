@@ -1,11 +1,13 @@
 import { graphClone, newGraph, type GraphDocument, type GraphNode, type GraphNodeType } from "../../domain/workflowGraph";
 import type { SerialAgentModelConfig } from "../../domain/serialAgentDemo";
+import type { ProviderProtocol } from "../../domain/workflowModelResources";
 
 const requiredPackages = ["workflow.content", "workflow.tools", "workflow.prompts",
   "workflow.models", "workflow.agents", "workflow.context"];
 
 export function createTavernDemo(catalog: GraphNodeType[],
-  packageLock: NonNullable<GraphDocument["package_lock"]>, modelConfig?: SerialAgentModelConfig): GraphDocument {
+  packageLock: NonNullable<GraphDocument["package_lock"]>, modelConfig?: SerialAgentModelConfig,
+  protocol: ProviderProtocol = "chat"): GraphDocument {
   const missing = requiredPackages.filter(id => !packageLock.some(row => row.package_id === id && row.version === "1.0.0"));
   if (!packageLock.some(row => row.package_id === "workflow.tavern" && row.version === "1.2.0"))
     missing.push("workflow.tavern@1.2.0");
@@ -28,13 +30,13 @@ export function createTavernDemo(catalog: GraphNodeType[],
       target_node_id: to.node_binding_id });
   }
   const input = node("tools.current-input", "1", "用户输入", 0, 0, { input_name: "text" });
-  const model = node("models.source", "2", modelConfig ? "模型" : "模型与容量待配置", 0, 200);
+  const model = node("models.source", protocol === "gemini" ? "4" : "2", modelConfig ? "模型" : "模型与容量待配置", 0, 200);
   if (modelConfig) model.config = { ...model.config, ...graphClone(modelConfig) };
   else {
     model.config.reference = { ...(model.config.reference as Record<string, unknown>), resource_id: "" };
     model.config.parameters = { ...(model.config.parameters as Record<string, unknown>), model: "" };
   }
-  const agent = node("agents.execute", "4", "酒馆 Agent", 850, 0);
+  const agent = node("agents.execute", protocol === "gemini" ? "8" : "4", "酒馆 Agent", 850, 0);
   const binding = { object_key: "context/tavern", agent_node_id: agent.node_binding_id };
   const read = node("context.output", "4", "Agent 上下文", 0, 400, binding);
   const assembly = node("context.assembly", "4", "提示词装配", 550, 0);

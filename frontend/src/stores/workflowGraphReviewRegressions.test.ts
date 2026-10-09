@@ -158,7 +158,7 @@ describe("reviewed graph receipt and operation races", () => {
     expect(graph.busy).toBeNull(); expect(graph.pending).toBeNull();
     choice.resolve(response(next)); await selecting;
     expect(graph.entries[id].session_id).toBe(current.workflow_session_id);
-    expect(graph.session?.definition_revision).toBe(2); expect(graph.locked).toBe(false);
+    expect(graph.session?.definition_revision).toBe(1); expect(graph.locked).toBe(false);
   });
 
   it("retains the displayed workflow poll after a hidden command receipt", async () => {

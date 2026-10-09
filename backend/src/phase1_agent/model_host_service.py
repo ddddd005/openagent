@@ -37,7 +37,10 @@ def model_service_requirement(capability, *operations):
 class ModelHostService:
     def __init__(self, environment):
         self.environment = environment
-        options = environment.options
+        options = dict(environment.options)
+        broker_factory = options.pop("credential_broker_factory", None)
+        if broker_factory is not None:
+            options["credential_broker"] = broker_factory()
         self.implementation = PublicModelService(
             provider_reader=environment.read_resource,
             accept_fact=self._accept_fact,

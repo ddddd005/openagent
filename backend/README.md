@@ -12,6 +12,11 @@ implementations and their test graphs are retired rather than silently upgraded.
 Application metadata remains `0.2.0`; the current mainline is not a new release
 tag or a claim that the entire backend suite is green.
 
+The current `develop` additionally implements frontend-userization P1-P4,
+not yet promoted to stable `main`. P4 adds management-only private credentials
+and bounded model discovery; see the [P3/P4 record](../docs/FRONTEND-P3-P4-2026-10-09.md).
+BAT startup and stable code remain unchanged.
+
 ## Start Here
 
 - [Documentation index](../docs/README.md): current guides and historical records.
@@ -83,6 +88,7 @@ All files below are under `src/phase1_agent/`.
 | `capability_registry.py`, `capability_packages.py`, `builtin_packages.py` | Exact package selection and current declarations |
 | `storage.py`, `graph_store.py`, `runtime_fact_store.py`, `storage_retirement.py` | Records, facts, additive storage-v16 drafts and the bounded pre-v15 retirement |
 | `graph_drafts.py`, `graph_editing_host.py` | Local editing drafts, CAS, non-secret intents and management/consumer scope checks |
+| `credential_store.py`, `graph_provider_host.py`, `provider_discovery.py` | Current-user private vault, secret-free receipts, frozen credential generations and protocol model lists |
 | `model_service.py`, `model_host_service.py`, `model_package.py` | Frozen provider resources, capacity-aware bindings and model calls |
 | `adapter.py`, `gemini_adapter.py`, `gemini_capabilities.py`, `provider_metadata.py` | Protocol conversion, thinking validation and original signed parts |
 | `context_v4.py`, `context_v4_nodes.py`, `context_receipt.py` | Native context, verified writeback and CAS receipts |
@@ -95,6 +101,15 @@ Schemas are checked in under `backend/schemas/`; exporters are under
 Thinking summaries are display data, not private protocol state. Gemini
 signatures remain opaque and preserve original part order and tool bindings;
 they must not be forged, removed or exposed as answer text.
+
+Private credentials use a separate `<database>.credentials.sqlite` protected
+with Windows current-user DPAPI and path-bound entropy. No plaintext fallback
+is available. Public provider schema 3 stores only a `local:<UUID>` or existing
+environment reference; schema 1/2 definitions remain unchanged. Credential
+commands bypass public request-body persistence and return secret-free
+receipts. Unknown requests are never replayed. Key rotation or deletion after
+run preparation prevents later dispatch; it does not cancel an already sent call.
+Vault migration to another account, host or path is not guaranteed.
 
 The runtime is not a general parallel tool scheduler or an active cross-process
 checkpoint recovery system. Current native Agents do not register a failed-node

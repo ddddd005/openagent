@@ -76,12 +76,12 @@ describe("local event management and original outbox", () => {
     snapshot.entries[id].pending!.body.payload = { _workflow_frozen_resources: {} };
     expect(graph.restoreSnapshot(snapshot)).toBe(false);
   });
-  it("preserves declaration targets across a saved-definition edit copy and leaves node copies outside the route", () => {
+  it("preserves declaration targets and the workflow identity while leaving node copies outside the route", () => {
     const { graph, id, node, binding } = fixture(); graph.entries[id].session_id = null;
     useWorkspaceStore().markWorkflowSaved(id);
     const copied = graph.setEventBindings([{ ...binding, display_name: "Changed" }])!;
-    expect(copied).not.toBe(id); expect(graph.document!.event_bindings![0].target_node_ids).toEqual([node]);
-    expect(graph.entries[id].document.event_bindings![0].display_name).toBe("Edit");
+    expect(copied).toBe(id); expect(graph.document!.event_bindings![0].target_node_ids).toEqual([node]);
+    expect(graph.entries[id].saved_document!.event_bindings![0].display_name).toBe("Edit");
     graph.selectedNodeIds = [node]; graph.duplicateSelection();
     expect(graph.document!.event_bindings![0].target_node_ids).toEqual([node]);
   });

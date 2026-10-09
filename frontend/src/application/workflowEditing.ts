@@ -25,14 +25,22 @@ export function createWorkflowEditing(ports: WorkflowEditingPorts) {
     if (!change(next) || graphSignature(next) === graphSignature(entry.document)) return null;
     if (next.schema_version === 2 && !isGraphDocument(next))
       throw new WorkbenchApiError("rejected", "编辑结果超出文档范围，或执行根、控制依赖、对象权限不完整");
-    if (ports.isDraft(workflowId)) {
-      ports.acceptDraft(workflowId, graphClone(next));
-      void Promise.resolve(ports.persist()).catch(ports.report);
-      return workflowId;
-    }
     const view = entry.session_id ? ports.observedSession(entry.session_id) : null;
-    if (entry.session_id && (!view || !view.can_submit))
+    if (entry.session_id && (!view || !view.can_submit
+      || ["prepared", "running", "pausing", "paused"].includes(view.status)))
       throw new WorkbenchApiError("unavailable", "当前会话未稳定，刷新或结束运行后再编辑");
+    ports.acceptDraft(workflowId, graphClone(next));
+    void Promise.resolve(ports.persist()).catch(ports.report);
+    return workflowId;
+  }
+  function copy({ workflowId }: WorkflowTarget) {
+    const entry = ports.entry(workflowId);
+    if (!entry || !ports.canEdit(workflowId)) return null;
+    const view = entry.session_id ? ports.observedSession(entry.session_id) : null;
+    if (entry.session_id && (!view || !view.can_submit
+      || ["prepared", "running", "pausing", "paused"].includes(view.status)))
+      throw new WorkbenchApiError("unavailable", "当前会话未稳定，不能复制工作流");
+    const next = graphClone(entry.document);
     const targetId = crypto.randomUUID();
     next.workflow_definition_id = targetId;
     next.revision = 1;
@@ -47,11 +55,11 @@ export function createWorkflowEditing(ports: WorkflowEditingPorts) {
       const command = createGraphCommand(`/api/graph/sessions/${view.workflow_session_id}/copy`, {
         document: next, expected_session_revision: view.revision, expected_data_revision: view.data_revision,
         expected_definition_revision: view.definition_revision, expected_head_revision: view.head_revision,
-        mappings: ports.entry(targetId)?.state_mappings ?? [],
+        mappings: entry.state_mappings ?? [],
       }, "copy");
       void ports.dispatch(targetId, command).catch(ports.report).finally(() => ports.copying(false));
     }
     return targetId;
   }
-  return { edit };
+  return { edit, copy };
 }

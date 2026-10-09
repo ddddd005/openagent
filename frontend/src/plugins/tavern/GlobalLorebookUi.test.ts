@@ -7,6 +7,7 @@ import { renderToString } from "@vue/server-renderer";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkbenchApiError } from "../../adapters/workbenchApi";
+import { createProviderResources, modelResourceControllerKey } from "../../application/workflowResources";
 import { createWorkbenchFrontendHost } from "../../application/workflowFrontendPackage";
 import { newLorebookEntry } from "../../domain/lorebook";
 import { graphClone, newGraph, type GraphDocument, type GraphNode } from "../../domain/workflowGraph";
@@ -137,6 +138,9 @@ async function mount(component: Component, f: ReturnType<typeof fixture>) {
   const app = renderer.createApp(component, [CurrentLorebookPanel, TavernChatPanel].includes(component as typeof CurrentLorebookPanel)
     ? {} : { node: f.node, document: f.document })
     .provide(lorebookResourceControllerKey, f.resources).provide(workflowFrontendSdkKey, f.sdk)
+    .provide(modelResourceControllerKey, createProviderResources({
+      list: async () => [], save: async () => ({}), readReceipt: vi.fn(), readPending: () => null, writePending: () => {},
+    }))
     .provide(Vue.ssrContextKey, { modules: new Set() });
   apps.push(app); app.mount(root); await flush(); return root;
 }

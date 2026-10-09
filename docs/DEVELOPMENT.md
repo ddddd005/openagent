@@ -4,7 +4,7 @@
 
 本文描述 2026-10-09 现行主干的工程边界。入口见 [文档索引](README.md)，操作见 [使用手册](USER-GUIDE.md)；历史记录不作为当前节点目录、部署状态或 API 的替代说明。
 
-本次 `develop` 包含尚未晋升 `main` 的前端用户化 P1/P2。稳定 BAT 不变；新增草稿契约、入口和验收见 [P1/P2 记录](FRONTEND-P1-P2-2026-10-09.md)。
+本次 `develop` 的前端用户化 P1/P2 已提交，P3/P4 已继续实现，均尚未晋升 `main`。稳定 BAT 不变；范围和验收分别见 [P1/P2 记录](FRONTEND-P1-P2-2026-10-09.md)和 [P3/P4 记录](FRONTEND-P3-P4-2026-10-09.md)。
 
 ## 分支与启动
 
@@ -62,6 +62,7 @@ git ls-remote --heads origin main
 | 前端对象与酒馆 | `frontend_package.py`、`frontend_business.py`、`tavern/` |
 | 定义、会话、对象、事实与存储升级 | `storage.py`、`graph_store.py`、`graph_records.py`、`session_objects.py`、`runtime_fact_store.py`、`storage_retirement.py` |
 | 本机编辑仓库 | `graph_drafts.py`、`graph_editing_host.py`；经 GraphApplication 分离管理与消费草稿权限 |
+| 私有凭据与模型发现 | `credential_store.py`、`graph_provider_host.py`、`provider_discovery.py`；管理专属、独立保护库、不走公开秘密 outbox |
 | 信息源与事实读取 | `graph_information.py`、`runtime_information.py` |
 | 独立聊天客户端 | `static/graph-chat.js`、`static/graph-chat-core.js` |
 
@@ -77,6 +78,7 @@ git ls-remote --heads origin main
 | 应用命令、编辑及信息读取 | `application/workflowCommands.ts`、`application/workflowEditing.ts`、`application/workflowInformation.ts` |
 | HTTP 适配 | `adapters/workflowApplicationApi.ts`、`adapters/workflowGraphApi.ts`、`adapters/workflowResourcesApi.ts` |
 | 供应商与模型编辑 | `components/CurrentProviderPanel.vue`、`components/ModelSourceFields.vue`、`application/workflowResources.ts` |
+| 私有 Key 编辑和模型列表 | `components/ProviderCredentialFields.vue`、`application/providerCredentialEditing.ts`、`adapters/providerConfigurationApi.ts` |
 | 可信本地扩展 | `plugins/workflowFrontendSdk.ts`、`plugins/modelFrontendPackage.ts`、`plugins/workflowFrontendPackage.ts` |
 | 观察与控制 | `components/GraphInformation.vue`、`components/GraphRunControls.vue`、`components/GraphHistory.vue` |
 
@@ -101,9 +103,9 @@ Gemini 普通响应及 `agent_message@5` 分离回答正文、可见 `thinking_s
 ## 运行与权威
 
 ```text
-工作台编辑副本
+同身份工作台草稿
   -> 保存定义及修订
-  -> 创建/选择工作流会话
+  -> 创建会话，或明确让既有会话采用保存修订
   -> run.start 校验身份、状态与冻结依据
   -> 编译激活节点和依赖，准备宿主服务
   -> Runtime 逐节点执行
@@ -124,7 +126,9 @@ Gemini 普通响应及 `agent_message@5` 分离回答正文、可见 `thinking_s
 | 会话对象与上下文 | 显式读写权限、接纳及 CAS 管理 |
 | 前端持久化和缓存 | 编辑副本、原请求恢复材料及展示投影，不替代后端事实 |
 
-模型服务读取受控 `env:DEEPSEEK_API_KEY` / `env:GEMINI_API_KEY`，节点只保存引用。通用 Runtime 不解释 Agent 私有工具语义，也不直接暴露供应商凭据。
+模型服务保留受控环境路线；开发 P4 增加私有 `local:<UUID>` 路线及 broker factory，每次运行冻结凭据代次。公开 provider 新增 schema 3，原 schema 1/2 不重定义。Key 只进独立当前用户保护库，普通草稿、资源、事实及公开身份存档不持有正文；查询原凭据回执不需要 Key。通用 Runtime 不解释 Agent 私有工具语义，也不直接暴露供应商凭据。
+
+编辑文档、草稿发布基准、最新已发布修订和会话采用修订独立维护；`session_document` 仅保管恢复会话的精确历史定义。保存不自动重绑，历史接纳不重写编辑图。模型列表按已保存供应商身份和序号查询，派发前后检查资源和凭据，发现未知 Gemini 不授予能力。
 
 ## 修改规则
 

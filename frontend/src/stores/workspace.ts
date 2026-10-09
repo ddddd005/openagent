@@ -54,6 +54,12 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     if (title !== undefined) workflow.title = title;
     return true;
   }
+  function markWorkflowDraft(id: string) {
+    const workflow = workflows.value.find(row => row.id === id);
+    if (!workflow) return false;
+    workflow.state = "draft";
+    return true;
+  }
   function removeWorkflow(id: string) {
     if (activeWorkflowId.value === id) return false;
     workflows.value = workflows.value.filter(row => row.id !== id);
@@ -74,6 +80,6 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   }
   return { workflows, selectedWorkflowId, activeWorkflowId, activeWorkflow, viewVersion,
     interactionMode, sidebarSection, currentViewToken, isCurrentView, selectWorkflow, openWorkflow,
-    registerGraphWorkflow, updateWorkflowProjection, setCopyPending, markWorkflowSaved, removeWorkflow,
+    registerGraphWorkflow, updateWorkflowProjection, setCopyPending, markWorkflowSaved, markWorkflowDraft, removeWorkflow,
     restoreCatalog, initializeFreshWorkspace };
 });

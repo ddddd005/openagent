@@ -55,14 +55,15 @@ describe("package configuration edits and serial example drafts", () => {
     expect(graph.patchNodeConfiguration(request)).toBeNull();
     expect(graph.entries[workflowId].document.nodes[0].config).toEqual(type.default_config);
   });
-  it("returns the real copy identity when editing a saved definition and preserves the original", () => {
+  it("keeps the real workflow identity when editing and preserves its published basis", () => {
     const { graph, workspace, workflowId, nodeId, request } = fixture();
     workspace.activeWorkflow.state = "saved";
     const original = graphClone(graph.document);
+    graph.entries[workflowId].saved_document = graphClone(original!); graph.entries[workflowId].saved_revision = 1;
     const result = graph.patchNodeConfiguration(request)!;
-    expect(result.workflowId).not.toBe(workflowId); expect(result.nodeId).toBe(nodeId);
+    expect(result.workflowId).toBe(workflowId); expect(result.nodeId).toBe(nodeId);
     expect(workspace.activeWorkflowId).toBe(result.workflowId);
-    expect(graph.entries[workflowId].document).toEqual(original);
+    expect(graph.entries[workflowId].saved_document).toEqual(original);
     expect(graph.document!.nodes[0].config.text).toBe("edited");
   });
   it("creates a stable independent draft without publishing, starting or changing blank-new behavior", () => {

@@ -35,6 +35,10 @@ def operation(name, method, required=(), optional=(), **options):
 
 
 COMMANDS = (
+    operation("credential.save", "save_credential",
+              ("credential_ref", "secret", "expected_generation", "idempotency_key")),
+    operation("credential.delete", "delete_credential",
+              ("credential_ref", "expected_generation", "idempotency_key")),
     operation("draft.save", "save_draft",
               ("address", "format_version", "value", "expected_sequence", "idempotency_key")),
     operation("consumer.draft.save", "save_consumer_draft",
@@ -87,6 +91,10 @@ COMMANDS = (
 )
 
 QUERIES = (
+    operation("credential.protection", "credential_protection"),
+    operation("credential.status", "credential_status", ("credential_ref",)),
+    operation("credential.receipt", "credential_receipt", ("operation", "request")),
+    operation("provider.models.list", "list_provider_models", ("identity", "expected_sequence")),
     operation("draft.read", "read_draft", ("address",)),
     operation("draft.list", "list_drafts", optional=("kind", "workflow_definition_id")),
     operation("consumer.draft.read", "read_consumer_draft", ("address",), consumer=True),
@@ -144,6 +152,13 @@ def validate_parameters(spec, parameters):
     required = spec.required | ({"session_id"} if spec.session else set())
     require(type(parameters) is dict and required <= set(parameters) <= required | spec.optional,
             "invalid_request", "Application operation fields differ")
+    if spec.name in ("credential.save", "credential.delete"):
+        from .credential_store import credential_id
+        credential_id(parameters["credential_ref"])
+        require(type(parameters["expected_generation"]) is int
+                and 0 <= parameters["expected_generation"] < 2**53 - 1
+                and uuid_value(parameters["idempotency_key"]),
+                "invalid_request", "Credential mutation identity is invalid")
     if spec.name in ("draft.read", "draft.save", "consumer.draft.read", "consumer.draft.save"):
         from .graph_drafts import validate_draft_address, validate_draft_value
         address = validate_draft_address(parameters["address"], "consumer" if spec.consumer else "management")

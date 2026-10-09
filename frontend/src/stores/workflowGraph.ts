@@ -52,8 +52,10 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     : session.value?.available_actions?.includes("resume") || session.value?.status === "paused" ? "resume" : "start");
   const statusLabel = computed(() => busy.value ? "提交中" : primaryAction.value === "pause" ? "暂停"
     : primaryAction.value === "resume" ? "继续" : "启动");
-  const canUndo = computed(() => !!history.value[workspace.activeWorkflowId]?.past.length && !locked.value);
-  const canRedo = computed(() => !!history.value[workspace.activeWorkflowId]?.future.length && !locked.value);
+  const editorStable = computed(() => !active.value?.session_id || !!session.value?.can_submit
+    && !["prepared", "running", "pausing", "paused"].includes(session.value.status));
+  const canUndo = computed(() => !!history.value[workspace.activeWorkflowId]?.past.length && !locked.value && editorStable.value);
+  const canRedo = computed(() => !!history.value[workspace.activeWorkflowId]?.future.length && !locked.value && editorStable.value);
   let persistence: (() => boolean | Promise<boolean>) | null = null;
   let alive = true;
   let viewGeneration = 0;
@@ -74,8 +76,11 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     for (const [id, entry] of Object.entries(restoredEntries)) {
       if (!graphObject(entry) || !isGraphDocument(entry.document)
         || !Number.isSafeInteger(entry.saved_revision) || Number(entry.saved_revision) < 0
+        || entry.latest_published_revision !== undefined && (!Number.isSafeInteger(entry.latest_published_revision)
+          || Number(entry.latest_published_revision) < Number(entry.saved_revision))
         || entry.session_id !== null && !graphUuid(entry.session_id)
         || entry.saved_document !== undefined && !isGraphDocument(entry.saved_document)
+        || entry.session_document !== undefined && !isGraphDocument(entry.session_document)
         || entry.external_inputs !== undefined && !graphObject(entry.external_inputs)
         || entry.pending !== null && (!graphObject(entry.pending) || typeof entry.pending.path !== "string"
           || !/^\/api\/graph\/(definitions|sessions(?:\/|$))/.test(entry.pending.path)
@@ -219,16 +224,15 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
           entry.saved_revision = receipt.document.revision;
           entry.saved_document = graphClone(receipt.document);
           entry.document.revision = receipt.document.revision;
+          entry.latest_published_revision = Math.max(entry.latest_published_revision ?? 0, receipt.document.revision);
         } else {
           const result = receipt.session;
           if (receipt.historicalDocument) {
-            entry.document = graphClone(receipt.historicalDocument);
-            entry.saved_document = graphClone(receipt.historicalDocument);
-            entry.saved_revision = receipt.historicalDocument.revision;
-            entry.state_mappings = [];
-            history.value[id] = { past: [], future: [] };
-            workspace.updateWorkflowProjection(id, entry.document.name, entry.document.nodes.length);
-            workspace.markWorkflowSaved(id, entry.document.name);
+            entry.session_document = graphClone(receipt.historicalDocument);
+          } else if (result.workflow_definition_id === entry.document.workflow_definition_id) {
+            const basis = request.action === "copy" ? entry.document : entry.saved_document;
+            if (basis?.revision === result.definition_revision) entry.session_document = graphClone(basis);
+            else delete entry.session_document;
           }
           entry.session_id = result.workflow_session_id;
           const view = observe(receipt.observation ?? result);
@@ -271,6 +275,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       history.value[id] = { past, future: [] };
       entry.document = next;
       workspace.updateWorkflowProjection(id, next.name, next.nodes.length);
+      workspace.markWorkflowDraft(id);
     },
     stageCopy(sourceId, targetId, next, baseline, copying) {
       entries.value[targetId] = { document: next, saved_revision: 0, session_id: null, pending: null };
@@ -291,6 +296,41 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       return true;
     } catch (failure) { report(failure, "保存工作流"); return false; }
     finally { busy.value = null; }
+  }
+  async function adoptRevision(id = workspace.activeWorkflowId) {
+    if (locked.value || !entries.value[id]?.session_id) return false;
+    const entry = entries.value[id];
+    const view = views.value[entry.session_id!];
+    if (view && view.workflow_definition_id !== entry.document.workflow_definition_id) {
+      notices.notify("unavailable", "当前历史会话属于另一工作流，请新建当前工作流会话", "采用已保存修订");
+      return false;
+    }
+    if (!entry.saved_document || graphSignature(entry.document) !== graphSignature(entry.saved_document)) {
+      notices.notify("unavailable", "请先保存工作流，再采用修订", "采用已保存修订"); return false;
+    }
+    busy.value = "rebind";
+    try { await management.commands.adoptRevision({ workflowId: id }); return true; }
+    catch (failure) { report(failure, "采用已保存修订"); return false; }
+    finally { busy.value = null; }
+  }
+  function copyWorkflow(id = workspace.activeWorkflowId) {
+    try { return editing.copy({ workflowId: id }); }
+    catch (failure) { report(failure, "复制工作流"); return null; }
+  }
+  function renameWorkflow(name: string) {
+    const title = name.trim();
+    if (!title || title.length > 128 || /[\u0000-\u001f\u007f]/.test(title)) return null;
+    return editable(workspace.activeWorkflowId, doc => { doc.name = title; return true; });
+  }
+  async function refreshPublishedRevision(id = workspace.activeWorkflowId) {
+    const entry = entries.value[id]; if (!entry?.saved_revision || locked.value) return false;
+    const definitionId = entry.document.workflow_definition_id;
+    try {
+      const latest = await management.queries.definition(definitionId);
+      if (!alive || entries.value[id] !== entry || entry.document.workflow_definition_id !== definitionId) return false;
+      entry.latest_published_revision = Math.max(entry.latest_published_revision ?? entry.saved_revision, latest.revision);
+      await persistence?.(); return true;
+    } catch (failure) { report(failure, "读取最新已发布修订"); return false; }
   }
   function editable(id: string, change: (document: GraphDocument) => boolean) {
     try { return editing.edit({ workflowId: id }, change); }
@@ -411,7 +451,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     });
   }
   function undo(redo = false) {
-    if (locked.value) return;
+    if (redo ? !canRedo.value : !canUndo.value) return;
     const id = workspace.activeWorkflowId;
     const h = history.value[id];
     const snapshot = (redo ? h?.future : h?.past)?.pop();
@@ -419,6 +459,9 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     (redo ? h.past : h.future).push(graphClone(entries.value[id].document));
     entries.value[id].document = snapshot;
     workspace.updateWorkflowProjection(id, snapshot.name, snapshot.nodes.length);
+    if (entries.value[id].saved_document
+      && graphSignature(snapshot) === graphSignature(entries.value[id].saved_document!)) workspace.markWorkflowSaved(id);
+    else workspace.markWorkflowDraft(id);
     persistence?.();
   }
   function duplicateSelection() {
@@ -533,7 +576,8 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       if (!current()) return;
       sessions.value[id] = rows.map(observe);
       if (sessionId) {
-        const incoming = await management.queries.session(sessionId, definitionId);
+        const incoming = await management.queries.session(sessionId,
+          views.value[sessionId]?.workflow_definition_id ?? entry.session_document?.workflow_definition_id ?? definitionId);
         if (current()) observe(incoming);
       }
     } catch (failure) { if (current()) report(failure, "读取工作流会话"); }
@@ -601,7 +645,10 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     try {
       const row = await management.queries.session(id, entry.document.workflow_definition_id);
       if (!current() || mutationLocked.value) return;
-      entry.session_id = row.workflow_session_id; observe(row);
+      entry.session_id = row.workflow_session_id;
+      if (entry.session_document?.workflow_definition_id !== row.workflow_definition_id
+        || entry.session_document?.revision !== row.definition_revision) delete entry.session_document;
+      observe(row);
       if (!await (persistence?.() ?? false)) throw new Error("选中会话尚未写入本机");
       schedulePoll(workflowId, viewVersion);
     } catch (failure) { if (current()) report(failure, "切换会话"); }
@@ -688,9 +735,22 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   }
   function discardDraft() {
     const workflow = workspace.activeWorkflow;
-    if (locked.value || workflow.state !== "draft" || !workflow.sourceId) return;
+    if (locked.value || !editorStable.value || workflow.state !== "draft") return;
     const id = workflow.id;
-    workspace.openWorkflow(workflow.sourceId);
+    const entry = entries.value[id];
+    if (entry?.saved_document) {
+      entry.document = graphClone(entry.saved_document);
+      entry.state_mappings = [];
+      history.value[id] = { past: [], future: [] };
+      workspace.updateWorkflowProjection(id, entry.document.name, entry.document.nodes.length);
+      workspace.markWorkflowSaved(id, entry.document.name);
+      persistence?.(); return;
+    }
+    const fallback = workspace.workflows.find(row => row.id !== id && !row.copyPending)?.id;
+    if (fallback) workspace.openWorkflow(fallback);
+    else {
+      workspace.activeWorkflowId = ""; workspace.selectedWorkflowId = ""; workspace.viewVersion++;
+    }
     workspace.removeWorkflow(id);
     delete entries.value[id]; delete history.value[id]; persistence?.();
   }
@@ -740,7 +800,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     const mutationVersion = mutationGeneration, viewToken = workspace.currentViewToken();
     const currentRead = () => alive && candidateGenerations.get(workflowId) === generation
       && entries.value[workflowId] === entry && entry.session_id === view.workflow_session_id
-      && entry.document.workflow_definition_id === view.workflow_definition_id
+      && views.value[view.workflow_session_id]?.workflow_definition_id === view.workflow_definition_id
       && mutationGeneration === mutationVersion && workspace.isCurrentView(viewToken);
     try {
       const value = await management.queries.candidates(view.workflow_session_id, view.workflow_definition_id);
@@ -779,7 +839,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   return { entries, catalog, frontendExtensions, packageLock, executionPackageLock, dataTypes, catalogLoading, catalogError, sessions, views, candidates, history, busy, active, document,
     session, pending, locked, primaryAction, statusLabel, selectedNodeIds, selectedEdgeId, canUndo, canRedo, setEventBindings, submitEvent,
     isGeneric, createWorkflow, createWorkflowDraft, createSerialAgentExample, createCompactingSerialAgentExample, typeFor, loadCatalog, setPersistenceGuard, storeSnapshot, restoreSnapshot,
-    saveWorkflow, addNode, patchNode, patchNodeConfiguration, moveNodes, connect, removeSelection, reorderEdge, undo, duplicateSelection,
+    saveWorkflow, adoptRevision, copyWorkflow, renameWorkflow, refreshPublishedRevision, addNode, patchNode, patchNodeConfiguration, moveNodes, connect, removeSelection, reorderEdge, undo, duplicateSelection,
     replaceNode, setExecutionRoot, setControlDependencies, setObjectBindings, attachFrontendDisplay, patchFrontendSource,
     activate, refresh, createSession, createSavedSession, selectSession, submitPrimary, reconcile, canRetryRejectedCopy, retryRejectedCopy, discardDraft, discardRejectedCopy, writeData, closeRun, setInputs, resetPrivateState, submitAgentAction, loadCandidates, changeCandidate,
     management, editing };

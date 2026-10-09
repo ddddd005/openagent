@@ -37,13 +37,14 @@ describe("frontend display definition transactions", () => {
     expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(true);
     expect(graph.document).toEqual(after);
   });
-  it("does not change the old saved definition when the recommendation creates an editable full copy", () => {
+  it("does not change the published basis when the recommendation edits the same workflow", () => {
     const { graph, id, request } = fixture(); const workspace = useWorkspaceStore();
     workspace.markWorkflowSaved(id);
     const before = graphClone(graph.entries[id].document);
+    graph.entries[id].saved_document = graphClone(before); graph.entries[id].saved_revision = 1;
     const copiedId = graph.attachFrontendDisplay(request)!;
-    expect(copiedId).not.toBe(id); expect(workspace.activeWorkflowId).toBe(copiedId);
-    expect(graph.entries[id].document).toEqual(before);
+    expect(copiedId).toBe(id); expect(workspace.activeWorkflowId).toBe(id);
+    expect(graph.entries[id].saved_document).toEqual(before);
     expect(graph.document!.nodes).toHaveLength(before.nodes.length + 3);
     graph.undo();
     expect(graph.document!.nodes).toEqual(before.nodes);
@@ -76,16 +77,17 @@ describe("frontend display definition transactions", () => {
     expect(graph.document!.edges.some(row => row.edge_id === added.edge_id)).toBe(false);
     graph.undo(); expect(graph.document!.edges.some(row => row.edge_id === added.edge_id)).toBe(true);
   });
-  it("copies the full saved graph for source edits and undo restores its source plus roots, controls and bindings", () => {
+  it("keeps source edits in the same workflow and undo restores roots, controls and bindings", () => {
     const { graph, id, source, request } = fixture(); graph.attachFrontendDisplay(request);
     graph.attachFrontendDisplay({ ...request, role: "assistant" });
     const replacement = graph.addNode("tools.current-input@1", { x: 0, y: 100 })!;
     const append = graph.document!.nodes.filter(node => node.component_id === "frontend.state.append")[1].node_binding_id;
     const edge = graph.document!.edges.find(row => row.target_node_id === append && row.target_port_id === "content")!;
     const before = graphClone(graph.document!); useWorkspaceStore().markWorkflowSaved(id);
+    graph.entries[id].saved_document = graphClone(before); graph.entries[id].saved_revision = 1;
     const copiedId = graph.patchFrontendSource(append, edge.edge_id, { nodeId: replacement, portId: "output" })!;
-    expect(copiedId).not.toBe(id);
-    expect(graph.entries[id].document).toEqual(before);
+    expect(copiedId).toBe(id);
+    expect(graph.entries[id].saved_document).toEqual(before);
     expect(graph.document!.object_bindings).toEqual(before.object_bindings);
     expect(graph.document!.control_edges).toEqual(before.control_edges);
     expect(graph.document!.execution_roots).toEqual(before.execution_roots);

@@ -142,6 +142,7 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
     expect(graph.dataTypes[0].type_id).toBe("plugin.object");
     graph.setExecutionRoot(write, true); graph.setControlDependencies(read, [write]);
     graph.setObjectBindings([binding([write, read], [write])]);
+    await graph.saveWorkflow();
     await graph.submitPrimary();
     expect(saved?.schema_version).toBe(2);
     expect(saved?.execution_roots).toEqual([write]);
@@ -150,17 +151,18 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
     expect(calls.some(call => call.path === "/api/graph/node-types")).toBe(false);
     expect(graph.pending).toBeNull(); expect(graph.session?.objects).toEqual({});
   });
-  it("keeps controls and object declarations when editing a saved graph creates a copied draft", () => {
+  it("keeps the workflow identity, controls and object declarations when editing a saved graph", () => {
     const { graph, id, write, read } = fixture();
     graph.setObjectBindings([binding([write, read], [write])]);
     graph.setExecutionRoot(write, true); graph.setControlDependencies(read, [write]);
     const before = graphClone(graph.document!);
+    graph.entries[id].saved_document = graphClone(before); graph.entries[id].saved_revision = 1;
     useWorkspaceStore().activeWorkflow.state = "saved";
     graph.patchNode(write, { title: "copied edit" });
-    expect(useWorkspaceStore().activeWorkflowId).not.toBe(id);
+    expect(useWorkspaceStore().activeWorkflowId).toBe(id);
     expect(graph.document?.control_edges).toEqual(before.control_edges);
     expect(graph.document?.execution_roots).toEqual(before.execution_roots);
     expect(graph.document?.object_bindings).toEqual(before.object_bindings);
-    expect(graph.entries[id].document).toEqual(before);
+    expect(graph.entries[id].saved_document).toEqual(before);
   });
 });

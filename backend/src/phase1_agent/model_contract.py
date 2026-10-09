@@ -56,6 +56,23 @@ def validate_gemini_provider(value: object) -> dict:
     return result
 
 
+def validate_local_provider(value: object) -> dict:
+    require(type(value) is dict and set(value) == {
+        "name", "protocol", "base_url", "credential_ref", "enabled",
+    }, "model_provider_invalid", "Provider fields are invalid")
+    reference = value["credential_ref"]
+    if type(reference) is str and reference.startswith("local:"):
+        from .credential_store import credential_id
+        credential_id(reference)
+    else:
+        require(reference in (None, "env:GEMINI_API_KEY" if value["protocol"] == "gemini"
+                              else "env:DEEPSEEK_API_KEY"),
+                "model_provider_invalid", "Credential reference is invalid")
+    validated = {**value, "credential_ref": None}
+    validate_chat_provider(validated)
+    return deepcopy(value)
+
+
 def validate_model_parameters(value: object) -> dict:
     parameters = FrozenModelParameters.from_mapping(value)
     require(parameters.max_tokens is None or parameters.max_tokens <= CHAT_MAX_TOKENS,
@@ -106,10 +123,11 @@ def validate_model_capacity(value: object, parameters: dict) -> dict:
 def validate_provider_record(record: object, reference: dict) -> dict:
     require(type(record) is dict and all(record.get(key) == reference[key] for key in reference)
             and type(record.get("data_schema_version")) is int
-            and record["data_schema_version"] in (1, 2),
+            and record["data_schema_version"] in (1, 2, 3),
             "model_provider_unavailable", "Current provider is missing or has an unsupported schema")
-    value = validate_chat_provider(record["value"])
-    require(record["data_schema_version"] == (2 if value["protocol"] == "gemini" else 1),
+    value = (validate_local_provider if record["data_schema_version"] == 3 else validate_chat_provider)(record["value"])
+    require(record["data_schema_version"] == 3
+            or record["data_schema_version"] == (2 if value["protocol"] == "gemini" else 1),
             "model_provider_invalid", "Provider data schema version does not match its protocol")
     require(value["enabled"], "model_provider_disabled", "Current provider is disabled")
     require(value["credential_ref"] is not None, "model_credential_unavailable",
@@ -196,6 +214,14 @@ def model_type_definitions() -> tuple[DataTypeDefinition, ...]:
     gemini_provider_schema["properties"].update({
         "protocol": {"const": "gemini"}, "credential_ref": {"enum": [None, "env:GEMINI_API_KEY"]},
     })
+    local_provider_schema = deepcopy(provider_schema)
+    local_provider_schema["properties"].update({
+        "protocol": {"enum": ["chat", "gemini"]},
+        "credential_ref": {"anyOf": [
+            {"enum": [None, "env:DEEPSEEK_API_KEY", "env:GEMINI_API_KEY"]},
+            {"type": "string", "pattern": "^local:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+        ]},
+    })
     binding_schema = object_schema({
         "schema_version": {"const": 1}, "kind": {"const": "workflow.model-binding"},
         "binding_id": _uuid_schema(), "reference": {"type": "object"},
@@ -245,6 +271,8 @@ def model_type_definitions() -> tuple[DataTypeDefinition, ...]:
                            validator=validate_chat_provider_v1, max_bytes=8192),
         DataTypeDefinition(CHAT_PROVIDER_TYPE, 2, gemini_provider_schema, scope="global",
                            validator=validate_gemini_provider, max_bytes=8192),
+        DataTypeDefinition(CHAT_PROVIDER_TYPE, 3, local_provider_schema, scope="global",
+                           validator=validate_local_provider, max_bytes=8192),
         DataTypeDefinition(MODEL_BINDING_TYPE, 2, native_binding_schema, scope="content",
                            validator=validate_public_model_binding, max_bytes=8192,
                            references=lambda value: [deepcopy(value["reference"])],

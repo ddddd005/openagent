@@ -67,6 +67,26 @@ describe("isolated tavern workbench launch and draft", () => {
     expect(() => createTavernDemo(catalog.filter(row => row.component_id !== "context.merge"), packages))
       .toThrow("context.merge@4");
   });
+  it.each(["chat", "gemini"] as const)("builds the full %s flow with exact protocol node versions and independent config", protocol => {
+    const completeCatalog = [...catalog,
+      { ...base, component_id: "models.source", component_version: "4",
+        default_config: graphClone(catalog.find(row => row.component_id === "models.source")!.default_config) },
+      { ...base, component_id: "agents.execute", component_version: "8" }];
+    const config = { reference: { envelope_version: 1 as const, scope: "workspace",
+      type_id: "workflow.chat-provider", resource_id: crypto.randomUUID() },
+      parameters: { model: protocol === "gemini" ? "gemini-2.5-flash" : "unit-chat", stream: false as const,
+        thinking: "disabled" as const, max_tokens: 1024 },
+      capacity: { context_window_tokens: 100000, output_reserve_tokens: 1024, summary_max_tokens: 128, max_cold_input_tokens: 100000 } };
+    const doc = createTavernDemo(completeCatalog, packages, config, protocol);
+    expect(doc.nodes).toHaveLength(12);
+    expect(doc.nodes.find(row => row.component_id === "models.source")?.component_version).toBe(protocol === "gemini" ? "4" : "2");
+    expect(doc.nodes.find(row => row.component_id === "agents.execute")?.component_version).toBe(protocol === "gemini" ? "8" : "4");
+    expect(doc.object_bindings).toHaveLength(2); expect(doc.execution_roots).not.toHaveLength(0);
+    expect(doc.control_edges).not.toHaveLength(0);
+    config.parameters.model = "changed-outside";
+    expect(doc.nodes.find(row => row.component_id === "models.source")?.config.parameters).not.toMatchObject({ model: "changed-outside" });
+    expect(isGraphDocument(doc)).toBe(true);
+  });
   it("registers a detached explicit draft without publishing, replacing another workflow or starting a run", () => {
     const pinia = createPinia(); setActivePinia(pinia);
     try {

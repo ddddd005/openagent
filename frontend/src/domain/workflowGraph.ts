@@ -194,6 +194,8 @@ export interface GraphRunDetail {
 export interface GraphEntry {
   document: GraphDocument;
   saved_revision: number;
+  session_document?: GraphDocument;
+  latest_published_revision?: number;
   session_id: string | null;
   pending: GraphCommand | null;
   rejected_copy?: GraphCommand;

@@ -67,6 +67,8 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
   async function bind(target: WorkflowTarget) {
     const entry = entryFor(target);
     if (!entry.session_id) return;
+    if (!entry.saved_document || graphSignature(entry.saved_document) !== graphSignature(entry.document))
+      throw new WorkbenchApiError("unavailable", "当前编辑尚未发布，请先保存工作流");
     const sessionId = entry.session_id, definitionId = entry.document.workflow_definition_id;
     const savedRevision = entry.saved_revision;
     const incoming = await workflowManagementQueries.session(sessionId, definitionId);
@@ -74,6 +76,8 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
       || entry.document.workflow_definition_id !== definitionId || entry.saved_revision !== savedRevision)
       throw new WorkbenchApiError("unavailable", "定义或会话依据已变化，未提交重绑");
     const view = ports.observe(incoming);
+    if (!view.can_submit || ["prepared", "running", "pausing", "paused"].includes(view.status))
+      throw new WorkbenchApiError("unavailable", "当前会话未稳定，不能采用新修订");
     if (view.definition_revision === savedRevision) return;
     await ports.dispatch(target.workflowId, createGraphCommand(`/api/graph/sessions/${sessionId}/rebind`, {
       definition_revision: savedRevision, expected_revision: view.revision,
@@ -81,18 +85,16 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
       mappings: entry.state_mappings ?? [],
     }, "rebind"));
   }
-  async function publishAndBind(target: WorkflowTarget) {
-    await publish(target);
-    await bind(target);
-  }
   async function save(target: WorkflowTarget) {
-    await publishAndBind(target);
+    await publish(target);
     if (!await ports.commitSaved(target.workflowId))
       throw new WorkbenchApiError("unavailable", "工作流已保存，当前本机目录状态尚未保存");
   }
   async function createSession(target: WorkflowTarget) {
-    await publish(target);
     const entry = entryFor(target);
+    if (!entry.saved_document || entry.saved_revision < 1
+      || graphSignature(entry.saved_document) !== graphSignature(entry.document))
+      throw new WorkbenchApiError("unavailable", "请先保存工作流，再新建会话");
     await ports.dispatch(target.workflowId, createGraphCommand("/api/graph/sessions", {
       workflow_definition_id: entry.document.workflow_definition_id, definition_revision: entry.saved_revision,
     }, "create"));
@@ -108,11 +110,27 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
     }, "create"));
   }
   async function start(target: WorkflowTarget) {
-    const inputs = graphClone(entryFor(target).external_inputs ?? {});
-    await publishAndBind(target);
+    const original = entryFor(target);
+    if (!original.saved_document || original.saved_revision < 1
+      || graphSignature(original.saved_document) !== graphSignature(original.document))
+      throw new WorkbenchApiError("unavailable", "当前编辑尚未发布，请先保存工作流");
+    const inputs = graphClone(original.external_inputs ?? {});
+    if (original.session_id) {
+      const sessionId = original.session_id, definitionId = original.document.workflow_definition_id;
+      if ((ports.observedSession(sessionId)?.workflow_definition_id
+        ?? original.session_document?.workflow_definition_id ?? definitionId) !== definitionId)
+        throw new WorkbenchApiError("unavailable", "当前历史会话属于另一工作流，请新建当前工作流会话");
+      const incoming = await workflowManagementQueries.session(sessionId, definitionId);
+      if (entryFor(target) !== original || original.session_id !== sessionId)
+        throw new WorkbenchApiError("unavailable", "所选会话已变化，未启动");
+      ports.observe(incoming);
+    }
     if (!entryFor(target).session_id) await createSession(target);
     const entry = entryFor(target), view = ports.observedSession(entry.session_id!);
     if (!view || !view.can_submit) throw new WorkbenchApiError("unavailable", "当前会话尚不能启动");
+    if (view.workflow_definition_id !== entry.document.workflow_definition_id
+      || view.definition_revision !== entry.saved_revision)
+      throw new WorkbenchApiError("unavailable", "当前会话仍使用旧修订，请明确采用已保存修订或新建会话");
     await ports.dispatch(target.workflowId, createGraphCommand(`/api/graph/sessions/${view.workflow_session_id}/runs`, {
       expected_revision: view.revision, inputs,
     }, "start"));
@@ -129,6 +147,7 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
     const fixedPayload = graphClone(payload), entry = entryFor(target);
     const view = entry.session_id ? ports.observedSession(entry.session_id) : null;
     if (!view || !view.can_submit || ["prepared", "running", "pausing", "paused"].includes(view.status)
+      || view.workflow_definition_id !== entry.document.workflow_definition_id
       || entry.saved_revision !== entry.document.revision || view.definition_revision !== entry.saved_revision
       || !entry.saved_document || graphSignature(entry.saved_document) !== graphSignature(entry.document))
       throw new WorkbenchApiError("unavailable", "局部事件需要已保存定义和已选择的稳定会话；请先保存并确认会话");
@@ -174,6 +193,7 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
   return {
     commands: {
       save: (target: WorkflowTarget) => execute(target, fixed => save(fixed)),
+      adoptRevision: (target: WorkflowTarget) => execute(target, fixed => bind(fixed)),
       createSession: (target: WorkflowTarget) => execute(target, fixed => createSession(fixed)),
       createSavedSession: (target: WorkflowTarget, basis: SavedWorkflowBasis) =>
         execute(target, fixed => createSavedSession(fixed, { ...basis })),

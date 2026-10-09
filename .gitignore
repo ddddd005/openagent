@@ -25,7 +25,7 @@ __pycache__/
 htmlcov/
 services.json
 
-# Credentials belong in the environment, never in the release.
+# Credentials and private vaults never belong in the release.
 .env
 .env.*
 !.env.example

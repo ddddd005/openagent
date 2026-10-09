@@ -188,10 +188,11 @@ describe("node form drafts after actual SDK configuration", () => {
     expect([...f.memory.records.values()].filter(record => record.address.key.startsWith(`node:${f.id}:${f.nodeId}:`)))
       .toEqual(originalRecords);
   });
-  it.each(["model", "lorebook"] as const)("does not rebase old %s draft identities when the SDK creates a copy", async kind => {
+  it.each(["model", "lorebook"] as const)("does not rebase old %s draft identities when the user explicitly copies", async kind => {
     const f = await mount(kind, true);
     await edit(f);
-    await trigger(label(f.root, formLabel(kind)), "Submit");
+    expect(await f.forms.flushAll()).toBe(true);
+    expect(f.graph.copyWorkflow()).not.toBeNull(); await flush();
     expect(f.workspace.activeWorkflowId).not.toBe(f.id);
     expect(f.graph.entries[f.id]!.document.nodes[0]!.config).toEqual(f.originalConfig);
     const drafts = [...f.memory.records.values()].filter(record => record.address.key.startsWith(`node:${f.id}:${f.nodeId}:`));
