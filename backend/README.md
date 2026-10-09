@@ -12,13 +12,15 @@ implementations and their test graphs are retired rather than silently upgraded.
 Application metadata remains `0.2.0`; the current mainline is not a new release
 tag or a claim that the entire backend suite is green.
 
-The current `develop` has locally committed frontend-userization P1-P4
-(`8743787` for P3/P4), with P5/P6 implemented but uncommitted in the workspace.
-None is promoted to stable `main`. P4 adds management-only private credentials
-and bounded model discovery; P5 adds read-only draft input declarations.
+Frontend-userization P1-P6 is locally committed and fast-forwarded into `main`,
+with feature commit `0c15587`; this batch has not been pushed. P4 adds
+management-only private credentials and bounded model discovery; P5 adds
+read-only draft input declarations.
 See the [P3/P4 record](../docs/FRONTEND-P3-P4-2026-10-09.md) and
 [P5/P6 record](../docs/FRONTEND-P5-P6-2026-10-09.md).
-BAT startup and stable code remain unchanged; no product service was started.
+The BAT files remain unchanged and `start.bat` still selects `main`, now with
+these features. The main worktree build and BAT `-CheckOnly` preflight passed;
+no product service or real model call was started. Live acceptance is pending.
 
 ## Start Here
 

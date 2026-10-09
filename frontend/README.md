@@ -2,7 +2,7 @@
 
 Vue 3、TypeScript、Pinia 和 Vue Flow 工作台，负责当前 Graph 的编辑、资源配置、会话操作和结果观察。定义、资源、运行事实与已接纳数据以 Python 后端为权威；本机编辑草稿写入独立后端仓库，不是运行档案。
 
-本次 `develop` 的 P1/P2 和 P3/P4（`8743787`）已本地提交，P5/P6 已在工作区实现但未提交；均未推送或晋升稳定 `main`，BAT 不变。范围见 [P1/P2](../docs/FRONTEND-P1-P2-2026-10-09.md)、[P3/P4](../docs/FRONTEND-P3-P4-2026-10-09.md)和 [P5/P6 记录](../docs/FRONTEND-P5-P6-2026-10-09.md)。
+本次 P1-P6 已本地提交并快进合入 `main`，功能提交为 `0c15587`；本批未推送。BAT 未改，正式 `start.bat` 仍指向 `main`，已包含这些功能；真实用户启动与模型调用待验收。范围见 [P1/P2](../docs/FRONTEND-P1-P2-2026-10-09.md)、[P3/P4](../docs/FRONTEND-P3-P4-2026-10-09.md)和 [P5/P6 记录](../docs/FRONTEND-P5-P6-2026-10-09.md)。
 
 当前默认目录有 44 个声明、41 个家族，按 9 个分类的二级菜单添加。单一现行路线直接添加；模型来源、模型调用与 Agent 选择 DeepSeek/Gemini 协议，不提供历史版本选择器。Gemini 思考摘要独立显示，协议签名不作为正文。
 

@@ -4,7 +4,7 @@
 
 本文描述 2026-10-09 现行主干的工程边界。入口见 [文档索引](README.md)，操作见 [使用手册](USER-GUIDE.md)；历史记录不作为当前节点目录、部署状态或 API 的替代说明。
 
-本次 `develop` 的前端用户化 P1/P2 和 P3/P4（`8743787`）已本地提交，P5/P6 已在工作区实现但未提交；均未推送或晋升 `main`。稳定 BAT 不变；范围见 [P1/P2](FRONTEND-P1-P2-2026-10-09.md)、[P3/P4](FRONTEND-P3-P4-2026-10-09.md)和 [P5/P6 记录](FRONTEND-P5-P6-2026-10-09.md)。
+本次前端用户化 P1-P6 已本地提交并快进合入 `main`，功能提交为 `0c15587`；本批未推送。两个 BAT 均未改，正式入口仍选 `main`，现在已包含这些功能。合并后重新构建并通过 `-CheckOnly`，未启动产品服务、打开产品库或调用模型。范围见 [P1/P2](FRONTEND-P1-P2-2026-10-09.md)、[P3/P4](FRONTEND-P3-P4-2026-10-09.md)和 [P5/P6 记录](FRONTEND-P5-P6-2026-10-09.md)。
 
 ## 分支与启动
 
@@ -38,7 +38,7 @@ git rev-parse main develop
 git ls-remote --heads origin main
 ```
 
-本地 `main` 的完整 SHA 应与 `ls-remote` 返回的 `refs/heads/main` 一致；开发有未晋升提交时 `develop` 可合理领先。同步前可执行 `git fetch origin`，再检查 `git log --oneline --left-right main...origin/main`。在实际 `main` 工作区以 `git push origin main:main` 正常推送；拒绝时检查分叉，不用强推绕过。推送后重新核对远端 SHA 和工作区状态。
+完成远端同步时，本地 `main` 的完整 SHA 应与 `ls-remote` 返回的 `refs/heads/main` 一致；仅本地合并而未推送时 main 可合理领先，开发有未晋升提交时 `develop` 可合理领先。同步前可执行 `git fetch origin`，再检查 `git log --oneline --left-right main...origin/main`。在实际 `main` 工作区以 `git push origin main:main` 正常推送；拒绝时检查分叉，不用强推绕过。推送后重新核对远端 SHA 和工作区状态。
 
 明确只推 `main`、不连带标签时使用 `git -c push.followTags=false push origin main:main`。归档标签需另行明确推送。Git 同步、发布标签、版本升级、安装/构建和服务部署是不同操作；日志、数据库、依赖、截图、`dist` 及本地归档不随代码推送。
 
@@ -130,7 +130,7 @@ Gemini 普通响应及 `agent_message@5` 分离回答正文、可见 `thinking_s
 | 会话对象与上下文 | 显式读写权限、接纳及 CAS 管理 |
 | 前端持久化和缓存 | 编辑副本、原请求恢复材料及展示投影，不替代后端事实 |
 
-模型服务保留受控环境路线；开发 P4 增加私有 `local:<UUID>` 路线及 broker factory，每次运行冻结凭据代次。公开 provider 新增 schema 3，原 schema 1/2 不重定义。Key 只进独立当前用户保护库，普通草稿、资源、事实及公开身份存档不持有正文；查询原凭据回执不需要 Key。通用 Runtime 不解释 Agent 私有工具语义，也不直接暴露供应商凭据。
+模型服务保留受控环境路线；P4 已在主干增加私有 `local:<UUID>` 路线及 broker factory，每次运行冻结凭据代次。公开 provider 新增 schema 3，原 schema 1/2 不重定义。Key 只进独立当前用户保护库，普通草稿、资源、事实及公开身份存档不持有正文；查询原凭据回执不需要 Key。通用 Runtime 不解释 Agent 私有工具语义，也不直接暴露供应商凭据。
 
 编辑文档、草稿发布基准、最新已发布修订和会话采用修订独立维护；`session_document` 仅保管恢复会话的精确历史定义。保存不自动重绑，历史接纳不重写编辑图。模型列表按已保存供应商身份和序号查询，派发前后检查资源和凭据，发现未知 Gemini 不授予能力。
 
