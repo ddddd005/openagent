@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Download, Import } from "lucide-vue-next";
+import { Archive, Download, Import } from "lucide-vue-next";
 import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 
 const persistence = useWorkbenchPersistenceStore();
@@ -17,11 +17,14 @@ function exportRecord() {
 }
 </script>
 <template>
-  <div v-if="persistence.error || persistence.legacyImportError || persistence.hasRawRecord" class="workbench-save-error storage-recovery" role="status">
-    <span>{{ persistence.error || persistence.legacyImportError || (persistence.isolated ? "浏览器原记录已保留" : "检测到旧浏览器记录，尚未导入本机") }}</span>
-    <button v-if="persistence.hasRawRecord" type="button" title="导出原始浏览器存档，不改写保存记录"
+  <div v-if="persistence.error || persistence.legacyArchiveError || !persistence.legacyArchived && (persistence.legacyImportError || persistence.hasRawRecord)"
+    class="workbench-save-error storage-recovery" role="status">
+    <span>{{ persistence.error || persistence.legacyArchiveError || persistence.legacyImportError || "检测到旧浏览器记录，尚未归档本机" }}</span>
+    <button v-if="persistence.hasRawRecord && !persistence.legacyArchived" type="button" title="导出原始浏览器存档，不改写保存记录"
       aria-label="导出原记录" @click="exportRecord()"><Download :size="14" />导出原记录</button>
-    <button v-if="persistence.canImportLegacy" type="button" title="将可验证的浏览器记录导入本机，保留原始记录，不执行待核实请求"
+    <button v-if="persistence.legacyArchiveError" type="button" aria-label="核实旧记录归档"
+      @click="persistence.archiveBrowserRecords()"><Archive :size="14" />核实归档</button>
+    <button v-if="persistence.canImportLegacy && !persistence.legacyArchived" type="button" title="将可验证的浏览器记录导入本机，保留原始记录，不执行待核实请求"
       aria-label="导入浏览器原记录" :disabled="persistence.importing" @click="persistence.importLegacy()"><Import :size="14" />{{ persistence.importing ? '导入中' : '导入浏览器记录' }}</button>
   </div>
 </template>

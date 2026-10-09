@@ -8,6 +8,8 @@ const [fixturePath, evidencePath] = process.argv.slice(2);
 const fixture = JSON.parse(fs.readFileSync(fixturePath ?? path.join(root, ".local/current-node-catalog.json"), "utf8").replace(/^\uFEFF/, ""));
 const evidence = evidencePath ?? path.join(root, ".local/p34-browser"), base = "http://127.0.0.1:5183";
 const clone = value => JSON.parse(JSON.stringify(value));
+const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
+  ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const uuid = n => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const address = { scope: "management", kind: "workbench", key: "workbench:v1",
   workflow_definition_id: null, workflow_session_id: null };
@@ -129,7 +131,7 @@ async function shot(name) {
               output_token_limit: 8192, context_window_tokens: null },
             { model: "future-unknown", adapted: false, input_token_limit: null, output_token_limit: null, context_window_tokens: null }] };
         } else throw new Error("Unexpected query " + operation);
-        return route.fulfill({ json: clone(value) });
+        return route.fulfill({ json: canonical(clone(value)) });
       }
       if (url.pathname === "/api/graph/receipts/read") {
         const prior = draftsReceipts.get(p.idempotency_key);
@@ -142,7 +144,7 @@ async function shot(name) {
         const existing = records.get(JSON.stringify(p.address));
         if ((existing?.sequence ?? 0) !== p.expected_sequence) return route.fulfill({ status: 409, json: { error: { code: "stale_draft_sequence" } } });
         const saved = seed(p.address, p.value, p.expected_sequence + 1), response = draftResult(p, saved);
-        draftsReceipts.set(p.idempotency_key, response); return route.fulfill({ json: response });
+        draftsReceipts.set(p.idempotency_key, response); return route.fulfill({ json: canonical(response) });
       }
       if (operation === "credential.save") {
         secretRequests++; assert.equal(p.secret, "fake-browser-key");
@@ -181,8 +183,25 @@ async function shot(name) {
   });
   page = await context.newPage(); page.on("pageerror", error => errors.push(String(error)));
   page.on("dialog", dialog => dialog.accept());
+  await page.addInitScript(() => {
+    if (localStorage.getItem("fixture:legacy-seeded")) return;
+    localStorage.setItem("workflow-workbench:fixed-base:v1", "{broken-browser-original");
+    localStorage.setItem("workflow-workbench:isolated-graph:v7", '{"schemaVersion":99,"pending":{"opaque":"never replay"}}');
+    localStorage.setItem("fixture:legacy-seeded", "1");
+  });
   await page.goto(base);
   await page.locator('.vue-flow__node[data-id="' + uuid(11) + '"]').waitFor();
+  await waitFor(() => [...records.values()].filter(row => row.address.key.startsWith("workbench:browser-archive:")).length === 2,
+    "Both browser namespaces must be archived to backend storage");
+  await page.waitForFunction(() => localStorage.getItem("workflow-workbench:fixed-base:v1") === null
+    && localStorage.getItem("workflow-workbench:isolated-graph:v7") === null);
+  assert.equal(await page.locator(".storage-recovery").count(), 0);
+  await page.getByRole("button", { name: "旧版存档", exact: true }).click();
+  await page.getByRole("dialog", { name: "旧版存档", exact: true }).getByText("原浏览器工作台", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "导出旧版存档", exact: true }).count(), 2);
+  await shot("browser-archives-desktop");
+  await page.getByRole("button", { name: "关闭旧版存档", exact: true }).click();
+  report.scenarios.push("Both old browser records are archived byte-for-byte, removed only after acknowledgement and accessible without a repeating warning");
   await open("Other flow"); assert.equal(workbench().graph.entries[docA.workflow_definition_id].document.name, "Main flow");
   await open("Main flow");
   report.scenarios.push("Single selection plus explicit switch preserves the other workflow");
@@ -220,11 +239,16 @@ async function shot(name) {
   assert.equal(secretRequests, 1); assert.ok(providers[0].value.credential_ref.startsWith("local:"));
   assert.ok(!JSON.stringify([...records.values()]).includes("fake-browser-key"));
   report.scenarios.push("Lost Key response survives reload; original receipt reconciled with no Key replay; binding saved separately");
-  await page.getByRole("button", { name: "内容", exact: true }).click();
+  await page.getByRole("button", { name: "工作流", exact: true }).click();
+  await page.getByRole("button", { name: "创建酒馆工作流", exact: true }).click();
+  await shot("tavern-template-entry-desktop");
   await page.getByRole("button", { name: "创建酒馆示例", exact: true }).click();
   await waitFor(() => active().document.nodes.length === 12 && active().saved_revision === 0, "Chat tavern draft not created");
   assert.equal(active().document.nodes.find(n => n.component_id === "models.source").component_version, "2");
   assert.equal(active().document.nodes.find(n => n.component_id === "agents.execute").component_version, "4");
+  await page.getByRole("button", { name: "新建会话并打开酒馆前端", exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "新建会话并打开酒馆前端", exact: true }).isDisabled(), true);
+  await shot("tavern-presentation-entry-desktop");
   report.scenarios.push("Chat preset uses valid current config and creates a detached complete 12-node draft without running");
   await page.getByRole("button", { name: "工作流", exact: true }).click(); await open("Edited flow");
   await page.getByRole("button", { name: "内容", exact: true }).click();

@@ -20,6 +20,18 @@ function deferred<T>() {
   return { promise, resolve };
 }
 describe("raw form draft custody", () => {
+  it("restores and edits a basis after backend JSON key sorting without treating arrays or values as interchangeable", async () => {
+    const memory = backend(), store = useFormDraftsStore();
+    const basis = { workflowId: crypto.randomUUID(), config: { z: 1, a: ["first", "second"] } };
+    await store.load("sorted", basis); store.stage("sorted", basis, "unfinished"); await store.flush();
+    const record = [...memory.records.values()][0];
+    record.value = { raw: "unfinished", basis: { config: { a: ["first", "second"], z: 1 }, workflowId: basis.workflowId } };
+    disposePinia(pinia); pinia = createPinia(); setActivePinia(pinia);
+    const restored = useFormDraftsStore();
+    expect(await restored.load("sorted", basis)).toMatchObject({ value: "unfinished", conflict: false });
+    expect(restored.stage("sorted", basis, "continued")).toBe(true); expect(await restored.flush()).toBe(true);
+    expect(await restored.load("sorted", { ...basis, config: { z: 1, a: ["second", "first"] } })).toMatchObject({ conflict: true });
+  });
   it("debounces unfinished raw fields, restores staged memory and survives a new store", async () => {
     const memory = backend(), store = useFormDraftsStore(), basis = { workflowId: crypto.randomUUID(), config: { text: "" } };
     expect(store.stage("node-fields", basis, { json: "{unfinished" })).toBe(false);

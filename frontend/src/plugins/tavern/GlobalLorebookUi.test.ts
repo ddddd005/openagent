@@ -176,6 +176,8 @@ describe("global lorebook workbench UI", () => {
       const tavernHtml = await render();
       expect(tavernHtml).toContain('aria-label="全局 Lorebook 资源"');
       expect(tavernHtml).toContain('aria-label="酒馆聊天入口"');
+      expect(tavernHtml.indexOf('aria-label="酒馆聊天入口"')).toBeLessThan(tavernHtml.indexOf('aria-label="新版提示词当前资源"'));
+      expect(tavernHtml).toContain("创建酒馆工作流");
       graph.frontendExtensions = [...promptFrontendExtensions, ...tavernFrontendExtensions];
       graph.packageLock = [{ package_id: "workflow.prompts", version: "1.0.0" },
         { package_id: "workflow.tavern", version: "1.0.0" }];
@@ -237,6 +239,7 @@ describe("global lorebook workbench UI", () => {
       await trigger(label(root, "创建酒馆示例"), "Click");
       expect(builder).toHaveBeenCalledOnce(); expect(graph.active!.document.workflow_definition_id).toBe(doc.workflow_definition_id);
       expect(graph.entries[originalId]).toEqual(before); expect(graph.active!.saved_revision).toBe(0);
+      expect(graph.selectedNodeIds).toEqual([doc.nodes[1]!.node_binding_id]);
       expect(elements(root).some(node => node.props["aria-label"] === "打开酒馆前端")).toBe(false);
       expect(fetcher).not.toHaveBeenCalled();
       graph.active!.saved_document = graphClone(doc); graph.active!.saved_revision = 1; await flush();

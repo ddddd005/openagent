@@ -401,8 +401,11 @@ function canonicalGraphValue(value: unknown): unknown {
     .map(key => [key, canonicalGraphValue(value[key])]));
   return value;
 }
+export function graphJsonSignature(value: unknown) {
+  return JSON.stringify(canonicalGraphValue(value));
+}
 export function graphSignature(document: GraphDocument) {
-  return JSON.stringify(canonicalGraphValue({ ...document, revision: 0 }));
+  return graphJsonSignature({ ...document, revision: 0 });
 }
 export function newGraph(name: string, packageLock: NonNullable<GraphDocument["package_lock"]> = []): GraphDocument {
   return { schema_version: 2, workflow_definition_id: crypto.randomUUID(), revision: 1, name, nodes: [], edges: [],

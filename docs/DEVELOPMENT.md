@@ -76,7 +76,7 @@ git ls-remote --heads origin main
 | 二级节点目录与协议选择 | `domain/nodeCatalog.ts`、`domain/nodeSelection.ts`、`components/NodeProfileDialog.vue` |
 | 连线检查与反馈 | `domain/graphConnections.ts`；画布与 store 共用动态端口、schema、基数和组合环检查 |
 | 图、会话与工作区状态 | `stores/workflowGraph.ts`、`stores/workspace.ts` |
-| 本机草稿、原始表单及旧浏览器导入 | `adapters/localDraftsApi.ts`、`stores/workbenchPersistence.ts`、`stores/formDrafts.ts`、`composables/useBoundFormDraft.ts`；旧读取器 `adapters/workbenchPersistence.ts` 只用于显式导入 |
+| 本机草稿、原始表单及旧浏览器归档 | `adapters/localDraftsApi.ts`、`adapters/browserWorkbenchArchives.ts`、`stores/workbenchPersistence.ts`、`stores/formDrafts.ts`、`composables/useBoundFormDraft.ts`；旧读取器只在受限旧导入路径使用 |
 | 应用命令、编辑及信息读取 | `application/workflowCommands.ts`、`application/workflowEditing.ts`、`application/workflowInformation.ts` |
 | HTTP 适配 | `adapters/workflowApplicationApi.ts`、`adapters/workflowGraphApi.ts`、`adapters/workflowResourcesApi.ts` |
 | 供应商与模型编辑 | `components/CurrentProviderPanel.vue`、`components/ModelSourceFields.vue`、`application/workflowResources.ts` |
@@ -156,7 +156,9 @@ P5/P6 显示层按精确 kind/schema 读取正文，签名仍经既有过滤器�
 
 本次源码 `STORAGE_VERSION = 16` 添加独立本机草稿仓库。v15 到 v16 是加表升级，不重复执行退役清理。`0 < old_version < 15` 的既有退役规则仍在单笔升级事务内按确切旧节点 ID/版本、退役包或旧资源身份识别旧路线，沿明确归属/引用形成闭包，整组删除关联记录。包括旧 `workflow.prompt-resource@1`；当前 schema2 提示词与供应商资源、无关联现行记录保留。
 
-旧浏览器记录的显式导入继续使用 `adapters/workbenchPersistence.ts`，对草稿、已保存图与 pending 请求中的旧声明实行对应整图剔除，但浏览器原始字节保留。不迁移旧图、不静默换节点版本、不重发 pending；未知插件/未知版本或正文提及旧名称不作为退役依据。节点整理及主干晋升验收只在隔离数据上验证；正常 BAT 首次打开原稳定库时才执行其适用升级。
+按用户更新策略，两套旧浏览器工作台先归档到管理端独立 `form` 记录，地址包含来源及原文 SHA-256。原文和地址校验通过、写入确认后才清理对应旧命名空间；未知写入只核实原回执，来源被其他页面改动或清理失败时保留新记录。顶部“旧版存档”只读校验并导出，不自动恢复旧图、升级节点或重发 pending。受限旧导入路径仍使用旧读取器，但不是新浏览器工作台的默认升级方式。
+
+后续破坏性变更应把旧测试工作流的归档或明确清理纳入同批交付和验收，不让退役记录持续干扰用户。普通界面更新不清空当前可用图，未知插件不因目录缺失被猜测删除；原文归档与运行历史删除是不同操作。表单依据按规范化 JSON 内容比较，对象字段顺序不是配置变化；数组顺序、数据类型与真实字段变化仍影响依据。
 
 旧固定宿主、兼容工厂、旧上下文/Agent 路线和专用测试已删除。当前包选择为 `current-execution`，没有旧运行 fallback 或旧存储 API 门面。存储版本、数据 schema、节点版本、能力包版本和应用 `0.2.0` 是不同契约，不应混称“软件版本”。
 

@@ -75,6 +75,7 @@ npm run build
 | 输入声明、提示词专用表单及不完整图 | `test_graph_input_declarations.py`、`test_prompt_package.py`；`graphInputDeclarationsApi`、`CurrentPromptResources` |
 | 连线拒绝与撤销记录 | `domain/graphConnections.test.ts`、`stores/workflowGraph.test.ts`；真实拖线用 `frontend_p56_browser.cjs` |
 | 正文/签名展示、本机名称和目录归档 | `resultPresentation`、`managementLabels`；冻结历史、确认取消及其他暂停会话用 `frontend_p56_browser.cjs` |
+| 旧浏览器工作台归档及 JSON 字段重排 | `adapters/browserWorkbenchArchives.test.ts`、`stores/formDrafts.test.ts`、`stores/managementLabels.test.ts`；入口和归档弹窗用 `frontend_p34_browser.cjs` |
 
 表内后端文件在 `backend/tests/`。前端短名在 `frontend/src/` 下以 `.test.ts` 结尾，按确切路径运行。`test_dev_launcher.py` 的完整模块包含真实本机服务/浏览器场景，不能将其统称为“不启动服务”的离线组；需要静态检查时只指定已核对的用例，例如：
 
@@ -117,6 +118,7 @@ P5/P6 用 `backend/tests/frontend_p56_browser.cjs` 验证正文置前、提示�
 | 共用类型声明 | 33 个共同声明在原版本下无重定义 |
 | P5/P6 源码 | 前端全量 87 文件/1075 项、类型/构建及后端定向 14 文件/286 项通过；功能提交 `0c15587` 已本地合入 main，本批未推送 |
 | P5/P6 离线浏览器 | 12 场景/7 截图；另复核草稿 7 场景、P3/P4 7 场景及菜单 9 场景，不累加为独立覆盖 |
+| 酒馆入口/旧存档修补 | 前端全量 88 文件/1087 项、后端定向 3 文件/67 项及类型/构建通过；入口/归档浏览器 8 场景/8 截图，另复核草稿与 P5/P6，不派发模型或工具 |
 
 50 项失败的测试身份全部在旧稳定基线对照中出现，未发现基线外失败，但仍属于未解决测试债务。集中于 `test_execution_facts.py` 的已删除固定 `save_bundle/get_record` API、`test_frontend_controls.py` 缺失脚本及 `test_host_sdk.py` 的既有预期。不恢复退役 API、不删除通用测试来宣称全绿。最终补测与各轮集中范围有重叠，不相加为独立覆盖数；全量第二轮也不是最后所有源码修改后的完整重跑。
 

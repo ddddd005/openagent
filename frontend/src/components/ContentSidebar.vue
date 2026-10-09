@@ -23,6 +23,8 @@ const tavernChatPanel = computed(() => host.extensions.value.find(row =>
   <section class="current-content-sidebar" aria-label="普通图提示词">
     <header class="workbench-panel-heading"><h1>内容</h1></header>
     <div class="current-content-sidebar-body">
+      <component v-if="tavernChatPanel" :is="tavernChatPanel.component"
+        :key="frontendExtensionIdentity(tavernChatPanel.declaration)" />
       <component v-if="promptPanel" :is="promptPanel.component"
         :key="frontendExtensionIdentity(promptPanel.declaration)" />
       <p v-else-if="graph.catalogLoading" class="content-sidebar-status" role="status">读取中</p>
@@ -32,8 +34,6 @@ const tavernChatPanel = computed(() => host.extensions.value.find(row =>
       </div>
       <component v-if="lorebookPanel" :is="lorebookPanel.component"
         :key="frontendExtensionIdentity(lorebookPanel.declaration)" />
-      <component v-if="tavernChatPanel" :is="tavernChatPanel.component"
-        :key="frontendExtensionIdentity(tavernChatPanel.declaration)" />
       <p v-for="issue in host.issues.value" :key="issue"
         class="content-sidebar-status content-sidebar-warning" role="status">{{ issue }}</p>
     </div>

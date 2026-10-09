@@ -14,6 +14,17 @@ function backend() {
   return memory;
 }
 describe("management-only labels and directory state", () => {
+  it("restores canonical backend target keys and remains able to archive the existing workflow", async () => {
+    const memory = backend(), store = useManagementLabelsStore(), target = { kind: "workflow" as const, id: crypto.randomUUID() };
+    expect(await store.update(target, { label: "Existing flow" })).toBe(true);
+    const record = [...memory.records.values()][0];
+    record.value = { basis: { managementTarget: { id: target.id, kind: "workflow" } },
+      raw: { archived: false, label: "Existing flow" } };
+    disposePinia(pinia); pinia = createPinia(); setActivePinia(pinia);
+    const restored = useManagementLabelsStore(); await restored.load(target);
+    expect(restored.error(target)).toBe(""); expect(restored.label(target, "")).toBe("Existing flow");
+    expect(await restored.update(target, { archived: true })).toBe(true); expect(restored.archived(target)).toBe(true);
+  });
   it("persists names across stores without adding anything to runtime identities", async () => {
     const memory = backend(), store = useManagementLabelsStore(), target = { kind: "session" as const, id: crypto.randomUUID() };
     expect(await store.update(target, { label: "First conversation" })).toBe(true);

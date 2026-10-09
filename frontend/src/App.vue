@@ -36,6 +36,7 @@ import GraphRunControls from "./components/GraphRunControls.vue";
 import GraphSessions from "./components/GraphSessions.vue";
 import GraphHistory from "./components/GraphHistory.vue";
 import WorkbenchStorageRecovery from "./components/WorkbenchStorageRecovery.vue";
+import BrowserWorkbenchArchives from "./components/BrowserWorkbenchArchives.vue";
 import { useWorkbenchSidebar } from "./composables/useWorkbenchSidebar";
 import { useBoundFormDraft } from "./composables/useBoundFormDraft";
 import FormDraftNotice from "./components/FormDraftNotice.vue";
@@ -45,6 +46,9 @@ import { useManagementLabelsStore } from "./stores/managementLabels";
 const workspace = useWorkspaceStore();
 const persistence = useWorkbenchPersistenceStore();
 const graph = useWorkflowGraphStore();
+const tavernTemplateAvailable = computed(() => graph.packageLock.some(row =>
+  row.package_id === "workflow.tavern" && row.version === "1.2.0")
+  && graph.frontendExtensions.some(row => row.extension_id === "workflow.tavern.chat-launch"));
 const labels = useManagementLabelsStore(), showArchived = ref(false);
 const listedWorkflows = computed(() => workspace.workflows.filter(row => showArchived.value
   || !labels.archived({ kind: "workflow", id: row.id })));
@@ -213,6 +217,10 @@ watch(
             <button class="workbench-tool-button" type="button" title="创建上下文精简串行示例" aria-label="创建上下文精简串行示例" :disabled="graph.catalogLoading || !graph.catalog.length" @click="leaveEditor(() => graph.createCompactingSerialAgentExample())"><Minimize2 :size="15" /></button>
           </header>
 
+          <button class="workbench-tavern-template" type="button"
+            :title="tavernTemplateAvailable ? '创建酒馆工作流' : '当前酒馆模板未启用，请核对节点目录与包选择'"
+            aria-label="创建酒馆工作流" :disabled="graph.locked || graph.catalogLoading || !!graph.catalogError || !tavernTemplateAvailable"
+            @click="openSidebarSection('content')"><BookOpen :size="15" />创建酒馆工作流</button>
           <ul class="workbench-workflow-list" aria-label="工作流列表">
             <li v-for="workflow in listedWorkflows" :key="workflow.id" class="workflow-row">
               <button
@@ -296,6 +304,7 @@ watch(
           </div>
           <button class="workbench-tool-button" type="button" title="保存工作流" aria-label="保存工作流" :disabled="persistence.status === 'blocked'" @click="persistence.saveWorkflow()"><Save :size="15" /></button>
           <button class="workbench-tool-button" type="button" title="复制工作流" aria-label="复制工作流" :disabled="graph.locked" @click="leaveEditor(() => graph.copyWorkflow())"><Copy :size="15" /></button>
+          <BrowserWorkbenchArchives />
           <button v-if="dirty" class="workbench-tool-button" type="button" title="放弃工作流修改" aria-label="放弃工作流修改" @click="discard"><Undo2 :size="15" /></button>
           <button
             class="workbench-tool-button"
@@ -363,6 +372,9 @@ watch(
 .model-pending-banner { display: flex; flex-wrap:wrap; align-items: center; gap: 8px 15px; }
 .model-pending-banner span { min-width:0; overflow-wrap:anywhere; }
 .model-pending-banner button { flex-shrink:0; font-size: 11px; text-decoration: underline; }
+.workbench-tavern-template { display:flex; align-items:center; gap:7px; margin:8px 12px; padding:7px 9px;
+  min-height:30px; border:1px solid #64776d; border-radius:3px; font-size:12px; }
+.workbench-tavern-template:disabled { opacity:.5; }
 .workflow-unsaved { display:flex;align-items:center;gap:6px;color:#e4c85f;font-size:11px;white-space:nowrap; }
 .workflow-row { position:relative; }
 .workflow-row:has(.workflow-archive) .workbench-workflow-item { padding-right:42px; }

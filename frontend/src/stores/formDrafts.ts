@@ -1,7 +1,7 @@
 import { computed, onScopeDispose, ref } from "vue";
 import { defineStore } from "pinia";
 import { createLocalDraftChannel, type LocalDraftAddress, type LocalDraftRecord } from "../adapters/localDraftsApi";
-import { graphClone, graphObject, graphUuid, isGraphJsonValue } from "../domain/workflowGraph";
+import { graphClone, graphJsonSignature, graphObject, graphUuid, isGraphJsonValue } from "../domain/workflowGraph";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 
 type DraftStatus = "loading" | "saved" | "pending" | "blocked";
@@ -69,7 +69,7 @@ export const useFormDraftsStore = defineStore("form-drafts", () => {
         || !Object.hasOwn(value, "basis") || !Object.hasOwn(value, "raw"))) throw new Error("原始表单草稿格式无效，原文未覆盖");
       const draft = value as FormDraftValue | null;
       const memory = state.loaded && (state.generation !== state.savedGeneration || state.clearGeneration !== null);
-      state.conflict = JSON.stringify(memory ? state.basis : draft?.basis ?? basis) !== JSON.stringify(basis);
+      state.conflict = graphJsonSignature(memory ? state.basis : draft?.basis ?? basis) !== graphJsonSignature(basis);
       if (!state.loaded || state.generation === state.savedGeneration) {
         state.basis = graphClone(draft?.basis ?? basis);
         state.raw = draft ? graphClone(draft.raw) : null;
@@ -90,7 +90,7 @@ export const useFormDraftsStore = defineStore("form-drafts", () => {
   function stage(id: string, basis: unknown, value: unknown) {
     if (!isGraphJsonValue(value) || !isGraphJsonValue(basis)) return false;
     const state = stateFor(id, basis);
-    if (!state.loaded || state.conflict || JSON.stringify(state.basis) !== JSON.stringify(basis)) return false;
+    if (!state.loaded || state.conflict || graphJsonSignature(state.basis) !== graphJsonSignature(basis)) return false;
     state.raw = graphClone(value);
     state.generation++;
     statuses.value[id] = "pending";
@@ -175,11 +175,11 @@ export const useFormDraftsStore = defineStore("form-drafts", () => {
   }
   async function remove(id: string, basis: unknown) {
     const state = stateFor(id, basis);
-    if (!state.loaded || state.conflict || JSON.stringify(state.basis) !== JSON.stringify(basis)) return false;
+    if (!state.loaded || state.conflict || graphJsonSignature(state.basis) !== graphJsonSignature(basis)) return false;
     state.clearGeneration ??= state.generation;
     statuses.value[id] = "pending";
     return serialize(state, async () => {
-      if (state.conflict || JSON.stringify(state.basis) !== JSON.stringify(basis)) return false;
+      if (state.conflict || graphJsonSignature(state.basis) !== graphJsonSignature(basis)) return false;
       if (!await clear(id, state)) return false;
       if (state.generation !== state.savedGeneration) void flush(id);
       return true;

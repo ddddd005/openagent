@@ -10,6 +10,7 @@ import { useWorkspaceStore } from "./workspace";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkbenchNoticesStore } from "./workbenchNotices";
 import { useFormDraftsStore } from "./formDrafts";
+import { createBrowserWorkbenchArchiver } from "../adapters/browserWorkbenchArchives";
 
 export const useWorkbenchPersistenceStore = defineStore("workbench-persistence", () => {
   const workspace = useWorkspaceStore();
@@ -24,6 +25,8 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
   const originalRaw = ref<string | null>(null);
   const legacyValue = ref<SavedWorkbench | null>(null);
   const legacyImportError = ref<string | null>(null);
+  const legacyArchiveError = ref<string | null>(null);
+  const legacyArchived = ref(false);
   const markerPending = ref<string | null>(null);
   const importing = ref(false);
   const conflictCopyKey = ref<string | null>(null);
@@ -34,6 +37,7 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
   const canRecover = computed(() => false);
   const hasUnsaved = computed(() => status.value !== "saved" || forms.hasUnsaved || importing.value || markerPending.value !== null);
   let ports = localDraftPorts;
+  let archiver = createBrowserWorkbenchArchiver(ports);
   let channel = createLocalDraftChannel(workbenchDraftAddress, ports);
   let importMarker = createLocalDraftChannel({ ...workbenchDraftAddress, kind: "intent", key: "workbench:legacy-import:v1" }, ports);
   let untouchedSignature: string | null = null;
@@ -50,6 +54,20 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
   }
   function stopTimer() { if (timer) clearTimeout(timer); timer = null; }
   function rawRecord() { return originalRaw.value; }
+  async function archiveBrowserRecords() {
+    if (!sourceStorage?.removeItem) return false;
+    try {
+      await archiver.archive(sourceStorage);
+      legacyArchived.value = true;
+      legacyValue.value = null;
+      legacyImportError.value = null;
+      legacyArchiveError.value = null;
+      return true;
+    } catch (failure) {
+      legacyArchiveError.value = failure instanceof Error ? failure.message : "旧浏览器记录归档失败，原文仍保留";
+      return false;
+    }
+  }
   async function rawDigest() {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(originalRaw.value ?? ""));
     return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
@@ -116,6 +134,7 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
   async function initialize(target?: DraftStorage, injectedPorts: LocalDraftPorts = localDraftPorts): Promise<void> {
     if (initialization) return initialization;
     ports = injectedPorts;
+    archiver = createBrowserWorkbenchArchiver(ports);
     channel = createLocalDraftChannel(workbenchDraftAddress, ports);
     importMarker = createLocalDraftChannel({ ...workbenchDraftAddress, kind: "intent", key: "workbench:legacy-import:v1" }, ports);
     initialization = (async () => {
@@ -132,7 +151,10 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
             originalRaw.value = loaded.raw;
             legacyValue.value = loaded.error ? null : loaded.value;
           }
-        } catch { sourceStorage = null; }
+        } catch {
+          sourceStorage = null;
+          legacyArchiveError.value = "浏览器旧记录无法读取，尚未归档；当前本机工作台仍独立保存";
+        }
         if (legacyValue.value) {
           try {
             const marker = await importMarker.read();
@@ -165,6 +187,7 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
         status.value = record && !record.deleted ? "saved" : "pending";
         graph.setPersistenceGuard(flushAll);
         if (!record || record.deleted) await save();
+        await archiveBrowserRecords();
       } catch (failure) {
         ready.value = true; writable = false; status.value = "blocked";
         error.value = failure instanceof Error ? failure.message : "本机工作台读取失败";
@@ -228,6 +251,7 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
     onScopeDispose(() => { stopTimer(); window.removeEventListener("beforeunload", beforeUnload); });
   } else onScopeDispose(stopTimer);
   return { status, error, savedAt, ready, pendingCopy, isolated, hasRawRecord, canRecover, canImportLegacy,
+    legacyArchived, legacyArchiveError, archiveBrowserRecords,
     hasUnsaved, conflictCopyKey, legacyImportError, importing, initialize, save, flushAll, saveWorkflow, discardDraft, reconcileCopy,
     rawRecord, recoverWorkspace, importLegacy };
 });

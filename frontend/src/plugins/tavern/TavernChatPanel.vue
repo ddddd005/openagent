@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
 import { Plus } from "lucide-vue-next";
 import { useWorkflowGraphStore } from "../../stores/workflowGraph";
 import { createTavernDemo } from "./tavernDemo";
@@ -46,6 +46,12 @@ async function create() {
       parameters: { ...fixed.config.parameters }, capacity: fixed.config.capacity } : undefined;
     const doc = createTavernDemo(graph.catalog, graph.executionPackageLock, modelConfig, fixedProtocol);
     if (!graph.createWorkflowDraft(doc, "酒馆独立聊天展示")) error.value = "当前不可创建酒馆草稿";
+    else {
+      await nextTick();
+      if (graph.document?.workflow_definition_id === doc.workflow_definition_id)
+        graph.selectedNodeIds = doc.nodes.filter(node => node.component_id === "tavern.chat.presentation")
+          .map(node => node.node_binding_id);
+    }
   } catch (failure) { error.value = failure instanceof Error ? failure.message : "酒馆示例不可用"; }
   finally { busy.value = false; }
 }
@@ -53,7 +59,7 @@ onMounted(() => { void resources.refresh(); });
 </script>
 <template>
   <section class="tavern-chat-panel" aria-label="酒馆聊天入口">
-    <header><strong>酒馆聊天</strong></header>
+    <header><strong>酒馆工作流</strong></header>
     <label>模型协议<select v-model="protocol" aria-label="酒馆模型协议" :disabled="busy" @change="selected = ''"><option value="chat">DeepSeek / Chat</option><option value="gemini">Gemini</option></select></label>
     <label>模型配置<select v-model="selected" aria-label="酒馆预置模型配置" :disabled="busy">
       <option value="">{{ configurations.length === 1 ? '使用当前有效配置' : '模型与容量待配置' }}</option>
@@ -62,7 +68,7 @@ onMounted(() => { void resources.refresh(); });
     </select></label>
     <div class="chat-actions">
       <button type="button" title="创建酒馆示例" aria-label="创建酒馆示例"
-        :disabled="busy || graph.locked || graph.catalogLoading || !!graph.catalogError" @click="create"><Plus :size="14" />新建</button>
+        :disabled="busy || graph.locked || graph.catalogLoading || !!graph.catalogError" @click="create"><Plus :size="14" />创建酒馆工作流</button>
     </div>
     <p v-if="error" class="warning" role="status">{{ error }}</p>
   </section>

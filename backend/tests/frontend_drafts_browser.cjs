@@ -223,7 +223,7 @@ async function screenshot(name) {
   await screenshot("p12-desktop-prompt");
 
   await openWorkflow("Saved Tavern"); await select(presentationId);
-  const launch = page.getByRole("link", { name: "打开酒馆", exact: true });
+  const launch = page.getByRole("link", { name: "打开酒馆前端", exact: true });
   await launch.waitFor();
   const href = new URL(await launch.getAttribute("href"));
   assert.equal(href.searchParams.get("graph_workflow"), workflowC);

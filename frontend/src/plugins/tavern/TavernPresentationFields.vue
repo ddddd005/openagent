@@ -50,10 +50,10 @@ async function open(create: boolean) {
 <template>
   <section class="tavern-presentation-fields" aria-label="酒馆聊天入口">
     <a v-if="entry?.session_id" :href="!locked ? launch.href ?? undefined : undefined"
-      :aria-disabled="locked || !launch.href" :title="launch.diagnosis"
-      target="_blank" rel="noopener noreferrer" @click.prevent="open(false)"><ExternalLink :size="15" />打开酒馆</a>
+      :aria-disabled="locked || !launch.href" :title="launch.diagnosis" aria-label="打开酒馆前端"
+      target="_blank" rel="noopener noreferrer" @click.prevent="open(false)"><ExternalLink :size="15" />打开酒馆前端</a>
     <button v-else type="button" :disabled="locked || !launch.href" @click="open(true)">
-      <Plus :size="15" />新建会话并打开
+      <Plus :size="15" />新建会话并打开酒馆前端
     </button>
     <p v-if="!launch.href" role="status">{{ launch.diagnosis }}</p>
     <p v-if="error" role="status">{{ error }}</p>

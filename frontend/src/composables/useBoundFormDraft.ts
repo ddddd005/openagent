@@ -1,5 +1,5 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
-import { graphClone } from "../domain/workflowGraph";
+import { graphClone, graphJsonSignature } from "../domain/workflowGraph";
 import { useFormDraftsStore } from "../stores/formDrafts";
 
 interface FormBinding<T> {
@@ -18,7 +18,7 @@ export function useBoundFormDraft<T>(binding: FormBinding<T>) {
   let generation = 0, restoring = false, currentId = "", currentBasis: unknown;
   let conflictedValue: T | null = null, lastValue = "";
 
-  const context = computed(() => JSON.stringify([binding.id(), binding.basis()]));
+  const context = computed(() => graphJsonSignature([binding.id(), binding.basis()]));
   watch(context, async () => {
     const token = ++generation;
     currentId = binding.id();
@@ -68,7 +68,7 @@ export function useBoundFormDraft<T>(binding: FormBinding<T>) {
   }
   function adoptBasis(nextBasis: unknown) {
     if (!store || !currentId) return true;
-    const acceptedContext = JSON.stringify(currentBasis) === JSON.stringify(nextBasis);
+    const acceptedContext = graphJsonSignature(currentBasis) === graphJsonSignature(nextBasis);
     if ((loading.value || conflict.value) && !acceptedContext || error.value
       || !store.rebase(currentId, nextBasis)) return false;
     return store.stage(currentId, nextBasis, graphClone(binding.capture()));

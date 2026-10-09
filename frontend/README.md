@@ -41,7 +41,7 @@ npm run preview
 
 新安装建立空普通图。示例只生成草稿，不自动运行模型。酒馆支持 Chat/Gemini 预置流，复用当前有效配置或明确保持待配置；串行示例仍须配置供应商、模型名称与容量，再保存并显式运行。
 
-普通图保存后由工作台“打开聊天前端”携带准确的定义及可选会话身份；酒馆由 `tavern.chat.presentation@1` 节点详情打开，绑定当前工作流和选中会话。“内容”只保留创建示例；无会话时显式创建精确保存修订，不发布或运行。不带身份的聊天首页不会新建业务会话。入口仅向没有用户信息的 HTTP/HTTPS loopback 地址附带本地身份，外部地址不附带身份。旧 `VITE_LEGACY_UI_URL` 仅为地址别名，不恢复旧流程。
+普通图保存后由工作台“打开聊天前端”携带准确的定义及可选会话身份；酒馆由 `tavern.chat.presentation@1` 节点详情“打开酒馆前端”，绑定当前工作流和选中会话。工作流区“创建酒馆工作流”打开置顶的模板面板，创建后选中展示节点；无会话时显式创建精确保存修订，不发布或运行。不带身份的聊天首页不会新建业务会话。入口仅向没有用户信息的 HTTP/HTTPS loopback 地址附带本地身份，外部地址不附带身份。旧 `VITE_LEGACY_UI_URL` 仅为地址别名，不恢复旧流程。
 
 请求结果未知时使用“核实原请求”，保留 body/key，不生成新身份重发。普通编辑保持工作流身份；保存只发布修订，会话采用修订须另行确认。只有明确复制才产生独立工作流，历史恢复不覆盖编辑区。
 
@@ -62,7 +62,8 @@ npm run preview
 | `src/domain/serialAgentDemo.ts` | 原生上下文串行/精简示例 |
 | `src/stores/workflowGraph.ts` | 图、会话、运行动作与原请求核实 |
 | `src/application/` | UI 动作和应用边界 |
-| `src/adapters/` | HTTP、异步本机草稿、原请求保管、旧浏览器显式导入与聊天交接 |
+| `src/adapters/` | HTTP、异步本机草稿、原请求保管、浏览器旧工作台原文归档与聊天交接 |
+| `src/adapters/browserWorkbenchArchives.ts`, `src/components/BrowserWorkbenchArchives.vue` | 内容寻址旧存档、确认后清理旧命名空间及校验导出 |
 | `src/stores/formDrafts.ts`, `src/composables/useBoundFormDraft.ts` | 未应用表单、原文、依据冲突及切换前落盘 |
 | `src/components/PromptMembersEditor.vue`, `src/components/PromptGroupFields.vue` | 全局/图内提示词共享条目编辑，保留身份和原始数字 |
 | `src/adapters/graphInputDeclarationsApi.ts`, `src/components/GraphRunControls.vue` | 管理只读输入声明，TEXT 表单和高级 JSON |
@@ -73,7 +74,7 @@ npm run preview
 
 ## 数据与验收边界
 
-图、表单和聊天输入使用本机草稿 API，200ms 合并普通编辑，业务提交和应用内切换前等待确认。未知草稿写入只核实原回执，CAS 冲突不覆盖其他页面；尚在内存的内容不报已保存。浏览器旧图只显式导入，可验证记录按精确退役规则处理，未知或损坏原文保留并可导出，不再写浏览器独立工作区。
+图、表单和聊天输入使用本机草稿 API，200ms 合并普通编辑，业务提交和应用内切换前等待确认。未知草稿写入只核实原回执，CAS 冲突不覆盖其他页面；尚在内存的内容不报已保存。两套旧浏览器工作台先按原文与 SHA-256 存入管理端独立归档记录，确认后才清理旧命名空间；未知格式不自动导入，损坏原文也可从“旧版存档”导出。归档失败不禁用当前工作台。草稿依据按 JSON 内容比较，字段排序不再产生假冲突，数组顺序和真实配置变化仍严格检查。
 
 本次 P1/P2 开发源码为 80 文件、1023 项前端测试及生产构建通过；真实 dist 的离线草稿与菜单浏览器场景通过，详见开发记录。稳定主干此前的 67 文件、928 项记录不累加为本次结果。窄屏菜单/弹窗检查不等于整个工作台支持移动端，工作台保留 1024px 最小宽度；完整移动端、无限长会话或全面人工验收未承诺。跨前后端契约测试依赖同仓库 `../backend`。
 
