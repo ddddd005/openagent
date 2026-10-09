@@ -55,6 +55,24 @@ h1, h2, h3, p { margin: 0; }
   background: #242426;
   border-right: 1px solid #39393d;
 }
+.workbench-shell.is-sidebar-collapsed {
+  grid-template-columns: 44px minmax(0, 1fr) 42px;
+}
+.is-sidebar-collapsed .workbench-sidebar { grid-template-columns: minmax(0, 1fr); }
+.is-sidebar-collapsed .workbench-navigation-rail { border-right: 0; }
+.workbench-sidebar-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.workbench-navigation-rail .workbench-sidebar-toggle {
+  flex: 0 0 28px;
+  width: 35px;
+  height: 28px;
+  margin-bottom: 7px;
+}
 .workbench-navigation-rail, .workbench-interface-rail {
   display: flex;
   flex-direction: column;
@@ -83,6 +101,7 @@ h1, h2, h3, p { margin: 0; }
 .workbench-workflow-panel {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-width: 0;
   min-height: 0;
 }

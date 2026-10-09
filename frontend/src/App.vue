@@ -16,6 +16,8 @@ import {
   Plus,
   GitBranch,
   Minimize2,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-vue-next";
 import ErrorToast from "./components/ErrorToast.vue";
 import ProviderSidebar from "./components/ProviderSidebar.vue";
@@ -29,10 +31,16 @@ import GraphRunControls from "./components/GraphRunControls.vue";
 import GraphSessions from "./components/GraphSessions.vue";
 import GraphHistory from "./components/GraphHistory.vue";
 import WorkbenchStorageRecovery from "./components/WorkbenchStorageRecovery.vue";
+import { useWorkbenchSidebar } from "./composables/useWorkbenchSidebar";
 
 const workspace = useWorkspaceStore();
 const persistence = useWorkbenchPersistenceStore();
 const graph = useWorkflowGraphStore();
+const { sidebarCollapsed, toggleSidebar, expandSidebar } = useWorkbenchSidebar();
+function openSidebarSection(section: typeof workspace.sidebarSection) {
+  workspace.sidebarSection = section;
+  expandSidebar();
+}
 persistence.initialize();
 const workspaceView = ref<"canvas" | "history">("canvas");
 const dirty = computed(
@@ -73,9 +81,21 @@ watch(
 </script>
 
 <template>
-  <div class="workbench-shell">
+  <div class="workbench-shell" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">
     <aside class="workbench-sidebar" aria-label="工作区导航">
       <nav class="workbench-navigation-rail" aria-label="主导航">
+        <button
+          class="workbench-tool-button workbench-sidebar-toggle"
+          type="button"
+          :title="sidebarCollapsed ? '展开左侧栏' : '收起左侧栏'"
+          :aria-label="sidebarCollapsed ? '展开左侧栏' : '收起左侧栏'"
+          :aria-expanded="!sidebarCollapsed"
+          aria-controls="workbench-sidebar-panel"
+          @click="toggleSidebar"
+        >
+          <PanelLeftOpen v-if="sidebarCollapsed" :size="18" aria-hidden="true" />
+          <PanelLeftClose v-else :size="18" aria-hidden="true" />
+        </button>
         <button
           class="workbench-rail-button"
           :class="{ 'is-active': workspace.sidebarSection === 'workflows' }"
@@ -83,7 +103,7 @@ watch(
           title="工作流"
           aria-label="工作流"
           :aria-current="workspace.sidebarSection === 'workflows' ? 'page' : undefined"
-          @click="workspace.sidebarSection = 'workflows'"
+          @click="openSidebarSection('workflows')"
         >
           <Workflow :size="19" />
           <span>工作流</span>
@@ -95,65 +115,67 @@ watch(
           title="供应商"
           aria-label="供应商"
           :aria-current="workspace.sidebarSection === 'providers' ? 'page' : undefined"
-          @click="workspace.sidebarSection = 'providers'"
+          @click="openSidebarSection('providers')"
         >
           <Cable :size="19" />
           <span>供应商</span>
         </button>
-        <button class="workbench-rail-button" :class="{ 'is-active': workspace.sidebarSection === 'content' }" type="button" title="内容" aria-label="内容" :aria-current="workspace.sidebarSection === 'content' ? 'page' : undefined" @click="workspace.sidebarSection = 'content'"><BookOpen :size="19" /><span>内容</span></button>
+        <button class="workbench-rail-button" :class="{ 'is-active': workspace.sidebarSection === 'content' }" type="button" title="内容" aria-label="内容" :aria-current="workspace.sidebarSection === 'content' ? 'page' : undefined" @click="openSidebarSection('content')"><BookOpen :size="19" /><span>内容</span></button>
       </nav>
 
-      <section v-show="workspace.sidebarSection === 'workflows'" class="workbench-workflow-panel" aria-labelledby="workflow-heading">
-        <header class="workbench-panel-heading">
-          <h1 id="workflow-heading">工作流</h1>
-          <span class="workbench-workflow-count">{{ workspace.workflows.length }}</span>
-          <button class="workbench-tool-button" type="button" title="新建工作流" aria-label="新建工作流" @click="graph.createWorkflow()"><Plus :size="15" /></button>
-          <button class="workbench-tool-button" type="button" title="创建串行 Agent 示例（模型资源与模型名待选择，配置后运行）" aria-label="创建串行 Agent 示例" :disabled="graph.catalogLoading || !graph.catalog.length" @click="graph.createSerialAgentExample()"><GitBranch :size="15" /></button>
-          <button class="workbench-tool-button" type="button" title="创建上下文精简串行示例" aria-label="创建上下文精简串行示例" :disabled="graph.catalogLoading || !graph.catalog.length" @click="graph.createCompactingSerialAgentExample()"><Minimize2 :size="15" /></button>
-        </header>
+      <div id="workbench-sidebar-panel" v-show="!sidebarCollapsed" class="workbench-sidebar-panel">
+        <section v-show="workspace.sidebarSection === 'workflows'" class="workbench-workflow-panel" aria-labelledby="workflow-heading">
+          <header class="workbench-panel-heading">
+            <h1 id="workflow-heading">工作流</h1>
+            <span class="workbench-workflow-count">{{ workspace.workflows.length }}</span>
+            <button class="workbench-tool-button" type="button" title="新建工作流" aria-label="新建工作流" @click="graph.createWorkflow()"><Plus :size="15" /></button>
+            <button class="workbench-tool-button" type="button" title="创建串行 Agent 示例（模型资源与模型名待选择，配置后运行）" aria-label="创建串行 Agent 示例" :disabled="graph.catalogLoading || !graph.catalog.length" @click="graph.createSerialAgentExample()"><GitBranch :size="15" /></button>
+            <button class="workbench-tool-button" type="button" title="创建上下文精简串行示例" aria-label="创建上下文精简串行示例" :disabled="graph.catalogLoading || !graph.catalog.length" @click="graph.createCompactingSerialAgentExample()"><Minimize2 :size="15" /></button>
+          </header>
 
-        <ul class="workbench-workflow-list" aria-label="工作流列表">
-          <li v-for="workflow in workspace.workflows" :key="workflow.id">
-            <button
-              class="workbench-workflow-item"
-              :class="{
-                'is-selected': workspace.selectedWorkflowId === workflow.id,
-                'is-open': workspace.activeWorkflowId === workflow.id,
-              }"
-              type="button"
-              :disabled="workflow.copyPending"
-              :aria-pressed="workspace.selectedWorkflowId === workflow.id"
-              :aria-current="workspace.activeWorkflowId === workflow.id ? 'page' : undefined"
-              :title="workflow.title"
-              @click="workspace.selectWorkflow(workflow.id)"
-              @dblclick="workspace.openWorkflow(workflow.id)"
-              @keydown.enter.prevent="workspace.openWorkflow(workflow.id)"
-            >
-              <span class="workbench-workflow-icon" aria-hidden="true">
-                <Workflow v-if="workflow.nodeCount > 0" :size="18" />
-                <File v-else :size="18" />
-              </span>
-              <span class="workbench-workflow-copy">
-                <strong>{{ workflow.title }}</strong>
-                <span class="workbench-workflow-meta">
-                  <span>{{ nodeCount(workflow.id) }} 个节点</span>
-                  <span v-if="workflow.copyPending">复制待核实</span>
-                  <span
-                    v-if="workspace.activeWorkflowId === workflow.id"
-                    class="workbench-open-indicator"
-                  >
-                    <Circle :size="5" fill="currentColor" :stroke-width="0" />
-                    当前打开
+          <ul class="workbench-workflow-list" aria-label="工作流列表">
+            <li v-for="workflow in workspace.workflows" :key="workflow.id">
+              <button
+                class="workbench-workflow-item"
+                :class="{
+                  'is-selected': workspace.selectedWorkflowId === workflow.id,
+                  'is-open': workspace.activeWorkflowId === workflow.id,
+                }"
+                type="button"
+                :disabled="workflow.copyPending"
+                :aria-pressed="workspace.selectedWorkflowId === workflow.id"
+                :aria-current="workspace.activeWorkflowId === workflow.id ? 'page' : undefined"
+                :title="workflow.title"
+                @click="workspace.selectWorkflow(workflow.id)"
+                @dblclick="workspace.openWorkflow(workflow.id)"
+                @keydown.enter.prevent="workspace.openWorkflow(workflow.id)"
+              >
+                <span class="workbench-workflow-icon" aria-hidden="true">
+                  <Workflow v-if="workflow.nodeCount > 0" :size="18" />
+                  <File v-else :size="18" />
+                </span>
+                <span class="workbench-workflow-copy">
+                  <strong>{{ workflow.title }}</strong>
+                  <span class="workbench-workflow-meta">
+                    <span>{{ nodeCount(workflow.id) }} 个节点</span>
+                    <span v-if="workflow.copyPending">复制待核实</span>
+                    <span
+                      v-if="workspace.activeWorkflowId === workflow.id"
+                      class="workbench-open-indicator"
+                    >
+                      <Circle :size="5" fill="currentColor" :stroke-width="0" />
+                      当前打开
+                    </span>
                   </span>
                 </span>
-              </span>
-            </button>
-          </li>
-        </ul>
-        <GraphSessions />
-      </section>
-      <ProviderSidebar v-if="workspace.sidebarSection === 'providers'" />
-      <ContentSidebar v-if="workspace.sidebarSection === 'content'" />
+              </button>
+            </li>
+          </ul>
+          <GraphSessions />
+        </section>
+        <ProviderSidebar v-if="workspace.sidebarSection === 'providers'" />
+        <ContentSidebar v-if="workspace.sidebarSection === 'content'" />
+      </div>
     </aside>
 
     <main class="workbench-main" aria-label="工作流工作台">
