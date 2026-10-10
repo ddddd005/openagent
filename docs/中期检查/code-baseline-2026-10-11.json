@@ -1,0 +1,787 @@
+{
+  "schema_version": 1,
+  "recorded_date": "2026-10-11",
+  "timezone": "Asia/Shanghai",
+  "repository_path": "D:\\agent rp\\方案1\\openagent",
+  "branch": "develop",
+  "code_base_commit": "447fa552b24a6493f450d6ff2a67f2f9fca97432",
+  "main_commit_at_capture": "447fa552b24a6493f450d6ff2a67f2f9fca97432",
+  "scope": "Git-visible changed or untracked non-Markdown files under backend/ and frontend/; ignored product data, credentials, logs, dependencies and builds are excluded.",
+  "fingerprint_format": "Ordinal path order; UTF-8 without BOM; tab-separated git_status,path,size_bytes,sha256; LF between rows; no final LF; deleted size/hash are -.",
+  "changed_code_sha256": "9ddba735a31205013a191d84bb6e816a233059f3a6957b17b0ef1f14b695223f",
+  "counts": {
+    "total": 123,
+    "modified": 103,
+    "deleted": 4,
+    "untracked": 16,
+    "backend": 77,
+    "frontend": 46
+  },
+  "changed_files": [
+    {
+      "path": "backend/scripts/reset_development_data.py",
+      "git_status": "??",
+      "size_bytes": 8294,
+      "sha256": "e05b3af2bc0b8df0c4de3a342a6cc587e794c677e7ba7360c1a6668bbfb6c688"
+    },
+    {
+      "path": "backend/src/phase1_agent/contract_errors.py",
+      "git_status": " M",
+      "size_bytes": 2154,
+      "sha256": "b40264af4fa7933f279275960164a2162138727ffeb8b04e2cc0f638025835b8"
+    },
+    {
+      "path": "backend/src/phase1_agent/credential_contract.py",
+      "git_status": "??",
+      "size_bytes": 549,
+      "sha256": "005ad92b38888057262e88588f76c738498e5473874cf99500350b41f96f03ad"
+    },
+    {
+      "path": "backend/src/phase1_agent/credential_store.py",
+      "git_status": " M",
+      "size_bytes": 10570,
+      "sha256": "73923b3257e797e0b519ae94caa187cfcfeb68914f8d6daf8f191d333a81acda"
+    },
+    {
+      "path": "backend/src/phase1_agent/gemini_adapter.py",
+      "git_status": " M",
+      "size_bytes": 17820,
+      "sha256": "abb5957d38fc0873757d38d7e5f751ac93c8f1e3ccb574f6be32c5d67f70be25"
+    },
+    {
+      "path": "backend/src/phase1_agent/gemini_capabilities.py",
+      "git_status": " M",
+      "size_bytes": 3449,
+      "sha256": "59b769c01732bfba710478607ac79d54080226ded65d7aab56c62c107391f9ef"
+    },
+    {
+      "path": "backend/src/phase1_agent/global_resources.py",
+      "git_status": " M",
+      "size_bytes": 14122,
+      "sha256": "221dca1c77b6324d3514f17da25d868422a173afcf3c4a315de44c6a459aca95"
+    },
+    {
+      "path": "backend/src/phase1_agent/graph_application.py",
+      "git_status": " M",
+      "size_bytes": 6953,
+      "sha256": "66fd93f1190778ebf0945efee13e9c1d86610e95b9fcc759ea52079a73f02c6b"
+    },
+    {
+      "path": "backend/src/phase1_agent/graph_application_contracts.py",
+      "git_status": " M",
+      "size_bytes": 14723,
+      "sha256": "3f5f7adeeaa651626049f93779fd21a59579b2c360f62061b6a3c68a1cbfc07d"
+    },
+    {
+      "path": "backend/src/phase1_agent/graph_contracts.py",
+      "git_status": " M",
+      "size_bytes": 46070,
+      "sha256": "30fdb29405ce9762454d6f48dccf6eca263531600ba5538fd0a1c3082429db27"
+    },
+    {
+      "path": "backend/src/phase1_agent/graph_execution.py",
+      "git_status": " M",
+      "size_bytes": 32284,
+      "sha256": "b338c1d10b7022fa602461b156668680077ffd844c3669a15615c1fe6bc56fdd"
+    },
+    {
+      "path": "backend/src/phase1_agent/graph_input_declarations.py",
+      "git_status": " M",
+      "size_bytes": 4306,
+      "sha256": "d07992c6234190ae928af8305f5a720d4a36cc4d3b38a3680af5a87fb9650ef1"
+    },
+    {
+      "path": "backend/src/phase1_agent/graph_platform.py",
+      "git_status": " M",
+      "size_bytes": 14450,
+      "sha256": "2d8a25a3ed683f9bad8b4464e4efa4f0dcc85871bad40bc7275154c982f1163c"
+    },
+    {
+      "path": "backend/src/phase1_agent/graph_provider_host.py",
+      "git_status": " M",
+      "size_bytes": 20590,
+      "sha256": "a816651c9dc4dc763cf636b11cc677aa7a4f708fecb28a0fa8f78083505368c8"
+    },
+    {
+      "path": "backend/src/phase1_agent/graph_public.py",
+      "git_status": " M",
+      "size_bytes": 27072,
+      "sha256": "082e9d002f7fe84fbbea8dc5cf08a56df0f00a5794d31cf431bde935206d1fc2"
+    },
+    {
+      "path": "backend/src/phase1_agent/graph_resource_host.py",
+      "git_status": " M",
+      "size_bytes": 7491,
+      "sha256": "d107bad26c378c264c18b40850a1135233d2df46a7128ca8dd027768d95ebba2"
+    },
+    {
+      "path": "backend/src/phase1_agent/graph_service.py",
+      "git_status": " M",
+      "size_bytes": 81598,
+      "sha256": "abadbf24d5900b006044891a6d0801e619ebdcabc5476e31337e10d69eb54bfb"
+    },
+    {
+      "path": "backend/src/phase1_agent/model_configuration.py",
+      "git_status": " D",
+      "size_bytes": null,
+      "sha256": null
+    },
+    {
+      "path": "backend/src/phase1_agent/model_contract.py",
+      "git_status": " M",
+      "size_bytes": 17894,
+      "sha256": "376bf7b8b2472c7001f5ca3f00f1fce7fe497d917bc9cc60b18df7d45347a1b5"
+    },
+    {
+      "path": "backend/src/phase1_agent/model_host_service.py",
+      "git_status": " M",
+      "size_bytes": 5196,
+      "sha256": "eeb60eb84d21ea907c93824d6bdae5870484c4e09e8301dec2c434d6056f9a60"
+    },
+    {
+      "path": "backend/src/phase1_agent/model_package.py",
+      "git_status": " M",
+      "size_bytes": 5318,
+      "sha256": "ef1dbd17a36ccec1d6d51ff775d186238d2612153b20fbb9880f3a8c7bf5a980"
+    },
+    {
+      "path": "backend/src/phase1_agent/model_selection.py",
+      "git_status": " D",
+      "size_bytes": null,
+      "sha256": null
+    },
+    {
+      "path": "backend/src/phase1_agent/model_service.py",
+      "git_status": " M",
+      "size_bytes": 35328,
+      "sha256": "16a72ff3f1ec0d4177bbb92bfaadcdafd7e87082525217196e5a89ff2d0bfc7c"
+    },
+    {
+      "path": "backend/src/phase1_agent/provider_discovery.py",
+      "git_status": " M",
+      "size_bytes": 4738,
+      "sha256": "816a23480c0ee0dc359683853b4a759818e3d2b38f65d74029a84fced5895e75"
+    },
+    {
+      "path": "backend/src/phase1_agent/runtime.py",
+      "git_status": " M",
+      "size_bytes": 57236,
+      "sha256": "c247a123b2626ee541d29ca8d423f396ca062c9a4563fb3c52b54ce98b93854c"
+    },
+    {
+      "path": "backend/src/phase1_agent/server.py",
+      "git_status": " M",
+      "size_bytes": 22092,
+      "sha256": "ef288260164fe35df1f4ebebca974f1c20e767a7a4a4cb6851e26be5bf4662e6"
+    },
+    {
+      "path": "backend/src/phase1_agent/static/graph-chat-core.js",
+      "git_status": " M",
+      "size_bytes": 79453,
+      "sha256": "d425bdfc60fdabc2de530cec0fa6e68c84ad2a19275c76a7bc9aa2b1888d4541"
+    },
+    {
+      "path": "backend/src/phase1_agent/storage_retirement.py",
+      "git_status": " M",
+      "size_bytes": 17336,
+      "sha256": "5eeebb7a97779d18921cd55b12dcf521efd566fe65b6aad9a53f88f3e9d6f4d1"
+    },
+    {
+      "path": "backend/src/phase1_agent/tavern/frontend/adapter.js",
+      "git_status": " M",
+      "size_bytes": 9814,
+      "sha256": "f8cb54cd889d5601ee2ba70cd9e9476dfa385689cb0740b9dc372ea48de283a2"
+    },
+    {
+      "path": "backend/tests/credential_test_support.py",
+      "git_status": "??",
+      "size_bytes": 1126,
+      "sha256": "7ff7040a45b2d33711ed1c1f6c7b33622f6f6dfe2d058769fb9e162b54a414c1"
+    },
+    {
+      "path": "backend/tests/frontend_p34_browser.cjs",
+      "git_status": " D",
+      "size_bytes": null,
+      "sha256": null
+    },
+    {
+      "path": "backend/tests/gemini_browser.cjs",
+      "git_status": " D",
+      "size_bytes": null,
+      "sha256": null
+    },
+    {
+      "path": "backend/tests/model_configuration_browser.cjs",
+      "git_status": "??",
+      "size_bytes": 27663,
+      "sha256": "9f7b94f1622306b46a7549e3d2207e687cc42576ed087efb4aab59c5d131e448"
+    },
+    {
+      "path": "backend/tests/test_agent_dispatch_diagnostics.py",
+      "git_status": "??",
+      "size_bytes": 2800,
+      "sha256": "32b0230f508d5ca48c1ec3d2169e057510458419477edaea6f1229cec2402803"
+    },
+    {
+      "path": "backend/tests/test_agent_information_reader.py",
+      "git_status": " M",
+      "size_bytes": 5689,
+      "sha256": "7e1c9ae16b765800f9b9c36562de23731338c9ecb6c132aeca5caf52d3387f0e"
+    },
+    {
+      "path": "backend/tests/test_agent_integration.py",
+      "git_status": " M",
+      "size_bytes": 9815,
+      "sha256": "0a84afab3b2a82e012ac49fa5c8896266280332fb6a1932fb4b2a8dc10f5e74b"
+    },
+    {
+      "path": "backend/tests/test_agent_native_execution.py",
+      "git_status": " M",
+      "size_bytes": 16889,
+      "sha256": "224b707cd1cd010a246af408d256fa642e86dec43f2923e315d3a162a52b26f5"
+    },
+    {
+      "path": "backend/tests/test_compacting_serial_integration.py",
+      "git_status": " M",
+      "size_bytes": 17874,
+      "sha256": "afc03b57cf7fe249272303ae938f78d9f00cd66354c3f742ddc88e59ace8a2b1"
+    },
+    {
+      "path": "backend/tests/test_context_native_integration.py",
+      "git_status": " M",
+      "size_bytes": 22634,
+      "sha256": "e5076aee24e9012969f0b759874b488479d9525acdd9ae1b5c9d290fca732a09"
+    },
+    {
+      "path": "backend/tests/test_current_node_directory.py",
+      "git_status": " M",
+      "size_bytes": 3222,
+      "sha256": "91a49d0a01ea8eb527de2997bc537ce591d443548d9505e8aba6b442936887ae"
+    },
+    {
+      "path": "backend/tests/test_current_runtime_isolation.py",
+      "git_status": " M",
+      "size_bytes": 10374,
+      "sha256": "19f5bedf36e303914f4ba197dc376689a7df199968e9616b360366b3eebeb962"
+    },
+    {
+      "path": "backend/tests/test_development_reset.py",
+      "git_status": "??",
+      "size_bytes": 7240,
+      "sha256": "05f9450b7c217393e737c0c9259b357ccc6d4a119d16aa8fde276b098aa390bb"
+    },
+    {
+      "path": "backend/tests/test_frontend_business_integration.py",
+      "git_status": " M",
+      "size_bytes": 17446,
+      "sha256": "37739c04ca2a45e39e455a025daf8fe8e26b79aadb1cf9c38f2df780ce344f62"
+    },
+    {
+      "path": "backend/tests/test_gemini_adapter.py",
+      "git_status": " M",
+      "size_bytes": 18269,
+      "sha256": "709b432e494efe888b289fe3145237e45e5c225a75a7e044dde07c695ae81a9e"
+    },
+    {
+      "path": "backend/tests/test_gemini_joint_integration.py",
+      "git_status": " M",
+      "size_bytes": 8487,
+      "sha256": "fc2558fe463e2ead4bc2076a30a15252fb8fef1a0a8bb3c1bbc35e97fed2c1fb"
+    },
+    {
+      "path": "backend/tests/test_gemini_model_integration.py",
+      "git_status": " M",
+      "size_bytes": 10805,
+      "sha256": "c305889b2019b7129a1cafd5c63d84f492450ac2992bc98d3f45a43d707927dd"
+    },
+    {
+      "path": "backend/tests/test_graph_checkpoint_retry.py",
+      "git_status": " M",
+      "size_bytes": 7274,
+      "sha256": "a4e06047d16dfb6e6925029577442f2b6284f2b9bc039a6713fa1ae7260319f6"
+    },
+    {
+      "path": "backend/tests/test_graph_drafts.py",
+      "git_status": " M",
+      "size_bytes": 18655,
+      "sha256": "5f07a2d86c0b6cb58d73d080215f493d37d8fa796a5ef1ff77fdc7c35636b87e"
+    },
+    {
+      "path": "backend/tests/test_graph_input_declarations.py",
+      "git_status": " M",
+      "size_bytes": 4069,
+      "sha256": "7a3b8e1559e8d617a529c9de1c042fa8f352ad18eceb79724d08403be78d1acb"
+    },
+    {
+      "path": "backend/tests/test_graph_public.py",
+      "git_status": " M",
+      "size_bytes": 21794,
+      "sha256": "b636d0282e4995ea658b31da80df3bf9c9c3df85aa4610169cc1b3aff3d72267"
+    },
+    {
+      "path": "backend/tests/test_graph_readonly_actions.py",
+      "git_status": " M",
+      "size_bytes": 11298,
+      "sha256": "f02c156deb64c896173d155b8f408b5b83a83d3891d7e9fdf4685d452dfee08d"
+    },
+    {
+      "path": "backend/tests/test_graph_receipt_roundtrip.py",
+      "git_status": " M",
+      "size_bytes": 13954,
+      "sha256": "f2810203ddd8768a4bd7f2b8bc061178c3bcf4fe51205d7dbb6fdf2912241e88"
+    },
+    {
+      "path": "backend/tests/test_graph_resource_host.py",
+      "git_status": " M",
+      "size_bytes": 21893,
+      "sha256": "4b5701803a174d885b796c513463bed869f7d014e6c3cc41d2bfb376f4bc530d"
+    },
+    {
+      "path": "backend/tests/test_graph_service.py",
+      "git_status": " M",
+      "size_bytes": 4375,
+      "sha256": "ab737815fea0a032f0cda9d06af0ca32dd6552846d0e126dbf54ac1fb71a544e"
+    },
+    {
+      "path": "backend/tests/test_host_sdk.py",
+      "git_status": " M",
+      "size_bytes": 11425,
+      "sha256": "147e876b8eaecd323afffb41d26a559fc8473eb4cebe7ae3a55dc019055714fb"
+    },
+    {
+      "path": "backend/tests/test_model_configuration_browser.py",
+      "git_status": "??",
+      "size_bytes": 2510,
+      "sha256": "27f697ea50b204cdcc98e4ee711f629f7413f72ea344be1ce5bb18cfbe7e451c"
+    },
+    {
+      "path": "backend/tests/test_model_package.py",
+      "git_status": " M",
+      "size_bytes": 29673,
+      "sha256": "79c7632c8f3906aef793d12dd92c35e40ac39213f9b2355db6fe2510444af86a"
+    },
+    {
+      "path": "backend/tests/test_model_profiles.py",
+      "git_status": "??",
+      "size_bytes": 25824,
+      "sha256": "54d4c941baf73dcdc6a4c2d344f9756dd25042db41ede74fe81e2e5109497fbd"
+    },
+    {
+      "path": "backend/tests/test_models_service_integration.py",
+      "git_status": " M",
+      "size_bytes": 15993,
+      "sha256": "ec82f8b466dcf2927dea583aec14879d67ae853d3eee046f59e490b4d49a3d79"
+    },
+    {
+      "path": "backend/tests/test_neutral_provider_boundaries.py",
+      "git_status": "??",
+      "size_bytes": 2936,
+      "sha256": "ff6a5d7b1c2f6139b5af316974381d8fb6070f6a2024d16e211a1e1fe13e8d50"
+    },
+    {
+      "path": "backend/tests/test_prepared_request_gate.py",
+      "git_status": " M",
+      "size_bytes": 11146,
+      "sha256": "0d2a0e55ada2cbf70ea76eaac9c518cb7ce95ef04f8c4dbdda29f4a0b22d98ca"
+    },
+    {
+      "path": "backend/tests/test_prompt_current_resources.py",
+      "git_status": " M",
+      "size_bytes": 12753,
+      "sha256": "c86a4e6e842a609902f3a01518672af2fbfdaedea17b231c9824128c1b0723e7"
+    },
+    {
+      "path": "backend/tests/test_prompt_package.py",
+      "git_status": " M",
+      "size_bytes": 12807,
+      "sha256": "b912d073f3a45105acc97398d822d8a9a133b937701f7de7b192b67c0ff70517"
+    },
+    {
+      "path": "backend/tests/test_provider_configuration.py",
+      "git_status": " M",
+      "size_bytes": 17204,
+      "sha256": "8720e120d87aa6b8981094bcf68b2d4a4cd18a0dd3f81fd2a1ffde7f406562e9"
+    },
+    {
+      "path": "backend/tests/test_public_runtime_review.py",
+      "git_status": " M",
+      "size_bytes": 5616,
+      "sha256": "66c374c458430d4d2b56585c5245624656d03cc48fc423f49884635969f3f020"
+    },
+    {
+      "path": "backend/tests/test_result_acceptance_retry.py",
+      "git_status": " M",
+      "size_bytes": 19252,
+      "sha256": "c4dc4762e0c6c4e32115d71befb4bdacc4fe07d8565483f817e23a1603e1808d"
+    },
+    {
+      "path": "backend/tests/test_serial_agent_demo_integration.py",
+      "git_status": " M",
+      "size_bytes": 13064,
+      "sha256": "bca3999de4d30047899c43cb299f1d3d7f8c38194d7044ae173160c51fa9d37c"
+    },
+    {
+      "path": "backend/tests/test_server.py",
+      "git_status": " M",
+      "size_bytes": 12023,
+      "sha256": "ace54fa3d5815fe56312008f681b3f7edd47df722164a4ccfb3665100f2de6ad"
+    },
+    {
+      "path": "backend/tests/test_storage_retirement.py",
+      "git_status": " M",
+      "size_bytes": 25302,
+      "sha256": "810af94a4bc808a39303cf83e39ac8b8af3495a0094592f99e988480443fdfa4"
+    },
+    {
+      "path": "backend/tests/test_tavern_chat_client.py",
+      "git_status": " M",
+      "size_bytes": 50036,
+      "sha256": "fff29fdffcdf08f3b4f7324f6b62f0fb397547109ec60502782f6cc278403659"
+    },
+    {
+      "path": "backend/tests/test_tavern_chat_integration.py",
+      "git_status": " M",
+      "size_bytes": 13946,
+      "sha256": "3c367ac488daf35e984a4502053cf7b47073357cb9d9ebbc34d16945a6d5d1a5"
+    },
+    {
+      "path": "backend/tests/test_tavern_fork_integration.py",
+      "git_status": " M",
+      "size_bytes": 16637,
+      "sha256": "4faa5237af574d127cb2bd0bd1b83a977e625e497332cf08280942733db76c1f"
+    },
+    {
+      "path": "backend/tests/test_tavern_global_lorebook.py",
+      "git_status": " M",
+      "size_bytes": 20625,
+      "sha256": "39d2c5995610314cd40e731ffa0cda3631ab74ce65327ca52fefd33b80f562d6"
+    },
+    {
+      "path": "backend/tests/test_tavern_integration.py",
+      "git_status": " M",
+      "size_bytes": 12674,
+      "sha256": "0b2444a67516132918bcb4477d8096a377a871db71664f6c9dc61f5322a87326"
+    },
+    {
+      "path": "backend/tests/test_tavern_joint_browser.py",
+      "git_status": " M",
+      "size_bytes": 24739,
+      "sha256": "870138fe231f528ee7f2c2b88bc0bb5afbe64648f84e2590b52c1f081804c12b"
+    },
+    {
+      "path": "backend/tests/test_tavern_prompt_presets.py",
+      "git_status": " M",
+      "size_bytes": 15416,
+      "sha256": "02dca7ea5e2552a7fa19005c73995c5d563740055f696731a4ab5416fa21f86b"
+    },
+    {
+      "path": "backend/tests/test_tavern_workbench_browser.py",
+      "git_status": " M",
+      "size_bytes": 9115,
+      "sha256": "5b28f6fe5eaf812c9cb26323618bb49fc4d1939f1db43180edff104e7d3b9294"
+    },
+    {
+      "path": "frontend/src/adapters/graphChatConsumer.test.ts",
+      "git_status": " M",
+      "size_bytes": 60483,
+      "sha256": "230fcf96de74a3892739b78e3766bca71d388f51f0298bbb0590ee7f8685a51b"
+    },
+    {
+      "path": "frontend/src/adapters/providerConfigurationApi.test.ts",
+      "git_status": " M",
+      "size_bytes": 7335,
+      "sha256": "e95f6a1fb26eacdd5574bf56ec1e8caa9e00c2f4af8caa69814dea7b35e99a40"
+    },
+    {
+      "path": "frontend/src/adapters/providerConfigurationApi.ts",
+      "git_status": " M",
+      "size_bytes": 11225,
+      "sha256": "13f595a20196ab750c9b7797edd878ead7a068ff75c0cc9217855ba3954aeaf6"
+    },
+    {
+      "path": "frontend/src/adapters/resourcePendingStorage.ts",
+      "git_status": " M",
+      "size_bytes": 2146,
+      "sha256": "595fd3f904e4ca4faf69c8cb9fa0b4ee2c38525b07d908e73d217f291cf0ca88"
+    },
+    {
+      "path": "frontend/src/adapters/workbenchApi.test.ts",
+      "git_status": " M",
+      "size_bytes": 5878,
+      "sha256": "fef46c0242dc0cac1ab6b2c10b27a4b24f4d97fa91929d7b4fd137ab2271335b"
+    },
+    {
+      "path": "frontend/src/adapters/workbenchApi.ts",
+      "git_status": " M",
+      "size_bytes": 9545,
+      "sha256": "8ed5f2f30922095ada89653c918412675e7f6cb16034213ec240b4c6332323d3"
+    },
+    {
+      "path": "frontend/src/adapters/workbenchPersistence.test.ts",
+      "git_status": " M",
+      "size_bytes": 12549,
+      "sha256": "f473fd2d1eb7c42c3e5c50db8d08dc2c3a61b8428c2b3504b22f2c5aacf803d7"
+    },
+    {
+      "path": "frontend/src/adapters/workbenchPersistence.ts",
+      "git_status": " M",
+      "size_bytes": 10656,
+      "sha256": "999e7c8b9374ea660a01a8cfebc2076ee852f4a7181a4a1d554aa3c96da116c4"
+    },
+    {
+      "path": "frontend/src/adapters/workflowModelProfilesApi.test.ts",
+      "git_status": "??",
+      "size_bytes": 11021,
+      "sha256": "adac26f287e172dae7394b835472850e0ca994e497a287110f918a61cc26f2cc"
+    },
+    {
+      "path": "frontend/src/adapters/workflowModelProfilesApi.ts",
+      "git_status": "??",
+      "size_bytes": 2450,
+      "sha256": "4ac8bcf694e6f94bc9bfc48a470a15a42fc86bb80b14dcc7ecc3738bd398b408"
+    },
+    {
+      "path": "frontend/src/application/modelProfiles.test.ts",
+      "git_status": "??",
+      "size_bytes": 19157,
+      "sha256": "d5965817c34f8a7d69f1056de4abbdf81b4a681256e91594c48d12248ba4e6f5"
+    },
+    {
+      "path": "frontend/src/application/modelProfiles.ts",
+      "git_status": "??",
+      "size_bytes": 2360,
+      "sha256": "6c54bec1c22bdf584d59f23285427a513dee68558705987a7e785fda28fe73e1"
+    },
+    {
+      "path": "frontend/src/application/providerCredentialEditing.test.ts",
+      "git_status": " M",
+      "size_bytes": 15833,
+      "sha256": "31f12a5a363de28e0d6a31f349eae58715ac90f612cf7da27b070e5a58aac0c8"
+    },
+    {
+      "path": "frontend/src/application/providerCredentialEditing.ts",
+      "git_status": " M",
+      "size_bytes": 14754,
+      "sha256": "778cdfff3b9d192908ea7b865c5732c14cc90620cb4d37b5d581642d1c277337"
+    },
+    {
+      "path": "frontend/src/application/resourceOutbox.test.ts",
+      "git_status": " M",
+      "size_bytes": 9028,
+      "sha256": "04747522ca3aeeb5aa66e6feeca59fef90f0286e50405a73ee8ed261f1a15c16"
+    },
+    {
+      "path": "frontend/src/application/resourceOutbox.ts",
+      "git_status": " M",
+      "size_bytes": 7487,
+      "sha256": "5a0c4455e0470dd60f06e27117e6450ad1d647668115ea88fd768c9fc4d36293"
+    },
+    {
+      "path": "frontend/src/application/workflowNodeConfiguration.test.ts",
+      "git_status": " M",
+      "size_bytes": 2495,
+      "sha256": "b7b06d50af96c7a05c0d8c12a31342887af066e07e0deed342552843f9af3ec3"
+    },
+    {
+      "path": "frontend/src/components/CurrentModelConfiguration.test.ts",
+      "git_status": " M",
+      "size_bytes": 10668,
+      "sha256": "e2d8b2dc3239021eabfa92cf15ef42f1d0b71bb1d8abf5fd01377fd2a3be5ab4"
+    },
+    {
+      "path": "frontend/src/components/CurrentModelProfilesPanel.vue",
+      "git_status": "??",
+      "size_bytes": 15625,
+      "sha256": "79f6c2c3ac35fb8373ce2d1db8e0785ed5f70785b02a3486701a5e2ab4cd875a"
+    },
+    {
+      "path": "frontend/src/components/CurrentPromptPanel.vue",
+      "git_status": " M",
+      "size_bytes": 10996,
+      "sha256": "80eba38a581b7baef51b2b42806baeb8f6cc598c0bdc6b49c653073e974955cf"
+    },
+    {
+      "path": "frontend/src/components/CurrentProviderPanel.vue",
+      "git_status": " M",
+      "size_bytes": 11758,
+      "sha256": "f59598956cfa526d157d6e89d6bfef9a1789a4e5454530d72678d503f093fef1"
+    },
+    {
+      "path": "frontend/src/components/GraphWorkbench.vue",
+      "git_status": " M",
+      "size_bytes": 33733,
+      "sha256": "4c1c0293d7803c8933ce9db08bf2556d8a99daaa9cb3a9f94b4356a8c23d92d6"
+    },
+    {
+      "path": "frontend/src/components/ModelSourceFields.vue",
+      "git_status": " M",
+      "size_bytes": 6976,
+      "sha256": "b2021fa2137d164c0b9d2075e9408244d38f5b27349bd25ef15a23a2388fa35a"
+    },
+    {
+      "path": "frontend/src/components/NodeFieldsAppliedDrafts.test.ts",
+      "git_status": " M",
+      "size_bytes": 13285,
+      "sha256": "7ac950f8d5a9a00d6347bfc1acc69f5c97e6496ac098b9f01c7303c247209034"
+    },
+    {
+      "path": "frontend/src/components/NodeProfileDialog.test.ts",
+      "git_status": " M",
+      "size_bytes": 3502,
+      "sha256": "447051d2dd495a5a3bb7d922998bbaf01f9129cd36f5adaf6220f5847b975fb1"
+    },
+    {
+      "path": "frontend/src/components/ProviderCredentialFields.vue",
+      "git_status": " M",
+      "size_bytes": 5436,
+      "sha256": "b01dcb333e8b3698f01835f979370fea110a8badf28ad13cc867f848fe4194f9"
+    },
+    {
+      "path": "frontend/src/components/ProviderSidebarResources.test.ts",
+      "git_status": " M",
+      "size_bytes": 12531,
+      "sha256": "bdc6abd5732a791befad873195779248a000d03bba319bcb218720798b9e2bcc"
+    },
+    {
+      "path": "frontend/src/composables/useBoundFormDraft.ts",
+      "git_status": " M",
+      "size_bytes": 4514,
+      "sha256": "50d18c5cff818f36b9c21eb2b007771697476d25a1015df71d5e5403d0b659a5"
+    },
+    {
+      "path": "frontend/src/composables/useResourceFormDraft.test.ts",
+      "git_status": "??",
+      "size_bytes": 11468,
+      "sha256": "686fe5f9aac0e4357c1d9a09216507795005d30c8bc43d301ae890ef647e5cc8"
+    },
+    {
+      "path": "frontend/src/composables/useResourceFormDraft.ts",
+      "git_status": " M",
+      "size_bytes": 5955,
+      "sha256": "c3340754931393ba829152ffd09e0673f8440da21cab518bf40d6a5383d8cdb9"
+    },
+    {
+      "path": "frontend/src/domain/diagnosticPresentation.ts",
+      "git_status": "??",
+      "size_bytes": 2098,
+      "sha256": "394ee58373f5bfbdfbb220fe3784519157641564d22c53e177add39bc713caaf"
+    },
+    {
+      "path": "frontend/src/domain/nodeCatalog.test.ts",
+      "git_status": " M",
+      "size_bytes": 3735,
+      "sha256": "c86fc995bd3add99fa6ed11ff7eaaa08383ab3907d029e34f1bdbc405077d513"
+    },
+    {
+      "path": "frontend/src/domain/nodeCatalog.ts",
+      "git_status": " M",
+      "size_bytes": 9293,
+      "sha256": "b849eaf9f3a2e31e7ce620c472b90adf1e25da310d9cc7ffc83b6f00577deec3"
+    },
+    {
+      "path": "frontend/src/domain/nodeSelection.test.ts",
+      "git_status": " M",
+      "size_bytes": 4319,
+      "sha256": "f952f33d35ba994e545defcc6fe902261f46aac0b9bb6e00a1975b8e15adab4d"
+    },
+    {
+      "path": "frontend/src/domain/serialAgentDemo.test.ts",
+      "git_status": " M",
+      "size_bytes": 11507,
+      "sha256": "78b0363808899c368131efcaa8910ac4a36e17fe5c9e5e7c53d333c7832ce503"
+    },
+    {
+      "path": "frontend/src/domain/serialAgentDemo.ts",
+      "git_status": " M",
+      "size_bytes": 6693,
+      "sha256": "4830ac93f27cb51db1fb44902f17b55d22eba36db031543f73cfca3bd8a3464c"
+    },
+    {
+      "path": "frontend/src/domain/workflowGraph.ts",
+      "git_status": " M",
+      "size_bytes": 23823,
+      "sha256": "78230f8858ede64aac360209102288f3f223918a15d25a8c91ffdb0e47a1de7c"
+    },
+    {
+      "path": "frontend/src/domain/workflowModelResources.test.ts",
+      "git_status": " M",
+      "size_bytes": 5724,
+      "sha256": "49ee8b92169d5828e74839977163807a08fe5e40f99b0a70e2bcfc1b2f99326d"
+    },
+    {
+      "path": "frontend/src/domain/workflowModelResources.ts",
+      "git_status": " M",
+      "size_bytes": 12525,
+      "sha256": "9e6c5e58d30ace4e3a8997ea298f5455a4f82753a8c9ba17e650e5254565356e"
+    },
+    {
+      "path": "frontend/src/plugins/modelFrontendManifest.ts",
+      "git_status": " M",
+      "size_bytes": 1024,
+      "sha256": "d787db329fc9f8b22cb59945d62735456d6b5dcc6c195a2072960fc429ba1a59"
+    },
+    {
+      "path": "frontend/src/plugins/modelFrontendPackage.ts",
+      "git_status": " M",
+      "size_bytes": 744,
+      "sha256": "cf2b5aad3b759d248a291a5a191c9720a281cf1d81ebbc195b176942fcbe64fd"
+    },
+    {
+      "path": "frontend/src/plugins/tavern/CurrentLorebookPanel.vue",
+      "git_status": " M",
+      "size_bytes": 8288,
+      "sha256": "4f3dd6edcfba6c300ed994c0c672b877f343b74ac78b27bfd258c56c47e36793"
+    },
+    {
+      "path": "frontend/src/plugins/tavern/GlobalLorebookUi.test.ts",
+      "git_status": " M",
+      "size_bytes": 23526,
+      "sha256": "ea51bd5a630fc28e4892771217e43d24cff749967cdd5f645558df77e8610182"
+    },
+    {
+      "path": "frontend/src/plugins/tavern/TavernChatPanel.vue",
+      "git_status": " M",
+      "size_bytes": 5998,
+      "sha256": "fdd5538bdecf43b49f0c8d5cfda2bcdf5adec8588c654d43347f7ad18f42cfb9"
+    },
+    {
+      "path": "frontend/src/plugins/tavern/chatLaunch.test.ts",
+      "git_status": " M",
+      "size_bytes": 15529,
+      "sha256": "cbb953337be158d0c7cb11878bd4d2f18af129f65408387ee599d52f757f3564"
+    },
+    {
+      "path": "frontend/src/plugins/tavern/tavernDemo.ts",
+      "git_status": " M",
+      "size_bytes": 5134,
+      "sha256": "c94b39e5b4e51116e5273b8d44fe83a3a32e6cd81b679fd69df6c073f9517db1"
+    }
+  ],
+  "unchanged_launchers": [
+    {
+      "path": "start.bat",
+      "sha256": "ba1900a6e2021c89686bd9b6d12e8ecfb65bcbad5d3aef43794111a16e734404"
+    },
+    {
+      "path": "start-dev.bat",
+      "sha256": "f5f07d8e4776a3fcbd9946d98d3f2c67984cfd49d4a87f1d4e62c4ba6c96e367"
+    },
+    {
+      "path": "scripts/service-processes.ps1",
+      "sha256": "3a3fbcdd3be9ded28942fe3669916e2834c5a3e935a325258724e4fb144acaf0"
+    },
+    {
+      "path": "scripts/start-branch-services.ps1",
+      "sha256": "de7bcf30a037232be6af150b1ff37c4b94a3a32c6d8563a3038593f2cb43e857"
+    },
+    {
+      "path": "scripts/start-services.ps1",
+      "sha256": "c9eb7a3d32ab308e098bed356c8f64391b85c6be359790ee1fecca6cf2626db1"
+    },
+    {
+      "path": "scripts/stop-services.ps1",
+      "sha256": "8e8109f51234e9b02ade8967439163ca98836c22d67c482af3cf5de66c3592c2"
+    }
+  ],
+  "limitation": "This manifest fingerprints the inspected working tree. It is not a source backup or a commit of the pending product changes."
+}
