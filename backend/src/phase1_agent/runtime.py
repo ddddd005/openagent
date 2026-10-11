@@ -392,10 +392,13 @@ class SnapshotKernel:
             recording_failed = not failure_fact(code, category, cause)
             if recording_failed:
                 state = None
-            raise RunFailed(
+            failure = RunFailed(
                 code, messages, model_requests, attempts, state,
                 recording_failed=recording_failed,
-            ) from cause
+            )
+            if isinstance(cause, ModelRequestError):
+                failure.public_diagnostic = cause.public_diagnostic
+            raise failure from cause
 
         def contract_fail(code: str, cause: BaseException | None = None) -> None:
             failure_fact(code, "contract", cause)

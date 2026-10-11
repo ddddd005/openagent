@@ -55,11 +55,18 @@ class GraphApplication:
 
     def _invoke(self, spec, parameters):
         arguments = deepcopy(validate_parameters(spec, parameters))
-        target = self if spec.method in (
-            "_management_actions", "_consumer_actions", "_registration_list", "_information_read",
-            "_receipt_read",
-            "_editor_inputs",
-        ) else self._service
+        if spec.name.startswith("request-evidence."):
+            from .request_evidence import RequestEvidenceService
+            target = RequestEvidenceService(self._service.database)
+        elif spec.name.startswith("content.metadata."):
+            target = self._service.content_configuration
+        else:
+            target = self._service.provider_configuration if spec.name.startswith((
+            "credential.", "provider.",
+            )) else self if spec.method in (
+                "_management_actions", "_consumer_actions", "_registration_list", "_information_read",
+                "_receipt_read", "_editor_inputs",
+            ) else self._service
         callback = getattr(target, spec.method)
         positional = []
         if spec.session:
@@ -79,7 +86,7 @@ class GraphApplication:
         # Keep the original request fixed even if a service callback mutates its copy.
         request = deepcopy(validate_parameters(spec, parameters))
         operation_scope = "consumer" if spec.consumer else "management"
-        if name in ("credential.save", "credential.delete"):
+        if name in ("credential.delete", "provider.credential.save"):
             result = self._invoke(spec, request)
             public_request = {key: value for key, value in request.items() if key != "secret"}
             receipt = application_command_receipt(name, operation_scope, public_request, result,

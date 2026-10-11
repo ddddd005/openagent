@@ -106,6 +106,11 @@ export interface GraphDiagnostic {
   edge_id?: string;
   dependent_outputs?: string[];
   phase?: string;
+  code?: string;
+  cause_code?: string;
+  step?: string;
+  recovery?: string;
+  correlation_id?: string;
 }
 export interface GraphNodeRun {
   node_binding_id: string;
@@ -129,12 +134,16 @@ export interface GraphSession {
   execution_model: "graph";
   workflow_session_id: string;
   workflow_definition_id: string;
+  name?: string;
+  metadata_sequence?: number;
   definition_revision: number;
   revision: number;
   data_revision: number;
   head_revision: number;
   status: string;
   can_submit: boolean;
+  archived?: boolean;
+  readonly?: boolean;
   nodes: { node_binding_id: string; label: string; status: string; run_id: string | null;
     revision: number | null; outputs: Record<string, unknown>; diagnostic: GraphDiagnostic | null;
     budget?: { max_model_requests: number; max_model_attempts: number; model_requests?: number;
@@ -160,6 +169,15 @@ export interface GraphCommand {
   expected_chain_run_id?: string;
   expected_definition_id?: string;
   expected_definition_revision?: number;
+}
+export interface GraphManagementResult {
+  schema_version: 1;
+  kind: "workflow.definition-management" | "workflow.session-management";
+  workflow_definition_id: string;
+  workflow_session_id?: string;
+  revision: number;
+  archived: boolean;
+  deleted: boolean;
 }
 export interface GraphCandidate {
   candidate_id: string;
@@ -371,7 +389,15 @@ export function isGraphSession(value: unknown, definitionId?: string): value is 
     || !positive(value.definition_revision) || !positive(value.revision)
     || !nonnegative(value.data_revision) || !nonnegative(value.head_revision)
     || !["idle", "prepared", "running", "pausing", "paused", "budget_exhausted", "archive_failed", "failed", "succeeded", "closed", "recovery_unavailable"].includes(String(value.status))
-    || typeof value.can_submit !== "boolean" || !graphObject(value.data) || !graphObject(value.data.values)
+    || typeof value.can_submit !== "boolean"
+    || value.archived !== undefined && typeof value.archived !== "boolean"
+    || value.readonly !== undefined && typeof value.readonly !== "boolean"
+    || value.name !== undefined && (typeof value.name !== "string" || [...value.name].length > 128
+      || /[\u0000-\u001f\u007f]/.test(value.name))
+    || value.metadata_sequence !== undefined && !nonnegative(value.metadata_sequence)
+    || value.archived === true && (value.can_submit !== false || value.readonly !== true
+      || !Array.isArray(value.available_actions) || value.available_actions.length !== 0)
+    || !graphObject(value.data) || !graphObject(value.data.values)
     || !Array.isArray(value.nodes) || !Array.isArray(value.chains) || !Array.isArray(value.outputs)
     || value.selected_chain_run_id !== undefined && value.selected_chain_run_id !== null && !graphUuid(value.selected_chain_run_id)
     || value.objects !== undefined && (!graphObject(value.objects) || !Object.entries(value.objects).every(([key, object]) =>

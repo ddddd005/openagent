@@ -178,7 +178,8 @@ def test_write_intent_and_global_identity_have_no_implicit_latest_or_content_cop
 
 def test_graph_v1_remains_strict_and_v2_can_be_saved_when_package_is_missing():
     source, output = node(1), node(2, "workflow.output")
-    old = document([source, output], [edge(10, 1, 2)])
+    old = {**document([source, output], [edge(10, 1, 2)]), "schema_version": 1}
+    old.pop("object_bindings")
     with pytest.raises(GraphDiagnosticError):
         validate_graph_document({**old, "object_bindings": []})
     updated = {**old, "schema_version": 2, "object_bindings": [binding(default_value={"count": 1})],

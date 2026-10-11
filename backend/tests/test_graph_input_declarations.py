@@ -6,7 +6,7 @@ import pytest
 
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.graph_application import GraphApplication
-from test_graph_service import service, document, node, edge
+from test_graph_service import service, document, node, edge, create
 
 
 def test_incomplete_graph_retains_editable_inputs_and_diagnoses_compile_failure(service):
@@ -55,3 +55,24 @@ def test_consumer_cannot_read_draft_input_declarations(service):
     with pytest.raises(ContractValidationError) as failure:
         GraphApplication(service, scope="consumer").query("definition.inputs", {"document": {}})
     assert failure.value.reason_code == "application_scope_denied"
+
+
+def test_consumer_incomplete_graph_keeps_text_declaration_and_real_blocking_reason(service, monkeypatch):
+    source = node(service.registry, "current-input", 1, input_name="message")
+    missing = node(service.registry, "output", 2)
+    doc = document([source, missing], [])
+    session = create(service, doc)
+    from phase1_agent.graph_contracts import GraphCompiler
+    original_compile, calls = GraphCompiler.compile, []
+
+    def compile_once(compiler, value):
+        calls.append(value["workflow_definition_id"])
+        return original_compile(compiler, value)
+
+    monkeypatch.setattr(GraphCompiler, "compile", compile_once)
+    consumer = service.get_consumer(session["workflow_session_id"])
+    assert consumer["inputs"] == [{"name": "message", "data_type": "TEXT", "required": True,
+                                  "node_ids": [source["node_binding_id"]]}]
+    assert not consumer["can_submit"]
+    assert consumer["diagnostics"][0]["reason_code"] == "graph_required_input_missing"
+    assert calls == [doc["workflow_definition_id"]]

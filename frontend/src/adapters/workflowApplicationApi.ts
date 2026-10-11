@@ -22,13 +22,18 @@ export function graphCommandOperation(path: string, body: Record<string, unknown
     "/api/graph/definitions": "definition.save",
     "/api/graph/sessions": "session.create",
     "/api/graph/resources/save": "resource.save",
+    "/api/graph/content/metadata": "content.metadata.update",
   };
   if (roots[path]) return { operation: roots[path], parameters: graphClone(body) };
-  const session = /^\/api\/graph\/sessions\/([0-9a-fA-F-]+)\/(runs|control|copy|rebind|data|events\/submit|candidates\/select|candidates\/fork)$/.exec(path);
+  const definition = /^\/api\/graph\/definitions\/([0-9a-fA-F-]+)\/(archive|delete)$/.exec(path);
+  if (definition && graphUuid(definition[1]))
+    return { operation: `definition.${definition[2]}`, parameters: { ...graphClone(body), identity: definition[1] } };
+  const session = /^\/api\/graph\/sessions\/([0-9a-fA-F-]+)\/(runs|control|copy|rebind|archive|delete|data|events\/submit|candidates\/select|candidates\/fork)$/.exec(path);
   const operations: Record<string, string> = {
     runs: "run.start", control: "run.control", copy: "session.copy", rebind: "session.rebind",
     data: "session.data.update", "candidates/select": "candidate.select", "candidates/fork": "candidate.fork",
     "events/submit": "event.submit",
+    archive: "session.archive", delete: "session.delete",
   };
   if (!session || !graphUuid(session[1]))
     throw new WorkbenchApiError("unknown", "原工作流请求没有对应应用操作，保留原请求");
@@ -79,6 +84,11 @@ function validateGraphCommandResult(value: unknown, request: ReturnType<typeof g
     "selected_chain_run_id", "reference", "update_sequence", "deleted", "package_lock"];
   const accepted = graphObject(evidence) ? Object.fromEntries(evidenceFields.filter(field => field in evidence)
     .map(field => [field, evidence[field]])) : {};
+  if (graphObject(evidence) && Object.keys(evidence).length === 3
+    && "reference" in evidence && "display_name" in evidence && "metadata_sequence" in evidence) {
+    accepted.display_name = evidence.display_name;
+    accepted.metadata_sequence = evidence.metadata_sequence;
+  }
   if (graphObject(evidence) && evidence.workflow_definition_id !== undefined
     && evidence.workflow_session_id === undefined && evidence.revision !== undefined)
     accepted.definition_revision = evidence.revision;

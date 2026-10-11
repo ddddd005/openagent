@@ -208,6 +208,16 @@ class GlobalResourceStore:
         _require(row["digest"] == digest, "idempotency_conflict", "Global resource request differs", 409)
         return loads_strict(row["payload"])
 
+    def write_receipt(self, record: dict, *, expected_sequence: int, idempotency_key: str) -> dict | None:
+        """Read acceptance of the exact original write, without applying it."""
+        record = self._validate_record(record, validate_type=False)
+        resource_revision(expected_sequence, zero=True)
+        resource_id(idempotency_key)
+        _require(record["update_sequence"] == expected_sequence + 1,
+                 "invalid_request", "Update sequence must advance once")
+        return self._receipt(idempotency_key, content_digest({
+            "operation": "write", "record": record, "expected_sequence": expected_sequence}))
+
     def _mutate(self, request: dict, key: str, change):
         resource_id(key)
         _require(not self._connection.in_transaction, "transaction_in_progress",

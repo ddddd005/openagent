@@ -9,7 +9,6 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   const activeWorkflowId = ref("");
   const viewVersion = ref(0);
   const interactionMode = ref<"select" | "pan">("select");
-  const sidebarSection = ref<"workflows" | "providers" | "content">("workflows");
   const emptyWorkflow: WorkspaceWorkflow = { id: "", title: "工作流", description: "", nodeCount: 0 };
   const activeWorkflow = computed(() => workflows.value.find(row => row.id === activeWorkflowId.value) ?? emptyWorkflow);
 
@@ -47,6 +46,13 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     workflow.copyPending = pending;
     return true;
   }
+  function setWorkflowManagement(id: string, archived: boolean, deleted = false) {
+    const workflow = workflows.value.find(row => row.id === id);
+    if (!workflow) return false;
+    workflow.archived = archived;
+    workflow.deleted = deleted;
+    return true;
+  }
   function markWorkflowSaved(id: string, title?: string) {
     const workflow = workflows.value.find(row => row.id === id);
     if (!workflow) return false;
@@ -76,10 +82,9 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   function initializeFreshWorkspace(workflow: WorkspaceWorkflow) {
     restoreCatalog([workflow], workflow.id, workflow.id);
     interactionMode.value = "select";
-    sidebarSection.value = "workflows";
   }
   return { workflows, selectedWorkflowId, activeWorkflowId, activeWorkflow, viewVersion,
-    interactionMode, sidebarSection, currentViewToken, isCurrentView, selectWorkflow, openWorkflow,
-    registerGraphWorkflow, updateWorkflowProjection, setCopyPending, markWorkflowSaved, markWorkflowDraft, removeWorkflow,
+    interactionMode, currentViewToken, isCurrentView, selectWorkflow, openWorkflow,
+    registerGraphWorkflow, updateWorkflowProjection, setCopyPending, setWorkflowManagement, markWorkflowSaved, markWorkflowDraft, removeWorkflow,
     restoreCatalog, initializeFreshWorkspace };
 });

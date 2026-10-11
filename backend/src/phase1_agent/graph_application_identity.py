@@ -26,6 +26,12 @@ def application_identity_key(operation, operation_scope, idempotency_key):
     })).hexdigest()
 
 
+def application_origin_key(identity):
+    key = (identity["native_receipt"]["key"] if identity["operation"].startswith("request-evidence.")
+           else identity["idempotency_key"])
+    return application_identity_key(identity["operation"], identity["operation_scope"], key)
+
+
 def native_command_request(operation, parameters):
     """Map only caller-owned fields and established service defaults."""
     request = {key: deepcopy(value) for key, value in parameters.items()
@@ -39,7 +45,12 @@ def native_command_request(operation, parameters):
     name = aliases.get(operation, operation)
     native_operations = {
         "definition.save": "graph.definition.save",
+        "definition.update": "graph.definition.update",
+        "definition.archive": "graph.definition.archive",
+        "definition.delete": "graph.definition.delete",
         "session.create": "graph.session.create",
+        "session.archive": "graph.session.archive",
+        "session.delete": "graph.session.delete",
         "run.start": "graph.run.start",
         "event.submit": "graph.event.submit",
         "consumer.event.submit": "graph.consumer.event.submit",
@@ -53,8 +64,16 @@ def native_command_request(operation, parameters):
         "context.adopt": "graph.context.adopt",
         "draft.save": "graph.draft.save",
         "consumer.draft.save": "graph.consumer.draft.save",
+        "session.metadata.update": "graph.session.metadata.update",
+        "content.metadata.update": "graph.content.metadata.update",
+        "request-evidence.write": "graph.request-evidence.write",
+        "request-evidence.resolve": "graph.request-evidence.resolve",
     }
     if name in native_operations:
+        key = parameters["idempotency_key"]
+        if name.startswith("request-evidence."):
+            from .request_evidence import evidence_receipt_key
+            key = evidence_receipt_key(parameters["operation"], key)
         if "session_id" in request:
             request["source" if name == "session.copy" else "session"] = request.pop("session_id")
         if name in ("session.copy", "session.rebind"):
@@ -66,7 +85,7 @@ def native_command_request(operation, parameters):
             request["inputs"] = request.get("inputs") if request.get("inputs") is not None else {}
         return {
             "table": "idempotency", "operation": native_operations[name],
-            "key": parameters["idempotency_key"],
+            "key": key,
             "request_digest": "workflow-op-v1:" + content_digest(request).rsplit(":", 1)[1],
         }
     resource_operations = {
@@ -128,8 +147,7 @@ def persist_application_command_identity(connection, *, table, operation, key, r
         "INSERT INTO idempotency "
         "(operation,key,digest,result_refs,result_payload,request_digest) VALUES(?,?,?,?,?,?)",
         (APPLICATION_IDENTITY_OPERATION,
-         application_identity_key(identity["operation"], identity["operation_scope"],
-                                  identity["idempotency_key"]),
+         application_origin_key(identity),
          digest, "[]", canonical_bytes([{"application_identity": identity}]).decode("utf-8"), digest),
     )
 
@@ -142,6 +160,19 @@ def application_accepted_result(result):
     if result.get("kind") == "workflow.local-draft":
         return {"draft_address": deepcopy(result["address"]), "draft_sequence": result["sequence"],
                 "draft_format_version": result["format_version"], "deleted": result["deleted"]}
+    if result.get("kind") == "workflow.request-evidence":
+        return {field: deepcopy(result[field]) for field in (
+            "operation", "idempotency_key", "owner_kind", "owner_id", "request_digest", "resolution")}
+    if result.get("kind") == "workflow.session-metadata":
+        return {field: deepcopy(result[field]) for field in (
+            "workflow_definition_id", "workflow_session_id", "name", "metadata_sequence")}
+    if result.get("kind") == "workflow.configuration-result":
+        return {field: deepcopy(result[field]) for field in (
+            "outcome", "source_workflow_definition_id", "workflow_definition_id",
+            "definition_revision", "edit_sequence", "source_has_effective_session",
+            "changed_categories", "node_id_map", "session_id")}
+    if set(result) == {"reference", "display_name", "metadata_sequence"}:
+        return deepcopy(result)
     source = result.get("session", result)
     fields = ("workflow_definition_id", "definition_revision", "workflow_session_id",
               "revision", "data_revision", "head_revision", "head_commit_id", "status",

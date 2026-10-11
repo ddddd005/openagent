@@ -87,11 +87,11 @@ def compacting_serial_graph(service, *, with_frontend=False):
                          "target_node_id": target["node_binding_id"]})
 
     current = make("tools.current-input", input_name="text")
-    model = make("models.source", "2", **{**source_config(), "capacity": {
+    model = make("models.source", "5", **source_config())
+    ModelDatabaseFixture.update_profile(service, parameters={"max_tokens": 128}, capacity={
         "context_window_tokens": 100_000, "output_reserve_tokens": 128,
         "summary_max_tokens": 128, "max_cold_input_tokens": 100_000,
-    }})
-    model["config"]["parameters"]["max_tokens"] = 128
+    })
     once = make("prompts.item", "2", text="ONCE_SERIAL_ORIGINAL " * 1600,
                 lifecycle="context_once", compaction="allowed")
     once["config"]["presentation"]["role"] = "user"
@@ -210,7 +210,6 @@ def test_serial_frontend_fixture_uses_explicit_business_state_and_public_present
 
 
 def test_serial_native_compaction_preserves_order_tool_ids_once_state_edit_fork_and_reopen(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-compacting-serial")
     fixture = CompactingSerialTransport()
     database = tmp_path / "serial-native.sqlite"
     with closing(GraphWorkflowService(database, public_model_factory=fixture.factory)) as service:
@@ -297,7 +296,6 @@ def test_serial_native_compaction_preserves_order_tool_ids_once_state_edit_fork_
 
 
 def test_serial_bad_second_agent_summary_does_not_commit_first_agent_or_consume_once(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-compacting-serial")
     fixture = CompactingSerialTransport(bad_summary_agent="B")
     with closing(GraphWorkflowService(tmp_path / "serial-failure.sqlite",
                                       public_model_factory=fixture.factory)) as service:

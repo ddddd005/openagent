@@ -1,12 +1,13 @@
 """Declared resource preflight and current-value execution frames."""
 
+from contextlib import closing
 from copy import deepcopy
 
 from .graph_records import graph_error, require
 
 
 class GraphResourceHost:
-    """Freeze authorized resources before accepting any graph effects."""
+    """Check authorized identities before effects and read content at use time."""
 
     def _content_dependencies(self, node, *, allow_inputs=False):
         entry = self.registry.get(node["component_id"], node["component_version"])
@@ -66,7 +67,24 @@ class GraphResourceHost:
                 current_ids = [dependency["reference"] for dependency in dependencies
                                if dependency["kind"] == "global-resource"]
                 try:
-                    current = self._global_store(repo.store).read_many(current_ids)
+                    resources = self._global_store(repo.store)
+                    current = resources.read_many(current_ids)
+                    index = 0
+                    while index < len(current):
+                        record = current[index]
+                        index += 1
+                        references = self.registry.data_types.references(
+                            record["type_id"], record["data_schema_version"], record["value"], scope="global")
+                        for reference in references:
+                            require(reference.get("scope") not in ("session", "artifact"),
+                                    "graph_resource_dependency_invalid",
+                                    "Global configuration dependencies must be global resource identities", 409,
+                                    node_id=node_id)
+                            if reference not in current_ids:
+                                require(len(current_ids) < 128, "graph_resource_dependency_invalid",
+                                        "Global configuration dependency budget exceeded", 409, node_id=node_id)
+                                current_ids.append(deepcopy(reference))
+                                current.extend(resources.read_many([reference]))
                     entry = self.registry.get(node["component_id"], node["component_version"])
                     if entry.resource_preflight_validator is not None:
                         entry.resource_preflight_validator(deepcopy(node["config"]), deepcopy(current))
@@ -89,6 +107,10 @@ class GraphResourceHost:
             "global_resource_ids", {}).get(context.node_binding_id, [])
         require(reference in declared, "graph_resource_dependency_undeclared",
                 "Resource is not declared for this node", 409, node_id=context.node_binding_id)
+        from .content_configuration import CONTENT_RESOURCE_TYPES
+        if reference["type_id"] in CONTENT_RESOURCE_TYPES:
+            with self._lock, closing(self._store()) as store:
+                return deepcopy(self._global_store(store).get(reference))
         records = self._resource_frames.get(context.chain_run_id, {}).get(context.node_binding_id, [])
         record = next((row for row in records if all(row[key] == reference[key]
                       for key in ("scope", "type_id", "resource_id"))), None)

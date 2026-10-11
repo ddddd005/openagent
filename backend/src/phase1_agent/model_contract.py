@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from urllib.parse import urlsplit
 
 from .contract_json import validate_json_value
+from .contract_errors import require, uuid4_string
+from .credential_contract import credential_id
 from .frozen_model import FrozenModelParameters
-from .graph_contracts import require, uuid4_string
 from .host_sdk import DataTypeDefinition, ResourceIdentity
-from .model_configuration import CHAT_MAX_TOKENS, DEFAULT_PROVIDER_ID, validate_provider
 from .gemini_capabilities import binding_capabilities
 from .provider_metadata import validate_provider_metadata, validate_thinking_summary
 
 
 MODEL_PACKAGE_ID = "workflow.models"
 CHAT_PROVIDER_TYPE = "workflow.chat-provider"
+MODEL_PROFILE_TYPE = "workflow.model-profile"
+CHAT_MAX_TOKENS = 8192
+DEFAULT_PROVIDER_ID = "7be319b8-30bd-4674-b7bf-d1cf54a1a110"
+DEFAULT_PROFILE_ID = "7be319b8-30bd-4674-b7bf-d1cf54a1a111"
 MODEL_BINDING_TYPE = "MODEL_BINDING"
 MODEL_RESULT_TYPE = "MODEL_RESULT"
 _CAPACITY_FIELDS = (
@@ -37,72 +42,108 @@ def validate_chat_provider(value: object) -> dict:
     require(type(value) is dict and set(value) == {
         "name", "protocol", "base_url", "credential_ref", "enabled",
     }, "model_provider_invalid", "Provider fields are invalid")
-    validate_provider({"schema_version": 1, "kind": "chat_provider",
-                       "provider_id": DEFAULT_PROVIDER_ID, "revision": 1, **value})
+    require(type(value["name"]) is str and 0 < len(value["name"].strip()) <= 128
+            and not any(ord(char) < 32 or ord(char) == 127 for char in value["name"])
+            and value["protocol"] in ("chat", "gemini") and type(value["enabled"]) is bool,
+            "model_provider_invalid", "Provider name, protocol or enabled state is invalid")
+    address = value["base_url"]
+    require(type(address) is str and 0 < len(address) <= 2048
+            and not any(char in address for char in "\\?#")
+            and not any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in address),
+            "model_provider_invalid", "Provider URL is invalid")
+    try:
+        parsed = urlsplit(address)
+        port = parsed.port
+    except ValueError:
+        require(False, "model_provider_invalid", "Provider URL is invalid")
+    require(parsed.scheme in ("http", "https") and bool(parsed.hostname)
+            and parsed.username is None and parsed.password is None
+            and (port is None or 1 <= port <= 65535)
+            and (parsed.scheme == "https" or parsed.hostname in ("localhost", "127.0.0.1", "::1")),
+            "model_provider_invalid", "Provider requires HTTPS or a local HTTP endpoint")
+    reference = value["credential_ref"]
+    if reference is not None:
+        credential_id(reference)
     return deepcopy(value)
-
-
-def validate_chat_provider_v1(value: object) -> dict:
-    result = validate_chat_provider(value)
-    require(result["protocol"] == "chat", "model_provider_invalid",
-            "Provider schema one is the existing DeepSeek Chat contract")
-    return result
-
-
-def validate_gemini_provider(value: object) -> dict:
-    result = validate_chat_provider(value)
-    require(result["protocol"] == "gemini", "model_provider_invalid",
-            "Provider schema two requires Gemini generateContent")
-    return result
 
 
 def validate_local_provider(value: object) -> dict:
-    require(type(value) is dict and set(value) == {
-        "name", "protocol", "base_url", "credential_ref", "enabled",
-    }, "model_provider_invalid", "Provider fields are invalid")
-    reference = value["credential_ref"]
-    if type(reference) is str and reference.startswith("local:"):
-        from .credential_store import credential_id
-        credential_id(reference)
-    else:
-        require(reference in (None, "env:GEMINI_API_KEY" if value["protocol"] == "gemini"
-                              else "env:DEEPSEEK_API_KEY"),
-                "model_provider_invalid", "Credential reference is invalid")
-    validated = {**value, "credential_ref": None}
-    validate_chat_provider(validated)
-    return deepcopy(value)
+    return validate_chat_provider(value)
 
 
 def validate_model_parameters(value: object) -> dict:
     parameters = FrozenModelParameters.from_mapping(value)
+    require(len(parameters.model) <= 256
+            and not any(ord(char) < 32 or ord(char) == 127 for char in parameters.model),
+            "model_parameters_unsupported", "Model name must be bounded and contain no control characters")
     require(parameters.max_tokens is None or parameters.max_tokens <= CHAT_MAX_TOKENS,
             "model_parameters_unsupported", "Model output limit exceeds this transport contract")
     return dict(parameters.as_mapping())
 
 
-def validate_model_reference(value: object) -> dict:
+def validate_provider_reference(value: object) -> dict:
     reference = ResourceIdentity.from_dict(value).to_dict()
     require(reference["type_id"] == CHAT_PROVIDER_TYPE, "model_provider_type_mismatch",
             "Model references require the current Chat provider type")
     return reference
 
 
+def validate_model_reference(value: object) -> dict:
+    reference = ResourceIdentity.from_dict(value).to_dict()
+    require(reference["type_id"] == MODEL_PROFILE_TYPE, "model_profile_type_mismatch",
+            "Model sources reference a global named model configuration")
+    return reference
+
+
 def validate_model_source_config(value: object) -> dict:
-    require(type(value) is dict and set(value) == {"reference", "parameters"},
-            "model_source_invalid", "Model source requires provider identity and explicit parameters")
-    return {"reference": validate_model_reference(value["reference"]),
-            "parameters": validate_model_parameters(value["parameters"])}
-
-
-def validate_native_model_source_config(value: object) -> dict:
-    require(type(value) is dict and set(value) == {"reference", "parameters", "capacity"},
-            "model_source_invalid", "Native model source requires explicit capacity budgets")
-    result = validate_model_source_config({key: value[key] for key in ("reference", "parameters")})
-    return {**result, "capacity": validate_model_capacity(value["capacity"], result["parameters"])}
+    require(type(value) is dict and set(value) == {"reference"},
+            "model_source_invalid", "Model source accepts only a global configuration reference")
+    return {"reference": validate_model_reference(value["reference"])}
 
 
 def validate_any_model_source_config(value: object) -> dict:
-    return validate_native_model_source_config(value)
+    return validate_model_source_config(value)
+
+
+def validate_model_profile(value: object) -> dict:
+    require(type(value) is dict and set(value) == {
+        "name", "protocol", "provider", "parameters", "capacity", "enabled",
+    }, "model_profile_invalid", "Named model configuration fields are invalid")
+    require(type(value["name"]) is str and 0 < len(value["name"].strip()) <= 128
+            and not any(ord(char) < 32 or ord(char) == 127 for char in value["name"])
+            and value["protocol"] in ("chat", "gemini") and type(value["enabled"]) is bool,
+            "model_profile_invalid", "Model configuration name, protocol or enabled state is invalid")
+    provider = validate_provider_reference(value["provider"])
+    parameters = validate_model_parameters(value["parameters"])
+    require(parameters == value["parameters"], "model_profile_invalid",
+            "Saved model configuration parameters must be explicit")
+    from .gemini_capabilities import validate_provider_parameters
+    validate_provider_parameters(value["protocol"], parameters)
+    capacity = validate_model_capacity(value["capacity"], parameters)
+    return {**deepcopy(value), "provider": provider, "parameters": parameters, "capacity": capacity}
+
+
+def validate_model_profile_record(record: object, reference: dict) -> dict:
+    require(type(record) is dict and all(record.get(key) == reference[key] for key in reference)
+            and type(record.get("data_schema_version")) is int and record["data_schema_version"] == 1,
+            "model_profile_unavailable", "Referenced model configuration is missing or unavailable")
+    value = validate_model_profile(record["value"])
+    require(value["enabled"], "model_profile_disabled", "Referenced model configuration is disabled")
+    return value
+
+
+def resolve_model_source(config: object, records: list[dict]) -> dict:
+    config = validate_model_source_config(config)
+    reference = config["reference"]
+    record = next((row for row in records if all(row.get(key) == reference[key] for key in reference)), None)
+    profile = validate_model_profile_record(record, reference)
+    provider_ref = profile["provider"]
+    record = next((row for row in records if all(row.get(key) == provider_ref[key] for key in provider_ref)), None)
+    provider = validate_provider_record(record, provider_ref)
+    require(profile["protocol"] == provider["protocol"], "model_source_protocol_mismatch",
+            "Model configuration and provider protocols differ")
+    return {"reference": reference, "provider_reference": provider_ref,
+            "parameters": profile["parameters"], "capacity": profile["capacity"], "provider": provider}
 
 
 def validate_model_capacity(value: object, parameters: dict) -> dict:
@@ -123,12 +164,9 @@ def validate_model_capacity(value: object, parameters: dict) -> dict:
 def validate_provider_record(record: object, reference: dict) -> dict:
     require(type(record) is dict and all(record.get(key) == reference[key] for key in reference)
             and type(record.get("data_schema_version")) is int
-            and record["data_schema_version"] in (1, 2, 3),
+            and record["data_schema_version"] == 3,
             "model_provider_unavailable", "Current provider is missing or has an unsupported schema")
-    value = (validate_local_provider if record["data_schema_version"] == 3 else validate_chat_provider)(record["value"])
-    require(record["data_schema_version"] == 3
-            or record["data_schema_version"] == (2 if value["protocol"] == "gemini" else 1),
-            "model_provider_invalid", "Provider data schema version does not match its protocol")
+    value = validate_local_provider(record["value"])
     require(value["enabled"], "model_provider_disabled", "Current provider is disabled")
     require(value["credential_ref"] is not None, "model_credential_unavailable",
             "Current provider needs a controlled credential reference")
@@ -140,7 +178,8 @@ def validate_public_model_binding(value: object) -> dict:
     version = value.get("schema_version") if type(value) is dict else None
     expected = {
         "schema_version", "kind", "binding_id", "reference", "parameters", "capabilities",
-    } | ({"capacity"} if version in (2, 4) else set())
+        "capacity",
+    }
     require(type(value) is dict and set(value) == expected
             and type(version) is int and version in (2, 4)
             and value["kind"] == "workflow.model-binding",
@@ -149,9 +188,8 @@ def validate_public_model_binding(value: object) -> dict:
     validate_model_reference(value["reference"])
     parameters = validate_model_parameters(value["parameters"])
     require(parameters == value["parameters"], "model_binding_invalid", "Binding parameters must be explicit")
-    if version in (2, 4):
-        validate_model_capacity(value["capacity"], parameters)
-    protocol = "gemini" if version in (3, 4) else "chat"
+    validate_model_capacity(value["capacity"], parameters)
+    protocol = "gemini" if version == 4 else "chat"
     require(type(value["capabilities"]) is dict
             and type(value["capabilities"].get("tools")) is bool
             and type(value["capabilities"].get("stream")) is bool
@@ -205,22 +243,20 @@ def validate_public_model_result(value: object) -> dict:
 
 
 def model_type_definitions() -> tuple[DataTypeDefinition, ...]:
-    provider_schema = object_schema({
+    local_provider_schema = object_schema({
         "name": {"type": "string", "minLength": 1, "maxLength": 128},
-        "protocol": {"const": "chat"}, "base_url": {"type": "string"},
-        "credential_ref": {"enum": [None, "env:DEEPSEEK_API_KEY"]}, "enabled": {"type": "boolean"},
-    })
-    gemini_provider_schema = deepcopy(provider_schema)
-    gemini_provider_schema["properties"].update({
-        "protocol": {"const": "gemini"}, "credential_ref": {"enum": [None, "env:GEMINI_API_KEY"]},
-    })
-    local_provider_schema = deepcopy(provider_schema)
-    local_provider_schema["properties"].update({
-        "protocol": {"enum": ["chat", "gemini"]},
+        "protocol": {"enum": ["chat", "gemini"]}, "base_url": {"type": "string"},
         "credential_ref": {"anyOf": [
-            {"enum": [None, "env:DEEPSEEK_API_KEY", "env:GEMINI_API_KEY"]},
+            {"type": "null"},
             {"type": "string", "pattern": "^local:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
         ]},
+        "enabled": {"type": "boolean"},
+    })
+    profile_schema = object_schema({
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "protocol": {"enum": ["chat", "gemini"]},
+        "provider": {"type": "object"}, "parameters": {"type": "object"},
+        "capacity": {"type": "object"}, "enabled": {"type": "boolean"},
     })
     binding_schema = object_schema({
         "schema_version": {"const": 1}, "kind": {"const": "workflow.model-binding"},
@@ -267,12 +303,12 @@ def model_type_definitions() -> tuple[DataTypeDefinition, ...]:
     })
     gemini_result_schema["required"].extend(["thinking_summary", "provider_metadata"])
     return (
-        DataTypeDefinition(CHAT_PROVIDER_TYPE, 1, provider_schema, scope="global",
-                           validator=validate_chat_provider_v1, max_bytes=8192),
-        DataTypeDefinition(CHAT_PROVIDER_TYPE, 2, gemini_provider_schema, scope="global",
-                           validator=validate_gemini_provider, max_bytes=8192),
         DataTypeDefinition(CHAT_PROVIDER_TYPE, 3, local_provider_schema, scope="global",
                            validator=validate_local_provider, max_bytes=8192),
+        DataTypeDefinition(MODEL_PROFILE_TYPE, 1, profile_schema, scope="global",
+                           validator=validate_model_profile, max_bytes=8192,
+                           references=lambda value: [deepcopy(value["provider"])],
+                           reference_mapper=lambda value, mapping: deepcopy(value)),
         DataTypeDefinition(MODEL_BINDING_TYPE, 2, native_binding_schema, scope="content",
                            validator=validate_public_model_binding, max_bytes=8192,
                            references=lambda value: [deepcopy(value["reference"])],

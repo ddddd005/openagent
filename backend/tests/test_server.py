@@ -238,7 +238,7 @@ def test_concurrent_peer_and_size_rejections_return_http_errors():
         assert service.calls == []
 
 
-def test_current_error_status_and_internal_redaction_are_preserved():
+def test_current_error_status_and_internal_redaction_are_preserved(caplog):
     with running_server() as (service, port):
         service.rejected = graph_error("stale_revision", "Graph revision changed", 409)
         status, _, body = command(port, {"operation": "example.current", "parameters": {}})
@@ -246,5 +246,13 @@ def test_current_error_status_and_internal_redaction_are_preserved():
         service.rejected = RuntimeError("DEEPSEEK_API_KEY=private")
         status, _, body = command(port, {"operation": "example.current", "parameters": {}})
         assert status == 500 and b"private" not in body and b"DEEPSEEK_API_KEY" not in body
-        assert json.loads(body)["error"]["reason_code"] == "storage_error"
+        error = json.loads(body)["error"]
+        assert error["reason_code"] == "internal_error"
+        diagnostic = error["diagnostics"][0]
+        assert diagnostic["step"] == "graph_dispatch"
+        assert diagnostic["recovery"] == "verify_original_request"
+        assert diagnostic["correlation_id"] == error["correlation_id"]
+        assert error["correlation_id"] in caplog.text
+        assert "RuntimeError" in caplog.text
+        assert "private" not in caplog.text and "DEEPSEEK_API_KEY" not in caplog.text
         assert service.calls == []

@@ -77,6 +77,7 @@ def test_readonly_consumer_preserves_outputs_and_candidates_refuse_missing_exact
             assert consumer["status"] == "succeeded"
             assert consumer["can_submit"] is False and consumer["available_actions"] == []
             assert consumer["inputs"] == []
+            assert consumer["diagnostics"][0]["reason_code"] == "workflow_definition_unavailable"
             assert consumer["outputs"][0]["payload"]["text"] == "Retained"
         candidates = service.list_graph_candidates(sid)["candidates"]
         assert candidates and all(not item["can_select"] for item in candidates)

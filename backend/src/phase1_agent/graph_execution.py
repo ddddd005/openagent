@@ -9,6 +9,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from .contract_json import canonical_bytes, content_digest, validate_json_value
+from .contract_errors import PublicDiagnostic
 from .graph_contracts import (
     GraphDiagnosticError, GraphPlan, NodeDefinition, NodeRegistry, require,
     validate_content_value, uuid4_string,
@@ -343,6 +344,8 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
                 "graph_implementation_changed", "Node implementation changed after planning", node_id=identity)
         require(identity in node_run_ids, "graph_node_run_missing", "Node run identity was not assigned", node_id=identity)
         run_id = uuid4_string(node_run_ids[identity])
+        pending = pending_results.get(run_id)
+        consumed_config = copy.deepcopy(pending["basis"]["config"] if pending is not None else node["config"])
         inputs: dict = {}
         input_refs: dict = {}
         before_state, before_private = copy.deepcopy(current), copy.deepcopy(private)
@@ -386,8 +389,16 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
             )
             pending = pending_results.get(run_id)
             if pending is not None:
+                from .workflow_configuration import fixed_configuration_projection
+                declaration = definition.adjustable_configuration
+                policy = node.get("configuration_policy")
+                require(fixed_configuration_projection(node["config"], declaration, policy)
+                        == fixed_configuration_projection(consumed_config, declaration, policy),
+                        "graph_acceptance_basis_changed", "Retained result fixed configuration changed",
+                        node_id=identity)
+                NodeRegistry.validate_config(entry, consumed_config)
                 require(pending["basis"] == {
-                    "config": node["config"], "inputs": inputs, "input_refs": input_refs,
+                    "config": consumed_config, "inputs": inputs, "input_refs": input_refs,
                     "state": before_state, "private": before_private, "objects": objects},
                     "graph_acceptance_basis_changed", "Retained result basis changed", node_id=identity)
                 context = pending["context"]
@@ -400,7 +411,7 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
             elif entry.executor_ref is None:
                 if runtime_host is not None:
                     runtime_host.bind_node_information(context)
-                returned = entry.executor(copy.deepcopy(node["config"]), copy.deepcopy(inputs), context)
+                returned = entry.executor(copy.deepcopy(consumed_config), copy.deepcopy(inputs), context)
             else:
                 from .runtime_control import NodeExecutionSuspended
                 from .runtime_hosting import InvocationOwner
@@ -414,7 +425,7 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
                     # graph state advances only after successful settlement.
                     context._state = copy.deepcopy(current)
                     context._private_states = copy.deepcopy(private)
-                    runtime_host.start(owner, entry.executor_ref, node["config"], inputs, context)
+                    runtime_host.start(owner, entry.executor_ref, consumed_config, inputs, context)
                 if should_pause is not None and should_pause():
                     runtime_host.request_pause(owner)
                 outcome = (runtime_host.retry_acceptance(owner)
@@ -480,7 +491,7 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
                 context._state = copy.deepcopy(context._state)
                 context._private_states = copy.deepcopy(context._private_states)
                 pending_results[run_id] = {
-                    "basis": copy.deepcopy({"config": node["config"], "inputs": inputs,
+                    "basis": copy.deepcopy({"config": consumed_config, "inputs": inputs,
                         "input_refs": input_refs, "state": before_state, "private": before_private,
                         "objects": objects}), "context": context, "outputs": None, "recover": recovery}
             retryable = recovery is not None
@@ -496,6 +507,9 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
             if isinstance(exc, GraphDiagnosticError):
                 diagnostic.update(exc.diagnostics[0])
                 diagnostic["node_id"] = diagnostic["node_id"] or identity
+            elif isinstance(getattr(exc, "public_diagnostic", None), PublicDiagnostic):
+                diagnostic.update(exc.public_diagnostic.to_dict())
+                diagnostic["node_id"] = diagnostic.get("node_id") or identity
             event.update(event="archive_failed" if retryable else "failed", effects=context.effects if context else [],
                          reads=context.reads if context else [], diagnostic=diagnostic,
                          object_writes=[])
@@ -505,7 +519,7 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
         context._state = copy.deepcopy(current)
         context._private_states = copy.deepcopy(private)
         pending_results[run_id] = {
-            "basis": copy.deepcopy({"config": node["config"], "inputs": inputs,
+            "basis": copy.deepcopy({"config": consumed_config, "inputs": inputs,
                 "input_refs": input_refs, "state": before_state, "private": before_private,
                 "objects": objects}), "context": context, "outputs": copy.deepcopy(validated), "recover": None}
         retained_refs = pending.get("candidate_output_refs") if pending is not None else None

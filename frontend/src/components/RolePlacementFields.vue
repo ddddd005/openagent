@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue";
 import type { RolePlacement } from "../domain/promptPresentation";
 import RawNumberInput from "./RawNumberInput.vue";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   modelValue: RolePlacement;
   label?: string;
   errors?: string[];
@@ -12,7 +12,8 @@ const props = defineProps<{
   disabled?: boolean;
   draftScope?: string;
   draftBasis?: unknown;
-}>();
+  persistNumericDrafts?: boolean;
+}>(), { persistNumericDrafts: true });
 const emit = defineEmits<{
   "update:modelValue": [value: RolePlacement];
   validity: [value: boolean];
@@ -92,6 +93,7 @@ function changePlacement(placement: RolePlacement["placement"]) {
           :disabled="disabled"
           :draft-scope="draftScope ? `${draftScope}:depth` : undefined"
           :draft-basis="draftBasis"
+          :persist="persistNumericDrafts"
           :aria-label="labelPrefix ? `${labelPrefix} 插入深度` : '中区深度'"
           @update:model-value="update({ depth: $event })"
           @validity="depthValid = $event"
@@ -106,6 +108,7 @@ function changePlacement(placement: RolePlacement["placement"]) {
           :disabled="disabled"
           :draft-scope="draftScope ? `${draftScope}:order` : undefined"
           :draft-basis="draftBasis"
+          :persist="persistNumericDrafts"
           :aria-label="labelPrefix ? `${labelPrefix} 装配顺序` : '装配顺序'"
           @update:model-value="update({ order: $event })"
           @validity="orderValid = $event"

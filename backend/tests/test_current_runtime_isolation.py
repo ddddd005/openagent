@@ -37,6 +37,7 @@ def _run_current_scenario(database):
     from phase1_agent.host_sdk import ObjectBinding, ResourceIdentity
     from phase1_agent.model_host_service import MODEL_SERVICE_REF
     from phase1_agent.prompt_package import PROMPT_RESOURCE_TYPE
+    from credential_test_support import seed_service_credential
 
     calls = []
 
@@ -83,17 +84,21 @@ def _run_current_scenario(database):
                 "target_port_id": target_port, "order": 0,
             })
 
-        model = node("models.source", "2", capacity={
-            "context_window_tokens": 100000, "output_reserve_tokens": 1024,
-            "summary_max_tokens": 128, "max_cold_input_tokens": 100000})
+        from test_model_package import profile_config, source_config
+        model = node("models.source", "5", **source_config())
+        reference = seed_service_credential(service, secret="offline-isolation-credential")
         provider = {
-            **model["config"]["reference"], "data_schema_version": 1, "update_sequence": 1,
+            **profile_config()["provider"], "data_schema_version": 3, "update_sequence": 1,
             "value": {
                 "name": "Local substitute", "protocol": "chat", "base_url": "https://isolation.invalid",
-                "credential_ref": "env:DEEPSEEK_API_KEY", "enabled": True,
+                "credential_ref": reference, "enabled": True,
             },
         }
         service.save_global_resource(provider, expected_sequence=0, idempotency_key=str(uuid4()))
+        service.save_global_resource({
+            **source_config()["reference"], "data_schema_version": 1, "update_sequence": 1,
+            "value": profile_config(),
+        }, expected_sequence=0, idempotency_key=str(uuid4()))
         reference = ResourceIdentity("workspace", PROMPT_RESOURCE_TYPE, str(uuid4())).to_dict()
         service.save_global_resource({
             **reference, "data_schema_version": 2, "update_sequence": 1,
@@ -197,7 +202,7 @@ print("current Agent multiround, fork and history reopen isolated")
 """
     root = Path(__file__).resolve().parents[1]
     environment = dict(
-        os.environ, PYTHONDONTWRITEBYTECODE="1", DEEPSEEK_API_KEY="offline-isolation-credential",
+        os.environ, PYTHONDONTWRITEBYTECODE="1",
     )
     environment["PYTHONPATH"] = os.pathsep.join([
         str(root / "src"), str(root / "tests"), environment.get("PYTHONPATH", ""),

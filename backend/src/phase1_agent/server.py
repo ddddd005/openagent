@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import socket
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 from threading import RLock
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
+from uuid import uuid4
 
 from .contract_errors import ContractValidationError
 from .contract_json import loads_strict
@@ -22,6 +25,7 @@ MAX_BODY_BYTES = 64 * 1024
 MAX_GRAPH_BODY_BYTES = 4 * 1024 * 1024
 REJECT_BODY_TIMEOUT = 0.25
 REJECT_DRAIN_BYTES = 2 * MAX_BODY_BYTES
+_LOGGER = logging.getLogger(__name__)
 _STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/static/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -109,6 +113,31 @@ def _valid_user_ui_query(query: str) -> bool:
             and ("graph_session" not in values or _UUID4.fullmatch(values["graph_session"]) is not None))
 
 
+def management_request(method, path, data):
+    """Select object management without constructing graph execution authority."""
+    if method == "GET" and path in ("/api/graph/application", "/api/graph/consumer/application"):
+        return True
+    if method == "POST" and path in (
+        "/api/graph/resources/read", "/api/graph/resources/list",
+        "/api/graph/resources/save", "/api/graph/resources/delete",
+    ):
+        return True
+    if method != "POST" or path not in (
+        "/api/graph/commands", "/api/graph/queries",
+        "/api/graph/consumer/commands", "/api/graph/consumer/queries",
+    ):
+        return False
+    from .graph_application_contracts import COMMANDS, QUERIES
+    if type(data) is not dict or set(data) != {"operation", "parameters"}:
+        return True
+    operation = data["operation"]
+    if type(operation) is not str:
+        return True
+    operations = COMMANDS if path.endswith("/commands") else QUERIES
+    return (operation.startswith(("provider.", "credential.", "resource.", "content.metadata.", "request-evidence."))
+            or operation not in {item.name for item in operations})
+
+
 class LocalHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -125,6 +154,7 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
     """Bind only to IPv4 loopback; pages and receipt reads do not initialize a runtime."""
     workbench_files = _workbench_files(workbench_dist)
     graph_services = [graph_service]
+    management_services = [None]
     graph_owned = [False]
     graph_lock = RLock()
 
@@ -142,6 +172,17 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
                     graph_services[0] = GraphWorkflowService(service.database)
                     graph_owned[0] = True
             return graph_services[0]
+
+    def get_management_service():
+        with graph_lock:
+            if graph_services[0] is not None:
+                return graph_services[0]
+            if management_services[0] is None:
+                from .workflow_host import WorkflowHost
+                management_services[0] = (service if isinstance(service, WorkflowHost)
+                                          or hasattr(service, "provider_configuration")
+                                          else WorkflowHost(service.database))
+            return management_services[0]
 
     class GraphHTTPServer(LocalHTTPServer):
         def server_close(self):
@@ -179,7 +220,8 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
             self.wfile.write(body)
 
         def _error(self, status: int, code: str, message: str,
-                   reason_code: str | None = None, diagnostics: list | None = None) -> None:
+                   reason_code: str | None = None, diagnostics: list | None = None,
+                   correlation_id: str | None = None) -> None:
             self._rejection_deadline = time.monotonic() + REJECT_BODY_TIMEOUT
             self._discard_rejected_body()
             error = {"code": code, "message": message}
@@ -187,8 +229,27 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
                 error["reason_code"] = reason_code
             if diagnostics is not None:
                 error["diagnostics"] = diagnostics
+            if correlation_id is not None:
+                error["correlation_id"] = correlation_id
             self._json(status, {"error": error})
             self._finish_rejection()
+
+        def _internal_error(self, error: Exception, step: str, graph_request: bool) -> None:
+            correlation = str(uuid4())
+            # Never log exception text, request bodies, secrets or frame locals.
+            frames = [{"module": frame.f_globals.get("__name__", "unknown"),
+                       "function": frame.f_code.co_name, "line": line}
+                      for frame, line in traceback.walk_tb(error.__traceback__)]
+            _LOGGER.error("request_internal_error correlation_id=%s method=%s step=%s "
+                          "exception_type=%s frames=%s",
+                          correlation, self.command, step, type(error).__name__,
+                          json.dumps(frames, ensure_ascii=True))
+            recovery = "verify_original_request" if graph_request and self.command == "POST" else "retry_read"
+            diagnostic = {"code": "internal_error", "message": "Service request could not be completed",
+                          "step": step, "correlation_id": correlation, "recovery": recovery}
+            message = "服务内部错误，请核实原请求" if recovery == "verify_original_request" else "服务内部错误，请重新读取"
+            self._error(500, "internal_error", f"{message}。关联编号：{correlation}",
+                        "internal_error", [diagnostic], correlation)
 
         def _discard_rejected_body(self) -> None:
             # Closing with unread body bytes can reset TCP before rejection arrives.
@@ -311,11 +372,13 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
 
         def _dispatch(self, method: str) -> None:
             graph_request = False
+            step = "request_validation"
             try:
                 self._validate_peer(require_origin=method == "POST")
                 path = self._path()
                 graph_request = path.startswith("/api/graph/")
                 if graph_request:
+                    step = "request_read"
                     data = self._read_json(MAX_GRAPH_BODY_BYTES) if method == "POST" else None
                     receipt_scope = {
                         "/api/graph/receipts/read": "management",
@@ -337,6 +400,7 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
                                 and set(receipt_request) == {"operation", "parameters"},
                                 "invalid_request", "Receipt request fields differ")
                         database = graph_services[0].database if graph_services[0] is not None else service.database
+                        step = "receipt_read"
                         result = read_graph_application_receipt(
                             database, receipt_request["operation"], receipt_request["parameters"],
                             scope=receipt_scope,
@@ -344,10 +408,15 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
                         self._json(200, result)
                         return
                     from .graph_http import dispatch_graph
-                    status, result = dispatch_graph(get_graph_service(), method, path, data)
+                    step = "graph_dispatch"
+                    target = (get_management_service() if management_request(method, path, data)
+                              else get_graph_service())
+                    status, result = dispatch_graph(target, method, path, data)
+                    step = "response_serialization"
                     self._json(status, result)
                     return
                 if method == "GET":
+                    step = "static_read"
                     if path in _TAVERN_STATIC_FILES:
                         name, content_type = _TAVERN_STATIC_FILES[path]
                         body = resources.files("phase1_agent.tavern").joinpath("frontend", name).read_bytes()
@@ -379,10 +448,8 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
                 self._error(status, code, "Graph request failed" if status >= 500 else str(exc),
                             getattr(exc, "reason_code", "invalid_request"),
                             diagnostics=getattr(exc, "diagnostics", []))
-            except Exception:
-                self._error(500, "internal_error", "服务暂不可用",
-                            "storage_error" if graph_request else None,
-                            diagnostics=[] if graph_request else None)
+            except Exception as error:
+                self._internal_error(error, step, graph_request)
 
         def do_GET(self) -> None:
             self._dispatch("GET")

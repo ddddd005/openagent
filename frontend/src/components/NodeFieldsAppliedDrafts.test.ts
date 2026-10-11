@@ -12,11 +12,12 @@ import RolePlacementFields from "./RolePlacementFields.vue";
 import RawNumberInput from "./RawNumberInput.vue";
 import FormDraftNotice from "./FormDraftNotice.vue";
 import { graphClone, type GraphNode, type GraphNodeType } from "../domain/workflowGraph";
-import { newProvider, providerIdentity } from "../domain/workflowModelResources";
+import { newProvider, newModelProfile, modelProfileIdentity } from "../domain/workflowModelResources";
 import { lorebookPackage, newLorebookEntry } from "../domain/lorebook";
 import { modelFrontendExtensions } from "../plugins/modelFrontendManifest";
 import { tavernFrontendExtensions } from "../plugins/tavernFrontendManifest";
 import { createProviderResources, modelResourceControllerKey } from "../application/workflowResources";
+import { createModelProfiles, modelProfilesKey } from "../application/modelProfiles";
 import { useWorkbenchFrontendHost } from "../composables/useWorkbenchFrontendHost";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { useWorkspaceStore } from "../stores/workspace";
@@ -97,20 +98,24 @@ async function mount(kind: "model" | "lorebook", saved = false) {
   const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore(), forms = useFormDraftsStore();
   graph.setPersistenceGuard(() => true);
   const provider = newProvider();
+  const profile = newModelProfile(provider), alternative = newModelProfile(provider);
+  for (const [index, record] of [profile, alternative].entries()) {
+    record.value.name = `Configuration ${index + 1}`;
+    record.value.parameters.model = `chosen-model-${index + 1}`;
+    record.value.capacity.context_window_tokens = 128000;
+    record.value.capacity.max_cold_input_tokens = 128000;
+  }
   const entry = newLorebookEntry();
   entry.presentation = { ...entry.presentation, placement: "middle", depth: 0 };
   entry.probability_enabled = true;
   const node: GraphNode = { node_binding_id: crypto.randomUUID(), component_id: kind === "model" ? "models.source" : "lorebook.item",
-    component_version: kind === "model" ? "2" : "1", title: kind, position: { x: 0, y: 0 },
-    config: kind === "model" ? { reference: providerIdentity(provider),
-      parameters: { model: "chosen-model", thinking: "disabled", stream: false, max_tokens: 1024 },
-      capacity: { context_window_tokens: 128000, output_reserve_tokens: 1024,
-        summary_max_tokens: 128, max_cold_input_tokens: 128000 } } : { entry, object_keys: [] } };
+    component_version: kind === "model" ? "5" : "1", title: kind, position: { x: 0, y: 0 },
+    config: kind === "model" ? { reference: modelProfileIdentity(profile) } : { entry, object_keys: [] } };
   const definition: GraphNodeType = { component_id: node.component_id, component_version: node.component_version,
     display_name: kind, category: kind, executable: true, is_output: false, input_storage: "references",
     default_config: graphClone(node.config), inputs: [], outputs: [],
     config_schema: { type: "object", properties: kind === "model"
-      ? { reference: {}, parameters: {}, capacity: {} } : { entry: {}, object_keys: {} } } };
+      ? { reference: {} } : { entry: {}, object_keys: {} } } };
   const lock = kind === "model" ? [{ package_id: "workflow.models", version: "1.0.0" }] : [lorebookPackage];
   graph.catalog = [definition]; graph.packageLock = lock; graph.executionPackageLock = lock;
   graph.frontendExtensions = graphClone(kind === "model" ? modelFrontendExtensions : tavernFrontendExtensions);
@@ -122,6 +127,9 @@ async function mount(kind: "model" | "lorebook", saved = false) {
   const resources = createProviderResources({ list: async () => [provider], save: async () => ({}),
     readReceipt: vi.fn(), readPending: () => null, writePending: () => {} });
   resources.records.value = [provider];
+  const profiles = createModelProfiles({ list: async () => [profile, alternative], save: vi.fn(),
+    readReceipt: vi.fn(), readPending: () => null, writePending: () => {} });
+  profiles.records.value = [profile, alternative];
   vi.spyOn(useWorkbenchPersistenceStore(), "flushAll").mockImplementation(() => forms.flushAll());
   installRender(RawNumberInput, "RawNumberInput.vue");
   installRender(FormDraftNotice, "FormDraftNotice.vue");
@@ -136,9 +144,11 @@ async function mount(kind: "model" | "lorebook", saved = false) {
   } };
   const root = new HostNode("root");
   const app = renderer.createApp(parent).use(pinia).provide(modelResourceControllerKey, resources)
+    .provide(modelProfilesKey, profiles)
     .provide(Vue.ssrContextKey, { modules: new Set() });
   apps.push(app); app.mount(root); await flush();
-  return { root, graph, forms, memory, id, nodeId: node.node_binding_id, originalConfig, kind, workspace };
+  return { root, graph, forms, memory, id, nodeId: node.node_binding_id, originalConfig, kind, workspace,
+    profile, alternative };
 }
 afterEach(() => {
   apps.splice(0).forEach(app => app.unmount());
@@ -147,8 +157,12 @@ afterEach(() => {
 });
 async function edit(f: Awaited<ReturnType<typeof mount>>) {
   if (f.kind === "model") {
-    await trigger(label(f.root, "最大输出 tokens"), "Input", { value: "02048" });
-    await trigger(label(f.root, "输出预留 tokens"), "Input", { value: "2048" });
+    const select = label(f.root, "全局模型配置");
+    const selected = JSON.stringify([f.alternative.scope, f.alternative.resource_id]);
+    select.options.forEach(option => { option.selected = option._value === selected; });
+    select.value = selected;
+    select.dispatchEvent(new Event("change"));
+    await flush();
   } else {
     await trigger(label(f.root, "条目 1 扫描深度"), "Input", { value: "09" });
     await trigger(label(f.root, "条目 1 概率值"), "Input", { value: "42.5" });
@@ -156,7 +170,7 @@ async function edit(f: Awaited<ReturnType<typeof mount>>) {
     await trigger(label(f.root, "条目 1 装配顺序"), "Input", { value: "-2" });
   }
 }
-const formLabel = (kind: "model" | "lorebook") => kind === "model" ? "模型源配置" : "Lorebook 配置";
+const formLabel = (kind: "model" | "lorebook") => kind === "model" ? "模型配置引用" : "Lorebook 配置";
 
 describe("node form drafts after actual SDK configuration", () => {
   it.each(["model", "lorebook"] as const)("adopts exactly the applied %s basis after the store replaces the document", async kind => {
@@ -176,11 +190,12 @@ describe("node form drafts after actual SDK configuration", () => {
       expect(f.forms.errors[record.address.key]).toBe("");
     }
     expect(elements(f.root).some(node => node.text.includes("旧表单草稿保留"))).toBe(false);
-    expect(label(f.root, kind === "model" ? "最大输出 tokens" : "条目 1 扫描深度").props.value)
-      .toBe(kind === "model" ? "02048" : "09");
+    if (kind === "model") {
+      expect(label(f.root, "全局模型配置").value).toBe(JSON.stringify([f.alternative.scope, f.alternative.resource_id]));
+      expect(f.graph.document!.nodes[0]!.config).toEqual({ reference: modelProfileIdentity(f.alternative) });
+    } else expect(label(f.root, "条目 1 扫描深度").props.value).toBe("09");
     const originalRecords = graphClone(drafts);
-    const externalConfig = kind === "model" ? { ...f.graph.document!.nodes[0]!.config,
-      parameters: { ...f.graph.document!.nodes[0]!.config.parameters as object, model: "external-model" } }
+    const externalConfig = kind === "model" ? { reference: modelProfileIdentity(f.profile) }
       : { ...f.graph.document!.nodes[0]!.config,
         entry: { ...f.graph.document!.nodes[0]!.config.entry as object, text: "external-text" } };
     f.graph.patchNode(f.nodeId, { config: externalConfig }); await flush();

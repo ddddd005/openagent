@@ -1,4 +1,5 @@
 from contextlib import closing
+import json
 import os
 import sqlite3
 from uuid import uuid4
@@ -7,6 +8,7 @@ import httpx
 import pytest
 
 from phase1_agent.credential_store import LocalCredentialBroker, PrivateCredentialStore, WindowsCredentialProtector
+from phase1_agent.credential_contract import CredentialLease
 from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.model_contract import validate_provider_record
@@ -14,18 +16,7 @@ from phase1_agent.provider_discovery import discover_provider_models
 from test_models_service_integration import ModelDatabaseFixture
 from threading import Event
 from copy import deepcopy
-
-
-class TestProtector:
-    __test__ = False
-    available = True
-
-    def protect(self, value):
-        return b"test-only:" + bytes(byte ^ 123 for byte in value)
-
-    def unprotect(self, value):
-        assert value.startswith(b"test-only:")
-        return bytes(byte ^ 123 for byte in value[10:])
+from credential_test_support import TestProtector, mutate_test_credential
 
 
 def request(reference=None, generation=0):
@@ -67,6 +58,20 @@ def test_receipt_requires_original_exact_generation_type(tmp_path):
     assert failure.value.reason_code == "invalid_request"
 
 
+def test_receipt_rejects_corrupted_boolean_original_generation(tmp_path):
+    store = PrivateCredentialStore(tmp_path / "private.sqlite", TestProtector())
+    body = request()
+    store.mutate("credential.save", body, "dummy-key")
+    with closing(sqlite3.connect(store.path)) as connection:
+        original = {"operation": "credential.save", **body, "expected_generation": False}
+        connection.execute("UPDATE receipts SET request=? WHERE key=?",
+                           (json.dumps(original), body["idempotency_key"]))
+        connection.commit()
+    with pytest.raises(Exception) as failure:
+        store.receipt("credential.save", body)
+    assert failure.value.reason_code == "idempotency_conflict"
+
+
 def test_cas_preserves_other_writers_key(tmp_path):
     store = PrivateCredentialStore(tmp_path / "private.sqlite", TestProtector())
     body = request()
@@ -96,7 +101,7 @@ def test_frozen_run_rejects_rotation_even_with_identical_key_or_deletion(tmp_pat
     store = PrivateCredentialStore(tmp_path / "private.sqlite", TestProtector())
     body = request()
     store.mutate("credential.save", body, "dummy-unit-key")
-    broker = LocalCredentialBroker(store, {})
+    broker = LocalCredentialBroker(store)
     lease = broker.freeze(body["credential_ref"])
     assert broker.authorize(lease) == "dummy-unit-key"
     store.mutate(operation, request(body["credential_ref"], 1), "dummy-unit-key" if operation.endswith("save") else None)
@@ -105,16 +110,26 @@ def test_frozen_run_rejects_rotation_even_with_identical_key_or_deletion(tmp_pat
     assert store.status(body["credential_ref"])["generation"] == 2
 
 
-def test_environment_route_still_freezes_and_authorizes_without_vault(tmp_path):
+@pytest.mark.parametrize("reference", ["env:DEEPSEEK_API_KEY", "env:GEMINI_API_KEY", "env:ANY_KEY"])
+def test_retired_environment_route_is_rejected_even_when_present(tmp_path, monkeypatch, reference):
     store = PrivateCredentialStore(tmp_path / "private.sqlite", TestProtector())
-    env = {"GEMINI_API_KEY": "dummy-env-key"}
-    broker = LocalCredentialBroker(store, env)
-    lease = broker.freeze("env:GEMINI_API_KEY")
-    assert broker.authorize(lease) == "dummy-env-key"
-    env["GEMINI_API_KEY"] = "changed-env-key"
-    with pytest.raises(Exception):
-        broker.authorize(lease)
+    monkeypatch.setenv(reference[4:], "retired-environment-key")
+    broker = LocalCredentialBroker(store)
+    with pytest.raises(Exception) as rejected:
+        broker.freeze(reference)
+    assert rejected.value.reason_code == "credential_reference_invalid"
+    with pytest.raises(Exception) as rejected:
+        broker.authorize(CredentialLease(reference, b""))
+    assert rejected.value.reason_code == "credential_reference_invalid"
     assert not store.path.exists()
+
+
+def test_environment_status_entry_is_rejected_by_management(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "retired-environment-key")
+    with closing(GraphWorkflowService(tmp_path / "public.sqlite")) as service:
+        with pytest.raises(Exception) as rejected:
+            GraphApplication(service).query("credential.status", {"credential_ref": "env:DEEPSEEK_API_KEY"})
+    assert rejected.value.reason_code == "credential_reference_invalid"
 
 
 def test_unsupported_system_protection_does_not_fall_back_to_plaintext(tmp_path):
@@ -143,27 +158,32 @@ def test_real_windows_protection_roundtrip_in_isolated_vault(tmp_path):
 def test_management_only_save_and_original_receipt_never_write_key_to_product_store(tmp_path):
     with closing(GraphWorkflowService(tmp_path / "public.sqlite", credential_protector=TestProtector())) as service:
         app, body = GraphApplication(service), request()
-        result = app.command("credential.save", {**body, "secret": "dummy-private-api-key"})
+        combined = {**body, "identity": {
+            "envelope_version": 1, "scope": "workspace", "type_id": "workflow.chat-provider",
+            "resource_id": str(uuid4())}, "expected_sequence": 0, "provider_seed": {
+                "name": "Test provider", "protocol": "chat", "base_url": "https://offline.invalid",
+                "enabled": True}}
+        result = app.command("provider.credential.save", {**combined, "secret": "dummy-private-api-key"})
         assert "dummy-private-api-key" not in str(result)
         assert result["receipt"]["accepted"] == result["result"]
-        assert app.query("credential.receipt", {"operation": "credential.save", "request": body}) == result["result"]
+        assert app.query("provider.credential.receipt", {"request": combined}) == result["result"]
         assert b"dummy-private-api-key" not in service.database.read_bytes()
         for operation, parameters in [
             ("credential.status", {"credential_ref": body["credential_ref"]}),
             ("credential.protection", {}),
-            ("credential.receipt", {"operation": "credential.save", "request": body}),
+            ("provider.credential.receipt", {"request": combined}),
         ]:
             with pytest.raises(Exception) as failure:
                 app.for_consumer().query(operation, parameters)
             assert failure.value.reason_code == "application_scope_denied"
         with pytest.raises(Exception):
-            app.for_consumer().command("credential.save", {**body, "secret": "dummy-private-api-key"})
+            app.for_consumer().command("provider.credential.save", {**combined, "secret": "dummy-private-api-key"})
 
 
 def provider(protocol="gemini"):
     return {"name": "test", "protocol": protocol,
             "base_url": "https://unit.invalid/v1beta" if protocol == "gemini" else "https://unit.invalid/v1",
-            "credential_ref": "env:GEMINI_API_KEY" if protocol == "gemini" else "env:DEEPSEEK_API_KEY", "enabled": True}
+            "credential_ref": "local:" + str(uuid4()), "enabled": True}
 
 
 def client(handler):
@@ -242,7 +262,8 @@ def test_local_key_executes_through_existing_model_host_and_blocks_frozen_change
     body = request()
     with closing(GraphWorkflowService(path, credential_protector=TestProtector(),
                                       public_model_factory=fixture.factory)) as service:
-        service.save_credential(body["credential_ref"], "dummy-local-model-key", 0, body["idempotency_key"])
+        mutate_test_credential(service.provider_configuration.credentials,
+                               body["credential_ref"], "dummy-local-model-key")
         record = fixture.write(service, 1)
         record = {**record, "update_sequence": 2, "data_schema_version": 3,
                   "value": {**record["value"], "credential_ref": body["credential_ref"]}}
@@ -253,9 +274,12 @@ def test_local_key_executes_through_existing_model_host_and_blocks_frozen_change
         try:
             assert entered.wait(10)
             if mutation:
-                app = GraphApplication(service)
                 change = request(body["credential_ref"], 1)
-                app.command(mutation, {**change, **({"secret": "dummy-local-model-key"} if mutation.endswith("save") else {})})
+                if mutation.endswith("save"):
+                    mutate_test_credential(service.provider_configuration.credentials,
+                                           change["credential_ref"], "dummy-local-model-key")
+                else:
+                    GraphApplication(service).command(mutation, change)
         finally:
             released.set()
         service.wait(started["active_chain_run_id"])
@@ -273,7 +297,8 @@ def test_local_key_executes_through_existing_model_host_and_blocks_frozen_change
 def test_discovery_rechecks_saved_provider_and_key_after_async_network_result(tmp_path, change):
     with closing(GraphWorkflowService(tmp_path / "discovery.sqlite", credential_protector=TestProtector())) as service:
         body = request()
-        service.save_credential(body["credential_ref"], "dummy-list-key", 0, body["idempotency_key"])
+        mutate_test_credential(service.provider_configuration.credentials,
+                               body["credential_ref"], "dummy-list-key")
         record = ModelDatabaseFixture.write(service, 1)
         record = {**record, "update_sequence": 2, "data_schema_version": 3,
                   "value": {**record["value"], "credential_ref": body["credential_ref"]}}
@@ -286,9 +311,9 @@ def test_discovery_rechecks_saved_provider_and_key_after_async_network_result(tm
                 updated["value"]["base_url"] = "https://other.unit.invalid"
                 service.save_global_resource(updated, expected_sequence=2, idempotency_key=str(uuid4()))
             else:
-                service.delete_credential(body["credential_ref"], 1, str(uuid4()))
+                service.provider_configuration.delete_credential(body["credential_ref"], 1, str(uuid4()))
             return httpx.Response(200, json={"data": [{"id": "mock-chat"}]})
-        service._discovery_client_factory = client(handler)
+        service.provider_configuration.discovery_client_factory = client(handler)
         with pytest.raises(Exception) as failure:
-            service.list_provider_models(identity, 2)
+            service.provider_configuration.list_provider_models(identity, 2)
         assert failure.value.reason_code in ("stale_provider_sequence", "model_credential_unavailable")

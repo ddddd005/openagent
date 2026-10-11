@@ -56,7 +56,6 @@ def test_real_workbench_resource_management_and_tavern_launch(tmp_path, monkeypa
     assert (dist / "index.html").is_file(), "Build the current frontend before browser acceptance"
     assert '"/workbench/assets/' in (dist / "index.html").read_text(encoding="utf-8"), (
         "Build with npm run build -- --base=/workbench/ before same-origin browser acceptance")
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-tavern-workbench")
     transport = NativeTransport()
     evidence = tmp_path / f"workbench-{width}"
     evidence.mkdir()

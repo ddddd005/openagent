@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { createProviderCredentialEditor } from "./providerCredentialEditing";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
-import type { CredentialRequest, CredentialStatus } from "../adapters/providerConfigurationApi";
+import type { CredentialRequest, CredentialStatus, ProviderCredentialRequest, ProviderCredentialResult } from "../adapters/providerConfigurationApi";
 import type { LocalDraftRecord } from "../adapters/localDraftsApi";
 import { graphClone } from "../domain/workflowGraph";
+import { newProvider, providerIdentity } from "../domain/workflowModelResources";
 
 const reference = `local:${crypto.randomUUID()}` as const;
 const status = (generation = 1, state: CredentialStatus["state"] = "saved"): CredentialStatus => ({
@@ -16,116 +17,241 @@ function deferred<T>() {
 }
 function fixture() {
   let record: LocalDraftRecord | null = null;
+  const provider = newProvider();
+  provider.value.credential_ref = reference;
+  const { credential_ref: _reference, ...configuration } = provider.value;
+  const basis = { identity: providerIdentity(provider), expected_sequence: 1, provider_seed: configuration };
+  const result = (outcome: ProviderCredentialResult["outcome"] = "saved"): ProviderCredentialResult => ({
+    schema_version: 1, kind: "workflow.provider-credential-save", outcome,
+    reason_code: outcome === "saved" ? "provider_credential_saved" : "provider_binding_conflict",
+    credential: status(2), provider: outcome === "saved"
+      ? { reference: providerIdentity(provider), update_sequence: 2, deleted: false } : null,
+  });
   const writes: unknown[] = [], saved = vi.fn();
   const channel = {
-    read: vi.fn(async () => record),
-    write: vi.fn(async (value: unknown) => {
+    read: vi.fn(async () => record), archive: vi.fn(async (_value: unknown) => {}),
+    write: vi.fn(async (value: unknown, format = 2) => {
       writes.push(graphClone(value));
       record = { schema_version: 1, kind: "workflow.local-draft", address: {
         scope: "management", kind: "intent", key: "credential:one", workflow_definition_id: null, workflow_session_id: null,
-      }, format_version: 1, sequence: (record?.sequence ?? 0) + 1, updated_at: "2026-10-09T00:00:00Z",
+      }, format_version: format, sequence: (record?.sequence ?? 0) + 1, updated_at: "2026-10-10T00:00:00Z",
       value: graphClone(value), deleted: value === null };
       return record;
     }),
   };
   const ports = {
     protection: vi.fn(async () => true), status: vi.fn(async () => status()),
-    save: vi.fn(async (_request: CredentialRequest, _secret: string, _remove = false) => status(2)),
-    receipt: vi.fn(async (_request: CredentialRequest, _remove = false) => status(2)),
+    provider: vi.fn(async () => ({ ...graphClone(provider), update_sequence: 2 })),
+    delete: vi.fn(async (_request: CredentialRequest) => status(2, "missing")),
+    receipt: vi.fn(async (_request: CredentialRequest) => status(2, "missing")),
+    saveBound: vi.fn(async (_request: ProviderCredentialRequest, _secret: string) => result()),
+    boundReceipt: vi.fn(async (_request: ProviderCredentialRequest, _bind = false) => result()),
   };
   const editor = createProviderCredentialEditor(channel, saved, ports);
-  return { editor, channel, ports, writes, saved, reopen: () => createProviderCredentialEditor(channel, saved, ports) };
+  return { editor, channel, ports, writes, saved, basis, provider, result,
+    reopen: () => createProviderCredentialEditor(channel, saved, ports) };
 }
-describe("private credential editing custody", () => {
-  it("stores only non-secret intent before sending the memory-only Key and rereads its current generation", async () => {
+describe("single-action private Key and effective provider binding", () => {
+  it("persists accepted form basis before releasing custody and accepts only its own basis update", async () => {
+    const f = fixture(), gate = deferred<void>();
+    await f.editor.load(reference, f.basis);
+    f.ports.status.mockResolvedValue(status(2));
+    f.saved.mockImplementation(async () => {
+      expect(f.editor.pending.value).not.toBeNull();
+      expect(f.editor.adoptSavedBasis(reference, { ...f.basis, expected_sequence: 2 })).toBe(true);
+      expect(f.editor.adoptSavedBasis(reference, { ...f.basis, expected_sequence: 3 })).toBe(false);
+      await gate.promise;
+    });
+    f.editor.secret.value = "dummy-memory-key";
+    const saving = f.editor.save();
+    await vi.waitFor(() => expect(f.saved).toHaveBeenCalledOnce());
+    expect(f.editor.blocked.value).toBe(true);
+    expect(f.writes.at(-1)).not.toBeNull();
+    gate.resolve();
+    await saving;
+    expect(f.editor.pending.value).toBeNull();
+    expect(f.editor.error.value).toBe("供应商配置与 Key 已保存");
+  });
+  it("keeps a saved Key intent when accepted form persistence fails, then verifies without re-saving", async () => {
     const f = fixture();
-    await f.editor.load(reference); f.editor.secret.value = "dummy-memory-key";
+    await f.editor.load(reference, f.basis);
+    f.ports.status.mockResolvedValue(status(2));
+    f.saved.mockRejectedValueOnce(new Error("Accepted form could not persist"));
+    f.editor.secret.value = "dummy-memory-key";
+    await f.editor.save();
+    expect(f.editor.pending.value).not.toBeNull();
+    expect(f.editor.error.value).toContain("could not persist");
+    await f.editor.reconcile();
+    expect(f.ports.saveBound).toHaveBeenCalledOnce();
+    expect(f.editor.pending.value).toBeNull();
+  });
+  it("persists only non-secret intent then verifies Key and provider before reporting success", async () => {
+    const f = fixture();
+    await f.editor.load(reference, f.basis); f.editor.secret.value = "dummy-memory-key";
     f.ports.status.mockResolvedValue(status(2));
     await f.editor.save();
-    expect(f.ports.save).toHaveBeenCalledWith(expect.objectContaining({
+    expect(f.ports.saveBound).toHaveBeenCalledWith(expect.objectContaining({
+      identity: f.basis.identity, expected_sequence: 1, provider_seed: f.basis.provider_seed,
       credential_ref: reference, expected_generation: 1,
-    }), "dummy-memory-key", false);
+    }), "dummy-memory-key");
     expect(JSON.stringify(f.writes)).not.toContain("dummy-memory-key");
-    expect(f.writes[0]).toMatchObject({ basis_reference: reference, remove: false });
+    expect(f.writes[0]).toMatchObject({ schema_version: 2, kind: "save", basis_reference: reference });
     expect(f.writes.at(-1)).toBeNull();
     expect(f.editor.secret.value).toBe(""); expect(f.editor.blocked.value).toBe(false);
-    expect(f.saved).toHaveBeenCalledWith(reference);
+    expect(f.saved).toHaveBeenCalledWith(reference, expect.objectContaining({ update_sequence: 2 }), expect.anything());
+    expect(f.editor.error.value).toBe("供应商配置与 Key 已保存");
   });
-  it("reloads an unknown request and only queries its original receipt without replaying a Key", async () => {
-    const f = fixture(); await f.editor.load(reference);
-    f.ports.save.mockRejectedValue(new WorkbenchApiError("unknown", "lost"));
+  it("keeps the memory-only Key while editing the same draft and saves its latest whole configuration", async () => {
+    const f = fixture();
+    await f.editor.load(reference, f.basis);
+    f.editor.secret.value = "dummy-memory-key";
+    const changed = { ...f.basis, provider_seed: {
+      ...f.basis.provider_seed, name: "Edited after Key", base_url: "https://edited.invalid/v1", enabled: false,
+    } };
+    expect(f.editor.updateDraftBasis(reference, changed)).toBe(true);
+    expect(f.editor.secret.value).toBe("dummy-memory-key");
+    f.ports.provider.mockResolvedValue({ ...f.provider, update_sequence: 2,
+      value: { ...changed.provider_seed, credential_ref: reference } });
+    f.ports.status.mockResolvedValue(status(2));
+    await f.editor.save();
+    expect(f.ports.saveBound).toHaveBeenCalledWith(expect.objectContaining({
+      provider_seed: changed.provider_seed,
+    }), "dummy-memory-key");
+    expect(f.saved).toHaveBeenCalledOnce();
+    expect(JSON.stringify(f.writes)).not.toContain("dummy-memory-key");
+  });
+  it("refuses draft basis changes for a different owner, saved version or active submission", async () => {
+    const f = fixture(), response = deferred<ProviderCredentialResult>();
+    await f.editor.load(reference, f.basis);
+    f.editor.secret.value = "dummy-memory-key";
+    expect(f.editor.updateDraftBasis(null, f.basis)).toBe(false);
+    expect(f.editor.updateDraftBasis(reference, { ...f.basis, expected_sequence: 2 })).toBe(false);
+    expect(f.editor.updateDraftBasis(reference, { ...f.basis, identity: providerIdentity(newProvider()) })).toBe(false);
+    f.ports.saveBound.mockReturnValueOnce(response.promise);
+    const saving = f.editor.save();
+    await vi.waitFor(() => expect(f.ports.saveBound).toHaveBeenCalledOnce());
+    expect(f.editor.updateDraftBasis(reference, { ...f.basis,
+      provider_seed: { ...f.basis.provider_seed, name: "Later edit" } })).toBe(false);
+    response.resolve(f.result("partial"));
+    await saving;
+    expect(f.editor.pending.value!.request).toMatchObject({ provider_seed: f.basis.provider_seed });
+  });
+  it("never claims the whole configuration was saved when only its Key reference matches", async () => {
+    const f = fixture();
+    await f.editor.load(reference, f.basis);
+    f.editor.secret.value = "dummy-memory-key";
+    f.ports.status.mockResolvedValue(status(2));
+    f.ports.provider.mockResolvedValue({ ...f.provider, update_sequence: 2,
+      value: { ...f.provider.value, base_url: "https://wrong.invalid" } });
+    await f.editor.save();
+    expect(f.saved).not.toHaveBeenCalled();
+    expect(f.editor.pending.value).not.toBeNull();
+    expect(f.editor.blocked.value).toBe(true);
+  });
+  it("reopens unknown intent and reads only the exact original receipt without re-sending Key", async () => {
+    const f = fixture(); await f.editor.load(reference, f.basis);
+    f.ports.saveBound.mockRejectedValue(new WorkbenchApiError("unknown", "lost"));
     f.editor.secret.value = "dummy-memory-key"; await f.editor.save();
     const original = graphClone(f.editor.pending.value!.request);
-    const reopened = f.reopen(); await reopened.load(reference);
+    const reopened = f.reopen(); await reopened.load(reference, f.basis);
     expect(reopened.secret.value).toBe(""); expect(reopened.blocked.value).toBe(true);
-    f.ports.status.mockResolvedValue(status(4, "missing"));
+    f.ports.status.mockResolvedValue(status(2));
     await reopened.reconcile();
-    expect(f.ports.receipt).toHaveBeenCalledWith(original, false);
-    expect(f.ports.save).toHaveBeenCalledTimes(1);
-    expect(reopened.state.value).toEqual(status(4, "missing"));
-    expect(reopened.pending.value).toBeNull(); expect(f.saved).not.toHaveBeenCalled();
+    expect(f.ports.boundReceipt).toHaveBeenCalledWith(original, false);
+    expect(f.ports.saveBound).toHaveBeenCalledOnce();
+    expect(reopened.pending.value).toBeNull(); expect(f.saved).toHaveBeenCalledOnce();
   });
-  it("keeps cleanup failures locked and reconciles without another mutation", async () => {
-    const f = fixture(); await f.editor.load(reference);
+  it("retains confirmed originals when durable clearing fails, then reconciles without mutation", async () => {
+    const f = fixture(); await f.editor.load(reference, f.basis);
     f.ports.status.mockResolvedValue(status(2));
     f.channel.write.mockImplementationOnce(async value => {
-      f.writes.push(value); return {} as LocalDraftRecord;
-    }).mockRejectedValueOnce(new Error("disk unavailable"));
-    f.editor.secret.value = "dummy-key"; await f.editor.save();
-    expect(f.editor.pending.value).not.toBeNull(); expect(f.editor.blocked.value).toBe(true);
-    expect(f.saved).not.toHaveBeenCalled();
-    await f.editor.reconcile();
-    expect(f.ports.save).toHaveBeenCalledTimes(1); expect(f.saved).toHaveBeenCalledWith(reference);
-  });
-  it("does not submit a Key when the context changes while intent is being written", async () => {
-    const f = fixture(), write = deferred<LocalDraftRecord>();
-    await f.editor.load(reference); f.editor.secret.value = "dummy-key";
-    f.channel.write.mockReturnValueOnce(write.promise);
-    const saving = f.editor.save();
-    await f.editor.load("env:GEMINI_API_KEY");
-    write.resolve({} as LocalDraftRecord); await saving;
-    expect(f.ports.save).not.toHaveBeenCalled(); expect(f.saved).not.toHaveBeenCalled();
-    expect(f.editor.secret.value).toBe("");
-  });
-  it("does not bind a late accepted mutation to another context", async () => {
-    const f = fixture(), response = deferred<CredentialStatus>();
-    await f.editor.load(reference); f.editor.secret.value = "dummy-key";
-    f.ports.save.mockReturnValueOnce(response.promise);
-    const saving = f.editor.save();
-    await vi.waitFor(() => expect(f.ports.save).toHaveBeenCalledOnce());
-    await f.editor.load("env:GEMINI_API_KEY"); response.resolve(status(2)); await saving;
-    await f.editor.reconcile();
-    expect(f.saved).not.toHaveBeenCalled();
-  });
-  it("clears definitively rejected requests but never treats idempotency conflicts as unsent", async () => {
-    for (const code of ["stale_credential_generation", "idempotency_conflict"]) {
-      const f = fixture(); await f.editor.load(reference);
-      f.ports.save.mockRejectedValue(new WorkbenchApiError("rejected", "conflict", 409, code));
-      f.editor.secret.value = "dummy-key"; await f.editor.save();
-      expect(f.editor.pending.value !== null).toBe(code === "idempotency_conflict");
-      expect(f.saved).not.toHaveBeenCalled();
-    }
-  });
-  it("cannot abandon an unknown request with no original receipt or submit again", async () => {
-    const f = fixture(); await f.editor.load(reference);
-    f.ports.save.mockRejectedValue(new WorkbenchApiError("unknown", "lost"));
-    f.ports.receipt.mockRejectedValue(new WorkbenchApiError("unknown", "no receipt"));
-    f.editor.secret.value = "dummy-key"; await f.editor.save(); await f.editor.reconcile();
-    await f.editor.save();
-    expect(f.editor.blocked.value).toBe(true); expect(f.ports.save).toHaveBeenCalledOnce();
-  });
-  it("rejects a stale status below the accepted receipt and malformed persisted intent without overwriting", async () => {
-    const f = fixture(); await f.editor.load(reference);
+      f.writes.push(value);
+      return { schema_version: 1 } as LocalDraftRecord;
+    });
+    // A missing durable intent cannot authorize cleanup or a success callback.
     f.editor.secret.value = "dummy-key"; await f.editor.save();
     expect(f.editor.pending.value).not.toBeNull(); expect(f.saved).not.toHaveBeenCalled();
-    await f.channel.write({ request: f.editor.pending.value!.request, remove: false, basis_reference: reference, secret: "bad" });
-    const writes = f.writes.length, reopened = f.reopen(); await reopened.load(reference);
+    await f.channel.write(f.editor.pending.value);
+    f.channel.write.mockRejectedValueOnce(new Error("disk unavailable"));
+    await f.editor.reconcile();
+    expect(f.editor.pending.value).not.toBeNull(); expect(f.editor.blocked.value).toBe(true);
+    await f.editor.reconcile();
+    expect(f.ports.saveBound).toHaveBeenCalledOnce(); expect(f.saved).toHaveBeenCalledTimes(2);
+  });
+  it("does not dispatch after context changes while the intent is being persisted", async () => {
+    const f = fixture(), write = deferred<LocalDraftRecord>();
+    await f.editor.load(reference, f.basis); f.editor.secret.value = "dummy-key";
+    f.channel.write.mockReturnValueOnce(write.promise);
+    const saving = f.editor.save();
+    await f.editor.load(null, { ...f.basis, identity: providerIdentity(newProvider()) });
+    write.resolve({} as LocalDraftRecord); await saving;
+    expect(f.ports.saveBound).not.toHaveBeenCalled(); expect(f.saved).not.toHaveBeenCalled();
+  });
+  it("does not clear a new context's memory-only Key when an old accepted response arrives", async () => {
+    const f = fixture(), response = deferred<ProviderCredentialResult>();
+    await f.editor.load(reference, f.basis); f.editor.secret.value = "old-key";
+    f.ports.saveBound.mockReturnValueOnce(response.promise);
+    const saving = f.editor.save();
+    await vi.waitFor(() => expect(f.ports.saveBound).toHaveBeenCalledOnce());
+    await f.editor.load(null, { ...f.basis, identity: providerIdentity(newProvider()) });
+    f.editor.secret.value = "new-key";
+    response.resolve(f.result()); await saving;
+    expect(f.saved).not.toHaveBeenCalled(); expect(f.editor.secret.value).toBe("new-key");
+  });
+  it.each(["stale_provider_sequence", "idempotency_conflict"])("handles definite refusal %s without losing unknown evidence", async code => {
+    const f = fixture(); await f.editor.load(reference, f.basis);
+    f.ports.saveBound.mockRejectedValue(new WorkbenchApiError("rejected", "conflict", 409, code));
+    f.editor.secret.value = "dummy-key"; await f.editor.save();
+    expect(f.editor.pending.value !== null).toBe(code === "idempotency_conflict");
+    expect(f.saved).not.toHaveBeenCalled();
+  });
+  it("reports a partial Key save without providing a supplementary binding mutation", async () => {
+    const f = fixture(); await f.editor.load(reference, f.basis);
+    f.ports.saveBound.mockResolvedValue(f.result("partial"));
+    f.editor.secret.value = "dummy-key"; await f.editor.save();
+    expect(f.editor.pending.value).not.toBeNull(); expect(f.saved).not.toHaveBeenCalled();
+    expect(f.editor.error.value).toContain("保存未完成");
+    expect(f.editor.error.value).not.toContain("绑定已保存");
+    expect("bindSaved" in f.editor).toBe(false);
+    expect("canBind" in f.editor).toBe(false);
+    expect(f.ports.saveBound).toHaveBeenCalledOnce();
+    await f.editor.reconcile();
+    expect(f.ports.saveBound).toHaveBeenCalledOnce();
+    expect(f.editor.pending.value).not.toBeNull(); expect(f.saved).not.toHaveBeenCalled();
+  });
+  it("retains read-only reconciliation for an earlier unknown binding request without replaying it", async () => {
+    const f = fixture(), request = { ...f.basis, credential_ref: reference,
+      expected_generation: 2, idempotency_key: crypto.randomUUID() };
+    await f.channel.write({ schema_version: 2, kind: "bind", request, basis_reference: reference });
+    await f.editor.load(reference, f.basis);
+    expect(f.editor.pending.value?.kind).toBe("bind");
+    f.ports.status.mockResolvedValue(status(2));
+    await f.editor.reconcile();
+    expect(f.ports.boundReceipt).toHaveBeenCalledExactlyOnceWith(request, true);
+    expect(f.ports.saveBound).not.toHaveBeenCalled();
+    expect(f.editor.pending.value).toBeNull(); expect(f.saved).toHaveBeenCalledOnce();
+  });
+  it("archives an unknown request only after explicit confirmation and does not replay it", async () => {
+    const f = fixture(); await f.editor.load(reference, f.basis);
+    f.ports.saveBound.mockRejectedValue(new WorkbenchApiError("unknown", "lost"));
+    f.editor.secret.value = "dummy-key"; await f.editor.save();
+    await f.editor.abandon(false); expect(f.channel.archive).not.toHaveBeenCalled();
+    await f.editor.abandon(true);
+    expect(f.channel.archive).toHaveBeenCalledOnce(); expect(f.editor.pending.value).toBeNull();
+    expect(f.ports.saveBound).toHaveBeenCalledOnce();
+  });
+  it("keeps mismatched present Key/provider state locked rather than claiming success", async () => {
+    const f = fixture(); await f.editor.load(reference, f.basis);
+    f.editor.secret.value = "dummy-key"; await f.editor.save();
+    expect(f.editor.pending.value).not.toBeNull(); expect(f.saved).not.toHaveBeenCalled();
+    await f.channel.write({ ...f.editor.pending.value, secret: "bad" });
+    const writes = f.writes.length, reopened = f.reopen(); await reopened.load(reference, f.basis);
     expect(reopened.blocked.value).toBe(true); expect(f.writes.length).toBe(writes);
   });
   it("clears memory on disposal and ignores late protection status", async () => {
     const f = fixture(), protection = deferred<boolean>();
     f.ports.protection.mockReturnValueOnce(protection.promise);
-    const loading = f.editor.load(reference); f.editor.secret.value = "memory";
+    const loading = f.editor.load(reference, f.basis); f.editor.secret.value = "memory";
     f.editor.dispose(); protection.resolve(true); await loading;
     expect(f.editor.secret.value).toBe(""); expect(f.editor.ready.value).toBe(false);
   });

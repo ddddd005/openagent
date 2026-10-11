@@ -15,7 +15,8 @@ const props = withDefaults(defineProps<{
   disabled?: boolean;
   draftScope?: string;
   draftBasis?: unknown;
-}>(), { required: true, draftScope: "" });
+  persist?: boolean;
+}>(), { required: true, draftScope: "", persist: true });
 const emit = defineEmits<{
   "update:modelValue": [value: number];
   "update:rawValue": [value: string];
@@ -27,7 +28,7 @@ const raw = ref(initialValue());
 const localDraft = useBoundFormDraft<string>({
   id: () => props.draftScope,
   basis: () => props.draftBasis ?? null,
-  enabled: !!props.draftScope && props.rawValue === undefined && typeof window !== "undefined",
+  enabled: props.persist && !!props.draftScope && props.rawValue === undefined && typeof window !== "undefined",
   reset: () => { raw.value = initialValue(); },
   capture: () => raw.value,
   restore: value => {
@@ -71,7 +72,7 @@ defineExpose({ valid, adoptBasis: localDraft.adoptBasis });
   <input ref="input" v-bind="$attrs" type="text" :inputmode="integer ? 'numeric' : 'decimal'"
     :value="text" :disabled="disabled || draftBlocked" :required="required"
     :aria-invalid="!valid || undefined" :title="validationMessage || undefined" @input="edit" />
-  <FormDraftNotice v-if="draftScope && rawValue === undefined" :message="localDraft.message.value"
+  <FormDraftNotice v-if="persist && draftScope && rawValue === undefined" :message="localDraft.message.value"
     :conflict="localDraft.conflict.value" @restore="localDraft.restoreConflict" @discard="localDraft.discardConflict" />
 </template>
 

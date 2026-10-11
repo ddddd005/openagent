@@ -37,7 +37,7 @@ describe("backend-authoritative workspace initialization", () => {
     const raw = JSON.stringify({ schemaVersion: 5, kind: "fixed-workbench" }), storage = memory(raw);
     const backend = memoryLocalDraftStorage(), persistence = useWorkbenchPersistenceStore();
     await persistence.initialize(storage, backend.ports);
-    expect(useWorkspaceStore().workflows).toHaveLength(1); expect(persistence.canImportLegacy).toBe(false);
+    expect(useWorkspaceStore().workflows).toHaveLength(1); expect("importLegacy" in persistence).toBe(false);
     expect(storage.getItem(WORKBENCH_STORAGE_KEY)).toBe(raw); expect(storage.setItem).not.toHaveBeenCalled();
   });
   it("preserves a frozen pending command and unknown metadata through the backend and reopening", async () => {
@@ -62,7 +62,7 @@ describe("backend-authoritative workspace initialization", () => {
     const storage = memory("{broken"), backend = memoryLocalDraftStorage(), persistence = useWorkbenchPersistenceStore();
     await persistence.initialize(storage, backend.ports);
     expect(persistence.status).toBe("saved"); expect(await persistence.save()).toBe(true);
-    expect(persistence.rawRecord()).toBe("{broken"); expect(persistence.canImportLegacy).toBe(false);
+    expect("rawRecord" in persistence).toBe(false); expect("importLegacy" in persistence).toBe(false);
     expect(storage.getItem(WORKBENCH_STORAGE_KEY)).toBe("{broken"); expect(storage.setItem).not.toHaveBeenCalled();
   });
   it("keeps both sides of a stale-page CAS conflict and never overwrites the newer primary record", async () => {

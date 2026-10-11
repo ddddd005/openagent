@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 
-from .graph_contracts import require
+from .contract_errors import require
 
 
 GEMINI_PROTOCOL = "gemini-generate-content@1"

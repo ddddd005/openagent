@@ -1,6 +1,6 @@
 # 测试说明
 
-默认按改动范围做离线验证，不自动运行全量、启动服务或调用真实模型。下面路径均对应 2026-10-09 现行源码；准备环境见 [快速启动](QUICKSTART.md)，声明与数据退役见 [节点目录](NODE-DIRECTORY-2026-10-09.md)。
+默认按改动范围做离线验证，不自动运行全量、启动服务或调用真实模型。下面路径按 2026-10-11 开发版已落地范围订正；首批实际结果和未完成项见 [实施记录](中期检查/11-首批整改实施与离线验证-2026-10-11.md)。准备环境见 [快速启动](QUICKSTART.md)，历史节点验收见 [节点目录](NODE-DIRECTORY-2026-10-09.md)。
 
 ## 测试依赖
 
@@ -27,7 +27,7 @@ New-Item -ItemType Directory -Force .local | Out-Null
 ..\.venv\Scripts\python.exe -m pytest tests/test_current_node_directory.py tests/test_tool_package.py tests/test_graph_execution.py --basetemp .local/pytest-current-core -q
 ..\.venv\Scripts\python.exe -m pytest tests/test_model_package.py tests/test_serial_agent_demo_integration.py tests/test_context_native_integration.py tests/test_agent_native_execution.py tests/test_result_acceptance_retry.py --basetemp .local/pytest-current-native -q
 ..\.venv\Scripts\python.exe -m pytest tests/test_gemini_adapter.py tests/test_gemini_history.py tests/test_gemini_model_integration.py tests/test_gemini_joint_integration.py --basetemp .local/pytest-current-gemini -q
-..\.venv\Scripts\python.exe -m pytest tests/test_storage_retirement.py tests/test_prompt_current_resources.py tests/test_global_resources.py --basetemp .local/pytest-current-storage -q
+..\.venv\Scripts\python.exe -m pytest tests/test_storage_initialization.py tests/test_development_reset.py tests/test_prompt_current_resources.py tests/test_global_resources.py --basetemp .local/pytest-current-storage -q
 ```
 
 每批使用专用、新的 basetemp 目录；pytest 会管理并可能清空该目录，不指向产品库或证据目录。这些用例使用临时 SQLite 和受控/mock transport，不需要真实模型密钥。`workflow_test_support.py` 提供现行原生图及共用替身。
@@ -48,7 +48,7 @@ New-Item -ItemType Directory -Force .local | Out-Null
 
 ```powershell
 npm test -- src/domain/nodeCatalog.test.ts src/domain/nodeSelection.test.ts src/components/NodeProfileDialog.test.ts src/domain/serialAgentDemo.test.ts src/stores/workflowDemoActions.test.ts src/components/CurrentModelConfiguration.test.ts
-npm test -- src/adapters/workbenchPersistence.test.ts src/stores/workbenchRecovery.test.ts src/adapters/workflowReceiptApi.test.ts src/application/workflowClientBoundary.test.ts src/adapters/graphChatConsumer.test.ts
+npm test -- src/adapters/workbenchPersistence.test.ts src/stores/workbenchLegacyIsolation.test.ts src/adapters/workflowReceiptApi.test.ts src/application/workflowClientBoundary.test.ts src/adapters/graphChatConsumer.test.ts
 npx vue-tsc --noEmit
 npm run build
 ```
@@ -67,7 +67,7 @@ npm run build
 | Gemini 工具、思考、签名及连续轮次 | `test_gemini_adapter.py`、`test_gemini_history.py`、`test_gemini_joint_integration.py` |
 | 原生上下文、精简与串行图 | `test_context_native_integration.py`、`test_agent_native_execution.py`、`test_compacting_serial_integration.py`、`test_serial_agent_demo_integration.py` |
 | 暂停、结果接纳与不重放 | `test_runtime_pause.py`、`test_result_acceptance_retry.py`、`test_gemini_model_integration.py`；`adapters/graphChatConsumer.test.ts` |
-| 退役图、资源与浏览器存档 | `test_storage_retirement.py`、`test_prompt_current_resources.py`；`adapters/workbenchPersistence.test.ts`、`stores/workbenchRecovery.test.ts` |
+| 显式重置、正常初始化与旧工作台隔离 | `test_development_reset.py`、`test_storage_initialization.py`、`test_prompt_current_resources.py`；`adapters/workbenchPersistence.test.ts`、`stores/workbenchLegacyIsolation.test.ts` |
 | 回执、未知结果、授权与身份 | `test_graph_receipt_http.py`、`test_graph_application_receipt_custody.py`、`test_graph_application_identity.py`；`adapters/workflowReceiptApi.test.ts`、`application/workflowClientBoundary.test.ts` |
 | 信息、公开摘要与消费者 | `test_graph_information_integration.py`、`test_plan12b_information_scope.py`、`test_tavern_chat_integration.py`；`application/workflowInformation.test.ts` |
 | 静态资产与启动分支 | `test_server_workbench.py`、`test_branch_launcher.py`；`test_dev_launcher.py` 中预检/静态用例 |
@@ -75,7 +75,9 @@ npm run build
 | 输入声明、提示词专用表单及不完整图 | `test_graph_input_declarations.py`、`test_prompt_package.py`；`graphInputDeclarationsApi`、`CurrentPromptResources` |
 | 连线拒绝与撤销记录 | `domain/graphConnections.test.ts`、`stores/workflowGraph.test.ts`；真实拖线用 `frontend_p56_browser.cjs` |
 | 正文/签名展示、本机名称和目录归档 | `resultPresentation`、`managementLabels`；冻结历史、确认取消及其他暂停会话用 `frontend_p56_browser.cjs` |
-| 旧浏览器工作台归档及 JSON 字段重排 | `adapters/browserWorkbenchArchives.test.ts`、`stores/formDrafts.test.ts`、`stores/managementLabels.test.ts`；入口和归档弹窗用 `frontend_p34_browser.cjs` |
+| 旧浏览器内容不导入及原请求只读核实 | `stores/workbenchLegacyIsolation.test.ts`、`adapters/resourcePendingStorage.test.ts`、`application/resourceOutbox.test.ts`；旧归档恢复专属测试已退出，当期证据仅保留历史记录 |
+| 工作流/会话目标归档、删除及管理隔离 | `test_workflow_lifecycle.py`；`stores/workflowLifecycle.test.ts`、`application/workflowCommands.test.ts`、`components/WorkbenchSidebar.test.ts` |
+| 单一私有 Key、全局模型配置及回执恢复 | `test_provider_configuration.py`、`test_model_profiles.py`、`test_model_configuration_browser.py`；`providerCredentialEditing`、`modelProfiles`、`resourceOutbox` |
 
 表内后端文件在 `backend/tests/`。前端短名在 `frontend/src/` 下以 `.test.ts` 结尾，按确切路径运行。`test_dev_launcher.py` 的完整模块包含真实本机服务/浏览器场景，不能将其统称为“不启动服务”的离线组；需要静态检查时只指定已核对的用例，例如：
 
@@ -89,11 +91,15 @@ npm run build
 
 当前主干的 `backend/tests/frontend_drafts_browser.cjs` 同样不监听端口，使用具备 CAS/命名草稿契约的 fake 后端覆盖无效 JSON、长文本、未提交提示词的切换与冷重开、节点酒馆 URL、写失败和双窗口冲突。不能以原 localStorage mock 代替新本机草稿验收；命令和证据见 [P1/P2 记录](FRONTEND-P1-P2-2026-10-09.md)。
 
-P3/P4 用 `backend/tests/frontend_p34_browser.cjs` 验证显式切换、同身份发布、确认采用修订、Key 丢响应后重开核实、双协议模板及发现列表；全部资产和请求拦截，无真实 Key、产品库或模型派发。凭据后端测试用临时私有库及假 Key；Windows 案例实际调用当前用户 DPAPI。范围和复现命令见 [P3/P4 记录](FRONTEND-P3-P4-2026-10-09.md)。
+P3/P4 当期用 `frontend_p34_browser.cjs` 验证修订、Key、双协议模板及发现列表；当期结果见 [历史记录](FRONTEND-P3-P4-2026-10-09.md)。2026-10-10 已删除此内联配置夹具及无人引用的旧 `gemini_browser.cjs`，不继续维护旧凭证/模型路线。
+
+开发版当前用 `backend/tests/test_model_configuration_browser.py` 驱动 `model_configuration_browser.cjs`。P01 的补绑定 mock/断言已退出，改为部分失败真实报告、冷重读和只读核实，不增加 Key 或资源派发；需要继续其他配置测试时显式归档原请求，不补写配置。其余场景覆盖统一供应商保存、Key 草稿保护、空 Key 保留、丢响应核实、手填容量、全局配置重读及引用节点。最新实际结果见首批实施记录，不以旧夹具通过数证明新接口。密码框验证 `autocomplete="off"` 且不标记为新密码；系统密码管理弹窗不属于 headless DOM 验收。全部资产及请求拦截，不监听端口、不调用上游，不等同于重跑旧 P3/P4 的全部场景。凭据后端测试使用临时私有库及合成 Key，拒绝环境变量引用；Windows 案例实际调用当前用户 DPAPI。
+
+默认 pytest 临时目录不可访问时，从仓库根目录指定一个新的 `.local/pytest-<unique-id>` 作为 `--basetemp`，不要删除或改权限处理用户的系统临时目录。生产服务不由此启动。
 
 P5/P6 用 `backend/tests/frontend_p56_browser.cjs` 验证正文置前、提示词身份/metadata、半输入数字冷恢复、具名输入保留复杂字段、真实拖线命中与吸附、冻结历史、摘要/签名隐藏、本机名称及可逆归档。恢复/分叉取消没有业务 mutation；另一个已知暂停会话阻止目录归档。全部请求和资产拦截，不监听端口。范围、fixture 和命令见 [P5/P6 记录](FRONTEND-P5-P6-2026-10-09.md)；390px 仅验证弹窗，工作台仍保留 1024px 最小宽度。
 
-真实调用只有在明确授权供应商、费用和范围后执行，使用隔离数据库，不使用正式会话：
+本轮按用户裁决使用 DeepSeek，由用户启动开发页面、填写保存 Key 并执行真实验收；全部职责订正完成后统一验收合并。开发代理当前不启动服务、不读取真实秘密、不调用上游。后续真实调用须明确供应商、费用和范围，使用隔离数据库，不使用正式会话：
 
 1. 记录源码完整 SHA、实际启动路径、资源修订、精确模型及参数；仅保留非秘密凭据引用，不记录 Key、私有保护数据或请求头。
 2. 普通串行示例核实 A 收到原文、B 收到原文及 A 本轮材料，公开输出来自 B。

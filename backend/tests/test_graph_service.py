@@ -18,7 +18,7 @@ def uid(number):
 
 def node(registry, type_name, number, **config):
     component = type_name if "." in type_name else "tools." + type_name
-    version = {"models.source": "2", "models.chat": "3", "agents.execute": "4"}.get(
+    version = {"models.source": "5", "models.chat": "3", "agents.execute": "4"}.get(
         component, "4" if component.startswith("context.") else "2" if component.startswith("prompts.") else "1")
     entry = registry.get(component, version)
     return {

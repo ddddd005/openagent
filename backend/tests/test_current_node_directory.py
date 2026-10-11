@@ -21,7 +21,7 @@ def test_default_directory_has_only_current_routes_and_protocol_options():
             versions.setdefault(entry["component_id"], set()).add(entry["component_version"])
     assert len(versions) == 41
     assert sum(map(len, versions.values())) == 44
-    assert versions["models.source"] == {"2", "4"}
+    assert versions["models.source"] == {"5", "6"}
     assert versions["models.chat"] == {"3", "4"}
     assert versions["agents.execute"] == {"4", "8"}
     assert all(values == {"4"} for key, values in versions.items() if key.startswith("context."))

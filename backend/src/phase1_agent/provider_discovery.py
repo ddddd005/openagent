@@ -5,7 +5,7 @@ import httpx
 
 from .contract_json import loads_strict
 from .gemini_capabilities import GEMINI_MODELS
-from .graph_records import require
+from .contract_errors import require
 
 MAX_PAGES = 10
 MAX_BYTES = 1_000_000

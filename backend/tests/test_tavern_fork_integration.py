@@ -53,7 +53,6 @@ def transcript(service, view, doc, chat):
 
 
 def test_native_tavern_fork_uses_old_completed_definition_context_and_display_then_continues(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-tavern-fork")
     transport = NativeTransport()
     database = tmp_path / "native-fork.sqlite"
     with closing(GraphWorkflowService(database, public_model_factory=transport.factory)) as service:

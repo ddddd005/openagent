@@ -78,7 +78,6 @@ print(json.dumps({"second_start_blocked": thread.is_alive(),
 os._exit(0)
 '''
     environment = os.environ.copy()
-    environment["DEEPSEEK_API_KEY"] = "local-review-key"
     project = Path(__file__).resolve().parents[1]
     environment["PYTHONPATH"] = os.pathsep.join((str(project / "src"), str(project / "tests")))
     result = subprocess.run(

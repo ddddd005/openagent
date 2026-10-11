@@ -8,6 +8,15 @@ function applicationCommand(operation: string, parameters: Record<string, unknow
   const accepted = Object.fromEntries(fields.filter(field => field in evidence).map(field => [field, evidence[field]]));
   if (evidence.workflow_definition_id !== undefined && evidence.workflow_session_id === undefined
     && evidence.revision !== undefined) accepted.definition_revision = evidence.revision;
+  if (evidence.kind === "workflow.session-metadata") {
+    accepted.name = evidence.name;
+    accepted.metadata_sequence = evidence.metadata_sequence;
+  }
+  if (Object.keys(evidence).length === 3 && "reference" in evidence
+    && "display_name" in evidence && "metadata_sequence" in evidence) {
+    accepted.display_name = evidence.display_name;
+    accepted.metadata_sequence = evidence.metadata_sequence;
+  }
   return {
     schema_version: 1, kind: "workflow.application-command", result,
     receipt: { schema_version: 1, kind: "workflow.application-receipt", operation, operation_scope: "management",
@@ -36,11 +45,18 @@ export function stubGraphApplicationFetch(handler: (...arguments_: any[]) => any
     const routes: Record<string, string> = {
       "catalog.node-types": `/api/graph/node-types${parameters.protocol_version === 2 ? "/v2" : ""}`,
       "definition.read": `/api/graph/definitions/${parameters.identity}${parameters.revision ? `/revisions/${parameters.revision}` : ""}`,
+      "definition.list": "/api/graph/definitions",
       "definition.sessions": `/api/graph/definitions/${parameters.workflow_definition_id}/sessions`,
       "session.read": `/api/graph/sessions/${sid}`,
       "run.read": `/api/graph/sessions/${sid}/runs/${parameters.chain_id}`,
       "candidate.list": `/api/graph/sessions/${sid}/candidates`,
       "definition.save": "/api/graph/definitions",
+      "definition.archive": `/api/graph/definitions/${parameters.identity}/archive`,
+      "definition.delete": `/api/graph/definitions/${parameters.identity}/delete`,
+      "session.archive": `/api/graph/sessions/${sid}/archive`,
+      "session.delete": `/api/graph/sessions/${sid}/delete`,
+      "session.metadata.read": `/api/graph/sessions/${sid}/metadata`,
+      "session.metadata.update": `/api/graph/sessions/${sid}/metadata`,
       "session.create": "/api/graph/sessions", "run.start": `/api/graph/sessions/${sid}/runs`,
       "run.control": `/api/graph/sessions/${sid}/control`, "session.copy": `/api/graph/sessions/${sid}/copy`,
       "session.rebind": `/api/graph/sessions/${sid}/rebind`, "session.data.update": `/api/graph/sessions/${sid}/data`,

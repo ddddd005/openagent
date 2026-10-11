@@ -12,7 +12,7 @@ from phase1_agent.frozen_model import FrozenModelParameters
 from phase1_agent.gemini_adapter import GeminiAdapter
 from phase1_agent.gemini_capabilities import validate_provider_parameters
 from phase1_agent.model_contract import validate_public_model_result
-from phase1_agent.model_service import EnvironmentCredentialBroker, create_chat_transport
+from phase1_agent.model_service import create_chat_transport
 from test_model_package import BoundaryFixture, uid
 
 
@@ -59,17 +59,17 @@ def history(response_value):
 def fixture(handler):
     value = BoundaryFixture()
     value.service.release_run(uid(2), uid(3))
-    value.config["parameters"] = deepcopy(PARAMETERS)
-    value.config["capacity"]["output_reserve_tokens"] = PARAMETERS["max_tokens"]
+    value.profile["value"]["parameters"] = deepcopy(PARAMETERS)
+    value.profile["value"]["protocol"] = "gemini"
+    value.profile["value"]["capacity"]["output_reserve_tokens"] = PARAMETERS["max_tokens"]
     value.record["value"].update(protocol="gemini",
-                                 credential_ref="env:GEMINI_API_KEY",
                                  base_url="https://generativelanguage.googleapis.com/v1beta")
-    value.record["data_schema_version"] = 2
-    value.environ["GEMINI_API_KEY"] = "private-gemini-fixture-secret"
+    value.record["data_schema_version"] = 3
+    value.set_credential("private-gemini-fixture-secret")
     value.service._factory = lambda **kwargs: create_chat_transport(
         **kwargs, http_client=httpx.Client(transport=httpx.MockTransport(handler)))
     value.service.prepare_run(workflow_session_id=uid(2), chain_run_id=uid(3),
-                              node_configs={uid(10): value.config}, records=[value.record])
+                              node_configs={uid(10): value.config}, records=[value.profile, value.record])
     value.binding = value.service.bind_model(value.source, value.config)
     value.service.accept_binding_output(workflow_session_id=uid(2), chain_run_id=uid(3),
                                        node_run_id=uid(11), binding_id=value.binding["binding_id"],
@@ -342,12 +342,14 @@ def test_model_specific_thinking_capabilities_and_freeze(model, thinking, valid)
         assert dict(frozen.as_mapping())["thinking"] != thinking
 
 
-def test_broker_does_not_grant_arbitrary_environment_access():
-    broker = EnvironmentCredentialBroker({"GEMINI_API_KEY": "gemini", "ANY_KEY": "other"})
-    lease = broker.freeze("env:GEMINI_API_KEY")
-    assert broker.authorize(lease) == "gemini"
-    with pytest.raises(ContractValidationError):
-        broker.freeze("env:ANY_KEY")
+def test_gemini_uses_only_the_saved_private_key():
+    def handler(request):
+        assert request.headers["x-goog-api-key"] == "private-gemini-fixture-secret"
+        return httpx.Response(200, json=response([{"text": "Answer"}]))
+    value = fixture(handler)
+    value.chat()
+    assert value.record["value"]["credential_ref"].startswith("local:")
+    assert "private-gemini-fixture-secret" not in json.dumps(value.facts)
 
 
 def test_25_unsigned_legacy_history_is_readable_but_3_tool_continuation_is_refused():

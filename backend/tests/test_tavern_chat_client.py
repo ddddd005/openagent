@@ -88,6 +88,14 @@ def test_tavern_input_boundary_and_isolated_transport():
     assert.ok(TavernAdapter.textInput({ ...bare, inputs }).diagnostic);
     assert.throws(() => TavernAdapter.inputsFor({ ...bare, inputs }, "x"), /唯一/);
   }
+  const blocked = { ...bare, can_submit: false, diagnostics: [{
+    reason_code: "graph_required_input_missing", message: "Required input is not connected" }] };
+  const blockedInput = TavernAdapter.textInput(blocked);
+  assert.equal(blockedInput.input, null);
+  assert.match(blockedInput.diagnostic, /graph_required_input_missing/);
+  assert.match(blockedInput.diagnostic, /Required input is not connected/);
+  assert.doesNotMatch(blockedInput.diagnostic, /唯一的 TEXT/);
+  assert.throws(() => TavernAdapter.inputsFor(blocked, "x"), /graph_required_input_missing/);
   const idle = { ...finalOutput, availability: "unproduced", payload: null };
   delete idle.data_schema_version;
   assert.equal(TavernAdapter.displayPorts({ outputs: [idle] }).length, 1);

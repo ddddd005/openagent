@@ -55,4 +55,12 @@ export function newLorebookResource(): CurrentLorebookResource {
     data_schema_version: 1, update_sequence: 1, value: { name: "", enabled: true, entries: [] } };
 }
 export function cloneLorebookResource(value: CurrentLorebookResource) { return graphClone(value); }
+export function duplicateLorebookResource(value: CurrentLorebookResource): CurrentLorebookResource {
+  if (!isCurrentLorebookResource(value)) throw new Error("Lorebook resource contract is invalid");
+  const result = cloneLorebookResource(value);
+  result.resource_id = crypto.randomUUID();
+  result.update_sequence = 1;
+  result.value.entries.forEach(entry => { entry.id = crypto.randomUUID(); });
+  return result;
+}
 export function lorebookResourceLabel(value: CurrentLorebookResource) { return value.value.name.trim() || value.resource_id; }

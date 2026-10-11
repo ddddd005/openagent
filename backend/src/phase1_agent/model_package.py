@@ -3,12 +3,10 @@
 from copy import deepcopy
 
 from .capability_packages import CapabilityPackage, PackageDependency, PackageManifest
-from .gemini_capabilities import validate_provider_parameters
 from .graph_contracts import NodeDefinition, NodePort, require
-from .model_configuration import DEFAULT_PROVIDER_ID
 from .model_contract import (
-    CHAT_PROVIDER_TYPE, MODEL_PACKAGE_ID, model_type_definitions, object_schema,
-    validate_native_model_source_config, validate_provider_record, validate_public_model_binding,
+    DEFAULT_PROFILE_ID, MODEL_PROFILE_TYPE, MODEL_PACKAGE_ID, model_type_definitions, object_schema,
+    resolve_model_source, validate_model_source_config, validate_public_model_binding,
 )
 from .model_host_service import (
     MODEL_SERVICE_DEFINITION, MODEL_SERVICE_REF, create_model_host_service, model_service_requirement,
@@ -24,7 +22,7 @@ MODEL_FRONTEND_EXTENSIONS = (
             "component_id": "models.source", "component_version": version,
             "binding": {"surface": "workbench", "slot": "node-fields",
                         "target": {"component_id": "models.source", "component_version": version}}}
-           for version in ("2", "4")),
+           for version in ("5", "6")),
 )
 
 
@@ -37,36 +35,24 @@ def create_model_package() -> CapabilityPackage:
             host.register_data_type(definition)
 
         def validate(value):
-            require(type(value) is dict and set(value) == {"reference", "parameters", "capacity"},
-                    "model_source_invalid", "Model source requires explicit capacity budgets")
-            return validate_native_model_source_config(value)
+            return validate_model_source_config(value)
 
         def preflight(config, records, protocol):
-            reference = config["reference"]
-            record = next((record for record in records if all(
-                record.get(key) == reference[key] for key in reference)), None)
-            provider = validate_provider_record(record, reference)
-            require(provider["protocol"] == protocol, "model_source_protocol_mismatch",
+            resolved = resolve_model_source(config, records)
+            require(resolved["provider"]["protocol"] == protocol, "model_source_protocol_mismatch",
                     "Model source does not match the selected provider protocol")
-            validate_provider_parameters(protocol, config["parameters"])
 
-        for source_version, chat_version, protocol, parameters in (
-            ("2", "3", "chat", {"model": "deepseek-flash", "thinking": "disabled", "stream": False}),
-            ("4", "4", "gemini", {"model": "gemini-2.5-flash", "thinking": {
-                "mode": "budget", "budget": -1, "include_summary": True}, "stream": False}),
+        for source_version, binding_version, chat_version, protocol in (
+            ("5", 2, "3", "chat"), ("6", 4, "4", "gemini"),
         ):
             config = {
                 "reference": {"envelope_version": 1, "scope": "workspace",
-                              "type_id": CHAT_PROVIDER_TYPE, "resource_id": DEFAULT_PROVIDER_ID},
-                "parameters": {**parameters, "max_tokens": 1024},
-                "capacity": {"context_window_tokens": 0, "output_reserve_tokens": 1024,
-                             "summary_max_tokens": 128, "max_cold_input_tokens": 0},
+                              "type_id": MODEL_PROFILE_TYPE, "resource_id": DEFAULT_PROFILE_ID},
             }
             host.register_node(NodeDefinition(
                 "models.source", source_version, "Model source", "Models", config,
-                object_schema({"reference": {"type": "object"}, "parameters": {"type": "object"},
-                               "capacity": {"type": "object"}}),
-                outputs=(NodePort("output", "MODEL_BINDING", data_schema_version=int(source_version)),),
+                object_schema({"reference": {"type": "object"}}),
+                outputs=(NodePort("output", "MODEL_BINDING", data_schema_version=binding_version),),
                 capabilities=("models:resolve", "resources:read"), input_storage="references",
                 service_requirements=(model_service_requirement("models:resolve", "bind-native-model"),),
             ), lambda config, inputs, context: {
@@ -85,7 +71,7 @@ def create_model_package() -> CapabilityPackage:
 
             host.register_node(NodeDefinition(
                 "models.chat", chat_version, "Chat", "Models", {}, object_schema({}),
-                inputs=(NodePort("model", "MODEL_BINDING", data_schema_version=int(source_version)),
+                inputs=(NodePort("model", "MODEL_BINDING", data_schema_version=binding_version),
                         NodePort("prompt", "PROMPT", data_schema_version=2)),
                 outputs=(NodePort("output", "MODEL_RESULT", data_schema_version=2 if protocol == "gemini" else 1),),
                 capabilities=("models:call",), input_storage="references", is_output=True,
@@ -98,7 +84,7 @@ def create_model_package() -> CapabilityPackage:
                             "schema_version": definition.schema_version}
                            for definition in model_type_definitions()],
             "nodes": [{"component_id": component, "component_version": version}
-                      for component, versions in (("models.source", ("2", "4")), ("models.chat", ("3", "4")))
+                      for component, versions in (("models.source", ("5", "6")), ("models.chat", ("3", "4")))
                       for version in versions],
             "services": [MODEL_SERVICE_REF.to_dict()],
             "frontend_extensions": [{"extension_id": row["extension_id"]} for row in MODEL_FRONTEND_EXTENSIONS],

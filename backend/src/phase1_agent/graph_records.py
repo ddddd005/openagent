@@ -229,6 +229,8 @@ def validate_graph_bundle(bundle: dict[str, list[dict]]) -> None:
                    for row in rows.get("workflow_definition_revision", [])}
     bindings = {(row["workflow_definition_id"], row["workflow_definition_revision"], row["node_binding_id"]): row
                 for row in rows.get("node_binding", [])}
+    descriptors = {(row["component_id"], row["component_version"]): row["descriptor"]
+                   for row in rows.get("node_definition", [])}
     chains = {row["chain_run_id"]: row for row in rows.get("chain_run", [])}
     runs = {row["run_id"]: row for row in rows.get("node_run", [])}
     outputs = {row["output_id"]: row for row in rows.get("workflow_output", [])}
@@ -270,9 +272,14 @@ def validate_graph_bundle(bundle: dict[str, list[dict]]) -> None:
                     require(row["status"] == "failed" and not row["output_refs"],
                             "storage_contract_violation", "Only rejected attempts may precede the current run", 500)
                 binding = bindings.get((chain["workflow_definition_id"], chain["definition_revision"], row["node_binding_id"]))
-                require(binding is not None and binding["config"] == row["config"],
-                        "storage_contract_violation", "Node run configuration differs from its frozen definition", 500)
                 document = definitions[(chain["workflow_definition_id"], chain["definition_revision"])]["document"]
+                node = next((node for node in document["nodes"]
+                             if node["node_binding_id"] == row["node_binding_id"]), None)
+                require(binding is not None and node is not None,
+                        "storage_contract_violation", "Node run has no fixed binding", 500)
+                _validate_consumed_configuration(
+                    node, binding["config"], row["config"],
+                    descriptors.get((binding["component_id"], binding["component_version"])))
                 edges = {edge["edge_id"]: edge for edge in document["edges"]}
                 if row["schema_version"] >= 4:
                     controls = {edge["edge_id"]: edge for edge in document.get("control_edges", [])
@@ -405,6 +412,29 @@ def validate_graph_bundle(bundle: dict[str, list[dict]]) -> None:
                 require(row["next_node_index"] == len(row["ordered_nodes"])
                         and all(identity in runs and runs[identity]["status"] == "succeeded" for identity in row["node_run_ids"]),
                         "storage_contract_violation", "Completed execution contains unfinished nodes", 500)
+
+
+def _validate_consumed_configuration(node, seed, consumed, descriptor):
+    from .workflow_configuration import fixed_configuration_projection, validate_node_configuration
+
+    policy = node.get("configuration_policy")
+    if policy is None or policy["prompt_mode"] == "fixed":
+        require(seed == consumed, "storage_contract_violation",
+                "Node run fixed configuration differs from its definition", 500)
+        return
+    require(descriptor is not None, "storage_contract_violation",
+            "Adjustable run requires its trusted declaration", 500)
+    consumed_node = {**node, "config": consumed}
+    declaration = validate_node_configuration(consumed_node, descriptor)
+    require(fixed_configuration_projection(seed, declaration, policy)
+            == fixed_configuration_projection(consumed, declaration, policy),
+            "storage_contract_violation", "Node run fixed configuration differs from its definition", 500)
+    from jsonschema import Draft202012Validator, ValidationError
+    try:
+        Draft202012Validator(descriptor["config_schema"]).validate(consumed)
+    except ValidationError as exc:
+        raise graph_error("storage_contract_violation",
+                          "Node run consumed configuration violates its trusted schema", 500) from exc
 
 
 def validate_graph_transition(kind: str, previous: dict | None, value: dict) -> None:

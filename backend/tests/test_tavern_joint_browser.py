@@ -48,7 +48,6 @@ def browser_runtime():
 
 def test_real_tavern_native_rounds_fork_reload_and_lost_response(tmp_path, monkeypatch):
     node = browser_runtime()
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-joint-browser")
     transport = NativeTransport()
     parent_snapshots = []
     evidence_path = Path(os.environ.get("TAVERN_JOINT_BROWSER_EVIDENCE", str(tmp_path / "browser")))

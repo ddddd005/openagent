@@ -220,12 +220,12 @@ def test_multiple_graphs_share_content_without_sharing_scan_or_node_identity(tmp
         assert GraphApplication(service).query("resource.read", {"identity": identity(value)}) == value
 
 
-def test_update_during_run_uses_frozen_body_next_run_uses_new_body_and_history_stays(tmp_path):
+def test_update_during_run_uses_current_saved_body_and_preserves_completed_history(tmp_path):
     registry = installed()
     value = record()
     entered, release = Event(), Event()
     document, nodes = graph(registry, identity(value), texts=("match", "match"), gate=(entered, release))
-    database = tmp_path / "frozen.sqlite"
+    database = tmp_path / "current-content.sqlite"
     with closing(GraphWorkflowService(database, registry=registry)) as service:
         app = GraphApplication(service)
         save(app, value)
@@ -244,7 +244,7 @@ def test_update_during_run_uses_frozen_body_next_run_uses_new_body_and_history_s
         service.wait(started["active_chain_run_id"])
         first = service.get_session(session["workflow_session_id"])
         assert first["status"] == "succeeded", first["chains"]
-        assert all(output(first, node)["items"][0]["text"] == "shared content" for node in nodes)
+        assert all(output(first, node)["items"][0]["text"] == "new shared content" for node in nodes)
         chain_id = first["selected_chain_run_id"]
         frozen_history = service.get_run(session["workflow_session_id"], chain_id)
         second = run(service, first)
@@ -364,7 +364,6 @@ def test_global_materials_assemble_once_without_entering_agent_history(tmp_path,
     from test_graph_service import create as native_create, edge
     from test_models_service_integration import ModelDatabaseFixture
     from test_tavern_integration import tavern_graph
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-global-lorebook")
     transport = NativeTransport()
     with closing(GraphWorkflowService(
             tmp_path / "native.sqlite", public_model_factory=transport.factory)) as service:

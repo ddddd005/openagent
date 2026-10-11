@@ -7,7 +7,7 @@ import { newProvider } from "../domain/workflowModelResources";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import type { PromptSaveRequest } from "../adapters/promptResourcesApi";
 import { graphReceiptReadResponse } from "../testUtils/graphApplicationServer";
-import { localDraftCommandResponse, memoryLocalDraftStorage } from "../testUtils/localDraftStorage";
+import { memoryRequestEvidence, requestEvidenceCommandResponse } from "../testUtils/requestEvidence";
 
 afterEach(() => vi.unstubAllGlobals());
 const cloneRequest = (value: PromptSaveRequest): PromptSaveRequest => JSON.parse(JSON.stringify(value));
@@ -246,14 +246,16 @@ describe("current independent prompt resource coordination", () => {
     const removeItem = vi.fn((key: string) => { storage.delete(key); });
     vi.stubGlobal("localStorage", { getItem, setItem, removeItem });
     const requests: PromptSaveRequest[] = [];
-    const backend = memoryLocalDraftStorage();
+    const backend = memoryRequestEvidence();
     let unknown = true;
     vi.stubGlobal("fetch", vi.fn(async (path: string, options: RequestInit) => {
       const request = JSON.parse(String(options.body));
-      if (request.operation === "draft.read") return new Response(JSON.stringify(await backend.ports.read(request.parameters.address)));
-      if (request.operation === "draft.save") {
-        const result = await backend.ports.save(request.parameters);
-        return localDraftCommandResponse(request.parameters, result);
+      if (request.operation === "request-evidence.read")
+        return new Response(JSON.stringify(await backend.ports.read(request.parameters.owner_kind, request.parameters.owner_id)));
+      if (request.operation === "request-evidence.write" || request.operation === "request-evidence.resolve") {
+        const result = await (request.operation === "request-evidence.write"
+          ? backend.ports.write : backend.ports.resolve)(request.parameters);
+        return requestEvidenceCommandResponse(request.operation, result);
       }
       if (request.operation === "resource.list") return new Response("[]");
       const parameters: PromptSaveRequest = request.parameters; requests.push(parameters);
@@ -264,8 +266,8 @@ describe("current independent prompt resource coordination", () => {
     }));
     const first = (await import("./promptResources")).usePromptResources();
     expect(await first.save(newPromptResource(), 0)).toBe(false);
-    const body = [...backend.records.values()].find(record => record.address.key === "prompts:resource-pending:v1");
-    expect(body?.value).toMatchObject({ request: requests[0] });
+    const body = [...backend.records.values()].find(record => record.owner_id === "prompts:resource-pending:v1");
+    expect(body).toMatchObject({ request: requests[0], resolution: "pending" });
     vi.resetModules(); unknown = false;
     const reopened = (await import("./promptResources")).usePromptResources();
     expect(await reopened.reconcile()).toBe(true);
@@ -273,7 +275,7 @@ describe("current independent prompt resource coordination", () => {
     expect(getItem.mock.calls.every(([key]) => key === "workflow.prompts.resource.pending.v1")).toBe(true);
     expect(setItem).not.toHaveBeenCalled();
     expect(removeItem).not.toHaveBeenCalled();
-    expect([...backend.records.values()][0]?.value).toMatchObject({ request: null });
+    expect([...backend.records.values()][0]).toMatchObject({ request: requests[0], resolution: "verified" });
     expect(storage.get("workflow.models.resource.pending.v1")).toBe("provider outbox untouched");
     expect(storage.get("workflow.graph.outbox.v1")).toBe("legacy outbox untouched");
   });

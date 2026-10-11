@@ -31,7 +31,6 @@ def frontend_package():
 
 @pytest.fixture
 def frontend_service(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-frontend-test")
     transport = SummaryTransport()
     with closing(GraphWorkflowService(
         tmp_path / "frontend.sqlite", public_model_factory=transport.factory,

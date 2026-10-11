@@ -17,13 +17,12 @@ from phase1_agent.model_service import create_chat_transport
 from phase1_agent.model_contract import model_type_definitions
 from phase1_agent.type_contract_store import initialize_type_contract_tables
 from test_gemini_adapter import PARAMETERS, fixture, response
-from test_model_package import source_config, uid
+from test_model_package import profile_config, source_config, uid
 from test_models_service_integration import ModelDatabaseFixture
+from credential_test_support import seed_service_credential
 
 
 CURRENT_CONTRACT_DIGESTS = {
-    ("global", "workflow.chat-provider", 1):
-        "json-v1:sha256:f34776baa4de4121f07669a828d71cac5bf01c228f44727e5e0516940c0e0bcb",
     ("content", "MODEL_BINDING", 2):
         "json-v1:sha256:d19506a06bca810eab3450dc8103ed6b75fefde0dade03db63d3c9e505aefc96",
     ("content", "MODEL_RESULT", 1):
@@ -32,11 +31,18 @@ CURRENT_CONTRACT_DIGESTS = {
 
 
 def write_provider(service):
-    record = {**source_config()["reference"], "data_schema_version": 2, "update_sequence": 1,
+    reference = seed_service_credential(service, secret="private-gemini-fixture-secret")
+    record = {**profile_config()["provider"], "data_schema_version": 3, "update_sequence": 1,
               "value": {"name": "Offline Gemini", "protocol": "gemini",
                         "base_url": "https://generativelanguage.googleapis.com/v1beta",
-                        "credential_ref": "env:GEMINI_API_KEY", "enabled": True}}
+                        "credential_ref": reference, "enabled": True}}
     service.save_global_resource(record, expected_sequence=0, idempotency_key=str(uuid4()))
+    profile = profile_config()
+    profile.update(protocol="gemini", parameters=deepcopy(PARAMETERS))
+    profile["capacity"]["output_reserve_tokens"] = PARAMETERS["max_tokens"]
+    service.save_global_resource({
+        **source_config()["reference"], "data_schema_version": 1, "update_sequence": 1, "value": profile,
+    }, expected_sequence=0, idempotency_key=str(uuid4()))
     return record
 
 
@@ -44,9 +50,7 @@ def document(service, **kwargs):
     doc = ModelDatabaseFixture.document(service, **kwargs)
     for node in doc["nodes"]:
         if node["component_id"] == "models.source":
-            node["component_version"] = "4"
-            node["config"]["parameters"] = deepcopy(PARAMETERS)
-            node["config"]["capacity"]["output_reserve_tokens"] = PARAMETERS["max_tokens"]
+            node["component_version"] = "6"
         if node["component_id"] == "models.chat":
             node["component_version"] = "4"
         if node["component_id"] == "prompts.group":
@@ -55,7 +59,6 @@ def document(service, **kwargs):
 
 
 def test_registered_gemini_chat_thinking_result_and_facts_survive_sqlite_reopen(tmp_path, monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "private-gemini-fixture-secret")
     observed = []
     def handler(request):
         observed.append(json.loads(request.content))
@@ -69,7 +72,7 @@ def test_registered_gemini_chat_thinking_result_and_facts_survive_sqlite_reopen(
     path = tmp_path / "gemini.sqlite"
     with closing(GraphWorkflowService(path, public_model_factory=factory)) as service:
         assert service.registry.get("models.source", "3") is None
-        assert service.registry.get("models.source", "4") is not None
+        assert service.registry.get("models.source", "6") is not None
         assert service.registry.get("models.chat", "4") is not None
         write_provider(service)
         final = ModelDatabaseFixture.execute(service, ModelDatabaseFixture.create(service, document(service)))
@@ -105,8 +108,9 @@ def test_current_registered_type_declarations_are_unchanged_and_existing_evidenc
                                (*key, digest, canonical_bytes(declaration).decode("utf-8")))
         connection.commit()
     with closing(GraphWorkflowService(path)) as service:
-        assert service.registry.data_types.get("workflow.chat-provider", 1, scope="global") is not None
-        assert service.registry.data_types.get("workflow.chat-provider", 2, scope="global") is not None
+        assert service.registry.data_types.get("workflow.chat-provider", 1, scope="global") is None
+        assert service.registry.data_types.get("workflow.chat-provider", 2, scope="global") is None
+        assert service.registry.data_types.get("workflow.chat-provider", 3, scope="global") is not None
         assert service.registry.data_types.get("MODEL_BINDING", 4) is not None
     with closing(sqlite3.connect(path)) as connection:
         assert {(scope, type_id, version): digest for scope, type_id, version, digest
@@ -115,7 +119,6 @@ def test_current_registered_type_declarations_are_unchanged_and_existing_evidenc
 
 
 def test_gemini_same_process_pause_before_dispatch_resumes_without_replay(tmp_path, monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "private-gemini-fixture-secret")
     entered, released = Event(), Event()
     observed = []
     def factory(**kwargs):
@@ -148,14 +151,13 @@ def test_gemini_same_process_pause_before_dispatch_resumes_without_replay(tmp_pa
 
 
 def test_source_protocol_mismatch_preflight_prevents_all_effects(tmp_path, monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "private-gemini-fixture-secret")
     effects = []
     with closing(GraphWorkflowService(tmp_path / "wrong-source.sqlite")) as service:
         write_provider(service)
         doc = document(service, side_effect=effects)
         for node in doc["nodes"]:
             if node["component_id"] == "models.source":
-                node["component_version"] = "2"
+                node["component_version"] = "5"
             if node["component_id"] == "models.chat":
                 node["component_version"] = "3"
         initial = ModelDatabaseFixture.create(service, doc)
@@ -173,12 +175,12 @@ def test_gemini_native_binding_and_compaction_use_same_actual_wire_estimate():
         return httpx.Response(200, json=response([{"text": "short summary"}]))
     value = fixture(handler)
     value.service.release_run(uid(2), uid(3))
-    value.config["capacity"] = {
+    value.profile["value"]["capacity"] = {
         "context_window_tokens": 32768, "output_reserve_tokens": 1024,
         "summary_max_tokens": 128, "max_cold_input_tokens": 10000,
     }
     value.service.prepare_run(workflow_session_id=uid(2), chain_run_id=uid(3),
-                              node_configs={uid(10): value.config}, records=[value.record])
+                              node_configs={uid(10): value.config}, records=[value.profile, value.record])
     value.binding = value.service.bind_model(value.source, value.config)
     value.service.accept_binding_output(workflow_session_id=uid(2), chain_run_id=uid(3),
                                        node_run_id=uid(11), binding_id=value.binding["binding_id"],

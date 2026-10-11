@@ -5,11 +5,12 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from typing import Any, Callable
-from uuid import UUID
 
 from jsonschema import Draft202012Validator, SchemaError, ValidationError
 
-from .contract_errors import ContractValidationError
+from .contract_errors import (
+    ContractValidationError, DiagnosticError as GraphDiagnosticError, require, uuid4_string,
+)
 from .contract_json import canonical_bytes, validate_json_value
 from .host_sdk import (
     DataTypeDefinition, HostContractError, HostServiceRegistry, InformationSourceRegistry,
@@ -22,34 +23,6 @@ MAX_GRAPH_NODES = 512
 MAX_GRAPH_EDGES = 4096
 MAX_CONTENT_CHARS = 1_000_000
 MAX_GRAPH_BYTES = 4_000_000
-
-
-class GraphDiagnosticError(ContractValidationError):
-    def __init__(self, code: str, message: str, *, node_id: str | None = None,
-                 port_id: str | None = None, edge_id: str | None = None,
-                 dependent_outputs: list[str] | None = None):
-        super().__init__(message)
-        self.reason_code, self.status_code = code, 400
-        self.diagnostics = [{
-            "code": code, "message": message, "node_id": node_id,
-            "port_id": port_id, "edge_id": edge_id,
-            "dependent_outputs": dependent_outputs or [],
-        }]
-
-
-def require(condition: bool, code: str, message: str, **location: Any) -> None:
-    if not condition:
-        raise GraphDiagnosticError(code, message, **location)
-
-
-def uuid4_string(value: Any) -> str:
-    try:
-        parsed = UUID(value) if type(value) is str else None
-    except (ValueError, TypeError):
-        parsed = None
-    require(parsed is not None and parsed.version == 4 and str(parsed) == value,
-            "graph_invalid_document", "Graph identities must be canonical UUID4")
-    return value
 
 
 def _validate_event_schema_references(schema: dict) -> None:
@@ -86,27 +59,35 @@ def validate_graph_document(value: Any) -> dict:
     validate_json_value(value)
     base_fields = {"schema_version", "workflow_definition_id", "revision", "name", "nodes", "edges"}
     require(type(value) is dict and type(value.get("schema_version")) is int
-            and value["schema_version"] in (1, 2),
+            and value["schema_version"] in (1, 2, 3),
             "graph_invalid_document", "Unknown graph document version")
     require(set(value) == base_fields if value["schema_version"] == 1 else
             base_fields | {"object_bindings"} <= set(value) <= base_fields | {
-                "object_bindings", "package_lock", "execution_roots", "control_edges", "event_bindings"},
+                "object_bindings", "package_lock", "execution_roots", "control_edges", "event_bindings"}
+            | ({"edit_sequence"} if value["schema_version"] == 3 else set()),
             "graph_invalid_document", "Graph document fields are invalid")
     uuid4_string(value["workflow_definition_id"])
     require(type(value["revision"]) is int and 1 <= value["revision"] <= 2**53 - 1,
             "graph_invalid_document", "Graph revision must be a positive integer")
+    if "edit_sequence" in value:
+        require(type(value["edit_sequence"]) is int and 0 <= value["edit_sequence"] <= 2**53 - 1,
+                "graph_invalid_document", "Graph edit sequence must be a nonnegative integer")
     require(type(value["name"]) is str and 0 < len(value["name"].strip()) <= 128,
             "graph_invalid_document", "Graph name must be nonempty text")
     require(type(value["nodes"]) is list and len(value["nodes"]) <= MAX_GRAPH_NODES,
             "graph_invalid_document", "Graph node array exceeds its limit")
     node_ids: set[str] = set()
     for node in value["nodes"]:
+        policy_fields = {"configuration_policy"} if value["schema_version"] == 3 else set()
         require(type(node) is dict and {
             "node_binding_id", "component_id", "component_version", "title", "position", "config",
-        } <= set(node) <= {
+        } | policy_fields <= set(node) <= {
             "node_binding_id", "component_id", "component_version", "title", "position", "config",
             "public_outputs",
-        }, "graph_invalid_document", "Graph node fields are invalid")
+        } | policy_fields, "graph_invalid_document", "Graph node fields are invalid")
+        if policy_fields:
+            from .workflow_configuration import validate_configuration_policy
+            validate_configuration_policy(node["configuration_policy"])
         identity = uuid4_string(node["node_binding_id"])
         require(identity not in node_ids, "graph_invalid_document", "Duplicate node identity")
         node_ids.add(identity)
@@ -140,7 +121,7 @@ def validate_graph_document(value: Any) -> dict:
                     for key in ("source_port_id", "target_port_id"))
                 and type(edge["order"]) is int and 0 <= edge["order"] <= 2**53 - 1,
                 "graph_invalid_document", "Graph edge ports or order are invalid", edge_id=identity)
-    if value["schema_version"] == 2:
+    if value["schema_version"] >= 2:
         require(type(value["object_bindings"]) is list and len(value["object_bindings"]) <= 1024,
                 "graph_invalid_document", "Object binding array exceeds its limit")
         object_keys: set[str] = set()
@@ -300,12 +281,6 @@ def _validate_builtin_content_value(value: Any, data_type: str) -> dict:
                 "graph_invalid_output", "PROMPT output exceeds its resource limit")
         if value["stage"] == "assembled":
             raise GraphDiagnosticError("graph_legacy_prompt_retired", "PROMPT@1 assembly is no longer supported")
-    elif data_type == "MODEL_RESOURCE":
-        require(set(value) == {"schema_version", "kind", "binding"}
-                and value["kind"] == "workflow.model-resource",
-                "graph_invalid_output", "Model resource must be a frozen reference")
-        from .model_selection import validate_model_binding
-        validate_model_binding(value["binding"])
     else:
         raise GraphDiagnosticError("graph_unknown_data_type", "Data type is not registered")
     return copy.deepcopy(value)
@@ -322,7 +297,7 @@ class NodePort:
     def to_dict(self) -> dict:
         value = {"port_id": self.port_id, "data_type": self.data_type,
                  "required": self.required, "multiple": self.multiple}
-        if self.data_schema_version != 1 or self.data_type not in {"TEXT", "PROMPT", "JSON", "MODEL_RESOURCE"}:
+        if self.data_schema_version != 1 or self.data_type not in {"TEXT", "PROMPT", "JSON"}:
             value["data_schema_version"] = self.data_schema_version
         return value
 
@@ -346,6 +321,7 @@ class NodeDefinition:
     object_accesses: tuple[dict, ...] = ()
     service_requirements: tuple[dict, ...] = ()
     config_node_references: tuple[dict, ...] = ()
+    adjustable_configuration: dict | None = None
 
     def ports(self, config: dict) -> tuple[tuple[NodePort, ...], tuple[NodePort, ...]]:
         if self.port_modes:
@@ -377,6 +353,8 @@ class NodeDefinition:
             value["service_requirements"] = copy.deepcopy(list(self.service_requirements))
         if self.config_node_references:
             value["config_node_references"] = copy.deepcopy(list(self.config_node_references))
+        if self.adjustable_configuration is not None:
+            value["adjustable_configuration"] = copy.deepcopy(self.adjustable_configuration)
         return value
 
 
@@ -408,7 +386,7 @@ class NodeRegistry:
         self.package_lock: tuple[dict, ...] = ()
         self.execution_package_lock: tuple[dict, ...] = ()
         self._frozen = False
-        for data_type in ("TEXT", "PROMPT", "JSON", "MODEL_RESOURCE"):
+        for data_type in ("TEXT", "PROMPT", "JSON"):
             if self.data_types.get(data_type, 1, scope="content") is None:
                 self.data_types.register(DataTypeDefinition(
                     data_type, 1, {}, scope="content", max_bytes=MAX_GRAPH_BYTES,
@@ -438,6 +416,9 @@ class NodeRegistry:
                     "runtime_missing_executor", "Hosted node requires its exact executor registration")
         require(definition.input_storage in ("inline", "references"),
                 "graph_invalid_type", "Unknown input storage policy")
+        from .workflow_configuration import validate_adjustable_configuration
+        validate_adjustable_configuration(definition.component_id, definition.component_version,
+                                          definition.adjustable_configuration)
         self.services.grants(definition.service_requirements, definition.capabilities)
         require(settlement_builder is None or callable(settlement_builder), "graph_invalid_type",
                 "Settlement builder must be callable")

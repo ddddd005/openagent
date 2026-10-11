@@ -2,6 +2,8 @@
 
 from copy import deepcopy
 import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -12,18 +14,20 @@ from phase1_agent.capability_packages import CapabilityPackageLoader
 from phase1_agent.content_contracts import create_content_package
 from phase1_agent.contract_errors import ContractValidationError, ModelRequestError
 from phase1_agent.contracts import ModelResponse, ModelToolCall
+from phase1_agent.credential_store import LocalCredentialBroker, PrivateCredentialStore
 from phase1_agent.graph_contracts import GraphCompiler
 from phase1_agent.graph_execution import execute_graph
 from phase1_agent.model_contract import (
-    CHAT_PROVIDER_TYPE, validate_chat_provider, validate_public_model_binding,
+    CHAT_PROVIDER_TYPE, MODEL_PROFILE_TYPE, validate_chat_provider, validate_public_model_binding,
     validate_public_model_result,
 )
 from phase1_agent.model_package import create_model_package, MODEL_FRONTEND_EXTENSIONS
 from phase1_agent.model_service import (
-    EnvironmentCredentialBroker, ModelCapabilityAdapter, PublicModelService, create_chat_transport,
+    ModelCapabilityAdapter, PublicModelService, create_chat_transport,
 )
 from phase1_agent.prompt_contract import assemble_prompt
 from phase1_agent.prompt_package import create_prompt_package
+from credential_test_support import TestProtector, mutate_test_credential
 
 
 def test_model_package_declares_exact_current_resource_management_and_source_editor():
@@ -38,7 +42,7 @@ def test_model_package_declares_exact_current_resource_management_and_source_edi
     assert package.manifest.to_dict()["exports"]["frontend_extensions"] == [
         {"extension_id": row["extension_id"]} for row in MODEL_FRONTEND_EXTENSIONS]
     fields = next(row for row in loaded.frontend_extensions if row["kind"] == "field-editor")
-    assert fields["binding"]["target"] == {"component_id": "models.source", "component_version": "2"}
+    assert fields["binding"]["target"] == {"component_id": "models.source", "component_version": "5"}
 
 
 def uid(number):
@@ -46,9 +50,15 @@ def uid(number):
 
 
 def source_config():
+    return {"reference": {"envelope_version": 1, "scope": "workspace",
+                          "type_id": MODEL_PROFILE_TYPE, "resource_id": uid(1)}}
+
+
+def profile_config():
     return {
-        "reference": {"envelope_version": 1, "scope": "workspace",
-                      "type_id": CHAT_PROVIDER_TYPE, "resource_id": uid(1)},
+        "name": "Unit model configuration", "protocol": "chat", "enabled": True,
+        "provider": {"envelope_version": 1, "scope": "workspace",
+                     "type_id": CHAT_PROVIDER_TYPE, "resource_id": uid(5)},
         "parameters": {"model": "deepseek-test", "max_tokens": 32,
                        "temperature": 0.5, "thinking": "disabled", "stream": False},
         "capacity": {"context_window_tokens": 100000, "output_reserve_tokens": 128,
@@ -59,12 +69,19 @@ def source_config():
 class BoundaryFixture:
     def __init__(self, *, transport=None):
         self.config = source_config()
-        self.record = {
+        self.profile = {
             **self.config["reference"], "data_schema_version": 1, "update_sequence": 1,
-            "value": {"name": "Test", "protocol": "chat", "base_url": "https://example.test",
-                      "credential_ref": "env:DEEPSEEK_API_KEY", "enabled": True},
+            "value": profile_config(),
         }
-        self.environ = {"DEEPSEEK_API_KEY": "private-fixture-secret"}
+        self.record = {
+            **self.profile["value"]["provider"], "data_schema_version": 3, "update_sequence": 1,
+            "value": {"name": "Test", "protocol": "chat", "base_url": "https://example.test",
+                      "credential_ref": "local:" + uid(99), "enabled": True},
+        }
+        self._private_directory = TemporaryDirectory(prefix="openagent-offline-model-")
+        self.credentials = PrivateCredentialStore(
+            Path(self._private_directory.name) / "credentials.sqlite", TestProtector())
+        self.set_credential("private-fixture-secret")
         self.facts, self.factory_args = [], []
         self.calls, self.closes = 0, 0
         self.fail_stage = None
@@ -75,16 +92,19 @@ class BoundaryFixture:
         self.consumer = self.context(20, 21, ("models:call",))
         self.service = PublicModelService(
             provider_reader=lambda reference: deepcopy(self.record),
-            credential_broker=EnvironmentCredentialBroker(self.environ),
+            credential_broker=LocalCredentialBroker(self.credentials),
             accept_fact=self.accept, resolve_input=self.resolve,
             transport_factory=self.factory,
         )
         self.service.prepare_run(workflow_session_id=uid(2), chain_run_id=uid(3),
-                                 node_configs={uid(10): self.config}, records=[self.record])
+                                 node_configs={uid(10): self.config}, records=[self.profile, self.record])
         self.binding = self.service(self.source, "models:resolve", "bind-native-model", self.config)
         self.service.accept_binding_output(workflow_session_id=uid(2), chain_run_id=uid(3),
                                            node_run_id=uid(11), binding_id=self.binding["binding_id"],
                                            output_id=uid(30))
+
+    def set_credential(self, secret):
+        return mutate_test_credential(self.credentials, self.record["value"]["credential_ref"], secret)
 
     def context(self, node, invocation, capabilities):
         refs = {"model": [{"edge_id": uid(40), "output_id": uid(30), "order": 0}],
@@ -132,15 +152,16 @@ def test_model_package_exports_without_agent_dependency():
     loaded = CapabilityPackageLoader((create_content_package(), create_model_package())).load(
         {"workflow.models": "1.0.0"})
     assert loaded.registry.get("workflow.agent", "1") is None
-    assert loaded.registry.get("models.source", "2").resource_dependencies_declaration is not None
+    assert loaded.registry.get("models.source", "5").resource_dependencies_declaration is not None
     assert loaded.registry.get("models.chat", "3").definition.input_storage == "references"
-    assert loaded.registry.data_types.get(CHAT_PROVIDER_TYPE, 1, scope="global") is not None
+    assert loaded.registry.data_types.get(CHAT_PROVIDER_TYPE, 3, scope="global") is not None
     assert loaded.package_lock == ({"package_id": "workflow.content", "version": "1.0.0"},
                                    {"package_id": "workflow.models", "version": "1.0.0"})
 
 
 @pytest.mark.parametrize("changes", [
     {"api_key": "secret"}, {"credential_ref": "env:ARBITRARY_KEY"},
+    {"credential_ref": "env:DEEPSEEK_API_KEY"}, {"credential_ref": "env:GEMINI_API_KEY"},
     {"base_url": "https://user:secret@example.test"},
     {"base_url": "https://example.test?token=secret"}, {"base_url": "http://remote.test"},
 ])
@@ -148,6 +169,22 @@ def test_provider_rejects_secret_fields_and_uncontrolled_connections(changes):
     fixture = BoundaryFixture()
     with pytest.raises(ContractValidationError):
         validate_chat_provider({**fixture.record["value"], **changes})
+
+
+def test_model_service_requires_explicit_private_credential_broker(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "retired-route-must-not-be-read")
+    with pytest.raises(ContractValidationError) as rejected:
+        PublicModelService(provider_reader=lambda reference: None, accept_fact=lambda context, fact: None,
+                           resolve_input=lambda context, port: None)
+    assert rejected.value.reason_code == "model_credential_broker_unavailable"
+
+
+def test_saved_private_key_is_used_instead_of_any_environment_key(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "retired-environment-key")
+    fixture = BoundaryFixture()
+    fixture.chat()
+    assert fixture.factory_args[0]["api_key"] == "private-fixture-secret"
+    assert "retired-environment-key" not in json.dumps(fixture.facts)
 
 
 def test_binding_and_request_facts_are_secret_free_and_reentry_never_redispatches():
@@ -161,6 +198,8 @@ def test_binding_and_request_facts_are_secret_free_and_reentry_never_redispatche
     assert fixture.facts[0]["details"]["messages"] == [
         {"kind": "text", "role": "user", "content": "Hello"}]
     assert fixture.facts[0]["details"]["input_refs"]["model"] == fixture.consumer.refs["model"]
+    assert fixture.facts[0]["details"]["provider_reference"] == fixture.profile["value"]["provider"]
+    assert fixture.facts[0]["details"]["configuration_reference"] == fixture.config["reference"]
     public = json.dumps([fixture.binding, fixture.facts, result])
     assert "private-fixture-secret" not in public
     assert "credential" not in public
@@ -177,7 +216,7 @@ def test_current_edit_keeps_frozen_address_parameters_and_new_run_uses_current()
     fixture.chat()
     assert fixture.factory_args[0]["provider"]["base_url"] == "https://example.test"
     fixture.service.prepare_run(workflow_session_id=uid(2), chain_run_id=uid(4),
-                               node_configs={uid(10): fixture.config}, records=[fixture.record])
+                               node_configs={uid(10): fixture.config}, records=[fixture.profile, fixture.record])
     context = fixture.context(10, 12, ("models:resolve",))
     context.chain_run_id = uid(4)
     binding = fixture.service.bind_model(context, fixture.config)
@@ -185,20 +224,72 @@ def test_current_edit_keeps_frozen_address_parameters_and_new_run_uses_current()
     assert fixture.service.active_frame_count == 2
 
 
-@pytest.mark.parametrize("policy_change", ["disabled", "credential_changed", "credential_missing"])
+@pytest.mark.parametrize("policy_change", ["disabled", "credential_changed", "credential_missing",
+                                         "credential_reference_invalid"])
 def test_dispatch_boundary_rechecks_revocation_and_credential_lease(policy_change):
     fixture = BoundaryFixture()
     if policy_change == "disabled":
         fixture.record["value"]["enabled"] = False
     elif policy_change == "credential_changed":
-        fixture.environ["DEEPSEEK_API_KEY"] = "rotated-secret"
+        fixture.set_credential("rotated-secret")
+    elif policy_change == "credential_reference_invalid":
+        fixture.record["value"]["credential_ref"] = "env:DEEPSEEK_API_KEY"
     else:
-        fixture.environ.pop("DEEPSEEK_API_KEY")
+        fixture.set_credential(None)
     with pytest.raises(ContractValidationError) as caught:
         fixture.chat()
     assert fixture.calls == 0
     assert caught.value.reason_code == "model_not_dispatched"
     assert fixture.facts[-1]["details"]["classification"] == "not_dispatched"
+    expected = {"disabled": ("model_provider_disabled", "enable_provider"),
+                "credential_changed": ("model_credential_changed", "save_provider_key"),
+                "credential_missing": ("model_credential_unavailable", "save_provider_key"),
+                "credential_reference_invalid": ("credential_reference_invalid", "save_provider_key")}
+    cause, recovery = expected[policy_change]
+    diagnostic = caught.value.diagnostics[0]
+    assert diagnostic["cause_code"] == cause and diagnostic["recovery"] == recovery
+    assert diagnostic["step"] == "credential_authorization"
+    assert fixture.facts[-1]["details"]["diagnostic"]["cause_code"] == cause
+    with pytest.raises(ContractValidationError) as repeated:
+        fixture.chat()
+    assert repeated.value.reason_code == "model_not_dispatched"
+    assert repeated.value.diagnostics == caught.value.diagnostics
+    assert fixture.calls == 0 and len(fixture.facts) == 3
+
+
+def test_transport_setup_unknown_exception_is_sanitized_and_not_replayed(caplog):
+    fixture = BoundaryFixture()
+
+    def fail(**kwargs):
+        raise RuntimeError("private-fixture-secret arbitrary SDK error")
+
+    fixture.service._factory = fail
+    with pytest.raises(ContractValidationError) as caught:
+        fixture.chat()
+    diagnostic = caught.value.diagnostics[0]
+    assert diagnostic["cause_code"] == "internal_error"
+    assert diagnostic["step"] == "transport_setup"
+    assert diagnostic["recovery"] == "inspect_server_diagnostics"
+    assert "private-fixture-secret" not in json.dumps([diagnostic, fixture.facts])
+    assert diagnostic["request_id"] in caplog.text and "RuntimeError" in caplog.text
+    assert "private-fixture-secret" not in caplog.text
+    assert fixture.calls == 0
+
+
+def test_model_facade_retains_only_explicit_public_dispatch_diagnostic():
+    fixture = BoundaryFixture()
+    context = fixture.consumer
+    context.host_call = lambda capability, operation, payload: fixture.service(
+        context, capability, operation, payload)
+    adapter = ModelCapabilityAdapter(context, fixture.binding)
+    fixture.set_credential(None)
+    with pytest.raises(ModelRequestError) as caught:
+        adapter.generate([{"kind": "text", "role": "user", "content": "Hello"}], [])
+    assert caught.value.code == "model_not_dispatched"
+    diagnostic = caught.value.public_diagnostic.to_dict()
+    assert diagnostic["cause_code"] == "model_credential_unavailable"
+    assert diagnostic["recovery"] == "save_provider_key"
+    assert fixture.calls == 0
 
 
 @pytest.mark.parametrize("stage", ["request", "attempt"])
@@ -458,7 +549,7 @@ def test_no_agent_graph_assembles_prompt_calls_model_and_accepts_result():
         create_content_package(), create_prompt_package(), create_model_package(),
     )).load({"workflow.prompts": "1.0.0", "workflow.models": "1.0.0"}).registry
     def node(component, number, config=None):
-        version = "3" if component == "models.chat" else "2"
+        version = "5" if component == "models.source" else "3" if component == "models.chat" else "2"
         return {"node_binding_id": uid(number), "component_id": component, "component_version": version,
                 "title": component, "position": {"x": 0, "y": 0},
                 "config": deepcopy(config if config is not None
@@ -499,7 +590,7 @@ def test_no_agent_graph_assembles_prompt_calls_model_and_accepts_result():
     # Recreate frame to use the graph's precise producer invocation.
     fixture.service.release_run(uid(2), uid(3))
     fixture.service.prepare_run(workflow_session_id=uid(2), chain_run_id=uid(3),
-                               node_configs={uid(10): fixture.config}, records=[fixture.record])
+                               node_configs={uid(10): fixture.config}, records=[fixture.profile, fixture.record])
     fixture.service._resolve_input = lambda context, port: accepted[
         context.input_artifact_refs(port)[0]["output_id"]]
     result = execute_graph(plan, registry, workflow_session_id=uid(2), chain_run_id=uid(3),

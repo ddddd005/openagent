@@ -28,7 +28,6 @@ from workflow_test_support import AgentTransportFixture, graph, output, run
 
 
 def test_service_close_accepts_inflight_response_once_and_restart_cannot_redispatch(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-close-private-secret")
     fixture = AgentTransportFixture(gate=True)
     database = tmp_path / "close-inflight.sqlite"
     service = GraphWorkflowService(database, public_model_factory=fixture.factory)
@@ -85,7 +84,6 @@ def test_service_close_accepts_inflight_response_once_and_restart_cannot_redispa
 
 
 def test_agent_pause_while_mock_model_inflight_retains_response_and_resumes_without_redispatch(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-agent-private-secret")
     fixture = AgentTransportFixture(gate=True)
     with closing(GraphWorkflowService(tmp_path / "agent-paused.sqlite",
                                       public_model_factory=fixture.factory)) as service:
@@ -130,7 +128,6 @@ def test_agent_pause_while_mock_model_inflight_retains_response_and_resumes_with
 @pytest.mark.parametrize("outcome", ["error", "outcome_unknown", "interrupted"])
 def test_two_round_history_preserves_typed_error_and_unknown_outcomes_without_success_fiction(
         tmp_path, monkeypatch, outcome):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-agent-private-secret")
     fixture, invocations = AgentTransportFixture(batch=True), []
 
     def inspect(text):

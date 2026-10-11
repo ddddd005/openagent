@@ -8,9 +8,9 @@ const packageLock = ["content", "tools", "prompts", "models", "agents", "context
 const base = { component_version: "1", display_name: "Node", category: "Test", config_schema: {},
   default_config: {}, inputs: [], outputs: [], is_output: false, executable: true };
 const catalog: GraphNodeType[] = [...graphClone(frontendCatalog),
-  { ...base, component_id: "models.source", component_version: "2", default_config: {
-    reference: { envelope_version: 1, scope: "workspace", type_id: "workflow.chat-provider", resource_id: "default-provider" },
-    parameters: { model: "default-model", thinking: "disabled", stream: false } } },
+  { ...base, component_id: "models.source", component_version: "5", default_config: {
+    reference: { envelope_version: 1, scope: "workspace", type_id: "workflow.model-profile",
+      resource_id: "00000000-0000-4000-8000-000000000010" } } },
   { ...base, component_id: "prompts.item", component_version: "2", default_config: { id: "00000000-0000-4000-8000-000000000001",
     text: "", presentation: { role: "system", placement: "before", depth: null, order: 0, enabled: true }, metadata: {},
     lifecycle: "per_request", compaction: "never" } },
@@ -20,8 +20,8 @@ const catalog: GraphNodeType[] = [...graphClone(frontendCatalog),
   { ...base, component_id: "context.merge", component_version: "4" },
   { ...base, component_id: "agents.execute", component_version: "4" },
 ];
-const model = { reference: { envelope_version: 1, scope: "workspace", type_id: "workflow.chat-provider", resource_id: "selected-provider" },
-  parameters: { model: "selected-model", thinking: "disabled", stream: false } };
+const model = { reference: { envelope_version: 1 as const, scope: "workspace", type_id: "workflow.model-profile" as const,
+  resource_id: "00000000-0000-4000-8000-000000000020" } };
 
 describe("serial Agent example", () => {
   it("keeps original input as both roots and uses A output as explicit non-system B material", () => {
@@ -37,9 +37,11 @@ describe("serial Agent example", () => {
       target_node_id: b.node_binding_id, target_port_id: "materials", order: 1 }));
     expect(handoff.config.presentation).toEqual({ role: "user", placement: "after", depth: null, order: 0, enabled: true });
     expect(doc.nodes.find(row => row.component_id === "models.source")!.config).toEqual(model);
-    model.parameters.model = "changed";
-    expect((doc.nodes.find(row => row.component_id === "models.source")!.config.parameters as Record<string, unknown>).model).toBe("selected-model");
-    model.parameters.model = "selected-model";
+    const selected = model.reference.resource_id;
+    model.reference.resource_id = crypto.randomUUID();
+    expect((doc.nodes.find(row => row.component_id === "models.source")!.config.reference as Record<string, unknown>).resource_id).toBe(selected);
+    expect(Object.keys(doc.nodes.find(row => row.component_id === "models.source")!.config)).toEqual(["reference"]);
+    model.reference.resource_id = selected;
   });
   it("authorizes separate bound objects and shares each exact view between assembly and merge", () => {
     const doc = createSerialAgentDemo(catalog, packageLock, model);
@@ -84,7 +86,8 @@ describe("serial Agent example", () => {
   it("creates an explicitly unconfigured model without inheriting a hidden default resource", () => {
     const doc = createSerialAgentDemo(catalog, packageLock);
     expect(doc.nodes.find(row => row.component_id === "models.source")!.config).toMatchObject({
-      reference: { resource_id: "" }, parameters: { model: "" } });
+      reference: { type_id: "workflow.model-profile", resource_id: "" } });
+    expect(Object.keys(doc.nodes.find(row => row.component_id === "models.source")!.config)).toEqual(["reference"]);
   });
   it("rejects missing exact versions and package locks instead of falling back", () => {
     expect(() => createSerialAgentDemo(catalog.filter(row => row.component_id !== "context.merge"), packageLock, model))
@@ -95,13 +98,11 @@ describe("serial Agent example", () => {
 });
 
 describe("native compacting serial example", () => {
-  const capacity = { context_window_tokens: 0, output_reserve_tokens: 1024, summary_max_tokens: 128,
-    max_cold_input_tokens: 0 };
   const nativeCatalog: GraphNodeType[] = [...catalog.filter(row => !row.component_id.startsWith("models.")
     && !row.component_id.startsWith("prompts.") && !row.component_id.startsWith("context.")
     && row.component_id !== "agents.execute"),
-    { ...base, component_id: "models.source", component_version: "2", default_config: {
-      reference: model.reference, parameters: { ...model.parameters, max_tokens: 1024 }, capacity } },
+    { ...base, component_id: "models.source", component_version: "5", default_config: {
+      reference: model.reference } },
     { ...base, component_id: "prompts.item", component_version: "2", default_config: {
       ...(catalog.find(row => row.component_id === "prompts.item")!.default_config),
       lifecycle: "per_request", compaction: "never" } },
@@ -113,11 +114,12 @@ describe("native compacting serial example", () => {
     { ...base, component_id: "agents.compaction-policy", default_config: {
       enabled: true, trigger_tokens: 0, keep_depth: 2, summary_prompt: "", target_tokens: null } },
   ];
-  it("uses only explicitly versioned native paths and leaves provider capacity unconfigured", () => {
+  it("uses only explicitly versioned native paths and leaves the global model reference unconfigured", () => {
     const doc = createCompactingSerialAgentDemo(nativeCatalog, packageLock);
     expect(isGraphDocument(doc)).toBe(true);
     expect(doc.nodes.find(row => row.component_id === "models.source")!).toMatchObject({
-      component_version: "2", config: { capacity, reference: { resource_id: "" }, parameters: { model: "", max_tokens: 1024 } } });
+      component_version: "5", config: { reference: { type_id: "workflow.model-profile", resource_id: "" } } });
+    expect(Object.keys(doc.nodes.find(row => row.component_id === "models.source")!.config)).toEqual(["reference"]);
     expect(doc.nodes.filter(row => row.component_id.startsWith("context."))).toHaveLength(6);
     expect(doc.nodes.filter(row => row.component_id.startsWith("context.")).every(row => row.component_version === "4")).toBe(true);
     expect(doc.nodes.filter(row => row.component_id === "agents.execute").every(row => row.component_version === "4")).toBe(true);
@@ -128,9 +130,8 @@ describe("native compacting serial example", () => {
       component_id: "prompts.source", component_version: "2",
       config: { lifecycle: "per_request", compaction: "never", presentation: { role: "user", placement: "after" } } });
   });
-  it("wires independent policies and exact capacity configuration without sharing mutable drafts", () => {
-    const configured = { ...model, parameters: { ...model.parameters, max_tokens: 1024 },
-      capacity: { ...capacity, context_window_tokens: 128000, max_cold_input_tokens: 128000 } };
+  it("wires independent policies and an exact global model reference without sharing mutable drafts", () => {
+    const configured = graphClone(model);
     const doc = createCompactingSerialAgentDemo(nativeCatalog, packageLock, configured);
     expect(doc.nodes.find(row => row.component_id === "models.source")!.config).toEqual(configured);
     const policies = doc.nodes.filter(row => row.component_id === "agents.compaction-policy");
@@ -141,9 +142,9 @@ describe("native compacting serial example", () => {
         target_node_id: doc.nodes.find(row => row.title === `Agent ${label}`)!.node_binding_id,
         target_port_id: "compaction_policy" }));
     }
-    configured.capacity.summary_max_tokens = 42;
-    expect((doc.nodes.find(row => row.component_id === "models.source")!.config.capacity as typeof capacity)
-      .summary_max_tokens).toBe(128);
+    configured.reference.resource_id = crypto.randomUUID();
+    expect(doc.nodes.find(row => row.component_id === "models.source")!.config).toEqual(model);
+    expect(Object.keys(doc.nodes.find(row => row.component_id === "models.source")!.config)).toEqual(["reference"]);
     expect(() => createCompactingSerialAgentDemo(catalog, packageLock)).toThrow("agents.compaction-policy@1");
   });
 });

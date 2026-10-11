@@ -15,8 +15,9 @@ from phase1_agent.graph_service import GraphWorkflowService
 from workflow_test_support import output, run
 from test_context_native_integration import native_graph
 from test_graph_service import create
-from test_model_package import source_config
+from test_model_package import profile_config, source_config
 from test_tavern_chat_integration import add_chat, public_read
+from credential_test_support import seed_service_credential
 
 
 class GeminiGraphFixture:
@@ -55,19 +56,25 @@ class GeminiGraphFixture:
 
     @staticmethod
     def write_provider(service):
-        record = {**source_config()["reference"], "data_schema_version": 2, "update_sequence": 1,
+        reference = seed_service_credential(service, secret="offline-fixture-not-a-real-key")
+        record = {**profile_config()["provider"], "data_schema_version": 3, "update_sequence": 1,
                   "value": {"name": "Offline Gemini", "protocol": "gemini",
                             "base_url": "https://generativelanguage.googleapis.com/v1beta",
-                            "credential_ref": "env:GEMINI_API_KEY", "enabled": True}}
+                            "credential_ref": reference, "enabled": True}}
         service.save_global_resource(record, expected_sequence=0, idempotency_key=str(uuid4()))
+        profile = profile_config()
+        profile.update(protocol="gemini")
+        profile["parameters"].update(model="gemini-3-flash-preview",
+            thinking={"mode": "level", "level": "low", "include_summary": True})
+        service.save_global_resource({
+            **source_config()["reference"], "data_schema_version": 1, "update_sequence": 1, "value": profile,
+        }, expected_sequence=0, idempotency_key=str(uuid4()))
 
 
 def gemini_graph(service, route):
     doc, _ = native_graph(service, policy=False, once=False)
     source = next(node for node in doc["nodes"] if node["component_id"] == "models.source")
-    source["component_version"] = "4"
-    source["config"]["parameters"].update(model="gemini-3-flash-preview",
-        thinking={"mode": "level", "level": "low", "include_summary": True})
+    source["component_version"] = "6"
     agent = next(node for node in doc["nodes"] if node["component_id"] == "agents.execute")
     agent["component_version"] = "8"
     current = next(node for node in doc["nodes"] if node["component_id"] == "tools.current-input")
@@ -102,7 +109,6 @@ def read_public_thinking(service, view):
 
 @pytest.mark.parametrize("route", ["native"])
 def test_gemini_agent_tools_context_cold_reopen_and_public_tavern(route, tmp_path, monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "offline-fixture-not-a-real-key")
     fixture = GeminiGraphFixture()
     database = tmp_path / (route + ".sqlite")
     with closing(GraphWorkflowService(database, public_model_factory=fixture.factory)) as service:

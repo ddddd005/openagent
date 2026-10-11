@@ -149,7 +149,6 @@ def assert_serial_packages(service):
 def test_serial_two_rounds_distinct_contexts_exact_handoff_and_completed_checkpoint(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-serial-test")
     transport = SerialTransport()
     database = tmp_path / "serial.sqlite"
     with closing(GraphWorkflowService(database, public_model_factory=transport.factory)) as service:
@@ -196,7 +195,6 @@ def test_serial_two_rounds_distinct_contexts_exact_handoff_and_completed_checkpo
 
 
 def test_serial_copy_remaps_agents_keeps_parent_future_outside_child(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-serial-copy")
     transport = SerialTransport()
     with closing(GraphWorkflowService(tmp_path / "serial-copy.sqlite", public_model_factory=transport.factory)) as service:
         assert_serial_packages(service)

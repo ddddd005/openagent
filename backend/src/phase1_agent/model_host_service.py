@@ -16,8 +16,7 @@ _RESULT_SCHEMA = {"type": "object", "required": ["schema_version", "kind", "bind
                                  "binding_id": {"type": "string"}, "request_id": {"type": "string"}}}
 MODEL_SERVICE_DEFINITION = ServiceDefinition(MODEL_SERVICE_REF, (
     ServiceOperation("models:resolve", "bind-native-model", object_schema({
-        "reference": {"type": "object"}, "parameters": {"type": "object"},
-        "capacity": {"type": "object"}}),
+        "reference": {"type": "object"}}),
         {**_BINDING_SCHEMA, "properties": {
             **_BINDING_SCHEMA["properties"], "schema_version": {"enum": [2, 4]}}}),
     ServiceOperation("models:call", "chat", object_schema({"binding_id": {"type": "string"}}), _RESULT_SCHEMA),

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from threading import Event
+from threading import Event, RLock
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -119,7 +119,7 @@ def test_current_start_reopen_and_next_head_use_current_resource_host(tmp_path):
         assert reopened._resource_frames == {}
 
 
-def test_current_pause_resume_keeps_start_frame_and_next_run_uses_current_head(tmp_path):
+def test_current_pause_resume_reads_saved_content_without_changing_prior_facts(tmp_path):
     installed, record = independent_registry().detached(), prompt_record()
     entered, release = Event(), Event()
 
@@ -153,7 +153,7 @@ def test_current_pause_resume_keeps_start_frame_and_next_run_uses_current_head(t
             service.wait(chain_id)
         paused = service.get_session(initial["workflow_session_id"])
         assert paused["status"] == "paused"
-        assert service._resource_frames[chain_id][uid(11)] == [record]
+        assert service._resource_frames[chain_id][uid(11)] == []
         changed = deepcopy(record)
         changed["update_sequence"] = 2
         changed["value"]["members"][0]["text"] = "updated while paused"
@@ -163,7 +163,7 @@ def test_current_pause_resume_keeps_start_frame_and_next_run_uses_current_head(t
         service.wait(chain_id)
         completed = service.get_session(initial["workflow_session_id"])
         assert completed["status"] == "succeeded"
-        assert completed["nodes"][-1]["outputs"]["output"]["items"][0]["text"] == "frozen prompt"
+        assert completed["nodes"][-1]["outputs"]["output"]["items"][0]["text"] == "updated while paused"
         assert service._resource_frames == {}
         next_round = run(service, completed)
         assert next_round["nodes"][-1]["outputs"]["output"]["items"][0]["text"] == "updated while paused"
@@ -260,7 +260,9 @@ def test_dependency_callback_failure_and_detached_deduplication():
 
 class PreflightHost(GraphResourceHost):
     def __init__(self, entries, records):
-        self.registry = SimpleNamespace(get=lambda component, version: entries[component])
+        types = CapabilityPackageLoader((create_content_package(), create_prompt_package())).load(
+            {"workflow.prompts": "1.0.0"}).registry.data_types
+        self.registry = SimpleNamespace(get=lambda component, version: entries[component], data_types=types)
         self.records = records
         self.reads = []
 
@@ -369,18 +371,22 @@ def test_current_frame_authorization_uses_full_identity(field, value):
 @pytest.mark.parametrize("frames", [{}, {uid(999): {uid(10): [prompt_record()]}},
                                   {uid(60): {uid(999): [prompt_record()]}},
                                   {uid(60): {uid(10): [prompt_record(scope="workspace")]}}])
-def test_declared_resource_never_falls_back_when_exact_frame_is_missing(frames):
+def test_declared_model_resource_never_falls_back_when_exact_frame_is_missing(frames):
     record = prompt_record()
+    record["type_id"] = "workflow.chat-provider"
     host = SimpleNamespace(_resource_frames=frames)
     with pytest.raises(ContractValidationError) as failure:
         GraphResourceHost._read_current_resource(host, resource_context(identity(record)), identity(record))
     assert failure.value.reason_code == "recovery_unavailable"
 
 
-def test_current_frame_returns_detached_frozen_record_through_current_host():
+def test_current_content_read_returns_detached_saved_value_without_a_run_frame():
     record = prompt_record()
     host = GraphResourceHost()
-    host._resource_frames = {uid(60): {uid(10): [record]}}
+    host._resource_frames = {}
+    host._lock = RLock()
+    host._store = lambda: SimpleNamespace(close=lambda: None)
+    host._global_store = lambda store: SimpleNamespace(get=lambda reference: record)
     context = resource_context(identity(record))
     returned = GraphResourceHost._read_current_resource(host, context, identity(record))
     returned["value"]["members"][0]["text"] = "caller edit"

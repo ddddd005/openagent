@@ -2,11 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { createNodeConfigurationAccess } from "./workflowNodeConfiguration";
 import { modelFrontendExtensions } from "../plugins/modelFrontendManifest";
 import type { WorkflowNodeConfigurationRequest } from "../plugins/workflowFrontendSdk";
+import { modelProfileIdentity, newModelProfile, newProvider } from "../domain/workflowModelResources";
 
 const request = (): WorkflowNodeConfigurationRequest => ({
-  workflowId: crypto.randomUUID(), nodeId: crypto.randomUUID(), componentId: "models.source", componentVersion: "2",
-  expectedConfig: { reference: {}, parameters: {} }, patch: { parameters: { model: "selected" } },
-  extensionId: "workflow.models.node-fields-v2", lifecycle: "origin",
+  workflowId: crypto.randomUUID(), nodeId: crypto.randomUUID(), componentId: "models.source", componentVersion: "5",
+  expectedConfig: {}, patch: { reference: modelProfileIdentity(newModelProfile(newProvider())) },
+  extensionId: "workflow.models.node-fields-v5", lifecycle: "origin",
 });
 describe("trusted package configuration access", () => {
   it("rejects asynchronous late edits after workflow/lifecycle changes or package unload", () => {

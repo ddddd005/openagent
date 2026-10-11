@@ -84,6 +84,14 @@ def dispatch_graph(service, method, path, data=None):
         return platform
     if method == "GET" and path in (prefix + "/node-types", prefix + "/node-types/v2"):
         return _query(application, "catalog.node-types", {"protocol_version": 2 if path.endswith("/v2") else 1})
+    if method == "GET" and path == prefix + "/definitions":
+        return _query(application, "definition.list")
+    management = re.fullmatch(prefix + r"/definitions/([^/]+)/(archive|delete)", path)
+    if method == "POST" and management:
+        require(uuid_value(management[1]), "not_found", "Definition not found", 404)
+        require(type(data) is dict and "identity" not in data,
+                "invalid_request", "Definition identity is supplied by the route")
+        return _command(application, "definition." + management[2], {**data, "identity": management[1]})
     history = re.fullmatch(prefix + r"/sessions/([^/]+)/runs/([^/]+)", path)
     if method == "GET" and history:
         require(uuid_value(history[1]) and uuid_value(history[2]), "not_found", "Execution not found", 404)
@@ -99,7 +107,7 @@ def dispatch_graph(service, method, path, data=None):
             return _query(application, "definition.sessions", {"workflow_definition_id": match[1]})
         return _query(application, "definition.read",
                       {"identity": match[1], "revision": int(match[2]) if match[2] else None})
-    match = re.fullmatch(prefix + r"/sessions/([^/]+)(?:/(runs|control|copy|rebind|data|consumer|consumer/runs|consumer/control|actions|consumer/actions|outputs/public|outputs/read|outputs/history|candidates|candidates/select|candidates/fork|events/submit|events/bindings|events/read|consumer/events/submit|consumer/events/bindings|consumer/events/read))?", path)
+    match = re.fullmatch(prefix + r"/sessions/([^/]+)(?:/(runs|control|copy|rebind|archive|delete|data|consumer|consumer/runs|consumer/control|actions|consumer/actions|outputs/public|outputs/read|outputs/history|candidates|candidates/select|candidates/fork|events/submit|events/bindings|events/read|consumer/events/submit|consumer/events/bindings|consumer/events/read))?", path)
     if match:
         require(uuid_value(match[1]), "not_found", "Session not found", 404)
         reads = {None: "session.read", "consumer": "consumer.read", "outputs/public": "output.list",
@@ -107,12 +115,14 @@ def dispatch_graph(service, method, path, data=None):
         if method == "GET" and match[2] in reads:
             return _query(application, reads[match[2]], session_id=match[1])
     require(method == "POST", "not_found", "Graph route not found", 404)
-    global_commands = {"/definitions": "definition.save", "/sessions": "session.create",
+    global_commands = {"/definitions": "definition.save", "/definitions/update": "definition.update",
+                       "/sessions": "session.create",
                        "/consumer/sessions": "consumer.session.create"}
     route = path[len(prefix):]
     if route in global_commands:
         return _command(application, global_commands[route], data)
     commands = {"runs": "run.start", "control": "run.control", "copy": "session.copy",
+                "archive": "session.archive", "delete": "session.delete",
                 "rebind": "session.rebind", "data": "session.data.update",
                 "consumer/runs": "consumer.run.start", "consumer/control": "consumer.run.control",
                 "events/submit": "event.submit", "consumer/events/submit": "consumer.event.submit",

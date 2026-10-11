@@ -10,14 +10,13 @@ from jsonschema import Draft202012Validator
 
 from .adapter import ProviderResponseError, _NON_SUCCESS_CONTENT, _TOOL_STATUSES
 from .contract_json import loads_strict, validate_json_value
-from .contract_errors import ContractValidationError
+from .contract_errors import ContractValidationError, require
 from .contracts import ModelResponse, ModelToolCall
 from .frozen_model import FrozenModelParameters
 from .gemini_capabilities import (
     GEMINI_BASE_URL, GEMINI_PROTOCOL, model_capability, thinking_wire,
     validate_provider_parameters,
 )
-from .graph_contracts import require
 from .provider_metadata import validate_provider_metadata
 
 

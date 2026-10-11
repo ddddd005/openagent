@@ -9,14 +9,16 @@ import { useWorkflowFrontendSdk, type WorkflowNodeConfigurationRequest } from ".
 import { promptFrontendExtensions } from "../plugins/promptFrontendManifest";
 import { useBoundFormDraft } from "../composables/useBoundFormDraft";
 import FormDraftNotice from "./FormDraftNotice.vue";
-import { useManagementLabelsStore } from "../stores/managementLabels";
+import { useContentMetadata } from "../application/contentMetadata";
 
 const props = defineProps<{ node: GraphNode; document: GraphDocument; disabled?: boolean }>();
 const sdk = useWorkflowFrontendSdk(), resources = usePromptResources();
 const records = resources.records, loading = resources.loading, resourceError = resources.error;
-const labels = useManagementLabelsStore();
-watch(records, values => { if (typeof window !== "undefined") for (const record of values)
-  void labels.load({ kind: "prompt", id: record.resource_id, scope: record.scope }); }, { immediate: true });
+const metadata = useContentMetadata();
+watch(records, values => { for (const record of values)
+  void metadata.forReference(promptIdentity(record)).load(); }, { immediate: true });
+const resourceLabel = (record: typeof records.value[number]) =>
+  metadata.forReference(promptIdentity(record)).record.value?.display_name || promptResourceLabel(record);
 const supportedRecords = computed(() => records.value.filter(record => record.data_schema_version === 2));
 const selected = ref(""), status = ref(""), basis = ref<WorkflowNodeConfigurationRequest | null>(null);
 const identityKey = (identity: PromptIdentity) => JSON.stringify([
@@ -82,7 +84,7 @@ onMounted(() => { void resources.refresh(); });
           <option v-if="selected && !chosen" :value="selected">缺失引用 · {{ reference?.scope }} · {{ reference?.resource_id }}</option>
           <option v-for="record in supportedRecords" :key="identityKey(promptIdentity(record))"
             :value="identityKey(promptIdentity(record))">
-            {{ labels.label({ kind: 'prompt', id: record.resource_id, scope: record.scope }, promptResourceLabel(record)) }}{{ record.value.enabled ? '' : '（已停用）' }}
+            {{ resourceLabel(record) }}{{ record.value.enabled ? '' : '（已停用）' }}
           </option>
         </select>
         <button type="button" title="刷新提示词资源" aria-label="刷新提示词资源" :disabled="loading"

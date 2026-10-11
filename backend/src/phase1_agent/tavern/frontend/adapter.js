@@ -16,6 +16,12 @@
   }
   function textInput(view) {
     if (!view) return { input: null, diagnostic: null };
+    if (!view.can_submit && view.diagnostics?.length) {
+      const blocked = view.diagnostics[0];
+      const reason = blocked.reason_code ?? blocked.code ?? "workflow_unavailable";
+      const message = blocked.message ?? "工作流当前不可运行";
+      return { input: null, diagnostic: `${message} [${reason}]；请在工作台修正后再试。` };
+    }
     if (view.inputs.length !== 1 || view.inputs[0].data_type !== "TEXT")
       return { input: null, diagnostic: "此聊天页需要唯一的 TEXT 输入；请在工作台调整工作流。" };
     return { input: clone(view.inputs[0]), diagnostic: null };

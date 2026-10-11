@@ -4,10 +4,14 @@ import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 import * as Vue from "vue";
 import { computed, createRenderer, createSSRApp, nextTick, reactive, ref, type App, type Component } from "vue";
 import { renderToString } from "@vue/server-renderer";
-import { createPinia, setActivePinia } from "pinia";
+import { createPinia, disposePinia, setActivePinia, type Pinia } from "pinia";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkbenchApiError } from "../../adapters/workbenchApi";
+import { localDraftPorts } from "../../adapters/localDraftsApi";
+import { memoryLocalDraftStorage } from "../../testUtils/localDraftStorage";
+import { useFormDraftsStore } from "../../stores/formDrafts";
 import { createProviderResources, modelResourceControllerKey } from "../../application/workflowResources";
+import { createModelProfiles, modelProfilesKey } from "../../application/modelProfiles";
 import { createWorkbenchFrontendHost } from "../../application/workflowFrontendPackage";
 import { newLorebookEntry } from "../../domain/lorebook";
 import { graphClone, newGraph, type GraphDocument, type GraphNode } from "../../domain/workflowGraph";
@@ -31,9 +35,10 @@ import type { LorebookSaveRequest } from "./lorebookResourcesApi";
 
 function fixture(initial = [newLorebookResource()], activate = false) {
   let raw: string | null = null;
-  const state = { records: graphClone(initial), loseResponse: false };
+  const state = { records: graphClone(initial), loseResponse: false, saveFailure: null as WorkbenchApiError | null };
   const save = vi.fn(async (request: LorebookSaveRequest) => {
     if (state.loseResponse) throw new WorkbenchApiError("unknown", "Response lost");
+    if (state.saveFailure) throw state.saveFailure;
     state.records = [graphClone(request.record)];
   });
   const readReceipt = vi.fn(async (_request: LorebookSaveRequest) => ({}));
@@ -97,7 +102,8 @@ const renderer = createRenderer<HostNode, HostNode>({
   nextSibling: node => node.parent?.children[node.parent.children.indexOf(node) + 1] ?? null,
 });
 const apps: App<HostNode>[] = [];
-async function flush() { await Promise.resolve(); await nextTick(); await Promise.resolve(); await nextTick(); }
+const piniaInstances: Pinia[] = [];
+async function flush() { for (let index = 0; index < 12; index++) { await Promise.resolve(); await nextTick(); } }
 function elements(root: HostNode): HostNode[] { return [root, ...root.children.flatMap(elements)]; }
 function find(root: HostNode, predicate: (node: HostNode) => boolean) {
   const node = elements(root).find(predicate);
@@ -122,7 +128,15 @@ function installRender(component: object, filename: string) {
   }).outputText;
   Object.assign(component, { render: new Function("Vue", code)(Vue) });
 }
-async function mount(component: Component, f: ReturnType<typeof fixture>) {
+async function mount(component: Component, f: ReturnType<typeof fixture>,
+  drafts?: ReturnType<typeof memoryLocalDraftStorage>) {
+  if (drafts) {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
+    vi.spyOn(localDraftPorts, "read").mockImplementation(drafts.ports.read);
+    vi.spyOn(localDraftPorts, "save").mockImplementation(drafts.ports.save);
+    vi.spyOn(localDraftPorts, "receipt").mockImplementation(drafts.ports.receipt);
+  }
   vi.stubGlobal("document", { activeElement: null });
   vi.stubGlobal("Document", class {});
   vi.stubGlobal("ShadowRoot", class {});
@@ -141,12 +155,107 @@ async function mount(component: Component, f: ReturnType<typeof fixture>) {
     .provide(modelResourceControllerKey, createProviderResources({
       list: async () => [], save: async () => ({}), readReceipt: vi.fn(), readPending: () => null, writePending: () => {},
     }))
+    .provide(modelProfilesKey, createModelProfiles({
+      list: async () => [], save: vi.fn(), readReceipt: vi.fn(), readPending: () => null, writePending: () => {},
+    }))
     .provide(Vue.ssrContextKey, { modules: new Set() });
+  if (drafts) {
+    const pinia = createPinia(); piniaInstances.push(pinia); setActivePinia(pinia); app.use(pinia);
+  }
   apps.push(app); app.mount(root); await flush(); return root;
 }
-afterEach(() => { apps.splice(0).forEach(app => app.unmount()); vi.unstubAllGlobals(); });
+afterEach(() => {
+  apps.splice(0).forEach(app => app.unmount()); piniaInstances.splice(0).forEach(disposePinia);
+  vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals();
+});
 
 describe("global lorebook workbench UI", () => {
+  it("copies a listed resource and submits it as new without touching the source or node binding", async () => {
+    const record = newLorebookResource(), entry = newLorebookEntry();
+    record.scope = "project:one"; record.update_sequence = 7;
+    record.value.name = "Shared setting"; record.value.entries = [entry];
+    entry.text = "Source lore"; entry.primary_keywords = ["world"];
+    const original = graphClone(record), f = fixture([record]), root = await mount(CurrentLorebookPanel, f);
+    await trigger(label(root, `复制 Lorebook ${record.scope} ${record.resource_id}`), "Click");
+    expect(f.save).not.toHaveBeenCalled();
+    expect(label(root, "Lorebook 资源名称").value).toBe("Shared setting");
+    await trigger(label(root, "条目 1 正文"), "Input", { value: "Copy lore" });
+    await trigger(label(root, "全局 Lorebook 表单"), "Submit");
+    const request = f.save.mock.calls[0]![0];
+    expect(request.expected_sequence).toBe(0);
+    expect(request.record.update_sequence).toBe(1);
+    expect(request.record.resource_id).not.toBe(record.resource_id);
+    expect(request.record.scope).toBe(record.scope);
+    expect(request.record.value.name).toBe(record.value.name);
+    expect(request.record.value.entries[0]!.id).not.toBe(entry.id);
+    expect(request.record.value.entries[0]!.text).toBe("Copy lore");
+    expect(record).toEqual(original);
+    expect(f.resources.records.value).toEqual(f.state.records);
+    expect(f.configureNode).not.toHaveBeenCalled();
+    expect(elements(root).some(node => node.props["aria-label"] === "全局 Lorebook 表单")).toBe(false);
+  });
+  it("disables copying while an unknown resource request still owns the mutation lock", async () => {
+    const record = newLorebookResource(), f = fixture([record]), root = await mount(CurrentLorebookPanel, f);
+    await trigger(label(root, "新增 Lorebook 资源"), "Click");
+    f.state.loseResponse = true;
+    await trigger(label(root, "全局 Lorebook 表单"), "Submit");
+    const copy = label(root, `复制 Lorebook ${record.scope} ${record.resource_id}`);
+    expect(copy.props.disabled).toBe(true);
+    const original = graphClone(f.resources.pending.value!);
+    await trigger(copy, "Click");
+    expect(f.resources.pending.value).toEqual(original);
+    expect(f.save).toHaveBeenCalledOnce();
+    expect(label(root, "Lorebook 资源名称").value).toBe("");
+  });
+  it("saves memory numeric edits without consulting any persistent draft gate", async () => {
+    const record = newLorebookResource(), entry = newLorebookEntry(); record.value.entries = [entry];
+    const f = fixture([record]), drafts = memoryLocalDraftStorage(), root = await mount(CurrentLorebookPanel, f, drafts);
+    const forms = useFormDraftsStore();
+    const flushAll = vi.spyOn(forms, "flushAll").mockResolvedValue(false), flushTarget = vi.spyOn(forms, "flush");
+    await trigger(find(root, node => node.tag === "button" && node.children.some(child => child.tag === "strong")), "Click");
+    await trigger(label(root, "条目 1 扫描深度"), "Input", { value: "009" });
+    await trigger(label(root, "全局 Lorebook 表单"), "Submit");
+    expect(f.save).toHaveBeenCalledOnce(); expect(f.save.mock.calls[0]![0].record.value.entries[0].scan_depth).toBe(9);
+    expect(flushAll).not.toHaveBeenCalled(); expect(flushTarget).not.toHaveBeenCalled();
+    expect(drafts.ports.read).not.toHaveBeenCalled(); expect(drafts.ports.save).not.toHaveBeenCalled();
+  });
+  it("retains ordinary text and numeric input after body CAS rejection without saving a draft", async () => {
+    const record = newLorebookResource(), entry = newLorebookEntry(); record.value.entries = [entry];
+    const f = fixture([record]), drafts = memoryLocalDraftStorage(), root = await mount(CurrentLorebookPanel, f, drafts);
+    await trigger(find(root, node => node.tag === "button" && node.children.some(child => child.tag === "strong")), "Click");
+    await trigger(label(root, "条目 1 扫描深度"), "Input", { value: "009" });
+    await trigger(label(root, "条目 1 正文"), "Input", { value: "Memory lore remains" });
+    f.state.saveFailure = new WorkbenchApiError("rejected", "body CAS changed", 409, "stale_revision");
+    await trigger(label(root, "全局 Lorebook 表单"), "Submit");
+    expect(f.save).toHaveBeenCalledOnce(); expect(label(root, "条目 1 扫描深度").value).toBe("009");
+    expect(label(root, "条目 1 正文").value).toBe("Memory lore remains");
+    expect(f.resources.locked.value).toBe(false);
+    expect(elements(root).some(node => node.text.includes("body CAS changed"))).toBe(true);
+    expect(drafts.ports.read).not.toHaveBeenCalled(); expect(drafts.ports.save).not.toHaveBeenCalled();
+    f.state.saveFailure = null;
+    await trigger(label(root, "全局 Lorebook 表单"), "Submit");
+    expect(f.save).toHaveBeenCalledTimes(2);
+  });
+  it("discards unsaved memory edits on resource switch and cancel without leaking invalid numeric text", async () => {
+    const first = newLorebookResource(); first.value.name = "First"; first.value.entries = [newLorebookEntry()];
+    const second = graphClone(first); second.scope = "project:story"; second.value.name = "Second";
+    second.value.entries[0]!.scan_depth = 9;
+    const f = fixture([first, second]), drafts = memoryLocalDraftStorage(), root = await mount(CurrentLorebookPanel, f, drafts);
+    await trigger(elements(root).filter(node => node.props.class === "resource-edit")[0]!, "Click");
+    model(label(root, "Lorebook 资源名称"), "Unsaved name");
+    await trigger(label(root, "条目 1 扫描深度"), "Input", { value: "-" });
+    await trigger(elements(root).filter(node => node.props.class === "resource-edit")[1]!, "Click");
+    expect(label(root, "Lorebook 资源名称").value).toBe("Second");
+    expect(label(root, "条目 1 扫描深度").value).toBe("9");
+    expect(label(root, "条目 1 扫描深度").props["aria-invalid"]).toBeUndefined();
+    await trigger(elements(root).filter(node => node.props.class === "resource-edit")[0]!, "Click");
+    expect(label(root, "Lorebook 资源名称").value).toBe("First");
+    await trigger(label(root, "取消 Lorebook 编辑"), "Click");
+    expect(elements(root).some(node => node.props["aria-label"] === "全局 Lorebook 表单")).toBe(false);
+    expect(elements(root).some(node => node.props["aria-label"] === "未提交世界书草稿")).toBe(false);
+    expect(f.save).not.toHaveBeenCalled(); expect(f.state.records).toEqual([first, second]);
+    expect(drafts.ports.read).not.toHaveBeenCalled(); expect(drafts.ports.save).not.toHaveBeenCalled();
+  });
   it("resolves only the exact new package, keeping legacy declarations separate", () => {
     const host = createWorkbenchFrontendHost(() => globalTavernFrontendExtensions, () => [globalTavernPackage]);
     expect(host.issues.value).toEqual([]);
@@ -158,7 +267,7 @@ describe("global lorebook workbench UI", () => {
     expect(createWorkbenchFrontendHost(() => tavernFrontendExtensions,
       () => [{ ...globalTavernPackage, version: "1.0.0" }]).extensions.value).toHaveLength(2);
   });
-  it("renders both content panels only with the matching installed tavern version", async () => {
+  it("keeps global content independent of the active graph while preserving the existing tavern launch gate", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const graph = useWorkflowGraphStore(), f = fixture();
@@ -167,9 +276,13 @@ describe("global lorebook workbench UI", () => {
     try {
       const render = () => renderToString(createSSRApp(ContentSidebar).use(pinia)
         .provide(lorebookResourceControllerKey, f.resources));
+      graph.frontendExtensions = []; graph.packageLock = [];
+      graph.catalogError = "Controlled graph catalog failure";
       const html = await render();
       expect(html).toContain('aria-label="新版提示词当前资源"');
       expect(html).toContain('aria-label="全局 Lorebook 资源"');
+      expect(html).not.toContain("Controlled graph catalog failure");
+      expect(html).not.toContain('aria-label="酒馆聊天入口"');
       graph.frontendExtensions = [...promptFrontendExtensions, ...chatTavernFrontendExtensions];
       graph.packageLock = [{ package_id: "workflow.prompts", version: "1.0.0" },
         { package_id: "workflow.tavern", version: "1.2.0" }];
@@ -181,7 +294,9 @@ describe("global lorebook workbench UI", () => {
       graph.frontendExtensions = [...promptFrontendExtensions, ...tavernFrontendExtensions];
       graph.packageLock = [{ package_id: "workflow.prompts", version: "1.0.0" },
         { package_id: "workflow.tavern", version: "1.0.0" }];
-      expect(await render()).not.toContain('aria-label="全局 Lorebook 资源"');
+      const oldGraphHtml = await render();
+      expect(oldGraphHtml).toContain('aria-label="全局 Lorebook 资源"');
+      expect(oldGraphHtml).not.toContain('aria-label="酒馆聊天入口"');
     } finally { pinia._s.forEach(store => store.$dispose()); }
   });
   it("retains the inline node contract under the new exact frontend extension identity", async () => {

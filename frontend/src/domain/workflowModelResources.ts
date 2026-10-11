@@ -1,12 +1,11 @@
 import { graphClone, graphObject, graphUuid } from "./workflowGraph";
 
 export const chatProviderType = "workflow.chat-provider";
-export const modelFieldsExtensionId = "workflow.models.node-fields";
-export const capacityModelFieldsExtensionId = "workflow.models.node-fields-v2";
-export const geminiModelFieldsExtensionId = "workflow.models.node-fields-v3";
-export const capacityGeminiModelFieldsExtensionId = "workflow.models.node-fields-v4";
+export const modelProfileType = "workflow.model-profile";
+export const capacityModelFieldsExtensionId = "workflow.models.node-fields-v5";
+export const capacityGeminiModelFieldsExtensionId = "workflow.models.node-fields-v6";
 export type ProviderProtocol = "chat" | "gemini";
-export type CredentialReference = "env:DEEPSEEK_API_KEY" | "env:GEMINI_API_KEY" | `local:${string}`;
+export type CredentialReference = `local:${string}`;
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high";
 export type ModelThinking = "disabled"
   | { mode: "budget"; budget: number; include_summary: boolean }
@@ -16,7 +15,7 @@ export interface ProviderIdentity {
 }
 export interface CurrentProvider {
   envelope_version: 1; scope: string; type_id: typeof chatProviderType; resource_id: string;
-  data_schema_version: 1 | 2 | 3; update_sequence: number;
+  data_schema_version: 3; update_sequence: number;
   value: { name: string; protocol: ProviderProtocol; base_url: string;
     credential_ref: null | CredentialReference; enabled: boolean };
 }
@@ -56,12 +55,19 @@ export function modelParameterDiagnostic(parameters: ModelParameters, protocol: 
     || thinking.budget >= capability.budgetMin! && thinking.budget <= capability.budgetMax!
     ? null : "思考预算超出所选 Gemini 型号范围";
 }
-export interface ModelSourceConfiguration { reference: ProviderIdentity; parameters: ModelParameters }
+export interface ModelProfileIdentity {
+  envelope_version: 1; scope: string; type_id: typeof modelProfileType; resource_id: string;
+}
+export interface ModelSourceConfiguration { reference: ModelProfileIdentity }
 export interface ModelCapacity {
   context_window_tokens: number; output_reserve_tokens: number;
   summary_max_tokens: number; max_cold_input_tokens: number;
 }
-export interface CapacityModelSourceConfiguration extends ModelSourceConfiguration { capacity: ModelCapacity }
+export interface CurrentModelProfile extends ModelProfileIdentity {
+  data_schema_version: 1; update_sequence: number;
+  value: { name: string; protocol: ProviderProtocol; provider: ProviderIdentity;
+    parameters: ModelParameters; capacity: ModelCapacity; enabled: boolean };
+}
 const keysAre = (value: Record<string, unknown>, keys: string[]) =>
   Object.keys(value).length === keys.length && keys.every(key => key in value);
 export function isProviderIdentity(value: unknown): value is ProviderIdentity {
@@ -80,7 +86,7 @@ export function isProviderValue(value: unknown): value is CurrentProvider["value
   if (!graphObject(value) || !keysAre(value, ["name", "protocol", "base_url", "credential_ref", "enabled"])
     || typeof value.name !== "string" || !value.name.trim() || value.name.length > 128 || /[\u0000-\u001f\u007f]/.test(value.name)
     || !["chat", "gemini"].includes(String(value.protocol)) || typeof value.enabled !== "boolean"
-    || value.credential_ref !== null && value.credential_ref !== (value.protocol === "gemini" ? "env:GEMINI_API_KEY" : "env:DEEPSEEK_API_KEY")
+    || value.credential_ref !== null
       && !(typeof value.credential_ref === "string" && value.credential_ref.startsWith("local:") && graphUuid(value.credential_ref.slice(6)))
     || typeof value.base_url !== "string" || value.base_url.length > 2048 || /[\s\\?#\u0000-\u001f\u007f]/.test(value.base_url)) return false;
   try {
@@ -93,10 +99,8 @@ export function isCurrentProvider(value: unknown): value is CurrentProvider {
   return graphObject(value) && keysAre(value, ["envelope_version", "scope", "type_id", "resource_id",
     "data_schema_version", "update_sequence", "value"])
     && isProviderIdentity(Object.fromEntries(["envelope_version", "scope", "type_id", "resource_id"].map(key => [key, value[key]])))
-    && [1, 2, 3].includes(Number(value.data_schema_version)) && Number.isSafeInteger(value.update_sequence)
-    && Number(value.update_sequence) > 0 && isProviderValue(value.value)
-    && (value.data_schema_version === 3 || value.data_schema_version === (value.value.protocol === "gemini" ? 2 : 1)
-      && !value.value.credential_ref?.startsWith("local:"));
+    && value.data_schema_version === 3 && Number.isSafeInteger(value.update_sequence)
+    && Number(value.update_sequence) > 0 && isProviderValue(value.value);
 }
 export function isModelParameters(value: unknown): value is ModelParameters {
   return graphObject(value) && Object.keys(value).every(key => ["model", "thinking", "stream", "max_tokens", "temperature"].includes(key))
@@ -108,8 +112,7 @@ export function isModelParameters(value: unknown): value is ModelParameters {
       && value.temperature >= 0 && value.temperature <= 2);
 }
 export function isModelSourceConfiguration(value: unknown): value is ModelSourceConfiguration {
-  return graphObject(value) && keysAre(value, ["reference", "parameters"])
-    && isProviderIdentity(value.reference) && isModelParameters(value.parameters);
+  return graphObject(value) && keysAre(value, ["reference"]) && isModelProfileIdentity(value.reference);
 }
 export function isModelCapacity(value: unknown, allowUnconfigured = false): value is ModelCapacity {
   return graphObject(value) && keysAre(value, ["context_window_tokens", "output_reserve_tokens",
@@ -120,17 +123,56 @@ export function isModelCapacity(value: unknown, allowUnconfigured = false): valu
     && (value.context_window_tokens === 0 && allowUnconfigured
       || Number(value.output_reserve_tokens) < Number(value.context_window_tokens));
 }
-export function isCapacityModelSourceConfiguration(value: unknown): value is CapacityModelSourceConfiguration {
-  return graphObject(value) && keysAre(value, ["reference", "parameters", "capacity"])
-    && isProviderIdentity(value.reference) && isModelParameters(value.parameters)
-    && Number.isSafeInteger(value.parameters.max_tokens)
-    && isModelCapacity(value.capacity, true)
-    && value.capacity.output_reserve_tokens >= Number(value.parameters.max_tokens);
+export function isModelProfileIdentity(value: unknown): value is ModelProfileIdentity {
+  return graphObject(value) && keysAre(value, ["envelope_version", "scope", "type_id", "resource_id"])
+    && value.type_id === modelProfileType && isProviderIdentity({ ...value, type_id: chatProviderType });
+}
+export function modelProfileIdentity(value: CurrentModelProfile): ModelProfileIdentity {
+  return { envelope_version: 1, scope: value.scope, type_id: modelProfileType, resource_id: value.resource_id };
+}
+export function sameModelProfileIdentity(left: ModelProfileIdentity, right: ModelProfileIdentity) {
+  return left.envelope_version === right.envelope_version && left.scope === right.scope
+    && left.type_id === right.type_id && left.resource_id === right.resource_id;
+}
+export function modelProfileDiagnostic(value: CurrentModelProfile["value"]): string | null {
+  if (!value.name.trim()) return "请填写配置名称";
+  if (!isProviderIdentity(value.provider)) return "请选择已保存的供应商";
+  if (!isModelParameters(value.parameters)) return "请填写模型名称和有效参数";
+  const parameterError = modelParameterDiagnostic(value.parameters, value.protocol);
+  if (parameterError) return parameterError;
+  if (!isModelCapacity(value.capacity)) return "请手动填写上下文窗口、输出预留、摘要上限和冷输入上限";
+  if (!Number.isSafeInteger(value.parameters.max_tokens)) return "请填写最大输出 tokens";
+  if (value.capacity.output_reserve_tokens < Number(value.parameters.max_tokens))
+    return "输出预留不能小于最大输出 tokens";
+  if (value.capacity.summary_max_tokens > 8192) return "摘要最大输出不能超过 8192 tokens";
+  return null;
+}
+export function isCurrentModelProfile(value: unknown): value is CurrentModelProfile {
+  if (!graphObject(value) || !keysAre(value, ["envelope_version", "scope", "type_id", "resource_id",
+    "data_schema_version", "update_sequence", "value"]) || value.data_schema_version !== 1
+    || !Number.isSafeInteger(value.update_sequence) || Number(value.update_sequence) < 1
+    || !isModelProfileIdentity(Object.fromEntries(["envelope_version", "scope", "type_id", "resource_id"]
+      .map(key => [key, value[key]]))) || !graphObject(value.value)
+    || !keysAre(value.value, ["name", "protocol", "provider", "parameters", "capacity", "enabled"])
+    || typeof value.value.name !== "string" || value.value.name.length > 128
+    || /[\u0000-\u001f\u007f]/.test(value.value.name)
+    || !["chat", "gemini"].includes(String(value.value.protocol)) || typeof value.value.enabled !== "boolean"
+    || !isProviderIdentity(value.value.provider) || !isModelParameters(value.value.parameters)
+    || !isModelCapacity(value.value.capacity)) return false;
+  return modelProfileDiagnostic(value.value as unknown as CurrentModelProfile["value"]) === null;
+}
+export function newModelProfile(provider: CurrentProvider): CurrentModelProfile {
+  return { envelope_version: 1, scope: "workspace", type_id: modelProfileType, resource_id: crypto.randomUUID(),
+    data_schema_version: 1, update_sequence: 1,
+    value: { name: "", protocol: provider.value.protocol, provider: providerIdentity(provider),
+      parameters: { model: "", thinking: "disabled", stream: false, max_tokens: 1024 },
+      capacity: { context_window_tokens: 0, output_reserve_tokens: 1024,
+        summary_max_tokens: 128, max_cold_input_tokens: 0 }, enabled: true } };
 }
 export function newProvider(): CurrentProvider {
   return { envelope_version: 1, scope: "workspace", type_id: chatProviderType, resource_id: crypto.randomUUID(),
-    data_schema_version: 1, update_sequence: 1,
+    data_schema_version: 3, update_sequence: 1,
     value: { name: "DeepSeek", protocol: "chat", base_url: "https://api.deepseek.com",
-      credential_ref: "env:DEEPSEEK_API_KEY", enabled: true } };
+      credential_ref: null, enabled: true } };
 }
 export function cloneProvider(value: CurrentProvider) { return graphClone(value); }

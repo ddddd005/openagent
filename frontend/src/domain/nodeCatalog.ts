@@ -78,10 +78,10 @@ const policies: Record<string, FamilyPolicy> = {
   "prompts.global-resolve": promptPolicy("全局提示词解析"),
   "prompts.tool": promptPolicy("工具提示词"),
   "prompts.tool-summary": promptPolicy("工具提示词汇总"),
-  "models.source": { label: "模型来源", category: "models", preferred: "2", axes: [protocol],
+  "models.source": { label: "模型来源", category: "models", preferred: "5", axes: [protocol],
     profiles: {
-      "2": { values: { protocol: "chat" } },
-      "4": { values: { protocol: "gemini" } },
+      "5": { values: { protocol: "chat" } },
+      "6": { values: { protocol: "gemini" } },
     } },
   "models.chat": { label: "模型调用", category: "models", preferred: "3", axes: [protocol],
     profiles: { "3": { values: { protocol: "chat" } }, "4": { values: { protocol: "gemini" } } } },

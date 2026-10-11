@@ -88,7 +88,6 @@ def test_two_checkpoint_save_failures_retry_original_success_without_executing_n
 
 
 def test_checkpoint_retry_preserves_single_mock_model_request_and_facts(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-test-secret")
     fixture = ModelDatabaseFixture()
     with closing(GraphWorkflowService(tmp_path / "checkpoint-model.sqlite",
                                       public_model_factory=fixture.factory)) as instance:

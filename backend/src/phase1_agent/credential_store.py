@@ -10,15 +10,8 @@ from pathlib import Path
 import sqlite3
 
 from .contract_json import canonical_bytes, loads_strict
-from .graph_records import require, uuid_value
-from .model_service import CredentialLease, EnvironmentCredentialBroker
-
-
-def credential_id(reference):
-    require(type(reference) is str and reference.startswith("local:")
-            and uuid_value(reference[6:]), "credential_reference_invalid",
-            "A local credential reference is required")
-    return reference[6:]
+from .contract_errors import require, uuid_value
+from .credential_contract import CredentialLease, credential_id
 
 
 class WindowsCredentialProtector:
@@ -182,28 +175,27 @@ class PrivateCredentialStore:
             row = connection.execute("SELECT request,result FROM receipts WHERE key=?", (request["idempotency_key"],)).fetchone()
             if row is None:
                 return None
-            require(loads_strict(row["request"]) == {"operation": operation, **request},
+            require(canonical_bytes(loads_strict(row["request"]))
+                    == canonical_bytes({"operation": operation, **request}),
                     "idempotency_conflict", "Credential receipt identity differs", 409)
             return loads_strict(row["result"])
 
 
 class LocalCredentialBroker:
-    def __init__(self, store, environ=None):
-        self.store, self.environment = store, EnvironmentCredentialBroker(environ)
+    def __init__(self, store):
+        self.store = store
         self._evidence_key = os.urandom(32)
 
     def _evidence(self, secret, generation):
         return hmac.new(self._evidence_key, canonical_bytes([secret, generation]), hashlib.sha256).digest()
 
     def freeze(self, reference):
-        if not reference.startswith("local:"):
-            return self.environment.freeze(reference)
+        credential_id(reference)
         secret, generation = self.store.read(reference)
         return CredentialLease(reference, self._evidence(secret, generation))
 
     def authorize(self, lease):
-        if not lease.reference.startswith("local:"):
-            return self.environment.authorize(lease)
+        credential_id(lease.reference)
         secret, generation = self.store.read(lease.reference)
         require(hmac.compare_digest(lease.evidence, self._evidence(secret, generation)),
                 "model_credential_changed", "Credential changed after run preparation")

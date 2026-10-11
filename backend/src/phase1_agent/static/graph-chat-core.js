@@ -50,7 +50,7 @@
   function supportedContent(type, version) {
     return ["TEXT", "PROMPT", "JSON"].includes(type) && [1, 2].includes(version)
       || type === "MODEL_RESULT" && [1, 2].includes(version)
-      || ["MODEL_RESOURCE", "FRONTEND_DISPLAY", "TAVERN_CHAT_DISPLAY"].includes(type) && version === 1;
+      || ["FRONTEND_DISPLAY", "TAVERN_CHAT_DISPLAY"].includes(type) && version === 1;
   }
   function identity(value, workflow, session) {
     return value.workflow_definition_id === workflow && (!session || value.workflow_session_id === session)
@@ -93,11 +93,6 @@
       && (value.content === null || typeof value.content === "string")
       && (value.schema_version === 1 || value.thinking_summary === null || typeof value.thinking_summary === "string"),
       "模型结果公开内容无效");
-    else if (type === "MODEL_RESOURCE") require(value.schema_version === 1 && exact(value, ["schema_version", "kind", "binding"])
-      && value.kind === "workflow.model-resource" && exact(value.binding, ["node_id", "provider", "credential_evidence", "parameters"])
-      && uuid(value.binding.node_id) && object(value.binding.provider) && uuid(value.binding.provider.provider_id)
-      && positive(value.binding.provider.revision) && typeof value.binding.provider.name === "string"
-      && /^[0-9a-f]{64}$/.test(value.binding.credential_evidence) && object(value.binding.parameters), "模型资源引用无效");
     else if (["FRONTEND_DISPLAY", "TAVERN_CHAT_DISPLAY"].includes(type)) {
       require(exact(value, ["schema_version", "kind", "entries"]) && value.schema_version === 1
         && value.kind === (type === "FRONTEND_DISPLAY" ? "workflow.frontend-display" : "workflow.tavern-chat-display")
@@ -139,8 +134,6 @@
       return payload.stage === "assembled" ? payload.assembly.messages.map(message => message.content).join("\n\n")
         : payload.items.filter(item => item.enabled).map(item => item.text).join("\n\n");
     }
-    if (payload.kind === "workflow.model-resource") return JSON.stringify({ provider_id: payload.binding.provider.provider_id,
-      revision: payload.binding.provider.revision, name: payload.binding.provider.name, model: payload.binding.parameters.model }, null, 2);
     return JSON.stringify(modelPresentation(payload), null, 2);
   }
   const protocolFields = new Set(["provider_metadata", "thoughtSignature", "thought_signature"]);
@@ -201,7 +194,7 @@
       && (value.reason_code === null || typeof value.reason_code === "string"), "未产出端口不应携带结果");
     if (value.availability === "produced") {
       const version = value.data_schema_version ?? (object(value.payload) ? value.payload.schema_version : undefined);
-      if (["TEXT", "PROMPT", "JSON", "MODEL_RESOURCE", "FRONTEND_DISPLAY", "TAVERN_CHAT_DISPLAY"].includes(value.data_type)
+      if (["TEXT", "PROMPT", "JSON", "FRONTEND_DISPLAY", "TAVERN_CHAT_DISPLAY"].includes(value.data_type)
         && (version === undefined || supportedContent(value.data_type, version))) {
         validateContent(value.payload, value.data_type, value.data_schema_version);
       }

@@ -30,11 +30,10 @@ export function createTavernDemo(catalog: GraphNodeType[],
       target_node_id: to.node_binding_id });
   }
   const input = node("tools.current-input", "1", "用户输入", 0, 0, { input_name: "text" });
-  const model = node("models.source", protocol === "gemini" ? "4" : "2", modelConfig ? "模型" : "模型与容量待配置", 0, 200);
+  const model = node("models.source", protocol === "gemini" ? "6" : "5", modelConfig ? "模型配置" : "模型配置待选择", 0, 200);
   if (modelConfig) model.config = { ...model.config, ...graphClone(modelConfig) };
   else {
     model.config.reference = { ...(model.config.reference as Record<string, unknown>), resource_id: "" };
-    model.config.parameters = { ...(model.config.parameters as Record<string, unknown>), model: "" };
   }
   const agent = node("agents.execute", protocol === "gemini" ? "8" : "4", "酒馆 Agent", 850, 0);
   const binding = { object_key: "context/tavern", agent_node_id: agent.node_binding_id };

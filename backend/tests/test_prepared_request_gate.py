@@ -82,7 +82,7 @@ def public_snapshot():
         "schema_version": 2, "kind": "workflow.model-binding", "binding_id": uid(70),
         "reference": {
             "envelope_version": 1, "scope": "workspace",
-            "type_id": "workflow.chat-provider", "resource_id": uid(71),
+            "type_id": "workflow.model-profile", "resource_id": uid(71),
         },
         "parameters": {
             "model": "fixture", "max_tokens": 32, "temperature": 0.5,

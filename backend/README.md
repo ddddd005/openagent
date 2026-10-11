@@ -22,6 +22,20 @@ The BAT files remain unchanged and `start.bat` still selects `main`, now with
 these features. The main worktree build and BAT `-CheckOnly` preflight passed;
 no product service or real model call was started. Live acceptance is pending.
 
+The 2026-10-10 configuration correction is currently on `develop`, not merged
+or pushed to `main`; the stable BAT remains unchanged. Development now uses
+global `workflow.model-profile@1` resources and reference-only model sources
+`@5/@6`. New runs resolve and freeze current profile/provider values; active
+runs and historical facts do not change. See the
+[correction record](../docs/MODEL-CONFIG-CORRECTION-2026-10-10.md).
+
+The development credential path is now page-entered Key -> protected private
+vault -> `local:<UUID>`. Environment credentials and their manual reference
+selector are removed; model services require an explicitly injected private
+broker, with no plaintext fallback. All responsibility corrections will be
+accepted and merged together. Real-model acceptance uses DeepSeek, with the
+user starting the page and entering/saving the Key; online acceptance is pending.
+
 ## Start Here
 
 - [Documentation index](../docs/README.md): current guides and historical records.
@@ -92,10 +106,11 @@ All files below are under `src/phase1_agent/`.
 | `graph_execution.py`, `graph_runtime_host.py` | Compilation and hosted execution |
 | `agent_package.py`, `agent_executor.py`, `runtime.py`, `runtime_hosting.py` | Native Agent execution, tool boundaries and same-process continuation |
 | `capability_registry.py`, `capability_packages.py`, `builtin_packages.py` | Exact package selection and current declarations |
-| `storage.py`, `graph_store.py`, `runtime_fact_store.py`, `storage_retirement.py` | Records, facts, additive storage-v16 drafts and the bounded pre-v15 retirement |
+| `storage.py`, `graph_store.py`, `runtime_fact_store.py`, `workflow_lifecycle.py` | Records, facts, scoped validation and storage-v17 target archive/deletion |
 | `graph_drafts.py`, `graph_editing_host.py` | Local editing drafts, CAS, non-secret intents and management/consumer scope checks |
-| `credential_store.py`, `graph_provider_host.py`, `provider_discovery.py` | Current-user private vault, secret-free receipts, frozen credential generations and protocol model lists |
-| `model_service.py`, `model_host_service.py`, `model_package.py` | Frozen provider resources, capacity-aware bindings and model calls |
+| `credential_contract.py`, `credential_store.py`, `graph_provider_host.py`, `provider_discovery.py` | Neutral credential contracts, independent ProviderConfigurationService, private vault, exact receipts and bounded discovery |
+| `content_configuration.py` | Independent trusted global-content management, excluding provider/profile types |
+| `model_contract.py`, `model_service.py`, `model_host_service.py`, `model_package.py` | Global named profiles, reference-only source nodes, recursively frozen configuration and model calls |
 | `adapter.py`, `gemini_adapter.py`, `gemini_capabilities.py`, `provider_metadata.py` | Protocol conversion, thinking validation and original signed parts |
 | `context_v4.py`, `context_v4_nodes.py`, `context_receipt.py` | Native context, verified writeback and CAS receipts |
 | `prompt_package.py`, `prompt_lifecycle.py`, `prompt_assembly.py`, `context_prompt_v6.py` | Lifecycle materials, ordinary `PROMPT@2` and native Agent `PROMPT@6` |
@@ -121,12 +136,32 @@ databases and mock transports, not a full backend rerun or live BAT acceptance.
 
 Private credentials use a separate `<database>.credentials.sqlite` protected
 with Windows current-user DPAPI and path-bound entropy. No plaintext fallback
-is available. Public provider schema 3 stores only a `local:<UUID>` or existing
-environment reference; schema 1/2 definitions remain unchanged. Credential
+is available. Public provider schema 3 stores only a `local:<UUID>` reference
+or `null`; environment references and provider schema 1/2 are retired. Credential
 commands bypass public request-body persistence and return secret-free
 receipts. Unknown requests are never replayed. Key rotation or deletion after
 run preparation prevents later dispatch; it does not cancel an already sent call.
 Vault migration to another account, host or path is not guaranteed.
+
+The 2026-10-11 restructuring remains uncommitted on `develop`; `main` and all
+launchers are unchanged. Independent provider/content management, target
+workflow/session archive and deletion, and live prompt/lorebook reads are in
+place. Definition derivation/autosave and per-request model settings are still
+unfinished. See the [implementation record](../docs/中期检查/11-首批整改实施与离线验证-2026-10-11.md).
+Storage v17 no longer runs legacy retirement scans during initialization;
+explicit development reset owns scoped cleanup and separate request evidence.
+
+The provider form has one "Save provider" action, for both creation and updates.
+Editing remains a draft until submission. With a newly entered Key,
+`provider.credential.save` persists the complete explicit provider configuration
+and its private Key; without one, ordinary configuration saving preserves the
+existing Key. The dedicated `provider.credential.bind` mutation/UI is removed;
+old binding receipts remain read-only evidence. Partial failure does not mean
+the provider configuration was saved. Original operation and non-secret
+parameters are part of the durable identity. Both authoritative receipts and
+complete configuration must verify before reporting success; missing evidence stays
+unresolved. Public `credential.save`, old `MODEL_RESOURCE`, `model_configuration.py`
+and `model_selection.py` are removed, not restored as compatibility routes.
 
 The runtime is not a general parallel tool scheduler or an active cross-process
 checkpoint recovery system. Current native Agents do not register a failed-node

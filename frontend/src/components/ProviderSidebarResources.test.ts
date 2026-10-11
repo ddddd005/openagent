@@ -5,10 +5,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import ProviderSidebar from "./ProviderSidebar.vue";
 import ModelSourceFields from "./ModelSourceFields.vue";
 import { createProviderResources, modelResourceControllerKey } from "../application/workflowResources";
+import { createModelProfiles, modelProfilesKey } from "../application/modelProfiles";
 import { listCurrentProviders, readCurrentProviderReceipt, saveCurrentProvider,
   type ProviderSaveRequest } from "../adapters/workflowResourcesApi";
 import { graphReceiptReadResponse } from "../testUtils/graphApplicationServer";
-import { chatProviderType, newProvider, providerIdentity, type CurrentProvider } from "../domain/workflowModelResources";
+import { chatProviderType, modelProfileIdentity, newModelProfile, newProvider, providerIdentity,
+  type CurrentProvider } from "../domain/workflowModelResources";
 import { graphClone, newGraph, type GraphNode } from "../domain/workflowGraph";
 import { modelFrontendExtensions } from "../plugins/modelFrontendManifest";
 import { workflowFrontendSdkKey, type WorkflowFrontendSdk } from "../plugins/workflowFrontendSdk";
@@ -76,20 +78,28 @@ function controlledResources(initial: CurrentProvider[] = []) {
   };
 }
 
-async function renderResources(resources: ResourceController, reference: CurrentProvider) {
+async function renderResources(resources: ResourceController, reference: CurrentProvider, unavailableGraph = false) {
   const pinia = createPinia();
   setActivePinia(pinia);
   const graph = useWorkflowGraphStore();
-  graph.createWorkflow();
-  graph.frontendExtensions = graphClone(modelFrontendExtensions);
-  graph.packageLock = [{ package_id: "workflow.models", version: "1.0.0" }];
+  if (unavailableGraph) graph.catalogError = "Controlled graph catalog failure";
+  else {
+    graph.createWorkflow();
+    graph.frontendExtensions = graphClone(modelFrontendExtensions);
+    graph.packageLock = [{ package_id: "workflow.models", version: "1.0.0" }];
+  }
+  const profile = newModelProfile(reference);
+  profile.value.name = `${reference.value.name} model configuration`;
+  profile.value.parameters.model = "offline-model";
+  profile.value.capacity.context_window_tokens = 128000;
+  profile.value.capacity.max_cold_input_tokens = 128000;
+  const profiles = createModelProfiles({ list: async () => [profile], save: vi.fn(), readReceipt: vi.fn(),
+    readPending: () => null, writePending: () => {} });
+  profiles.records.value = [profile];
   const node: GraphNode = {
-    node_binding_id: crypto.randomUUID(), component_id: "models.source", component_version: "2",
+    node_binding_id: crypto.randomUUID(), component_id: "models.source", component_version: "5",
     title: "Model source", position: { x: 0, y: 0 },
-    config: { reference: providerIdentity(reference),
-      parameters: { model: "offline-model", thinking: "disabled", stream: false, max_tokens: 1024 },
-      capacity: { context_window_tokens: 128000, output_reserve_tokens: 1024,
-        summary_max_tokens: 128, max_cold_input_tokens: 128000 } },
+    config: { reference: modelProfileIdentity(profile) },
   };
   const document = { ...newGraph("Current provider fields"), nodes: [node] };
   const configureNode = vi.fn();
@@ -105,7 +115,8 @@ async function renderResources(resources: ResourceController, reference: Current
   ]) });
   try {
     const html = await renderToString(createSSRApp(root).use(pinia)
-      .provide(modelResourceControllerKey, resources).provide(workflowFrontendSdkKey, sdk));
+      .provide(modelResourceControllerKey, resources).provide(modelProfilesKey, profiles)
+      .provide(workflowFrontendSdkKey, sdk));
     expect(configureNode).not.toHaveBeenCalled();
     return html;
   } finally {
@@ -117,8 +128,11 @@ function expectSharedProvider(html: string, record: CurrentProvider) {
   expect(html).toContain("current-provider-panel");
   expect(html).not.toContain('class="provider-panel"');
   const fields = html.slice(html.indexOf('class="model-source-fields"'));
-  expect(fields).toContain(record.value.name);
-  expect(fields).toContain(record.resource_id);
+  expect(fields).toContain(`${record.value.name} model configuration`);
+  expect(fields).toContain("offline-model");
+  expect(fields).not.toContain(record.resource_id);
+  expect(fields).not.toContain("最大输出 tokens");
+  expect(fields).not.toContain("服务地址");
   expect(fields).not.toContain(` · s${record.update_sequence}`);
   expect(fields).not.toContain("\u7f3a\u5931\u5f15\u7528");
 }
@@ -126,7 +140,17 @@ function expectSharedProvider(html: string, record: CurrentProvider) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("provider sidebar SSR and current-resource controller integration", () => {
-  it("makes a newly saved sidebar resource selectable by the model-source fields through the same current API", async () => {
+  it("keeps global provider management available without an active workflow or graph catalog", async () => {
+    const backend = controlledResources(), resources = backend.create(), provider = newProvider();
+    resources.records.value = [provider];
+    const html = await renderResources(resources, provider, true);
+    expect(html).toContain("current-provider-panel");
+    expect(html).toContain('aria-label="新增供应商"');
+    expect(html).not.toContain("Controlled graph catalog failure");
+    expect(html).not.toContain("供应商资源不可用");
+    expect(backend.commands()).toHaveLength(0);
+  });
+  it("uses a saved sidebar provider through a global model configuration rather than a direct node provider selection", async () => {
     const backend = controlledResources(), resources = backend.create(), provider = newProvider();
     provider.value.name = "Shared current provider";
     expect(await resources.save(provider, 0)).toBe(true);
@@ -152,7 +176,7 @@ describe("provider sidebar SSR and current-resource controller integration", () 
     await reopened.refresh();
     const pendingHtml = await renderResources(reopened, provider);
     expect(pendingHtml).toContain("\u8d44\u6e90\u63d0\u4ea4\u7ed3\u679c\u5f85\u6838\u5b9e");
-    expect(pendingHtml).toMatch(/aria-label="\u65b0\u589e\u4f9b\u5e94\u5546\u8d44\u6e90"[^>]*disabled/);
+    expect(pendingHtml).toMatch(/aria-label="\u65b0\u589e\u4f9b\u5e94\u5546"[^>]*disabled/);
     expect(backend.pending()).toBe(persisted);
     expect(await reopened.save(provider, 0)).toBe(false);
     expect(backend.commands()).toHaveLength(1);
@@ -202,7 +226,7 @@ describe("provider sidebar SSR and current-resource controller integration", () 
       expect(backend.commands()).toHaveLength(1);
       const html = await renderResources(reopened, provider);
       expect(html).toContain("\u8d44\u6e90\u63d0\u4ea4\u7ed3\u679c\u5f85\u6838\u5b9e");
-      expect(html).toMatch(/aria-label="\u65b0\u589e\u4f9b\u5e94\u5546\u8d44\u6e90"[^>]*disabled/);
+      expect(html).toMatch(/aria-label="\u65b0\u589e\u4f9b\u5e94\u5546"[^>]*disabled/);
     },
   );
 });

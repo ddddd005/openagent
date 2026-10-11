@@ -1,0 +1,199 @@
+"""Non-secret immutable request evidence; this authority never dispatches requests."""
+
+from contextlib import closing
+from copy import deepcopy
+from hashlib import sha256
+from pathlib import Path
+from threading import RLock
+
+from .contract_json import canonical_bytes, content_digest, loads_strict, validate_json_value
+from .graph_application_identity import application_command_digest, persist_application_command_identity
+from .graph_records import require
+
+
+_SECRET_FIELDS = {
+    "secret", "api_key", "apikey", "access_token", "authorization", "private_key",
+    "secret_key", "password", "credential_value",
+}
+_FIELDS = {
+    "schema_version", "kind", "operation", "idempotency_key", "owner_kind", "owner_id",
+    "request", "request_digest", "resolution",
+}
+
+
+def initialize_request_evidence(connection):
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS pending_commands ("
+        "operation TEXT NOT NULL,idempotency_key TEXT NOT NULL,owner_kind TEXT NOT NULL,"
+        "owner_id TEXT NOT NULL,request_json TEXT NOT NULL,request_digest TEXT NOT NULL,"
+        "resolution TEXT NOT NULL CHECK(resolution IN ('pending','verified','archived')),"
+        "PRIMARY KEY(operation,idempotency_key))"
+    )
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS pending_command_owner "
+        "ON pending_commands(owner_kind,owner_id) WHERE resolution='pending'"
+    )
+
+
+def evidence_receipt_key(operation, idempotency_key):
+    return sha256(canonical_bytes([operation, idempotency_key])).hexdigest()
+
+
+def _text(value, maximum):
+    return type(value) is str and 0 < len(value) <= maximum and value == value.strip() and not any(
+        ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def validate_evidence_owner(owner_kind, owner_id):
+    require(_text(owner_kind, 128) and _text(owner_id, 512),
+            "invalid_request", "Request evidence owner is invalid")
+
+
+def validate_evidence_request(operation, idempotency_key, request):
+    from .graph_application_contracts import COMMANDS, validate_parameters
+    spec = next((item for item in COMMANDS if item.name == operation), None)
+    require(spec is not None and not operation.startswith("request-evidence.")
+            and "idempotency_key" in spec.required,
+            "invalid_request", "Evidence requires an existing business command")
+    validate_parameters(spec, request)
+    validate_json_value(request)
+    require(request["idempotency_key"] == idempotency_key,
+            "request_evidence_conflict", "Evidence identity differs from the original request", 409)
+    require(len(canonical_bytes(request)) <= 3_900_000,
+            "request_evidence_capacity_exceeded", "Request evidence exceeds its limit", 413)
+    pending = [request]
+    while pending:
+        value = pending.pop()
+        if type(value) is dict:
+            for field, child in value.items():
+                require(field.casefold().replace("-", "_") not in _SECRET_FIELDS
+                        or child is None or child == "",
+                        "request_evidence_secret_disallowed", "Secret fields cannot enter request evidence")
+                pending.append(child)
+        elif type(value) is list:
+            pending.extend(value)
+    return application_command_digest(operation, request)
+
+
+def validate_evidence_record(record):
+    require(type(record) is dict and set(record) == _FIELDS
+            and type(record["schema_version"]) is int and record["schema_version"] == 1
+            and record["kind"] == "workflow.request-evidence"
+            and record["resolution"] in ("pending", "verified", "archived"),
+            "storage_contract_violation", "Request evidence record is invalid", 500)
+    validate_evidence_owner(record["owner_kind"], record["owner_id"])
+    digest = validate_evidence_request(record["operation"], record["idempotency_key"], record["request"])
+    require(record["request_digest"] == digest,
+            "storage_contract_violation", "Request evidence digest differs", 500)
+    return deepcopy(record)
+
+
+class RequestEvidenceService:
+    def __init__(self, database_path, *, store_factory=None):
+        from .storage import SqliteStore
+        self.database = Path(database_path).resolve()
+        self.database.parent.mkdir(parents=True, exist_ok=True)
+        self._store_factory = store_factory or (lambda: SqliteStore(self.database))
+        self._lock = RLock()
+
+    @staticmethod
+    def _record(row):
+        return validate_evidence_record({
+            "schema_version": 1, "kind": "workflow.request-evidence",
+            **{field: row[field] for field in (
+                "operation", "idempotency_key", "owner_kind", "owner_id", "request_digest", "resolution")},
+            "request": loads_strict(row["request_json"]),
+        })
+
+    def read_evidence(self, owner_kind, owner_id):
+        validate_evidence_owner(owner_kind, owner_id)
+        with self._lock, closing(self._store_factory()) as store:
+            rows = store._connection.execute(
+                "SELECT * FROM pending_commands WHERE owner_kind=? AND owner_id=? ORDER BY rowid",
+                (owner_kind, owner_id))
+            return [self._record(row) for row in rows]
+
+    def _mutate(self, native_operation, request, idempotency_key, update):
+        digest = "workflow-op-v1:" + content_digest(request).rsplit(":", 1)[1]
+        with self._lock, closing(self._store_factory()) as store:
+            connection = store._connection
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                prior = store.read_receipt_with_digest(native_operation, idempotency_key)
+                if prior is not None:
+                    require(prior[0] == digest, "idempotency_conflict",
+                            "Request evidence command identity differs", 409)
+                    require(type(prior[1]) is list and len(prior[1]) == 1
+                            and set(prior[1][0]) == {"graph_result"},
+                            "storage_contract_violation", "Request evidence receipt is invalid", 500)
+                    result = validate_evidence_record(prior[1][0]["graph_result"])
+                else:
+                    result = update(connection)
+                    store._inject("after_request_evidence_write")
+                    connection.execute(
+                        "INSERT INTO idempotency "
+                        "(operation,key,digest,result_refs,result_payload,request_digest) VALUES(?,?,?,?,?,?)",
+                        (native_operation, idempotency_key, digest, "[]",
+                         canonical_bytes([{"graph_result": result}]).decode("utf-8"), digest))
+                    persist_application_command_identity(connection, table="idempotency",
+                        operation=native_operation, key=idempotency_key, request_digest=digest)
+                store._inject("before_commit")
+                connection.execute("COMMIT")
+                return deepcopy(result)
+            except BaseException:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+                raise
+
+    def write_evidence(self, operation, idempotency_key, owner_kind, owner_id, request):
+        validate_evidence_owner(owner_kind, owner_id)
+        request_digest = validate_evidence_request(operation, idempotency_key, request)
+        record = {
+            "schema_version": 1, "kind": "workflow.request-evidence", "operation": operation,
+            "idempotency_key": idempotency_key, "owner_kind": owner_kind, "owner_id": owner_id,
+            "request": deepcopy(request), "request_digest": request_digest, "resolution": "pending",
+        }
+
+        def update(connection):
+            current = connection.execute(
+                "SELECT * FROM pending_commands WHERE operation=? AND idempotency_key=?",
+                (operation, idempotency_key)).fetchone()
+            require(current is None, "request_evidence_conflict",
+                    "Original request evidence already exists", 409)
+            active = connection.execute(
+                "SELECT 1 FROM pending_commands WHERE owner_kind=? AND owner_id=? AND resolution='pending'",
+                (owner_kind, owner_id)).fetchone()
+            require(active is None, "request_evidence_pending",
+                    "This owner already has an unresolved request", 409)
+            connection.execute("INSERT INTO pending_commands VALUES(?,?,?,?,?,?,?)", (
+                operation, idempotency_key, owner_kind, owner_id,
+                canonical_bytes(request).decode("utf-8"), request_digest, "pending"))
+            return record
+
+        parameters = {"operation": operation, "owner_kind": owner_kind, "owner_id": owner_id,
+                      "request": deepcopy(request)}
+        return self._mutate("graph.request-evidence.write", parameters,
+                            evidence_receipt_key(operation, idempotency_key), update)
+
+    def resolve_evidence(self, operation, idempotency_key, request_digest, resolution):
+        require(resolution in ("verified", "archived"),
+                "invalid_request", "Evidence can only be verified or archived")
+
+        def update(connection):
+            row = connection.execute(
+                "SELECT * FROM pending_commands WHERE operation=? AND idempotency_key=?",
+                (operation, idempotency_key)).fetchone()
+            require(row is not None, "not_found", "Original request evidence was not found", 404)
+            record = self._record(row)
+            require(record["request_digest"] == request_digest,
+                    "request_evidence_conflict", "Original request digest differs", 409)
+            require(record["resolution"] in ("pending", resolution),
+                    "request_evidence_conflict", "Original evidence has already been resolved differently", 409)
+            connection.execute(
+                "UPDATE pending_commands SET resolution=? WHERE operation=? AND idempotency_key=?",
+                (resolution, operation, idempotency_key))
+            return {**record, "resolution": resolution}
+
+        parameters = {"operation": operation, "request_digest": request_digest, "resolution": resolution}
+        return self._mutate("graph.request-evidence.resolve", parameters,
+                            evidence_receipt_key(operation, idempotency_key), update)

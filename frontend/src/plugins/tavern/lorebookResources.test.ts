@@ -1,10 +1,42 @@
 import { describe, expect, it } from "vitest";
 import { graphClone } from "../../domain/workflowGraph";
 import { newLorebookEntry } from "../../domain/lorebook";
-import { isCurrentLorebookResource, isLorebookActivationConfig, isLorebookIdentity,
+import { duplicateLorebookResource, isCurrentLorebookResource, isLorebookActivationConfig, isLorebookIdentity,
   isLorebookReferenceConfig, lorebookIdentity, lorebookIdentityKey, newLorebookResource } from "./lorebookResources";
 
 describe("global lorebook contracts", () => {
+  it("duplicates content with new resource and entry identities without changing the original", () => {
+    const resource = newLorebookResource(), first = newLorebookEntry(), second = newLorebookEntry();
+    resource.scope = "project:one";
+    resource.update_sequence = 7;
+    resource.value.name = "n".repeat(128);
+    resource.value.enabled = false;
+    first.text = "Shared lore";
+    first.primary_keywords = ["world"];
+    first.recursive = true;
+    first.metadata = { preserved: { tags: [true, null, "text"] } };
+    resource.value.entries = [first, second];
+    const original = graphClone(resource), duplicate = duplicateLorebookResource(resource);
+    expect(isCurrentLorebookResource(duplicate)).toBe(true);
+    expect(duplicate.resource_id).not.toBe(resource.resource_id);
+    expect(duplicate.update_sequence).toBe(1);
+    expect(duplicate.scope).toBe(resource.scope);
+    expect(duplicate.value.name).toBe(resource.value.name);
+    expect(duplicate.value.enabled).toBe(false);
+    expect(new Set(duplicate.value.entries.map(entry => entry.id)).size).toBe(2);
+    duplicate.value.entries.forEach((entry, index) => {
+      expect(entry.id).not.toBe(original.value.entries[index]!.id);
+      expect({ ...entry, id: original.value.entries[index]!.id }).toEqual(original.value.entries[index]);
+    });
+    duplicate.value.entries[0]!.metadata.preserved = "edited copy";
+    expect(resource).toEqual(original);
+  });
+  it("copies empty resources but refuses invalid originals", () => {
+    expect(duplicateLorebookResource(newLorebookResource()).value.entries).toEqual([]);
+    const resource = newLorebookResource();
+    resource.value.name = "n".repeat(129);
+    expect(() => duplicateLorebookResource(resource)).toThrow("contract is invalid");
+  });
   it("retains resource and member identities independently of labels and session permissions", () => {
     const resource = newLorebookResource();
     resource.value.entries = [newLorebookEntry()];

@@ -13,7 +13,7 @@ from .contract_json import canonical_bytes, loads_strict
 from .graph_records import GRAPH_VERSIONS, is_graph_record, require, validate_graph_transition
 
 
-STORAGE_VERSION = 16
+STORAGE_VERSION = 19
 _IDENTITIES = {
     "node_definition": ("component_id", "component_version"),
     "node_binding": ("workflow_definition_id", "workflow_definition_revision", "node_binding_id"),
@@ -80,13 +80,23 @@ class SqliteStore:
             from .global_resources import initialize_global_resource_tables
             from .type_contract_store import initialize_type_contract_tables
             from .graph_drafts import initialize_draft_tables
+            from .request_evidence import initialize_request_evidence
+            from .workflow_lifecycle import initialize_session_metadata
+            from .content_configuration import initialize_content_metadata
+            from .workflow_configuration import initialize_configuration_tables
             initialize_object_tables(self._connection)
             initialize_global_resource_tables(self._connection)
             initialize_type_contract_tables(self._connection)
             initialize_draft_tables(self._connection)
-            if 0 < version < 15:
-                from .storage_retirement import remove_retired_test_data
-                remove_retired_test_data(self._connection)
+            initialize_request_evidence(self._connection)
+            initialize_session_metadata(self._connection)
+            initialize_content_metadata(self._connection)
+            initialize_configuration_tables(self._connection)
+            self._connection.execute(
+                "CREATE TABLE IF NOT EXISTS workflow_management ("
+                "object_kind TEXT NOT NULL CHECK(object_kind IN ('definition','session')), "
+                "object_id TEXT NOT NULL, archived INTEGER NOT NULL CHECK(archived IN (0,1)), "
+                "PRIMARY KEY(object_kind,object_id))")
             self._connection.execute(f"PRAGMA user_version = {STORAGE_VERSION}")
             self._connection.execute("COMMIT")
         except BaseException as exc:

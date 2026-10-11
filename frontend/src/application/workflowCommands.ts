@@ -1,13 +1,14 @@
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import {
   graphClone, graphSignature, isGraphDocument, isGraphSession,
-  type GraphCommand, type GraphDocument, type GraphEntry, type GraphSession,
+  graphObject, graphUuid, type GraphCommand, type GraphDocument, type GraphEntry, type GraphSession, type GraphManagementResult,
 } from "../domain/workflowGraph";
 import { newerGraphObservation } from "../domain/graphObservation";
 
 export type GraphReceipt =
   | { kind: "definition"; document: GraphDocument }
-  | { kind: "session"; session: GraphSession; observation?: GraphSession; historicalDocument?: GraphDocument };
+  | { kind: "session"; session: GraphSession; observation?: GraphSession; historicalDocument?: GraphDocument }
+  | { kind: "management"; result: GraphManagementResult };
 export interface GraphCommandPorts {
   persist(): boolean | Promise<boolean>;
   request(path: string, body: Record<string, unknown>): Promise<unknown>;
@@ -34,6 +35,16 @@ async function readReceipt(value: unknown, request: GraphCommand,
       || graphSignature(value) !== graphSignature(request.body.document as GraphDocument))
       unknown("定义保存回执不匹配");
     return { kind: "definition", document: value };
+  }
+  if (["definition-archive", "definition-delete", "session-archive", "session-delete"].includes(request.action)) {
+    const session = request.action.startsWith("session-"), deleted = request.action.endsWith("-delete");
+    if (!graphObject(value) || Object.keys(value).length !== (session ? 7 : 6)
+      || value.schema_version !== 1 || value.kind !== `workflow.${session ? "session" : "definition"}-management`
+      || value.workflow_definition_id !== basis.definitionId || value.revision !== request.body.expected_revision
+      || value.archived !== !deleted || value.deleted !== deleted
+      || session && (!graphUuid(request.source_session_id) || value.workflow_session_id !== request.source_session_id))
+      unknown("归档或删除回执与目标不匹配");
+    return { kind: "management", result: value as unknown as GraphManagementResult };
   }
   const candidate = ["candidate-select", "candidate-fork"].includes(request.action);
   const definitionId = candidate ? request.expected_definition_id : basis.definitionId;

@@ -308,7 +308,6 @@ def test_consumer_http_receipts_and_history_do_not_return_private_records(tmp_pa
 
 
 def test_current_agent_uses_same_public_ports_and_separate_delivery(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-public-agent")
     transport = AgentTransportFixture()
     with closing(GraphWorkflowService(
         tmp_path / "public-agent.sqlite", public_model_factory=transport.factory,
@@ -329,7 +328,6 @@ def test_current_agent_uses_same_public_ports_and_separate_delivery(tmp_path, mo
 
 
 def test_public_control_receipts_preserve_current_pause_resume_identity(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-public-agent")
     transport = AgentTransportFixture(gate=True)
     with closing(GraphWorkflowService(
         tmp_path / "public-pause.sqlite", public_model_factory=transport.factory,

@@ -532,13 +532,11 @@ describe("optional graph chat consumer", () => {
     expect(JSON.parse(request.mock.calls[1][1].body).parameters.inputs.prompt).toEqual(payload);
   });
 
-  it("shows a model reference summary without credential references or evidence", () => {
+  it("rejects the retired inline model resource format", () => {
     const payload = { schema_version: 1, kind: "workflow.model-resource", binding: { node_id: node,
       provider: { provider_id: workflow, revision: 1, name: "Chat", credential_ref: "env:API_KEY" },
       credential_evidence: "1".repeat(64), parameters: { model: "test-chat" } } };
-    validateContent(payload, "MODEL_RESOURCE");
-    expect(JSON.parse(displayText(payload))).toEqual({ provider_id: workflow, revision: 1, name: "Chat", model: "test-chat" });
-    expect(displayText(payload)).not.toMatch(/credential|API_KEY|11111111/);
+    expect(() => validateContent(payload, "MODEL_RESOURCE")).toThrow();
   });
 
   it("shows a structured server rejection code and diagnostic rather than an object string", () => {

@@ -20,6 +20,25 @@ function fixture(overrides: Partial<ResourceOutboxPorts<Request>> = {}) {
 }
 
 describe("async resource mutation custody", () => {
+  it("retains the original until the exact accepted form state has been persisted", async () => {
+    const gate = deferred<boolean>(), called = deferred<void>();
+    const state = fixture();
+    const handler = vi.fn(async () => { called.resolve(); return gate.promise; });
+    state.outbox.setCompletionHandler(handler);
+    const original = request(), sending = state.outbox.send(original);
+    await called.promise;
+    expect(state.outbox.locked.value).toBe(true);
+    expect(JSON.parse(state.durable()!)).toEqual(original);
+    gate.resolve(false);
+    expect(await sending).toBe(false);
+    expect(state.outbox.pending.value).toEqual(original);
+    expect(state.refresh).not.toHaveBeenCalled();
+    handler.mockImplementation(async () => true);
+    expect(await state.outbox.reconcile()).toBe(true);
+    expect(state.ports.save).toHaveBeenCalledOnce();
+    expect(state.ports.readReceipt).toHaveBeenCalledOnce();
+    expect(state.durable()).toBeNull();
+  });
   it("locks synchronously and waits for durable intent before dispatching", async () => {
     const gate = deferred<void>(), writes: (string | null)[] = [];
     const state = fixture({ writePending: async value => {
@@ -72,21 +91,78 @@ describe("async resource mutation custody", () => {
     expect(state.ports.save).toHaveBeenCalledOnce();
     expect(state.ports.readReceipt).toHaveBeenCalledWith(JSON.parse(original!));
   });
-  it("imports a browser original only on explicit action and never replays its mutation", async () => {
+  it("only reads the browser original receipt without importing, restoring forms, or replaying its mutation", async () => {
     const original = request(), raw = JSON.stringify(original);
     let durable: string | null = null;
     const state = fixture({ readPending: async () => durable, readLegacyPending: () => raw,
-      importLegacyPending: vi.fn(async value => { durable = value; }),
       readReceipt: vi.fn(async () => { throw new WorkbenchApiError("unknown", "no original receipt"); }) });
+    const accept = vi.fn(async () => true);
+    state.outbox.setCompletionHandler(accept);
     expect(await state.outbox.initialize()).toBe(true);
     expect(state.outbox.legacyRaw.value).toBe(raw); expect(state.outbox.locked.value).toBe(true);
     expect(await state.outbox.send(request())).toBe(false);
-    expect(state.ports.importLegacyPending).not.toHaveBeenCalled(); expect(state.ports.save).not.toHaveBeenCalled();
-    expect(await state.outbox.importLegacyPending()).toBe(true);
-    expect(durable).toBe(raw); expect(state.outbox.pending.value).toEqual(original);
     expect(state.ports.save).not.toHaveBeenCalled();
-    expect(await state.outbox.reconcile()).toBe(false);
+    expect(await state.outbox.reconcileLegacyPending()).toBe(false);
     expect(state.ports.readReceipt).toHaveBeenCalledWith(original);
-    expect(state.ports.save).not.toHaveBeenCalled(); expect(durable).toBe(raw);
+    expect(state.ports.save).not.toHaveBeenCalled(); expect(durable).toBeNull();
+    expect(state.outbox.pending.value).toBeNull(); expect(state.outbox.legacyRaw.value).toBe(raw);
+    expect(accept).not.toHaveBeenCalled(); expect(state.refresh).not.toHaveBeenCalled();
+    vi.mocked(state.ports.readReceipt).mockResolvedValueOnce({});
+    expect(await state.outbox.reconcileLegacyPending()).toBe(true);
+    expect(state.outbox.legacyRaw.value).toBe(raw); expect(state.outbox.locked.value).toBe(true);
+    expect(accept).not.toHaveBeenCalled(); expect(state.refresh).not.toHaveBeenCalled();
+  });
+  it.each(["saved", "rejected", "unknown"])("compares %s requests by JSON content after backend key sorting", async outcome => {
+    let durable: string | null = null;
+    const original = request();
+    const state = fixture({
+      readPending: () => durable,
+      writePending: value => {
+        durable = value === null ? null : JSON.stringify({ text: JSON.parse(value).text,
+          idempotency_key: JSON.parse(value).idempotency_key });
+      },
+      save: vi.fn(async () => {
+        if (outcome !== "saved") throw new WorkbenchApiError(outcome === "rejected" ? "rejected" : "unknown", outcome, 400);
+      }),
+    });
+    expect(await state.outbox.send(original)).toBe(outcome === "saved");
+    expect(state.outbox.pending.value === null).toBe(outcome !== "unknown");
+    if (outcome === "saved") expect(state.refresh).toHaveBeenCalledOnce();
+    else expect(state.outbox.error.value).toBe(outcome);
+  });
+  it("does not treat array reordering or a changed numeric type as the original request", async () => {
+    let durable: string | null = null;
+    const state = fixture({
+      readPending: () => durable,
+      writePending: value => { durable = value; },
+      save: vi.fn(async () => {
+        durable = JSON.stringify({ ...JSON.parse(durable!), text: 12 });
+      }),
+    });
+    expect(await state.outbox.send(request())).toBe(false);
+    expect(state.outbox.pending.value).not.toBeNull();
+    expect(state.refresh).not.toHaveBeenCalled();
+  });
+  it("archives and acknowledges the exact unknown request before explicit abandonment without a replay", async () => {
+    const archive = vi.fn(async (_raw: string) => {});
+    const state = fixture({ archivePending: archive,
+      save: vi.fn(async () => { throw new WorkbenchApiError("unknown", "missing receipt"); }) });
+    await state.outbox.send(request());
+    const raw = state.durable();
+    expect(await state.outbox.abandon(false)).toBe(false);
+    expect(archive).not.toHaveBeenCalled();
+    expect(await state.outbox.abandon(true)).toBe(true);
+    expect(archive).toHaveBeenCalledWith(raw);
+    expect(state.durable()).toBeNull();
+    expect(state.ports.save).toHaveBeenCalledOnce();
+  });
+  it("keeps unknown evidence when its archive fails", async () => {
+    const state = fixture({ archivePending: async () => { throw new Error("archive unavailable"); },
+      save: async () => { throw new WorkbenchApiError("unknown", "missing receipt"); } });
+    await state.outbox.send(request());
+    const raw = state.durable();
+    expect(await state.outbox.abandon(true)).toBe(false);
+    expect(state.durable()).toBe(raw);
+    expect(state.outbox.pending.value).not.toBeNull();
   });
 });

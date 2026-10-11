@@ -1,6 +1,6 @@
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import {
-  readGraphCandidates, readGraphCatalogDetails, readGraphDefinition,
+  readGraphCandidates, readGraphCatalogDetails, readGraphDefinition, readGraphDefinitions,
   readGraphRun, readGraphSession, readGraphSessions,
 } from "../adapters/workflowGraphApi";
 import {
@@ -26,6 +26,7 @@ export interface WorkflowManagementPorts {
 export const workflowManagementQueries = {
   catalog: readGraphCatalogDetails,
   definition: readGraphDefinition,
+  definitions: readGraphDefinitions,
   sessions: readGraphSessions,
   session: readGraphSession,
   candidates: readGraphCandidates,
@@ -142,6 +143,23 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
       ...parameters, action, expected_revision: view.revision,
     }, action));
   }
+  async function manageDefinition(target: WorkflowTarget, action: "archive" | "delete") {
+    const entry = entryFor(target);
+    if (entry.saved_revision < 1)
+      throw new WorkbenchApiError("unavailable", "工作流尚未保存，不能提交归档或删除");
+    await ports.dispatch(target.workflowId, createGraphCommand(
+      `/api/graph/definitions/${entry.document.workflow_definition_id}/${action}`,
+      { expected_revision: entry.saved_revision }, `definition-${action}`));
+  }
+  async function manageSession(target: WorkflowTarget, sessionId: string, action: "archive" | "delete") {
+    const entry = entryFor(target), definitionId = entry.document.workflow_definition_id;
+    const view = ports.observe(await workflowManagementQueries.session(sessionId, definitionId));
+    entryFor(target);
+    const request = createGraphCommand(`/api/graph/sessions/${sessionId}/${action}`,
+      { expected_revision: view.revision }, `session-${action}`);
+    request.source_session_id = sessionId;
+    await ports.dispatch(target.workflowId, request);
+  }
   async function submitEvent(target: WorkflowTarget, eventId: string, eventVersion: number, payload: Record<string, unknown>) {
     assertEventPayload(payload);
     const fixedPayload = graphClone(payload), entry = entryFor(target);
@@ -202,6 +220,10 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
         execute(target, fixed => submitEvent(fixed, eventId, eventVersion, payload)),
       control: (target: WorkflowTarget, action: WorkflowControlAction, parameters?: WorkflowControlParameters) =>
         execute(target, fixed => control(fixed, action, parameters)),
+      manageDefinition: (target: WorkflowTarget, action: "archive" | "delete") =>
+        execute(target, fixed => manageDefinition(fixed, action)),
+      manageSession: (target: WorkflowTarget, sessionId: string, action: "archive" | "delete") =>
+        execute(target, fixed => manageSession(fixed, sessionId, action)),
       restoreCandidate: (target: WorkflowTarget, snapshot: GraphCandidates, candidateId: string, fork = false) =>
         execute(target, fixed => restoreCandidate(fixed, snapshot, candidateId, fork)),
     },

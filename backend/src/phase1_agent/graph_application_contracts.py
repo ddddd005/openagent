@@ -35,8 +35,17 @@ def operation(name, method, required=(), optional=(), **options):
 
 
 COMMANDS = (
-    operation("credential.save", "save_credential",
-              ("credential_ref", "secret", "expected_generation", "idempotency_key")),
+    operation("request-evidence.write", "write_evidence",
+              ("operation", "idempotency_key", "owner_kind", "owner_id", "request")),
+    operation("request-evidence.resolve", "resolve_evidence",
+              ("operation", "idempotency_key", "request_digest", "resolution")),
+    operation("content.metadata.update", "update_content_metadata",
+              ("reference", "display_name", "expected_metadata_sequence", "idempotency_key")),
+    operation("session.metadata.update", "update_session_metadata",
+              ("name", "expected_metadata_sequence", "idempotency_key"), session=True),
+    operation("provider.credential.save", "save_provider_credential",
+              ("identity", "expected_sequence", "credential_ref", "expected_generation",
+               "secret", "idempotency_key", "provider_seed")),
     operation("credential.delete", "delete_credential",
               ("credential_ref", "expected_generation", "idempotency_key")),
     operation("draft.save", "save_draft",
@@ -45,8 +54,16 @@ COMMANDS = (
               ("address", "format_version", "value", "expected_sequence", "idempotency_key"), consumer=True),
     operation("definition.save", "save_definition",
               ("document", "expected_revision", "idempotency_key"), status=201),
+    operation("definition.update", "update_definition",
+              ("workflow_definition_id", "document", "expected_edit_sequence", "idempotency_key")),
+    operation("definition.archive", "archive_definition",
+              ("identity", "expected_revision", "idempotency_key")),
+    operation("definition.delete", "delete_definition",
+              ("identity", "expected_revision", "idempotency_key")),
     operation("session.create", "create_session",
               ("workflow_definition_id", "definition_revision", "idempotency_key"), status=201),
+    operation("session.archive", "archive_session", ("expected_revision", "idempotency_key"), session=True),
+    operation("session.delete", "delete_session", ("expected_revision", "idempotency_key"), session=True),
     operation("run.start", "start", ("expected_revision", "idempotency_key"), ("inputs",), session=True, status=202),
     operation("event.submit", "submit_event",
               ("workflow_definition_id", "definition_revision", "event_id", "event_schema_version",
@@ -91,6 +108,11 @@ COMMANDS = (
 )
 
 QUERIES = (
+    operation("request-evidence.read", "read_evidence", ("owner_kind", "owner_id")),
+    operation("content.metadata.read", "read_content_metadata", ("reference",)),
+    operation("session.metadata.read", "get_session_metadata", session=True),
+    operation("provider.credential.receipt", "provider_credential_receipt", ("request",)),
+    operation("provider.credential.bind-receipt", "provider_binding_receipt", ("request",)),
     operation("credential.protection", "credential_protection"),
     operation("credential.status", "credential_status", ("credential_ref",)),
     operation("credential.receipt", "credential_receipt", ("operation", "request")),
@@ -103,6 +125,7 @@ QUERIES = (
     operation("receipt.read", "_receipt_read", ("operation", "parameters"), consumer=True),
     operation("catalog.node-types", "node_types", optional=("protocol_version",)),
     operation("platform", "platform_capabilities"),
+    operation("definition.list", "list_definitions", optional=("include_archived",)),
     operation("definition.read", "get_definition", ("identity",), ("revision",)),
     operation("definition.inputs", "_editor_inputs", ("document",)),
     operation("definition.sessions", "list_sessions", ("workflow_definition_id",)),
@@ -153,13 +176,37 @@ def validate_parameters(spec, parameters):
     required = spec.required | ({"session_id"} if spec.session else set())
     require(type(parameters) is dict and required <= set(parameters) <= required | spec.optional,
             "invalid_request", "Application operation fields differ")
-    if spec.name in ("credential.save", "credential.delete"):
+    if spec.name.startswith("request-evidence."):
+        from .request_evidence import validate_evidence_owner, validate_evidence_request
+        if spec.name in ("request-evidence.read", "request-evidence.write"):
+            validate_evidence_owner(parameters["owner_kind"], parameters["owner_id"])
+        if spec.name == "request-evidence.write":
+            validate_evidence_request(parameters["operation"], parameters["idempotency_key"], parameters["request"])
+        if spec.name == "request-evidence.resolve":
+            from re import fullmatch
+            require(type(parameters["operation"]) is str
+                    and type(parameters["request_digest"]) is str
+                    and fullmatch("[0-9a-f]{64}", parameters["request_digest"]) is not None
+                    and parameters["resolution"] in ("verified", "archived"),
+                    "invalid_request", "Request evidence resolution is invalid")
+    if "expected_metadata_sequence" in parameters:
+        require(type(parameters["expected_metadata_sequence"]) is int
+                and 0 <= parameters["expected_metadata_sequence"] < 2**53 - 1,
+                "invalid_request", "Metadata expected sequence is invalid")
+    if "expected_edit_sequence" in parameters:
+        require(type(parameters["expected_edit_sequence"]) is int
+                and 0 <= parameters["expected_edit_sequence"] < 2**53 - 1,
+                "invalid_request", "Configuration expected sequence is invalid")
+    if spec.name == "credential.delete":
         from .credential_store import credential_id
         credential_id(parameters["credential_ref"])
         require(type(parameters["expected_generation"]) is int
                 and 0 <= parameters["expected_generation"] < 2**53 - 1
                 and uuid_value(parameters["idempotency_key"]),
                 "invalid_request", "Credential mutation identity is invalid")
+    if spec.name == "provider.credential.save":
+        from .graph_provider_host import validate_provider_key_request
+        validate_provider_key_request({key: value for key, value in parameters.items() if key != "secret"})
     if spec.name in ("draft.read", "draft.save", "consumer.draft.read", "consumer.draft.save"):
         from .graph_drafts import validate_draft_address, validate_draft_value
         address = validate_draft_address(parameters["address"], "consumer" if spec.consumer else "management")
@@ -182,8 +229,11 @@ def validate_parameters(spec, parameters):
                     "invalid_request", "An idempotency key is required")
         if field in ("workflow_definition_id", "chain_id", "candidate_id"):
             require(uuid_value(value), "invalid_request", "Invalid graph identity")
-    if spec.name in ("definition.read", "consumer.definition", "consumer.sessions"):
+    if spec.name in ("definition.read", "definition.archive", "definition.delete",
+                     "consumer.definition", "consumer.sessions"):
         require(uuid_value(parameters["identity"]), "not_found", "Definition not found", 404)
+    if spec.name == "definition.list" and "include_archived" in parameters:
+        require(type(parameters["include_archived"]) is bool, "invalid_request", "Archive filter is invalid")
     if "mappings" in parameters:
         require(type(parameters["mappings"]) is list, "invalid_request", "Mappings must be an array")
     if "inputs" in parameters:

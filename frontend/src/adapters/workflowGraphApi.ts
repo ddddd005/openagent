@@ -34,6 +34,14 @@ export async function readGraphDefinition(id: string, revision?: number): Promis
     throw new WorkbenchApiError("unavailable", "工作流定义身份或版本不匹配");
   return value;
 }
+export async function readGraphDefinitions(includeArchived = true): Promise<{ document: GraphDocument; archived: boolean }[]> {
+  const value = await graphApplicationQuery("definition.list", { include_archived: includeArchived });
+  if (!Array.isArray(value) || !value.every(row => graphObject(row) && Object.keys(row).length === 2
+    && isGraphDocument(row.document) && typeof row.archived === "boolean")
+    || new Set(value.map(row => row.document.workflow_definition_id)).size !== value.length)
+    throw new WorkbenchApiError("unavailable", "工作流目录身份或格式无效");
+  return value;
+}
 export async function readGraphSessions(definitionId: string): Promise<GraphSession[]> {
   const value = await graphApplicationQuery("definition.sessions", { workflow_definition_id: definitionId });
   if (!Array.isArray(value) || !value.every(session => isGraphSession(session, definitionId)))

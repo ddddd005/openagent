@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { isCurrentProvider, isModelSourceConfiguration, isCapacityModelSourceConfiguration,
-  isModelCapacity, isModelParameters, newProvider, providerIdentity } from "./workflowModelResources";
+import { isCurrentProvider, isModelSourceConfiguration, isCurrentModelProfile, modelProfileDiagnostic, modelProfileIdentity,
+  isModelCapacity, isModelParameters, newModelProfile, newProvider, providerIdentity } from "./workflowModelResources";
 import { geminiThinkingCapability, modelParameterDiagnostic } from "./workflowModelResources";
 describe("current model resource contracts", () => {
-  it("keeps model parameters on the source and rejects secrets or unsupported provider fields", () => {
+  it("keeps model parameters globally and permits only profile identity on workflow sources", () => {
     const record = newProvider();
+    expect(record.value.credential_ref).toBeNull();
     expect(isCurrentProvider(record)).toBe(true);
     expect(isCurrentProvider({ ...record, value: { ...record.value, api_key: "forbidden" } })).toBe(false);
     expect(isCurrentProvider({ ...record, value: { ...record.value, credential_ref: "env:ARBITRARY" } })).toBe(false);
     expect(isCurrentProvider({ ...record, value: { ...record.value, base_url: "http://remote.example" } })).toBe(false);
-    expect(isModelSourceConfiguration({ reference: providerIdentity(record),
-      parameters: { model: "chosen-model", thinking: "disabled", stream: false, max_tokens: 8192, temperature: 0 } })).toBe(true);
+    const profile = newModelProfile(record);
+    expect(isModelSourceConfiguration({ reference: modelProfileIdentity(profile) })).toBe(true);
+    expect(isModelSourceConfiguration({ reference: modelProfileIdentity(profile), parameters: { model: "chosen-model" } })).toBe(false);
+    expect(isModelSourceConfiguration({ reference: providerIdentity(record) })).toBe(false);
     expect(isModelSourceConfiguration({ reference: providerIdentity(record), parameters: {}, credential_ref: record.value.credential_ref })).toBe(false);
   });
   it.each([{ model: "" }, { max_tokens: 8193 }, { max_tokens: 1.5 }, { temperature: NaN },
@@ -22,25 +25,28 @@ describe("current model resource contracts", () => {
       summary_max_tokens: 128, max_cold_input_tokens: 0 };
     expect(isModelCapacity(capacity)).toBe(false);
     expect(isModelCapacity(capacity, true)).toBe(true);
-    const source = { reference: providerIdentity(newProvider()),
-      parameters: { model: "test", thinking: "disabled", stream: false, max_tokens: 1024 }, capacity };
-    expect(isCapacityModelSourceConfiguration(source)).toBe(true);
-    expect(isModelSourceConfiguration(source)).toBe(false);
-    expect(isCapacityModelSourceConfiguration({ ...source, parameters: { ...source.parameters, max_tokens: undefined } })).toBe(false);
-    expect(isCapacityModelSourceConfiguration({ ...source, parameters: { ...source.parameters, max_tokens: 2048 } })).toBe(false);
+    const profile = newModelProfile(newProvider());
+    profile.value.name = "Named config";
+    profile.value.parameters.model = "test";
+    expect(isCurrentModelProfile(profile)).toBe(false);
+    profile.value.capacity = { ...capacity, context_window_tokens: 128000, max_cold_input_tokens: 128000 };
+    expect(isCurrentModelProfile(profile)).toBe(true);
+    expect(isCurrentModelProfile({ ...profile, value: { ...profile.value, api_key: "forbidden" } })).toBe(false);
+    expect(modelProfileDiagnostic({ ...profile.value, parameters: { ...profile.value.parameters, max_tokens: 2048 } }))
+      .toContain("输出预留");
     expect(isModelCapacity({ ...capacity, context_window_tokens: 128000, max_cold_input_tokens: 128000 })).toBe(true);
     expect(isModelCapacity({ ...capacity, context_window_tokens: 1024, max_cold_input_tokens: 1 })).toBe(false);
     expect(isModelCapacity({ ...capacity, summary_max_tokens: 1025 }, true)).toBe(false);
   });
-  it("supports only protocol-matched controlled Gemini credentials", () => {
+  it.each(["chat", "gemini"] as const)("accepts only saved local Key references or null for %s", protocol => {
     const record = newProvider();
-    record.value = { name: "Gemini", protocol: "gemini", enabled: true,
-      base_url: "https://generativelanguage.googleapis.com/v1beta", credential_ref: "env:GEMINI_API_KEY" };
-    expect(isCurrentProvider(record)).toBe(false);
-    record.data_schema_version = 2;
+    record.value = { name: "Provider", protocol, enabled: true,
+      base_url: "https://example.test", credential_ref: `local:${crypto.randomUUID()}` };
     expect(isCurrentProvider(record)).toBe(true);
-    expect(isCurrentProvider({ ...record, value: { ...record.value, credential_ref: "env:DEEPSEEK_API_KEY" } })).toBe(false);
-    expect(isCurrentProvider({ ...newProvider(), value: { ...newProvider().value, credential_ref: "env:GEMINI_API_KEY" } })).toBe(false);
+    expect(isCurrentProvider({ ...record, value: { ...record.value, credential_ref: null } })).toBe(true);
+    expect(isCurrentProvider({ ...record, data_schema_version: 2 })).toBe(false);
+    for (const reference of ["env:DEEPSEEK_API_KEY", "env:GEMINI_API_KEY", "local:not-a-uuid"])
+      expect(isCurrentProvider({ ...record, value: { ...record.value, credential_ref: reference } })).toBe(false);
     expect(isCurrentProvider({ ...newProvider(), data_schema_version: 2 })).toBe(false);
   });
   it("validates explicit budgets and levels without guessing unknown model capabilities", () => {

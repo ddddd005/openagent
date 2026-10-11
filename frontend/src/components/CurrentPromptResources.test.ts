@@ -3,7 +3,7 @@ import { compileScript, compileTemplate, parse as parseSfc } from "@vue/compiler
 import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 import * as Vue from "vue";
 import { computed, createRenderer, createSSRApp, nextTick, reactive, ref, type App } from "vue";
-import { createPinia } from "pinia";
+import { createPinia, disposePinia, setActivePinia, type Pinia } from "pinia";
 import { renderToString } from "@vue/server-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CurrentPromptPanel from "./CurrentPromptPanel.vue";
@@ -11,11 +11,16 @@ import PromptReferenceFields from "./PromptReferenceFields.vue";
 import GraphNodeConfiguration from "./GraphNodeConfiguration.vue";
 import RawNumberInput from "./RawNumberInput.vue";
 import PromptMembersEditor from "./PromptMembersEditor.vue";
-import ManagementLabelFields from "./ManagementLabelFields.vue";
+import ContentMetadataFields from "./ContentMetadataFields.vue";
+import { createContentMetadata, contentMetadataKey } from "../application/contentMetadata";
+import type { ContentMetadataSaveRequest } from "../adapters/contentMetadataApi";
 import { createPromptResources, promptResourceControllerKey } from "../application/promptResources";
 import { createWorkbenchFrontendHost } from "../application/workflowFrontendPackage";
 import { workbenchFrontendHostKey } from "../application/workbenchFrontendHost";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
+import { localDraftPorts } from "../adapters/localDraftsApi";
+import { memoryLocalDraftStorage } from "../testUtils/localDraftStorage";
+import { useFormDraftsStore } from "../stores/formDrafts";
 import { graphClone, newGraph, type GraphNode, type GraphNodeType } from "../domain/workflowGraph";
 import { newPromptMember, newPromptResource, promptIdentity,
   type CurrentPromptResource } from "../domain/workflowPromptResources";
@@ -24,11 +29,12 @@ import { workflowFrontendSdkKey, type WorkflowFrontendSdk,
   type WorkflowNodeConfigurationRequest } from "../plugins/workflowFrontendSdk";
 
 function fixture(initial = [newPromptResource()]) {
-  const state = { records: graphClone(initial), failSave: false };
+  const state = { records: graphClone(initial), failSave: false, saveFailure: null as WorkbenchApiError | null };
   const list = vi.fn(async () => graphClone(state.records));
   const writePending = vi.fn();
   const save = vi.fn(async (request: Parameters<Parameters<typeof createPromptResources>[0]["save"]>[0]) => {
     if (state.failSave) throw new WorkbenchApiError("unknown", "Controlled response loss");
+    if (state.saveFailure) throw state.saveFailure;
     state.records = state.records.filter(record => JSON.stringify(promptIdentity(record))
       !== JSON.stringify(promptIdentity(request.record)));
     state.records.push(graphClone(request.record));
@@ -37,6 +43,27 @@ function fixture(initial = [newPromptResource()]) {
   const readReceipt = vi.fn(async (_request: Parameters<typeof save>[0]) => ({}));
   const resources = createPromptResources({ list, save, readReceipt, readPending: () => null, writePending });
   resources.records.value = graphClone(initial);
+  const names = new Map<string, { display_name: string; metadata_sequence: number }>();
+  const namePending = new Map<string, string | null>();
+  const nameState = { failure: null as WorkbenchApiError | null };
+  const nameSave = vi.fn(async (request: ContentMetadataSaveRequest) => {
+    if (nameState.failure) throw nameState.failure;
+    const result = { reference: graphClone(request.reference), display_name: request.display_name,
+      metadata_sequence: request.expected_metadata_sequence + 1 };
+    names.set(JSON.stringify(request.reference), result);
+    return result;
+  });
+  const nameReceipt = vi.fn(async (request: ContentMetadataSaveRequest) => ({
+    reference: graphClone(request.reference), display_name: request.display_name,
+    metadata_sequence: request.expected_metadata_sequence + 1,
+  }));
+  const metadata = createContentMetadata(identity => {
+    const key = JSON.stringify(identity);
+    return { read: async () => ({ reference: graphClone(identity),
+      ...(names.get(key) ?? { display_name: "", metadata_sequence: 0 }) }),
+      save: nameSave, readReceipt: nameReceipt, readPending: () => namePending.get(key) ?? null,
+      writePending: value => { namePending.set(key, value); } };
+  });
   const record = initial[0] ?? newPromptResource();
   const node = reactive<GraphNode>({
     node_binding_id: crypto.randomUUID(), component_id: "prompts.global-reference", component_version: "2",
@@ -61,7 +88,8 @@ function fixture(initial = [newPromptResource()]) {
     config_schema: { type: "object", required: ["reference"], additionalProperties: false,
       properties: { reference: { type: "object" } } },
   };
-  return { state, list, save, readReceipt, writePending, resources, node, document, definition, sdk, configureNode, locked, lifecycle };
+  return { state, list, save, readReceipt, writePending, resources, node, document, definition, sdk, configureNode, locked, lifecycle,
+    metadata, names, nameSave, nameReceipt, nameState, namePending };
 }
 
 // This small renderer runs actual mounted hooks and form handlers without a browser or live backend.
@@ -107,7 +135,8 @@ const renderer = createRenderer<HostNode, HostNode>({
   nextSibling: node => node.parent?.children[node.parent.children.indexOf(node) + 1] ?? null,
 });
 const apps: App<HostNode>[] = [];
-async function flush() { await Promise.resolve(); await nextTick(); await Promise.resolve(); await nextTick(); }
+const piniaInstances: Pinia[] = [];
+async function flush() { for (let index = 0; index < 12; index++) { await Promise.resolve(); await nextTick(); } }
 function elements(root: HostNode): HostNode[] { return [root, ...root.children.flatMap(elements)]; }
 function find(root: HostNode, predicate: (node: HostNode) => boolean) {
   const found = elements(root).find(predicate);
@@ -130,7 +159,15 @@ async function trigger(node: HostNode, event: "Click" | "Submit" | "Change") {
   await (node.props[`on${event}`] as (event: { preventDefault(): void }) => unknown)({ preventDefault() {} });
   await flush();
 }
-async function mount(component: typeof CurrentPromptPanel | typeof PromptReferenceFields, f: ReturnType<typeof fixture>) {
+async function mount(component: typeof CurrentPromptPanel | typeof PromptReferenceFields, f: ReturnType<typeof fixture>,
+  drafts?: ReturnType<typeof memoryLocalDraftStorage>) {
+  if (drafts) {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
+    vi.spyOn(localDraftPorts, "read").mockImplementation(drafts.ports.read);
+    vi.spyOn(localDraftPorts, "save").mockImplementation(drafts.ports.save);
+    vi.spyOn(localDraftPorts, "receipt").mockImplementation(drafts.ports.receipt);
+  }
   vi.stubGlobal("document", { activeElement: null });
   vi.stubGlobal("Document", class {});
   vi.stubGlobal("ShadowRoot", class {});
@@ -142,7 +179,7 @@ async function mount(component: typeof CurrentPromptPanel | typeof PromptReferen
   Object.assign(RawNumberInput, { render: new Function("Vue", transpileModule(numericTemplate.code, {
     compilerOptions: { target: ScriptTarget.ES2022, module: ModuleKind.None },
   }).outputText)(Vue) });
-  for (const [name, component] of [["PromptMembersEditor.vue", PromptMembersEditor], ["ManagementLabelFields.vue", ManagementLabelFields]] as const) {
+  for (const [name, component] of [["PromptMembersEditor.vue", PromptMembersEditor], ["ContentMetadataFields.vue", ContentMetadataFields]] as const) {
     const descriptor = parseSfc(readFileSync(new URL(name, import.meta.url), "utf8")).descriptor;
     const script = compileScript(descriptor, { id: name });
     const template = compileTemplate({ source: descriptor.template!.content, filename: name, id: name,
@@ -164,8 +201,9 @@ async function mount(component: typeof CurrentPromptPanel | typeof PromptReferen
   const clientComponent = { ...component, render: new Function("Vue", code)(Vue) };
   const root = new HostNode("root");
   const app = renderer.createApp(clientComponent, component === PromptReferenceFields ? { node: f.node, document: f.document } : {});
-  app.use(createPinia());
+  const pinia = createPinia(); piniaInstances.push(pinia); setActivePinia(pinia); app.use(pinia);
   app.provide(promptResourceControllerKey, f.resources).provide(workflowFrontendSdkKey, f.sdk);
+  app.provide(contentMetadataKey, f.metadata);
   app.provide(Vue.ssrContextKey, {});
   apps.push(app);
   app.mount(root);
@@ -175,21 +213,133 @@ async function mount(component: typeof CurrentPromptPanel | typeof PromptReferen
 function renderFields(f: ReturnType<typeof fixture>) {
   return renderToString(createSSRApp(PromptReferenceFields, { node: f.node, document: f.document })
     .use(createPinia())
-    .provide(promptResourceControllerKey, f.resources).provide(workflowFrontendSdkKey, f.sdk));
+    .provide(promptResourceControllerKey, f.resources).provide(workflowFrontendSdkKey, f.sdk)
+    .provide(contentMetadataKey, f.metadata));
 }
-afterEach(() => { apps.splice(0).forEach(app => app.unmount()); vi.unstubAllGlobals(); });
+afterEach(() => {
+  apps.splice(0).forEach(app => app.unmount()); piniaInstances.splice(0).forEach(disposePinia);
+  vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals();
+});
 
 describe("current prompt panel form interactions", () => {
-  it("keeps the explicit legacy import action available while ordinary editing is locked", async () => {
+  it("saves formal names independently of memory body editing and keeps the strict resource envelope", async () => {
+    const record = newPromptResource(2), original = graphClone(record), f = fixture([record]);
+    f.names.set(JSON.stringify(promptIdentity(record)), { display_name: "Saved formal name", metadata_sequence: 7 });
+    const drafts = memoryLocalDraftStorage(), root = await mount(CurrentPromptPanel, f, drafts);
+    expect(elements(root).some(node => node.text === "Saved formal name")).toBe(true);
+    await trigger(find(root, node => node.props.class === "resource-edit"), "Click");
+    const forms = useFormDraftsStore(), flushDraft = vi.spyOn(forms, "flush").mockResolvedValue(false);
+    model(label(root, "提示词显示名称"), "Renamed prompt");
+    await trigger(label(root, "保存提示词显示名称"), "Click");
+    expect(f.nameSave).toHaveBeenCalledWith({ reference: promptIdentity(record), display_name: "Renamed prompt",
+      expected_metadata_sequence: 7, idempotency_key: expect.any(String) });
+    expect(flushDraft).not.toHaveBeenCalled(); expect(f.save).not.toHaveBeenCalled();
+    expect(f.resources.records.value).toEqual([original]);
+    expect(elements(root).some(node => node.text === "Renamed prompt")).toBe(true);
+    expect(label(root, "提示词显示名称").parent?.parent?.parent?.tag).not.toBe("fieldset");
+  });
+  it("keeps name text after CAS failure and verifies an unknown exact original without replay", async () => {
+    const f = fixture(), root = await mount(CurrentPromptPanel, f);
+    await trigger(find(root, node => node.props.class === "resource-edit"), "Click");
+    f.nameState.failure = new WorkbenchApiError("rejected", "name CAS changed", 409, "stale_metadata_sequence");
+    model(label(root, "提示词显示名称"), "Memory text");
+    await trigger(label(root, "保存提示词显示名称"), "Click");
+    expect(label(root, "提示词显示名称").value).toBe("Memory text");
+    expect(label(root, "提示词显示名称").props.disabled).toBe(false);
+    const record = f.resources.records.value[0]!;
+    f.names.set(JSON.stringify(promptIdentity(record)), { display_name: "Other saved name", metadata_sequence: 8 });
+    await trigger(label(root, "刷新提示词名称"), "Click");
+    expect(label(root, "提示词显示名称").value).toBe("Memory text");
+    expect(f.metadata.forReference(promptIdentity(record)).record.value?.metadata_sequence).toBe(8);
+    f.nameState.failure = new WorkbenchApiError("unknown", "response lost");
+    await trigger(label(root, "保存提示词显示名称"), "Click");
+    const original = graphClone(f.nameSave.mock.calls[1]![0]);
+    expect(original.expected_metadata_sequence).toBe(8);
+    expect(label(root, "提示词显示名称").props.disabled).toBe(true);
+    await trigger(label(root, "核实原提示词名称请求"), "Click");
+    expect(f.nameReceipt).toHaveBeenCalledWith(original);
+    expect(f.nameSave).toHaveBeenCalledTimes(2); expect(f.save).not.toHaveBeenCalled();
+    expect(label(root, "提示词显示名称").props.disabled).toBe(false);
+  });
+  it("keeps an unresolved name lock on its own identity while another prompt can be named", async () => {
+    const first = newPromptResource(), second = { ...newPromptResource(), scope: "project:story", resource_id: first.resource_id };
+    const f = fixture([first, second]), root = await mount(CurrentPromptPanel, f);
+    await trigger(find(root, node => node.props.class === "resource-edit"), "Click");
+    f.nameState.failure = new WorkbenchApiError("unknown", "response lost");
+    model(label(root, "提示词显示名称"), "First original");
+    await trigger(label(root, "保存提示词显示名称"), "Click");
+    await trigger(elements(root).filter(node => node.props.class === "resource-edit")[1]!, "Click");
+    expect(label(root, "提示词显示名称").props.disabled).toBe(false);
+    f.nameState.failure = null;
+    model(label(root, "提示词显示名称"), "Second name");
+    await trigger(label(root, "保存提示词显示名称"), "Click");
+    expect(f.nameSave.mock.calls[1]![0].reference).toEqual(promptIdentity(second));
+    expect(f.metadata.forReference(promptIdentity(first)).locked.value).toBe(true);
+    expect(f.metadata.forReference(promptIdentity(second)).record.value?.display_name).toBe("Second name");
+  });
+  it("saves memory numeric edits without consulting any persistent draft gate", async () => {
+    const record = newPromptResource(2), member = newPromptMember("Target prompt", 2);
+    record.value.members = [member];
+    const f = fixture([record]), drafts = memoryLocalDraftStorage(), root = await mount(CurrentPromptPanel, f, drafts);
+    const forms = useFormDraftsStore();
+    const flushAll = vi.spyOn(forms, "flushAll").mockResolvedValue(false), flushTarget = vi.spyOn(forms, "flush");
+    await trigger(find(root, node => node.props.class === "resource-edit"), "Click");
+    model(label(root, "条目 1 装配顺序"), "007"); await flush();
+    await trigger(label(root, "提示词当前资源表单"), "Submit");
+    expect(f.save).toHaveBeenCalledOnce();
+    expect(f.save.mock.calls[0]![0].record.value.members[0].presentation.order).toBe(7);
+    expect(flushAll).not.toHaveBeenCalled(); expect(flushTarget).not.toHaveBeenCalled();
+    expect(drafts.ports.read).not.toHaveBeenCalled(); expect(drafts.ports.save).not.toHaveBeenCalled();
+  });
+  it("preserves ordinary text and numeric input after a definitive body CAS rejection without saving a draft", async () => {
+    const record = newPromptResource(2), member = newPromptMember("Target prompt", 2);
+    record.value.members = [member];
+    const f = fixture([record]), drafts = memoryLocalDraftStorage(), root = await mount(CurrentPromptPanel, f, drafts);
+    await trigger(find(root, node => node.props.class === "resource-edit"), "Click");
+    model(label(root, "条目 1 装配顺序"), "007"); await flush();
+    model(label(root, "条目 1 正文"), "Memory text remains");
+    f.state.saveFailure = new WorkbenchApiError("rejected", "body CAS changed", 409, "stale_revision");
+    await trigger(label(root, "提示词当前资源表单"), "Submit");
+    expect(f.save).toHaveBeenCalledOnce(); expect(label(root, "条目 1 装配顺序").value).toBe("007");
+    expect(label(root, "条目 1 正文").value).toBe("Memory text remains");
+    expect(f.resources.locked.value).toBe(false);
+    expect(elements(root).some(node => node.text.includes("body CAS changed"))).toBe(true);
+    expect(drafts.ports.read).not.toHaveBeenCalled(); expect(drafts.ports.save).not.toHaveBeenCalled();
+    f.state.saveFailure = null;
+    await trigger(label(root, "提示词当前资源表单"), "Submit");
+    expect(f.save).toHaveBeenCalledTimes(2);
+  });
+  it("drops ordinary unsaved edits on switch or cancel and isolates invalid numbers by full resource identity", async () => {
+    const first = newPromptResource(2); first.value.members = [newPromptMember("Saved first", 2)];
+    const second = graphClone(first); second.scope = "project:story"; second.value.members[0]!.text = "Saved second";
+    second.value.members[0]!.presentation.order = 8;
+    const f = fixture([first, second]), drafts = memoryLocalDraftStorage(), root = await mount(CurrentPromptPanel, f, drafts);
+    await trigger(elements(root).filter(node => node.props.class === "resource-edit")[0]!, "Click");
+    model(label(root, "条目 1 正文"), "Unsaved ordinary edit");
+    model(label(root, "条目 1 装配顺序"), "-"); await flush();
+    await trigger(elements(root).filter(node => node.props.class === "resource-edit")[1]!, "Click");
+    expect(label(root, "条目 1 正文").value).toBe("Saved second");
+    expect(label(root, "条目 1 装配顺序").value).toBe("8");
+    expect(label(root, "条目 1 装配顺序").props["aria-invalid"]).toBeUndefined();
+    await trigger(elements(root).filter(node => node.props.class === "resource-edit")[0]!, "Click");
+    expect(label(root, "条目 1 正文").value).toBe("Saved first");
+    expect(label(root, "条目 1 装配顺序").value).toBe("0");
+    await trigger(label(root, "取消提示词编辑"), "Click");
+    expect(elements(root).some(node => node.props["aria-label"] === "提示词当前资源表单")).toBe(false);
+    expect(elements(root).some(node => node.props["aria-label"] === "未提交提示词草稿")).toBe(false);
+    expect(f.save).not.toHaveBeenCalled(); expect(f.state.records).toEqual([first, second]);
+    expect(drafts.ports.read).not.toHaveBeenCalled(); expect(drafts.ports.save).not.toHaveBeenCalled();
+  });
+  it("keeps only legacy receipt verification available while ordinary editing is locked", async () => {
     const f = fixture();
     f.resources.legacyRaw.value = "retained original request";
-    const importRequest = vi.spyOn(f.resources, "importLegacyPending").mockResolvedValue(true);
+    const verifyRequest = vi.spyOn(f.resources, "reconcileLegacyPending").mockResolvedValue(true);
     const root = await mount(CurrentPromptPanel, f);
     expect(label(root, "新增提示词资源").props.disabled).toBe(true);
-    const action = button(root, "导入旧提示词请求");
+    const action = button(root, "核实旧提示词原请求");
     expect(action.props.disabled).toBe(false);
     await trigger(action, "Click");
-    expect(importRequest).toHaveBeenCalledOnce(); expect(f.save).not.toHaveBeenCalled();
+    expect(verifyRequest).toHaveBeenCalledOnce(); expect(f.save).not.toHaveBeenCalled();
   });
   it("saves an empty enabled workspace resource with read-only identity and no schema-1 name or kind fields", async () => {
     const f = fixture([]), root = await mount(CurrentPromptPanel, f);
@@ -230,7 +380,7 @@ describe("current prompt panel form interactions", () => {
       lifecycle: "context_once", compaction: "never", presentation: { role: "system" } });
   });
 
-  it.each([1, 2] as const)("copies a schema-%i group into an unsaved independent draft without rebinding the node", async version => {
+  it.each([1, 2] as const)("copies a schema-%i group into independent memory editing until explicit creation", async version => {
     const record = newPromptResource(version), member = newPromptMember("Original background", version);
     record.scope = "project:story"; record.update_sequence = 7; record.value.enabled = false;
     member.presentation = { role: "user", placement: "middle", depth: 2, order: -8, enabled: false };
@@ -352,8 +502,8 @@ describe("current prompt panel form interactions", () => {
       .toMatchObject({ placement: "after", depth: null });
     await trigger(find(root, node => node.tag === "button" && node.children.some(child => child.tag === "strong")), "Click");
     await trigger(add(), "Click");
-    await trigger(label(root, "移除草稿条目"), "Click");
-    await trigger(label(root, "移除草稿条目"), "Click");
+    await trigger(label(root, "移除条目"), "Click");
+    await trigger(label(root, "移除条目"), "Click");
     await trigger(label(root, "提示词当前资源表单"), "Submit");
     expect(f.save.mock.calls[1]![0].record.value.members).toEqual([]);
   });
@@ -379,7 +529,7 @@ describe("current prompt panel form interactions", () => {
     model(label(root, "条目 1 装配顺序"), 1.5);
     await flush();
     expect(label(root, "条目 1 装配顺序").props["aria-invalid"]).toBe(true);
-    expect(button(root, "保存当前资源").props.disabled).toBe(true);
+    expect(button(root, "创建提示词资源").props.disabled).toBe(true);
     await trigger(label(root, "提示词当前资源表单"), "Submit");
     expect(f.save).not.toHaveBeenCalled();
     expect(elements(root).some(node => node.text.includes("数字字段不完整"))).toBe(true);
@@ -444,6 +594,14 @@ describe("current prompt panel form interactions", () => {
 });
 
 describe("current prompt reference configuration", () => {
+  it("uses the formal prompt name in reference choices without changing the binding", async () => {
+    const f = fixture(), record = f.resources.records.value[0]!;
+    f.names.set(JSON.stringify(promptIdentity(record)), { display_name: "Formal reference name", metadata_sequence: 4 });
+    const original = graphClone(f.node.config), root = await mount(PromptReferenceFields, f);
+    expect(label(root, "提示词当前资源").options.some(option => option.text.trim() === "Formal reference name")).toBe(true);
+    expect(f.node.config).toEqual(original); expect(f.nameSave).not.toHaveBeenCalled();
+    expect(f.configureNode).not.toHaveBeenCalled();
+  });
   it("uses the exact prompt package editor to own only reference without duplicate generic JSON fields", async () => {
     const f = fixture(), pinia = createPinia();
     const host = createWorkbenchFrontendHost(() => promptFrontendExtensions, () => f.sdk.packages.value);
@@ -451,7 +609,7 @@ describe("current prompt reference configuration", () => {
       const html = await renderToString(createSSRApp(GraphNodeConfiguration,
         { node: f.node, document: f.document, definition: f.definition }).use(pinia)
         .provide(workbenchFrontendHostKey, host).provide(workflowFrontendSdkKey, f.sdk)
-        .provide(promptResourceControllerKey, f.resources));
+        .provide(promptResourceControllerKey, f.resources).provide(contentMetadataKey, f.metadata));
       expect(host.extensions.value.map(row => row.declaration.extension_id))
         .toEqual(promptFrontendExtensions.map(row => row.extension_id));
       expect(host.extensions.value[1]!.configurationFields).toEqual(["reference"]);

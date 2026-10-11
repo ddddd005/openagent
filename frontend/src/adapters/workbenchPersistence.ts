@@ -1,11 +1,9 @@
-import { graphClone, graphObject, graphUuid, isGraphDocument, type GraphEntry } from "../domain/workflowGraph";
-import type { DraftStorage } from "./browserStorage";
+import { graphObject, graphUuid, isGraphDocument, type GraphEntry } from "../domain/workflowGraph";
 import type { WorkspaceWorkflow } from "../domain/workspace";
 
 export const WORKBENCH_STORAGE_KEY = "workflow-workbench:fixed-base:v1";
 export const WORKBENCH_RECOVERY_STORAGE_KEY = "workflow-workbench:isolated-graph:v7";
-const MAX_BYTES = 4_000_000;
-// Keep these exact identities aligned with backend storage_retirement._RETIRED_NODES.
+// Reject retired product node identities; this list never migrates stored content.
 const RETIRED_COMPONENTS = [
   ["workflow.text", "1"], ["workflow.current-input", "1"],
   ["workflow.output", "1"], ["workflow.regex", "1"],
@@ -22,7 +20,7 @@ const RETIRED_COMPONENTS = [
   ["workflow.agent", "1"], ["workflow.agent", "2"],
   ["workflow.model-provider", "1"], ["workflow.model-provider", "2"],
   ["workflow.context", "1"], ["workflow.prompt-assembly", "1"],
-  ["models.source", "1"], ["models.source", "3"],
+  ["models.source", "1"], ["models.source", "2"], ["models.source", "3"], ["models.source", "4"],
   ["models.chat", "1"], ["models.chat", "2"],
   ["agents.execute", "1"], ["agents.execute", "2"], ["agents.execute", "3"],
   ["agents.execute", "5"], ["agents.execute", "6"], ["agents.execute", "7"],
@@ -50,12 +48,6 @@ export interface SavedWorkbench extends WorkbenchConfiguration {
   revision: number;
   savedAt: string;
 }
-export interface WorkbenchRead {
-  value: SavedWorkbench | null;
-  raw: string | null;
-  error: string | null;
-  rewrite: boolean;
-}
 function metadata(value: Record<string, unknown>) {
   return Number.isSafeInteger(value.revision) && Number(value.revision) > 0
     && typeof value.savedAt === "string" && Number.isFinite(Date.parse(value.savedAt));
@@ -65,7 +57,9 @@ function workflow(value: unknown): value is WorkspaceWorkflow {
     && typeof value.description === "string" && Number.isSafeInteger(value.nodeCount) && Number(value.nodeCount) >= 0
     && (value.state === undefined || value.state === "saved" || value.state === "draft")
     && (value.sourceId === undefined || typeof value.sourceId === "string")
-    && (value.copyPending === undefined || typeof value.copyPending === "boolean");
+    && (value.copyPending === undefined || typeof value.copyPending === "boolean")
+    && (value.archived === undefined || typeof value.archived === "boolean")
+    && (value.deleted === undefined || typeof value.deleted === "boolean");
 }
 function entry(value: unknown): value is GraphEntry {
   return graphObject(value) && isGraphDocument(value.document)
@@ -86,88 +80,14 @@ function explicitLegacy(document: unknown, row?: Record<string, unknown>) {
 }
 export function isSavedWorkbench(value: unknown): value is SavedWorkbench {
   if (!graphObject(value) || value.schemaVersion !== 7 || value.kind !== "graph-workbench" || !metadata(value)
-    || !Array.isArray(value.catalog) || !value.catalog.length || value.catalog.length > 128
+    || !Array.isArray(value.catalog) || value.catalog.length > 128
     || !value.catalog.every(workflow) || new Set(value.catalog.map(row => row.id)).size !== value.catalog.length
     || !graphObject(value.graph) || value.graph.schema_version !== 1 || !graphObject(value.graph.entries)) return false;
   const entries = value.graph.entries;
   return Object.keys(entries).length === value.catalog.length
     && value.catalog.every(row => entry(entries[row.id]) && !explicitLegacy(
       (entries[row.id] as GraphEntry).document, entries[row.id] as unknown as Record<string, unknown>))
-    && value.catalog.some(row => row.id === value.activeWorkflowId)
-    && value.catalog.some(row => row.id === value.selectedWorkflowId);
-}
-function readMixed(value: Record<string, unknown>): SavedWorkbench {
-  if (!metadata(value) || !Array.isArray(value.catalog) || !graphObject(value.documents)
-    || !graphObject(value.graph) || value.graph.schema_version !== 1 || !graphObject(value.graph.entries))
-    throw new Error("schema");
-  const sourceCatalog = value.catalog, documents = value.documents, entries = value.graph.entries;
-  if (sourceCatalog.length > 128 || new Set(sourceCatalog.map(row => graphObject(row) && row.id)).size !== sourceCatalog.length)
-    throw new Error("catalog");
-  const catalog: WorkspaceWorkflow[] = [];
-  const currentEntries: Record<string, GraphEntry> = {};
-  for (const row of sourceCatalog) {
-    if (!graphObject(row) || typeof row.id !== "string" || !graphObject(documents[row.id]))
-      throw new Error("catalog");
-    const documentRow = documents[row.id] as Record<string, unknown>;
-    const entryRow = entries[row.id];
-    if (explicitLegacy(documentRow.document, documentRow)
-      || graphObject(entryRow) && explicitLegacy(documentRow.document, entryRow)) continue;
-    if (!workflow(row) || !isGraphDocument(documentRow.document) || !graphObject(entryRow))
-      throw new Error("current-schema");
-    const restored = { ...graphClone(entryRow),
-      document: graphClone(documentRow.document) };
-    if (!entry(restored)) throw new Error("metadata");
-    catalog.push(graphClone(row));
-    currentEntries[row.id] = restored;
-  }
-  // Unclassified records must not disappear merely because the catalog omitted them.
-  if (Object.keys(documents).some(id => !sourceCatalog.some(row => graphObject(row) && row.id === id))
-    || Object.keys(entries).some(id => !sourceCatalog.some(row => graphObject(row) && row.id === id)))
-    throw new Error("unclassified");
-  const fallback = catalog.find(row => !row.copyPending)?.id ?? catalog[0]?.id ?? "";
-  return { schemaVersion: 7, kind: "graph-workbench", revision: Number(value.revision), savedAt: String(value.savedAt),
-    activeWorkflowId: catalog.some(row => row.id === value.activeWorkflowId) ? String(value.activeWorkflowId) : fallback,
-    selectedWorkflowId: catalog.some(row => row.id === value.selectedWorkflowId) ? String(value.selectedWorkflowId) : fallback,
-    catalog, graph: { schema_version: 1, entries: currentEntries } };
-}
-function readRetiredCurrent(value: Record<string, unknown>): SavedWorkbench {
-  if (!Array.isArray(value.catalog) || !value.catalog.length
-    || !graphObject(value.graph) || !graphObject(value.graph.entries)
-    || !value.catalog.some(row => graphObject(row) && row.id === value.activeWorkflowId)
-    || !value.catalog.some(row => graphObject(row) && row.id === value.selectedWorkflowId))
-    throw new Error("schema");
-  const sourceEntries = value.graph.entries;
-  if (!Object.values(sourceEntries).some(row => graphObject(row) && explicitLegacy(row.document, row)))
-    throw new Error("schema");
-  const documents = Object.fromEntries(Object.entries(sourceEntries).map(([id, row]) =>
-    [id, graphObject(row) ? { document: row.document } : null]));
-  return readMixed({ ...value, documents });
-}
-export function readWorkbench(storage: DraftStorage): WorkbenchRead {
-  let raw: string | null = null;
-  try {
-    raw = storage.getItem(WORKBENCH_STORAGE_KEY);
-    if (raw === null) return { value: null, raw, error: null, rewrite: false };
-    if (raw.length > MAX_BYTES) throw new Error("capacity");
-    const value: unknown = JSON.parse(raw);
-    if (isSavedWorkbench(value)) return { value, raw, error: null, rewrite: false };
-    if (graphObject(value) && value.schemaVersion === 6 && value.kind === "unified-workbench")
-      return { value: readMixed(value), raw, error: null, rewrite: true };
-    if (graphObject(value) && value.schemaVersion === 7 && value.kind === "graph-workbench")
-      return { value: readRetiredCurrent(value), raw, error: null, rewrite: true };
-    if (graphObject(value) && [1, 2, 3, 4, 5].includes(Number(value.schemaVersion)) && value.kind === "fixed-workbench")
-      return { value: null, raw, error: null, rewrite: true };
-    throw new Error("schema");
-  } catch {
-    return { value: null, raw, error: "保存记录无法读取或版本不兼容，原始记录未覆盖", rewrite: false };
-  }
-}
-export function writeWorkbench(storage: DraftStorage, value: SavedWorkbench, expectedRaw: string | null): string {
-  if (!isSavedWorkbench(value)) throw new Error("工作台保存内容格式无效");
-  const raw = JSON.stringify(value);
-  if (raw.length > MAX_BYTES) throw new Error("工作台保存内容超出容量");
-  if (storage.getItem(WORKBENCH_STORAGE_KEY) !== expectedRaw)
-    throw new Error("其他页面更新了保存记录，当前修改尚未保存");
-  storage.setItem(WORKBENCH_STORAGE_KEY, raw);
-  return raw;
+    && (value.catalog.length === 0 ? value.activeWorkflowId === "" && value.selectedWorkflowId === ""
+      : value.catalog.some(row => row.id === value.activeWorkflowId)
+        && value.catalog.some(row => row.id === value.selectedWorkflowId));
 }

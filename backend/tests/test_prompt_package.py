@@ -49,7 +49,8 @@ def loaded(*, tools=None):
 
 
 def graph_node(registry, component, number, **config):
-    version = "3" if component == "models.chat" else "2" if component.startswith(("models.", "prompts.")) else "1"
+    version = ("5" if component == "models.source" else "3" if component == "models.chat"
+               else "2" if component.startswith("prompts.") else "1")
     entry = registry.get(component, version)
     return {"node_binding_id": uid(number), "component_id": component, "component_version": version,
             "title": component, "position": {"x": 0, "y": 0},

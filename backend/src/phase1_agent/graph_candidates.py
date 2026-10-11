@@ -130,6 +130,8 @@ class GraphCandidateHost:
             session = repo.get("workflow_session", workflow_session_id=sid)
             visible = set(self._history(repo, sid))
             selected = self._selected_chain(repo, sid)
+            archived = (self._archived(repo, "session", sid)
+                        or self._archived(repo, "definition", session["workflow_definition_id"]))
             candidates = []
             for commit in repo.rows("workflow_commit"):
                 if (commit["source"].get("kind") != "completed_execution"
@@ -148,7 +150,7 @@ class GraphCandidateHost:
                     "source_definition_revision": chain["definition_revision"],
                     "data_revision": snapshot["data_revision"],
                     "selected": selected is not None and selected["chain_run_id"] == chain["chain_run_id"],
-                    "can_select": session["active_chain_run_id"] is None and diagnostic is None,
+                    "can_select": not archived and session["active_chain_run_id"] is None and diagnostic is None,
                     "diagnostic": diagnostic})
             return {"schema_version": 1, "kind": "workflow.graph-candidates", "workflow_session_id": sid,
                     "workflow_definition_id": session["workflow_definition_id"],

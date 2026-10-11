@@ -25,9 +25,9 @@ const catalog: GraphNodeType[] = [
   ...["context.output", "context.assembly", "context.merge", "agents.execute"].map(component_id => ({
     ...base, component_id, component_version: "4",
   })),
-  { ...base, component_id: "models.source", component_version: "2", default_config: {
-    reference: { resource_id: "hidden-default" }, parameters: { model: "hidden-default" },
-    capacity: { context_window_tokens: 0, output_reserve_tokens: 1024, summary_max_tokens: 128, max_cold_input_tokens: 0 },
+  { ...base, component_id: "models.source", component_version: "5", default_config: {
+    reference: { envelope_version: 1, scope: "workspace", type_id: "workflow.model-profile",
+      resource_id: "00000000-0000-4000-8000-000000000010" },
   } },
   { ...base, component_id: "prompts.item", component_version: "2" },
   { ...base, component_id: "tools.current-input", component_version: "1", capabilities: ["external:read"] },
@@ -56,7 +56,8 @@ describe("isolated tavern workbench launch and draft", () => {
     expect(presentation.public_outputs).toEqual(["display"]);
     expect(doc.execution_roots).toContain(presentation.node_binding_id);
     expect(doc.nodes.find(row => row.component_id === "models.source")!.config)
-      .toMatchObject({ reference: { resource_id: "" }, parameters: { model: "" } });
+      .toMatchObject({ reference: { type_id: "workflow.model-profile", resource_id: "" } });
+    expect(Object.keys(doc.nodes.find(row => row.component_id === "models.source")!.config)).toEqual(["reference"]);
     const next = createTavernDemo(catalog, packages);
     expect(next.workflow_definition_id).not.toBe(doc.workflow_definition_id);
     expect(next.nodes.every(node => !doc.nodes.some(old => old.node_binding_id === node.node_binding_id))).toBe(true);
@@ -69,22 +70,20 @@ describe("isolated tavern workbench launch and draft", () => {
   });
   it.each(["chat", "gemini"] as const)("builds the full %s flow with exact protocol node versions and independent config", protocol => {
     const completeCatalog = [...catalog,
-      { ...base, component_id: "models.source", component_version: "4",
+      { ...base, component_id: "models.source", component_version: "6",
         default_config: graphClone(catalog.find(row => row.component_id === "models.source")!.default_config) },
       { ...base, component_id: "agents.execute", component_version: "8" }];
     const config = { reference: { envelope_version: 1 as const, scope: "workspace",
-      type_id: "workflow.chat-provider", resource_id: crypto.randomUUID() },
-      parameters: { model: protocol === "gemini" ? "gemini-2.5-flash" : "unit-chat", stream: false as const,
-        thinking: "disabled" as const, max_tokens: 1024 },
-      capacity: { context_window_tokens: 100000, output_reserve_tokens: 1024, summary_max_tokens: 128, max_cold_input_tokens: 100000 } };
+      type_id: "workflow.model-profile" as const, resource_id: crypto.randomUUID() } };
     const doc = createTavernDemo(completeCatalog, packages, config, protocol);
     expect(doc.nodes).toHaveLength(12);
-    expect(doc.nodes.find(row => row.component_id === "models.source")?.component_version).toBe(protocol === "gemini" ? "4" : "2");
+    expect(doc.nodes.find(row => row.component_id === "models.source")?.component_version).toBe(protocol === "gemini" ? "6" : "5");
     expect(doc.nodes.find(row => row.component_id === "agents.execute")?.component_version).toBe(protocol === "gemini" ? "8" : "4");
     expect(doc.object_bindings).toHaveLength(2); expect(doc.execution_roots).not.toHaveLength(0);
     expect(doc.control_edges).not.toHaveLength(0);
-    config.parameters.model = "changed-outside";
-    expect(doc.nodes.find(row => row.component_id === "models.source")?.config.parameters).not.toMatchObject({ model: "changed-outside" });
+    const reference = graphClone(config.reference);
+    config.reference.resource_id = crypto.randomUUID();
+    expect(doc.nodes.find(row => row.component_id === "models.source")?.config).toEqual({ reference });
     expect(isGraphDocument(doc)).toBe(true);
   });
   it("registers a detached explicit draft without publishing, replacing another workflow or starting a run", () => {

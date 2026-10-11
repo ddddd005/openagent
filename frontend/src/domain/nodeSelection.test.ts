@@ -3,13 +3,13 @@ import { captureNodeSelection, nodeSelectionAllowed, nodeSelectionIssue, type No
 import { graphClone, newGraph, type GraphNodeType } from "./workflowGraph";
 
 function setup(): NodeSelectionContext {
-  const source: GraphNodeType = { component_id: "models.source", component_version: "3", display_name: "Gemini",
+  const source: GraphNodeType = { component_id: "models.source", component_version: "6", display_name: "Gemini",
     category: "Models", config_schema: {}, default_config: {}, inputs: [], outputs: [], executable: true, is_output: false };
   const document = newGraph("test");
-  document.nodes.push({ node_binding_id: crypto.randomUUID(), component_id: "models.source", component_version: "1",
+  document.nodes.push({ node_binding_id: crypto.randomUUID(), component_id: "models.source", component_version: "5",
     title: "My model", position: { x: 0, y: 0 }, config: { token: "keep" }, public_outputs: ["output"] });
   return { workflowId: document.workflow_definition_id, viewVersion: 0, sessionId: null, document,
-    catalog: [source, { ...source, component_version: "1" }, { ...source, component_id: "models.chat" }],
+    catalog: [source, { ...source, component_version: "5" }, { ...source, component_id: "models.chat", component_version: "4" }],
     packageLock: [], locked: false, catalogLoading: false, catalogError: null };
 }
 describe("node selection custody", () => {
@@ -18,19 +18,19 @@ describe("node selection custody", () => {
     const request = captureNodeSelection(context, "models.source", { position })!;
     position.x = 90;
     expect(request.position).toEqual({ x: 20, y: 40 });
-    expect(nodeSelectionAllowed(request, context, "models.source@3")).toBe(true);
-    expect(nodeSelectionAllowed(request, context, "models.chat@3")).toBe(false);
+    expect(nodeSelectionAllowed(request, context, "models.source@6")).toBe(true);
+    expect(nodeSelectionAllowed(request, context, "models.chat@4")).toBe(false);
     expect(nodeSelectionAllowed(request, context, "models.source@4")).toBe(false);
-    expect(nodeSelectionAllowed(request, { ...context, catalog: context.catalog.map(row => ({ ...row, executable: false })) }, "models.source@3")).toBe(false);
+    expect(nodeSelectionAllowed(request, { ...context, catalog: context.catalog.map(row => ({ ...row, executable: false })) }, "models.source@6")).toBe(false);
     expect(context).toEqual(before);
   });
   it("requires reset acknowledgement for an actual replacement and does not mutate the old node", () => {
     const context = setup(), before = graphClone(context.document);
     const request = captureNodeSelection(context, "models.source", { nodeId: context.document!.nodes[0]!.node_binding_id })!;
-    expect(nodeSelectionAllowed(request, context, "models.source@3")).toBe(false);
-    expect(nodeSelectionAllowed(request, context, "models.source@1", true)).toBe(false);
-    expect(nodeSelectionAllowed(request, context, "models.source@3", true)).toBe(true);
-    expect(nodeSelectionAllowed(request, context, "models.chat@3", true)).toBe(true);
+    expect(nodeSelectionAllowed(request, context, "models.source@6")).toBe(false);
+    expect(nodeSelectionAllowed(request, context, "models.source@5", true)).toBe(false);
+    expect(nodeSelectionAllowed(request, context, "models.source@6", true)).toBe(true);
+    expect(nodeSelectionAllowed(request, context, "models.chat@4", true)).toBe(true);
     expect(context.document).toEqual(before);
   });
   it("rejects stale workflow, view, session, graph, catalog, package lock and locked state", () => {
@@ -50,7 +50,7 @@ describe("node selection custody", () => {
     ];
     for (const value of changed) {
       expect(nodeSelectionIssue(request, value)).toBeTruthy();
-      expect(nodeSelectionAllowed(request, value, "models.source@3")).toBe(false);
+      expect(nodeSelectionAllowed(request, value, "models.source@6")).toBe(false);
     }
   });
   it("does not capture requests for absent nodes or unavailable editing state", () => {

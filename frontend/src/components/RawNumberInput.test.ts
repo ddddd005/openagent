@@ -51,7 +51,7 @@ function installRender() {
   }).outputText;
   Object.assign(RawNumberInput, { render: new Function("Vue", code)(Vue) });
 }
-async function mount(raw: string | null) {
+async function mount(raw: string | null, persist = true) {
   vi.stubGlobal("window", {});
   const pinia = createPinia(); setActivePinia(pinia);
   const forms = useFormDraftsStore();
@@ -60,7 +60,7 @@ async function mount(raw: string | null) {
   const update = vi.fn(), validity = vi.fn();
   installRender();
   const root = new HostNode("root");
-  const app = renderer.createApp(RawNumberInput, { modelValue: 8, integer: true, min: 0,
+  const app = renderer.createApp(RawNumberInput, { modelValue: 8, integer: true, min: 0, persist,
     draftScope: "resource:entries:item:stable-id:scan", draftBasis: { resourceId: "stable", sequence: 7 },
     "onUpdate:modelValue": update, onValidity: validity }).use(pinia)
     .provide(Vue.ssrContextKey, { modules: new Set() });
@@ -70,6 +70,23 @@ async function mount(raw: string | null) {
 afterEach(() => { apps.splice(0).forEach(app => app.unmount()); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("raw number form control", () => {
+  it("keeps incomplete input in memory without loading or staging numeric drafts", async () => {
+    const f = await mount("99", false);
+    expect(f.forms.load).not.toHaveBeenCalled();
+    expect(f.input.props.value).toBe("8");
+    (f.input.props.onInput as (event: unknown) => void)({ target: { value: "1e-" } });
+    await flush();
+    expect(f.input.props.value).toBe("1e-");
+    expect(f.input.validationMessage).toBe("数值尚未填写完整");
+    expect(f.validity).toHaveBeenLastCalledWith(false);
+    expect(f.update).not.toHaveBeenCalled();
+    expect(f.stage).not.toHaveBeenCalled();
+    (f.input.props.onInput as (event: unknown) => void)({ target: { value: "12" } });
+    await flush();
+    expect(f.update).toHaveBeenLastCalledWith(12);
+    expect(f.validity).toHaveBeenLastCalledWith(true);
+    expect(f.stage).not.toHaveBeenCalled();
+  });
   it.each(["-", "1e"])("restores incomplete %s verbatim and invalidates the old numeric value", async raw => {
     const f = await mount(raw);
     expect(f.input.props.type).toBe("text");

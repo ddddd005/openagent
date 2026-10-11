@@ -1,33 +1,32 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
-import { Copy, Import, Plus, RefreshCw, Save, X } from "lucide-vue-next";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { Archive, Copy, Plus, RefreshCw, Save, X } from "lucide-vue-next";
 import { usePromptResources } from "../application/promptResources";
 import { clonePromptResource, duplicatePromptResource, isCurrentPromptResource, newPromptResource,
-  promptIdentity, promptResourceLabel, type CurrentPromptResource,
-  type PromptMember } from "../domain/workflowPromptResources";
-import { useResourceFormDraft } from "../composables/useResourceFormDraft";
-import FormDraftNotice from "./FormDraftNotice.vue";
+  promptIdentity, promptResourceLabel, type CurrentPromptResource } from "../domain/workflowPromptResources";
+import { useResourceFormEditor } from "../composables/useResourceFormEditor";
 import PromptMembersEditor from "./PromptMembersEditor.vue";
-import { useFormDraftsStore } from "../stores/formDrafts";
-import { useManagementLabelsStore } from "../stores/managementLabels";
-import ManagementLabelFields from "./ManagementLabelFields.vue";
+import { useContentMetadata } from "../application/contentMetadata";
+import ContentMetadataFields from "./ContentMetadataFields.vue";
 
 const resources = usePromptResources();
 const records = resources.records, loading = resources.loading;
-const labels = useManagementLabelsStore();
-watch(records, values => { if (typeof window !== "undefined") for (const record of values)
-  void labels.load({ kind: "prompt", id: record.resource_id, scope: record.scope }); }, { immediate: true });
-const resourceLabel = (record: CurrentPromptResource) => labels.label({ kind: "prompt", id: record.resource_id, scope: record.scope }, promptResourceLabel(record));
+const metadata = useContentMetadata();
+watch(records, values => { for (const record of values) void metadata.forReference(promptIdentity(record)).load(); },
+  { immediate: true });
+const resourceLabel = (record: CurrentPromptResource) =>
+  metadata.forReference(promptIdentity(record)).record.value?.display_name || promptResourceLabel(record);
 const submitting = ref(false);
-const locked = computed(() => resources.locked.value || submitting.value || localDraft.loading.value || localDraft.conflict.value);
+const locked = computed(() => resources.locked.value || submitting.value);
 const error = resources.error, pending = resources.pending, busy = resources.busy;
-const editor = useResourceFormDraft<CurrentPromptResource>("prompt", () => newPromptResource(2), promptResourceLabel);
-const { form, expectedSequence, localDraft, choices } = editor;
+const editor = useResourceFormEditor<CurrentPromptResource>(() => newPromptResource(2));
+const { form, expectedSequence } = editor;
+onBeforeUnmount(resources.setCompletionHandler(async request => {
+  editor.acceptSubmitted(request.record, request.expected_sequence);
+  return true;
+}));
 const formError = ref("");
 const membersValid = ref(true);
-const forms = typeof window === "undefined" ? null : useFormDraftsStore();
-const numberScope = (member: PromptMember, field: string) =>
-  `resource:prompt:${form.value?.scope}:${form.value?.resource_id}:member:${member.id}:${field}`;
 const numberBasis = computed(() => ({ resourceId: form.value?.resource_id ?? null,
   scope: form.value?.scope ?? null, sequence: expectedSequence.value, format: form.value?.data_schema_version ?? null }));
 const numbersValid = computed(() => membersValid.value);
@@ -54,18 +53,15 @@ async function save() {
   formError.value = "";
   submitting.value = true;
   const record = clonePromptResource(form.value), sequence = expectedSequence.value;
-  const originalNumberBasis = numberBasis.value;
-  const scopes = record.value.members.flatMap(member => [numberScope(member, "order"), numberScope(member, "depth")]);
   try {
-    if (!await localDraft.flush() || forms && !await forms.flushAll()) return;
-    if (await resources.save(record, sequence)) {
-      if (forms) for (const scope of scopes) if (forms.statuses[scope]) await forms.remove(scope, originalNumberBasis);
-      editor.close();
-    }
+    await resources.save(record, sequence);
   } finally { submitting.value = false; }
 }
 async function reconcile() {
-  if (await resources.reconcile()) editor.close();
+  await resources.reconcile();
+}
+async function abandon() {
+  await resources.abandon(window.confirm("归档并解除原提示词请求的本机锁定？这不会撤销已发生的保存，也不会重新提交。"));
 }
 onMounted(() => { void resources.refresh(); });
 </script>
@@ -81,11 +77,7 @@ onMounted(() => { void resources.refresh(); });
     </header>
     <p v-if="loading" role="status">读取中</p>
     <p v-else-if="!records.length">暂无提示词当前资源</p>
-    <FormDraftNotice v-if="localDraft.message.value" :message="localDraft.message.value" :conflict="localDraft.conflict.value" @restore="localDraft.restoreConflict" @discard="localDraft.discardConflict" />
-    <button v-if="resources.legacyRaw.value" type="button" :disabled="busy || submitting || localDraft.loading.value || localDraft.conflict.value" @click="resources.importLegacyPending()"><Import :size="14" />导入旧提示词请求</button>
-    <select v-if="choices.length" aria-label="未提交提示词草稿" value="" :disabled="locked" @change="editor.resume(($event.target as HTMLSelectElement).value)">
-      <option value="">未提交草稿</option><option v-for="choice in choices" :key="choice.id" :value="choice.id">{{ choice.label }}</option>
-    </select>
+    <button v-if="resources.legacyRaw.value" type="button" :disabled="busy || submitting" @click="resources.reconcileLegacyPending()"><RefreshCw :size="14" />核实旧提示词原请求</button>
     <ul>
       <li v-for="record in records" :key="identityKey(record)">
         <button type="button" class="resource-edit" :disabled="locked" @click="edit(record)">
@@ -104,22 +96,24 @@ onMounted(() => { void resources.refresh(); });
         <button type="button" title="取消提示词编辑" aria-label="取消提示词编辑" :disabled="locked"
           @click="editor.close()"><X :size="15" /></button>
       </header>
-      <fieldset :disabled="locked || localDraft.loading.value">
-        <ManagementLabelFields :target="{ kind: 'prompt', id: form.resource_id, scope: form.scope }" :disabled="locked" :fallback="promptResourceLabel(form)" />
+      <ContentMetadataFields v-if="expectedSequence" :reference="promptIdentity(form)" :fallback="promptResourceLabel(form)" />
+      <fieldset :disabled="locked">
         <label class="enabled"><input v-model="form.value.enabled" type="checkbox" />启用资源</label>
-        <PromptMembersEditor :members="form.value.members" :version="form.data_schema_version" :disabled="locked"
+        <PromptMembersEditor :key="identityKey(form)" :members="form.value.members" :version="form.data_schema_version" :disabled="locked"
+          :persist-numeric-drafts="false"
           :draft-scope="`resource:prompt:${form.scope}:${form.resource_id}`" :draft-basis="numberBasis"
           @validity="membersValid = $event" />
         <details><summary>技术详情</summary><label>范围<output>{{ form.scope }}</output></label><label>资源 UUID<output>{{ form.resource_id }}</output></label></details>
       </fieldset>
       <p v-if="formError" class="warning" role="status">{{ formError }}</p>
-      <button type="submit" :disabled="locked || !numbersValid"><Save :size="14" />保存当前资源</button>
+      <button type="submit" :disabled="locked || !numbersValid"><Save :size="14" />{{ expectedSequence ? '保存当前资源' : '创建提示词资源' }}</button>
     </form>
     <div v-if="pending" class="warning" role="status">
       <p>提示词资源提交结果待核实</p>
       <button type="button" :disabled="busy" @click="reconcile">
         <RefreshCw :size="14" />核实原提示词请求
       </button>
+      <button type="button" :disabled="busy" @click="abandon"><Archive :size="14" />归档并解除锁定</button>
     </div>
     <p v-if="error" class="warning" role="status">{{ error }}</p>
   </section>

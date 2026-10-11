@@ -39,7 +39,6 @@ def retry(service, view, key=None):
 
 @pytest.mark.parametrize("failure", ["outcome", "output"])
 def test_chat_acceptance_failure_reuses_response_and_exact_node_identity(tmp_path, monkeypatch, failure):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-secret")
     fixture = ModelDatabaseFixture()
     with closing(GraphWorkflowService(tmp_path / "chat.sqlite", public_model_factory=fixture.factory)) as service:
         fixture.write(service, 1)
@@ -80,7 +79,6 @@ def test_chat_acceptance_failure_reuses_response_and_exact_node_identity(tmp_pat
 
 
 def test_unknown_result_is_not_offered_acceptance_retry(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-secret")
     fixture = ModelDatabaseFixture()
     fixture.fail = True
     with closing(GraphWorkflowService(tmp_path / "unknown.sqlite", public_model_factory=fixture.factory)) as service:
@@ -93,7 +91,6 @@ def test_unknown_result_is_not_offered_acceptance_retry(tmp_path, monkeypatch):
 
 
 def test_lost_process_candidate_refuses_retry_and_close_releases_retained_result(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-secret")
     fixture = ModelDatabaseFixture()
     path = tmp_path / "lost.sqlite"
     with closing(GraphWorkflowService(path, public_model_factory=fixture.factory)) as service:
@@ -120,7 +117,6 @@ def test_lost_process_candidate_refuses_retry_and_close_releases_retained_result
 
 @pytest.mark.parametrize("failure", ["terminal_fact", "terminal_fact_committed", "output"])
 def test_agent_completed_result_retry_does_not_repeat_model_or_tools(tmp_path, monkeypatch, failure):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-secret")
     fixture = AgentTransportFixture(batch=True)
     with closing(GraphWorkflowService(tmp_path / "agent.sqlite", public_model_factory=fixture.factory)) as service:
         ModelDatabaseFixture.write(service, 1)
@@ -170,7 +166,6 @@ def test_agent_completed_result_retry_does_not_repeat_model_or_tools(tmp_path, m
 
 
 def test_retry_requires_original_state_fence_and_close_discards_candidate(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-secret")
     fixture = ModelDatabaseFixture()
     with closing(GraphWorkflowService(tmp_path / "fence.sqlite", public_model_factory=fixture.factory)) as service:
         fixture.write(service, 1)
@@ -202,7 +197,6 @@ def test_retry_requires_original_state_fence_and_close_discards_candidate(tmp_pa
 
 @pytest.mark.parametrize("failure", ["protocol", "capacity"])
 def test_actual_model_fact_validation_error_is_not_a_retry_boundary(tmp_path, monkeypatch, failure):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-secret")
     fixture = ModelDatabaseFixture()
     with closing(GraphWorkflowService(tmp_path / "invalid.sqlite", public_model_factory=fixture.factory)) as service:
         fixture.write(service, 1)
@@ -222,7 +216,6 @@ def test_actual_model_fact_validation_error_is_not_a_retry_boundary(tmp_path, mo
 
 
 def test_public_http_retry_action_is_idempotent_and_state_revision_checked(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-secret")
     fixture = ModelDatabaseFixture()
     with closing(GraphWorkflowService(tmp_path / "http.sqlite", public_model_factory=fixture.factory)) as service:
         fixture.write(service, 1)
@@ -255,7 +248,6 @@ def test_public_http_retry_action_is_idempotent_and_state_revision_checked(tmp_p
 @pytest.mark.parametrize("failure", ["hook", "lost_ack"])
 def test_committed_result_notification_failure_keeps_accepted_outputs_and_cannot_replay(
         tmp_path, monkeypatch, failure):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-secret")
     fixture = ModelDatabaseFixture()
     with closing(GraphWorkflowService(tmp_path / "committed.sqlite", public_model_factory=fixture.factory)) as service:
         fixture.write(service, 1)

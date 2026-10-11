@@ -185,7 +185,7 @@ def test_missing_saved_package_keeps_history_and_original_receipts_read_only_unt
         assert not hasattr(missing, "_native_runtime")
 
 
-def test_missing_saved_package_with_active_chain_requires_original_install_before_close(tmp_path):
+def test_missing_saved_package_does_not_block_closing_owned_execution(tmp_path):
     optional = CapabilityPackage(PackageManifest("example.optional-ui", "1"), lambda host:
         host.register_frontend_extension(
             "example.optional-ui.panel", "workbench-panel", "example.optional-ui.panel",
@@ -207,31 +207,30 @@ def test_missing_saved_package_with_active_chain_requires_original_install_befor
         current = missing.get_session(sid)
         assert current["status"] == "recovery_unavailable"
         assert current["active_chain_run_id"] == chain_id
-        assert not current["can_submit"] and current["available_actions"] == []
+        assert not current["can_submit"] and current["available_actions"] == ["close"]
         assert missing.registry.catalog() == []
         assert missing.platform_capabilities()["package_diagnostics"][0]["enabled_packages"] == selection
-        with pytest.raises(ContractValidationError) as denied:
-            missing.control(sid, action="close", expected_revision=current["revision"],
-                            idempotency_key="unavailable-close")
-        assert denied.value.reason_code == "package_missing_dependency"
         with pytest.raises(ContractValidationError) as denied:
             missing.configure_capability_packages({"workflow.tools": "1.0.0"})
         assert denied.value.reason_code == "package_change_during_execution"
         assert missing.get_session(sid) == current
         assert saved_selection(path) == persisted
         assert missing._futures == {} and not hasattr(missing, "_native_runtime")
+        closed = missing.control(sid, action="close", expected_revision=current["revision"],
+                                 idempotency_key="unavailable-close")
+        assert closed["status"] == "closed" and closed["active_chain_run_id"] is None
+        assert missing.get_run(sid, chain_id)["chain"]["diagnostic"]["reason_code"] == "recovery_unavailable"
+        assert missing.control(sid, action="close", expected_revision=current["revision"],
+                               idempotency_key="unavailable-close") == closed
 
     with closing(GraphWorkflowService(path, capability_packages=(optional,))) as restored:
         current = restored.get_session(sid)
         assert restored.platform_capabilities()["package_diagnostics"] == []
         assert saved_selection(path) == persisted
-        assert current["status"] == "recovery_unavailable" and current["active_chain_run_id"] == chain_id
+        assert current["status"] == "closed" and current["active_chain_run_id"] is None
         with pytest.raises(ContractValidationError) as denied:
             restored.control(sid, action="resume", expected_revision=current["revision"],
                              idempotency_key="restored-resume")
-        assert denied.value.reason_code == "recovery_unavailable"
+        assert denied.value.reason_code == "invalid_state"
         assert restored._futures == {} and not hasattr(restored, "_native_runtime")
-        closed = restored.control(sid, action="close", expected_revision=current["revision"],
-                                  idempotency_key="restored-close")
-        assert closed["status"] == "closed" and closed["active_chain_run_id"] is None
         assert restored.configure_capability_packages(DEFAULT_PACKAGES)["package_diagnostics"] == []

@@ -6,8 +6,8 @@ export const modelFrontendPackage: WorkbenchFrontendPackageModule = {
   implementations: [
     { declaration: modelFrontendExtensions[0]!, implementation: CurrentProviderPanel },
     { declaration: modelFrontendExtensions[1]!, implementation: ModelSourceFields,
-      configurationFields: ["reference", "parameters", "capacity"] },
+      configurationFields: ["reference"] },
     { declaration: modelFrontendExtensions[2]!, implementation: ModelSourceFields,
-      configurationFields: ["reference", "parameters", "capacity"] },
+      configurationFields: ["reference"] },
   ],
 };

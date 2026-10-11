@@ -201,7 +201,6 @@ def test_global_group_freezes_at_start_and_preserves_order_and_old_history(tmp_p
 
 
 def test_real_workflow_edits_keep_once_identity_and_explicit_copy_creates_new_identity(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-tavern-prompt-presets")
     transport = NativeTransport()
     database = tmp_path / "native.sqlite"
     value = record(

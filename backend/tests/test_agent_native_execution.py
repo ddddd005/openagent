@@ -15,7 +15,7 @@ import pytest
 from phase1_agent.contracts import ModelResponse, ModelToolCall
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.model_contract import (
-    validate_model_source_config, validate_native_model_source_config,
+    validate_model_source_config, validate_model_profile,
 )
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.runtime_fact_store import RuntimeFactStore
@@ -66,7 +66,6 @@ class RecordingTransport:
 
 
 def test_native_rounds_keep_actual_tool_ids_and_project_final_answer_as_text(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-agent")
     fixture = RecordingTransport(tool_batch=True)
     with closing(GraphWorkflowService(tmp_path / "native-rounds.sqlite", public_model_factory=fixture.factory)) as service:
         ModelDatabaseFixture.write(service, 1)
@@ -95,14 +94,12 @@ def test_native_rounds_keep_actual_tool_ids_and_project_final_answer_as_text(tmp
 
 
 def test_summary_output_limit_is_controlled_and_usage_is_preserved_without_claiming_a_real_hit(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-agent")
     fixture = RecordingTransport()
     with closing(GraphWorkflowService(tmp_path / "native-summary.sqlite", public_model_factory=fixture.factory)) as service:
         ModelDatabaseFixture.write(service, 1)
         doc, entries = native_graph(service)
-        model = next(node for node in doc["nodes"] if node["component_id"] == "models.source")
-        model["config"]["parameters"]["max_tokens"] = 256
-        model["config"]["capacity"].update(output_reserve_tokens=256, summary_max_tokens=16)
+        ModelDatabaseFixture.update_profile(service, parameters={"max_tokens": 256},
+                                            capacity={"output_reserve_tokens": 256, "summary_max_tokens": 16})
         final = run(service, create(service, doc), "Current task")
         assert final["status"] == "succeeded", final["chains"]
         assert [call["parameters"]["max_tokens"] for call in fixture.calls] == [16, 256]
@@ -126,13 +123,11 @@ def test_summary_output_limit_is_controlled_and_usage_is_preserved_without_claim
 
 
 def test_cold_input_budget_rejects_summary_before_any_provider_dispatch(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-agent")
     fixture = RecordingTransport()
     with closing(GraphWorkflowService(tmp_path / "cold-budget.sqlite", public_model_factory=fixture.factory)) as service:
         ModelDatabaseFixture.write(service, 1)
         doc, _ = native_graph(service)
-        model = next(node for node in doc["nodes"] if node["component_id"] == "models.source")
-        model["config"]["capacity"]["max_cold_input_tokens"] = 100
+        ModelDatabaseFixture.update_profile(service, capacity={"max_cold_input_tokens": 100})
         initial = create(service, doc)
         before = deepcopy(initial["objects"]["context-a"])
         failed = run(service, initial, "Current task")
@@ -146,7 +141,6 @@ def test_cold_input_budget_rejects_summary_before_any_provider_dispatch(tmp_path
 
 
 def test_native_pause_after_inflight_summary_resumes_same_view_without_another_summary(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-agent")
     fixture = RecordingTransport(pause_summary=True)
     with closing(GraphWorkflowService(tmp_path / "native-pause.sqlite", public_model_factory=fixture.factory)) as service:
         ModelDatabaseFixture.write(service, 1)
@@ -174,30 +168,30 @@ def test_native_pause_after_inflight_summary_resumes_same_view_without_another_s
         assert final["objects"]["context-a"]["revision"] == 2
 
 
-def test_model_source_versions_do_not_guess_or_silently_accept_capacity_fields():
-    from test_model_package import source_config
-    old = source_config()
-    native = {**deepcopy(old), "capacity": {
+def test_model_source_cannot_override_global_capacity_and_profile_requires_explicit_budgets():
+    from test_model_package import profile_config, source_config
+    source = source_config()
+    native = {**profile_config(), "capacity": {
         "context_window_tokens": 10_000, "output_reserve_tokens": 128,
         "summary_max_tokens": 16, "max_cold_input_tokens": 5000,
     }}
     native["parameters"]["max_tokens"] = 128
-    assert validate_native_model_source_config(native) == native
+    assert validate_model_profile(native) == native
+    assert validate_model_source_config(source) == source
     with pytest.raises(ContractValidationError):
-        validate_model_source_config(native)
+        validate_model_source_config({**source, "capacity": native["capacity"]})
     for field in ("context_window_tokens", "max_cold_input_tokens"):
         invalid = deepcopy(native)
         invalid["capacity"][field] = 0
         with pytest.raises(ContractValidationError):
-            validate_native_model_source_config(invalid)
+            validate_model_profile(invalid)
     missing_output = deepcopy(native)
     missing_output["parameters"].pop("max_tokens")
     with pytest.raises(ContractValidationError):
-        validate_native_model_source_config(missing_output)
+        validate_model_profile(missing_output)
 
 
 def test_summary_model_outcome_commit_failure_never_replays_dispatch_or_adopts_context(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-agent")
     fixture = RecordingTransport()
     original, fail_once = RuntimeFactStore.accept, [True]
 
@@ -233,7 +227,6 @@ def test_summary_model_outcome_commit_failure_never_replays_dispatch_or_adopts_c
 def test_native_update_proves_actual_policy_even_when_no_compaction_was_triggered(tmp_path, monkeypatch):
     from phase1_agent.agent_executor import validate_execution_update
 
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-agent")
     fixture = RecordingTransport()
     with closing(GraphWorkflowService(tmp_path / "policy-proof.sqlite",
                                       public_model_factory=fixture.factory)) as service:

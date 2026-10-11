@@ -113,20 +113,28 @@ class GraphPublic:
         return result
 
     def _consumer_inputs(self, document):
-        from .graph_input_declarations import collect_input_declarations, input_diagnostics
+        from .graph_input_declarations import (
+            collect_input_declarations, collect_document_input_declarations, input_diagnostics,
+        )
         try:
             plan = GraphCompiler(self.registry).compile(document)
             nodes = {node["node_binding_id"]: node for node in document["nodes"]}
             return collect_input_declarations(self.registry, [nodes[node_id] for node_id in plan.ordered_node_ids]), []
         except Exception as error:
-            return [], input_diagnostics(error)
+            declarations, _ = collect_document_input_declarations(self.registry, document["nodes"])
+            inputs = [{key: deepcopy(value[key]) for key in ("name", "data_type", "required", "node_ids")}
+                      for value in declarations]
+            return inputs, input_diagnostics(error)
 
     def _consumer_view(self, repo, sid):
         session, document = self._consumer_scope(repo, sid)
         private_view = self._view(repo, sid)
         chain = self._selected_chain(repo, sid)
         if private_view.get("readonly"):
-            inputs, input_diagnostics = [], []
+            inputs, input_diagnostics = [], (deepcopy(self._package_diagnostics) or [{
+                "reason_code": "workflow_definition_unavailable",
+                "message": "Current workflow components or package versions are unavailable",
+            }])
         else:
             inputs, input_diagnostics = self._consumer_inputs(document)
         diagnostics = deepcopy(input_diagnostics)

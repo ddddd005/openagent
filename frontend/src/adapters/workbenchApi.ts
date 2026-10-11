@@ -1,9 +1,13 @@
+import { diagnosticRecovery } from "../domain/diagnosticPresentation";
+import { graphObject, graphUuid } from "../domain/workflowGraph";
+
 export type FailureKind = "unavailable" | "rejected" | "unknown";
 
 export class WorkbenchApiError extends Error {
   requestId?: string;
   nodeId?: string;
   diagnostics?: import("../domain/workflowGraph").GraphDiagnostic[];
+  correlationId?: string;
   constructor(
     public kind: FailureKind,
     public reason: string,
@@ -28,11 +32,34 @@ const publicReasons: Record<string, string> = {
   provider_missing: "确切供应商配置不存在",
   provider_unavailable: "供应商已停用",
   credential_reference_missing: "供应商凭据引用缺失或已撤销",
-  credential_unavailable: "后端凭据不可用",
+  credential_unavailable: "Key 不可用，请在模型供应商中填写并保存",
   credential_changed: "原执行凭据已变化，不能替换为新凭据继续",
   model_credential_changed: "运行准备后的 Key 已变化，不能替换为新 Key 继续",
-  model_credential_unavailable: "后端凭据缺失或不可读取",
-  credential_protection_unavailable: "当前宿主不支持本机 Key 保护，请使用环境凭据",
+  model_credential_unavailable: "Key 缺失或不可读取，请在模型供应商中填写并保存",
+  model_credential_broker_unavailable: "私有 Key 服务未配置，请检查后端初始化",
+  internal_error: "服务内部错误，请核实原请求或重新读取",
+  model_not_dispatched: "模型请求在发送前被阻止，未自动重试",
+  not_dispatched: "模型请求在发送前被阻止，未自动重试",
+  model_profile_missing: "全局模型配置不存在，请在模型供应商中创建并重新选择",
+  model_profile_unavailable: "引用的全局模型配置不存在或不可读取，请在模型供应商中检查并重新选择",
+  model_profile_type_mismatch: "模型来源引用的不是全局模型配置，请重新选择模型配置",
+  model_profile_disabled: "全局模型配置已停用，请在模型供应商中启用",
+  model_profile_invalid: "全局模型配置无效，请在模型供应商中检查",
+  model_source_invalid: "模型来源只能引用全局模型配置，请重新选择模型配置",
+  model_source_protocol_mismatch: "模型配置、供应商与模型来源的协议不一致，请选择同一协议的配置",
+  model_configuration_missing: "模型配置不存在，请在模型供应商中保存",
+  model_capacity_unconfigured: "模型容量未配置，请在模型供应商中手动填写",
+  model_capacity_unknown: "模型容量未配置，请在模型供应商中手动填写",
+  model_capacity_invalid: "模型容量关系无效，请在模型供应商中检查窗口、最大输出、输出预留和摘要上限",
+  model_output_reserve_unknown: "模型最大输出未配置，请在模型供应商中填写",
+  model_provider_unavailable: "供应商配置不存在或不可读取，请在模型供应商中检查",
+  model_provider_disabled: "供应商已停用，请在模型供应商中启用",
+  model_provider_invalid: "供应商配置无效，请在模型供应商中检查名称、协议、服务地址和已保存 Key",
+  model_provider_type_mismatch: "模型配置引用的不是供应商，请在模型供应商中重新选择",
+  provider_binding_conflict: "Key 已保存，但供应商版本已变化，请核实后绑定已保存 Key",
+  provider_binding_changed: "生效供应商引用已变化，请重新读取供应商配置",
+  provider_credential_changed: "已保存 Key 的代次已变化，请重新读取并保存",
+  credential_protection_unavailable: "当前宿主不支持本机 Key 安全保护，无法保存或使用 Key",
   credential_protection_failed: "本机 Key 无法安全保护或解密",
   credential_secret_invalid: "Key 为空、过长、首尾含空白或含控制字符",
   credential_reference_invalid: "本机 Key 引用无效",
@@ -91,7 +118,7 @@ export async function workbenchRequest<T>(
     );
   }
   if (!response.ok) {
-    const error = (data as { error?: { reason_code?: string; code?: string; diagnostic?: { node_id?: unknown }; diagnostics?: unknown[] } })?.error;
+    const error = graphObject(data) && graphObject(data.error) ? data.error : null;
     const candidate = error?.reason_code ?? error?.code;
     const code = typeof candidate === "string" && /^[A-Za-z0-9_]{1,64}$/.test(candidate)
       ? candidate : "unclassified";
@@ -106,20 +133,30 @@ export async function workbenchRequest<T>(
       response.status,
       code,
     );
-    if (typeof error?.diagnostic?.node_id === "string"
-      && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(error.diagnostic.node_id))
-      failure.nodeId = error.diagnostic.node_id;
+    const singular = graphObject(error?.diagnostic) ? error.diagnostic : null;
+    if (graphUuid(singular?.node_id)) failure.nodeId = singular.node_id;
+    if (graphUuid(error?.correlation_id)) failure.correlationId = error.correlation_id;
     const diagnostics = Array.isArray(error?.diagnostics) ? error.diagnostics : error?.diagnostic ? [error.diagnostic] : [];
-    failure.diagnostics = diagnostics.filter(item => !!item && typeof item === "object")
+    const token = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_]{1,64}$/.test(value);
+    failure.diagnostics = diagnostics.filter(graphObject)
       .map(item => {
         const diagnostic = item as Record<string, unknown>;
-        return { reason_code: typeof diagnostic.reason_code === "string" ? diagnostic.reason_code : code,
+        return { reason_code: token(diagnostic.reason_code) ? diagnostic.reason_code : token(diagnostic.code) ? diagnostic.code : code,
           message: typeof diagnostic.message === "string" ? diagnostic.message : reason,
           ...(typeof diagnostic.node_id === "string" ? { node_id: diagnostic.node_id } : {}),
           ...(typeof diagnostic.port_id === "string" ? { port_id: diagnostic.port_id } : {}),
           ...(typeof diagnostic.edge_id === "string" ? { edge_id: diagnostic.edge_id } : {}),
-          ...(Array.isArray(diagnostic.dependent_outputs) ? { dependent_outputs: diagnostic.dependent_outputs.filter((v): v is string => typeof v === "string") } : {}) };
+          ...(Array.isArray(diagnostic.dependent_outputs) ? { dependent_outputs: diagnostic.dependent_outputs.filter((v): v is string => typeof v === "string") } : {}),
+          ...(token(diagnostic.cause_code) ? { cause_code: diagnostic.cause_code } : {}),
+          ...(token(diagnostic.step) ? { step: diagnostic.step } : {}),
+          ...(token(diagnostic.recovery) ? { recovery: diagnostic.recovery } : {}),
+          ...(graphUuid(diagnostic.correlation_id) ? { correlation_id: diagnostic.correlation_id } : {}),
+        };
       });
+    const guidance = [...new Set(failure.diagnostics.map(diagnosticRecovery).filter(Boolean))].join("；");
+    const correlation = failure.correlationId ?? failure.diagnostics.find(d => d.correlation_id)?.correlation_id;
+    failure.reason += (guidance ? ` ${guidance}` : "") + (correlation ? ` 关联编号：${correlation}` : "");
+    failure.message = failure.reason;
     throw failure;
   }
   return data as T;

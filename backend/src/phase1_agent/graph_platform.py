@@ -226,23 +226,32 @@ class GraphPlatform:
         return GlobalResourceStore(store, self.registry.data_types)
 
     def get_global_resource(self, identity):
-        with self._lock, closing(self._store()) as store:
+        from .content_configuration import global_resource_service
+        from .host_sdk import ResourceIdentity
+        identity = ResourceIdentity.from_dict(identity).to_dict()
+        with self._lock:
             self._check_open()
-            return self._global_store(store).get(identity)
+            return global_resource_service(self, identity["type_id"]).get_global_resource(identity)
 
     def list_global_resources(self, *, scope=None, type_id=None):
-        with self._lock, closing(self._store()) as store:
+        from .content_configuration import list_managed_global_resources
+        with self._lock:
             self._check_open()
-            return self._global_store(store).list(scope=scope, type_id=type_id)
+            return list_managed_global_resources(self, scope=scope, type_id=type_id)
 
     def save_global_resource(self, record, *, expected_sequence, idempotency_key):
-        with self._lock, closing(self._store()) as store:
+        from .content_configuration import global_resource_service
+        require(type(record) is dict, "global_resource_invalid", "Global resource envelope is invalid")
+        with self._lock:
             self._check_open()
-            return self._global_store(store).write(record, expected_sequence=expected_sequence,
-                                                   idempotency_key=idempotency_key)
+            return global_resource_service(self, record.get("type_id")).save_global_resource(
+                record, expected_sequence=expected_sequence, idempotency_key=idempotency_key)
 
     def delete_global_resource(self, identity, *, expected_sequence, idempotency_key):
-        with self._lock, closing(self._store()) as store:
+        from .content_configuration import global_resource_service
+        from .host_sdk import ResourceIdentity
+        identity = ResourceIdentity.from_dict(identity).to_dict()
+        with self._lock:
             self._check_open()
-            return self._global_store(store).delete(identity, expected_sequence=expected_sequence,
-                                                    idempotency_key=idempotency_key)
+            return global_resource_service(self, identity["type_id"]).delete_global_resource(
+                identity, expected_sequence=expected_sequence, idempotency_key=idempotency_key)

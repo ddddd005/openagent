@@ -64,11 +64,11 @@ def versioned_node(service, component, version, number):
 def native_graph(service, *, policy=True, once=True, dual=False):
     entries, edges, bindings, roots = {}, [], [], []
     current = versioned_node(service, "tools.current-input", "1", 4100)
-    model = versioned_node(service, "models.source", "2", 4101)
-    model["config"] = {**source_config(), "capacity": {
+    model = versioned_node(service, "models.source", "5", 4101)
+    model["config"] = source_config()
+    ModelDatabaseFixture.update_profile(service, parameters={"max_tokens": 128}, capacity={
         "context_window_tokens": 100_000, "output_reserve_tokens": 128,
-        "summary_max_tokens": 128, "max_cold_input_tokens": 100_000}}
-    model["config"]["parameters"]["max_tokens"] = 128
+        "summary_max_tokens": 128, "max_cold_input_tokens": 100_000})
     shared = [current, model]
     if policy:
         strategy = versioned_node(service, "agents.compaction-policy", "1", 4102)
@@ -133,7 +133,6 @@ def rebind(service, view, doc):
 
 
 def test_native_graph_two_compactions_project_then_append_and_survive_copy_reopen(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-context")
     fixture = NativeTransport(generate_long_text=True)
     database = tmp_path / "native.sqlite"
     with closing(GraphWorkflowService(database, public_model_factory=fixture.factory)) as service:
@@ -189,7 +188,6 @@ def test_native_graph_two_compactions_project_then_append_and_survive_copy_reope
 
 
 def test_two_agents_keep_separate_once_ledgers_contexts_and_owners(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-context")
     fixture = NativeTransport()
     with closing(GraphWorkflowService(tmp_path / "dual.sqlite", public_model_factory=fixture.factory)) as service:
         ModelDatabaseFixture.write(service, 1)
@@ -211,7 +209,6 @@ def test_two_agents_keep_separate_once_ledgers_contexts_and_owners(tmp_path, mon
 
 
 def test_bad_summary_leaves_context_pointer_and_once_ledger_unconsumed(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-context")
     fixture = NativeTransport(bad_summary=True)
     with closing(GraphWorkflowService(tmp_path / "bad-summary.sqlite", public_model_factory=fixture.factory)) as service:
         ModelDatabaseFixture.write(service, 1)
@@ -225,7 +222,6 @@ def test_bad_summary_leaves_context_pointer_and_once_ledger_unconsumed(tmp_path,
 
 
 def test_context_acceptance_rollback_retries_without_reexecuting_summary_or_agent(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-context")
     fixture = NativeTransport()
     with closing(GraphWorkflowService(tmp_path / "retry.sqlite", public_model_factory=fixture.factory)) as service:
         ModelDatabaseFixture.write(service, 1)
@@ -260,7 +256,6 @@ def test_context_acceptance_rollback_retries_without_reexecuting_summary_or_agen
 
 
 def test_native_write_proof_rejects_wrong_agent_artifact_inputs_and_changed_candidate(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-context")
     fixture = NativeTransport()
     with closing(GraphWorkflowService(tmp_path / "proof.sqlite", public_model_factory=fixture.factory)) as service:
         ModelDatabaseFixture.write(service, 1)
@@ -313,7 +308,6 @@ def test_native_write_proof_rejects_wrong_agent_artifact_inputs_and_changed_cand
 
 
 def test_native_graph_without_compaction_stores_current_and_final_text_not_fixed_rules(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-context")
     fixture = NativeTransport()
     with closing(GraphWorkflowService(tmp_path / "plain.sqlite", public_model_factory=fixture.factory)) as service:
         ModelDatabaseFixture.write(service, 1)
@@ -331,7 +325,6 @@ def test_native_graph_without_compaction_stores_current_and_final_text_not_fixed
 def test_native_graph_middle_depth_reaches_model_and_does_not_persist_material(
     tmp_path, monkeypatch, depth,
 ):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-depth")
     fixture = NativeTransport()
     database = tmp_path / "depth.sqlite"
     with closing(GraphWorkflowService(database, public_model_factory=fixture.factory)) as service:
@@ -369,7 +362,6 @@ def test_native_graph_middle_depth_reaches_model_and_does_not_persist_material(
 
 
 def test_native_context_adoption_is_idempotent_and_rejects_stale_compacted_candidate(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-native-context")
     fixture = NativeTransport()
     with closing(GraphWorkflowService(tmp_path / "adoption.sqlite", public_model_factory=fixture.factory)) as service:
         ModelDatabaseFixture.write(service, 1)

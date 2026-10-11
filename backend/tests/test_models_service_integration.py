@@ -15,8 +15,9 @@ from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.model_contract import CHAT_PROVIDER_TYPE
 
-from test_model_package import source_config, uid
+from test_model_package import profile_config, source_config, uid
 from test_prompt_package import graph_document, graph_edge, graph_node, member
+from credential_test_support import mutate_test_credential, seed_service_credential
 
 
 class ModelDatabaseFixture:
@@ -48,12 +49,39 @@ class ModelDatabaseFixture:
 
     @staticmethod
     def write(service, sequence, *, address="https://original.test", enabled=True):
+        reference = seed_service_credential(service)
         record = {
-            **source_config()["reference"], "data_schema_version": 1, "update_sequence": sequence,
+            **profile_config()["provider"], "data_schema_version": 3, "update_sequence": sequence,
             "value": {"name": "Test current provider", "protocol": "chat", "base_url": address,
-                      "credential_ref": "env:DEEPSEEK_API_KEY", "enabled": enabled},
+                      "credential_ref": reference, "enabled": enabled},
         }
         service.save_global_resource(record, expected_sequence=sequence - 1, idempotency_key=str(uuid4()))
+        if service.get_global_resource(source_config()["reference"]) is None:
+            service.save_global_resource({
+                **source_config()["reference"], "data_schema_version": 1, "update_sequence": 1,
+                "value": profile_config(),
+            }, expected_sequence=0, idempotency_key=str(uuid4()))
+        return record
+
+    @staticmethod
+    def set_credential(service, secret):
+        record = service.get_global_resource(profile_config()["provider"])
+        return mutate_test_credential(service.provider_configuration.credentials,
+                                      record["value"]["credential_ref"], secret)
+
+    @staticmethod
+    def update_profile(service, *, parameters=None, capacity=None, protocol=None):
+        record = service.get_global_resource(source_config()["reference"])
+        assert record is not None
+        record["update_sequence"] += 1
+        if parameters:
+            record["value"]["parameters"].update(parameters)
+        if capacity:
+            record["value"]["capacity"].update(capacity)
+        if protocol:
+            record["value"]["protocol"] = protocol
+        service.save_global_resource(record, expected_sequence=record["update_sequence"] - 1,
+                                     idempotency_key=str(uuid4()))
         return record
 
     @staticmethod
@@ -118,12 +146,11 @@ class ModelDatabaseFixture:
 
 
 def test_default_loaded_model_graph_persists_secret_free_facts_and_releases_frame(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "private-api-secret")
     fixture = ModelDatabaseFixture()
     path = tmp_path / "models.sqlite"
     with closing(GraphWorkflowService(path, public_model_factory=fixture.factory)) as service:
         assert service.registry.get("models.chat", "3") is not None
-        assert service.registry.data_types.get(CHAT_PROVIDER_TYPE, 1, scope="global") is not None
+        assert service.registry.data_types.get(CHAT_PROVIDER_TYPE, 3, scope="global") is not None
         fixture.write(service, 1)
         final = fixture.execute(service, fixture.create(service, fixture.document(service)))
         assert final["status"] == "succeeded", final
@@ -148,11 +175,12 @@ def test_default_loaded_model_graph_persists_secret_free_facts_and_releases_fram
 
 
 def test_missing_credential_preflight_rolls_back_before_any_graph_effect(tmp_path, monkeypatch):
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "retired-route-must-not-rescue-missing-key")
     fixture, effects = ModelDatabaseFixture(), []
     with closing(GraphWorkflowService(tmp_path / "preflight.sqlite",
                                       public_model_factory=fixture.factory)) as service:
         fixture.write(service, 1)
+        fixture.set_credential(service, None)
         initial = fixture.create(service, fixture.document(service, side_effect=effects))
         with pytest.raises(ContractValidationError) as caught:
             service.start(initial["workflow_session_id"], expected_revision=initial["revision"],
@@ -166,7 +194,6 @@ def test_missing_credential_preflight_rolls_back_before_any_graph_effect(tmp_pat
 
 
 def test_pause_preserves_frozen_provider_next_run_and_fork_use_current(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "private-api-secret")
     fixture = ModelDatabaseFixture()
     entered, released = Event(), Event()
     with closing(GraphWorkflowService(tmp_path / "paused.sqlite",
@@ -212,7 +239,6 @@ def test_pause_preserves_frozen_provider_next_run_and_fork_use_current(tmp_path,
 
 @pytest.mark.parametrize("policy_change", ["disabled", "credential_changed", "credential_missing"])
 def test_policy_changed_before_dispatch_has_not_dispatched_fact_and_releases_frame(tmp_path, monkeypatch, policy_change):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "private-api-secret")
     fixture = ModelDatabaseFixture()
     entered, released = Event(), Event()
     with closing(GraphWorkflowService(tmp_path / "revoked.sqlite",
@@ -226,9 +252,9 @@ def test_policy_changed_before_dispatch_has_not_dispatched_fact_and_releases_fra
             if policy_change == "disabled":
                 fixture.write(service, 2, enabled=False)
             elif policy_change == "credential_changed":
-                monkeypatch.setenv("DEEPSEEK_API_KEY", "rotated-private-secret")
+                fixture.set_credential(service, "rotated-private-secret")
             else:
-                monkeypatch.delenv("DEEPSEEK_API_KEY")
+                fixture.set_credential(service, None)
         finally:
             released.set()
         service.wait(started["active_chain_run_id"])
@@ -243,7 +269,6 @@ def test_policy_changed_before_dispatch_has_not_dispatched_fact_and_releases_fra
 
 
 def test_unknown_transport_failure_persists_once_and_disposes_model(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "private-api-secret")
     fixture = ModelDatabaseFixture()
     fixture.fail = True
     with closing(GraphWorkflowService(tmp_path / "unknown.sqlite",
@@ -259,7 +284,6 @@ def test_unknown_transport_failure_persists_once_and_disposes_model(tmp_path, mo
 
 
 def test_current_provider_write_cas_and_idempotency_keep_only_current_value(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "private-api-secret")
     fixture = ModelDatabaseFixture()
     with closing(GraphWorkflowService(tmp_path / "cas.sqlite",
                                       public_model_factory=fixture.factory)) as service:
@@ -272,4 +296,4 @@ def test_current_provider_write_cas_and_idempotency_keep_only_current_value(tmp_
         with pytest.raises(ContractValidationError) as caught:
             service.save_global_resource(second, expected_sequence=1, idempotency_key=str(uuid4()))
         assert caught.value.reason_code == "stale_revision"
-        assert service.get_global_resource(source_config()["reference"]) == second
+        assert service.get_global_resource(profile_config()["provider"]) == second

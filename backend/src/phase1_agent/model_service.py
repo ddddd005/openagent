@@ -10,10 +10,8 @@ from __future__ import annotations
 from copy import deepcopy
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-import hashlib
-import hmac
-import os
 import httpx
+import logging
 from threading import RLock
 from uuid import uuid4
 
@@ -21,53 +19,22 @@ from jsonschema import Draft202012Validator
 from openai import APIStatusError
 
 from .adapter import DeepSeekAdapter, ProviderResponseError
-from .contract_errors import ContractValidationError, ModelRequestError
+from .contract_errors import ContractValidationError, ModelRequestError, PublicDiagnostic
 from .contract_json import canonical_bytes, content_digest, validate_json_value
 from .contracts import ModelResponse, ModelToolCall
+from .credential_contract import CredentialLease
 from .frozen_model import FrozenConfiguredAdapter, FrozenModelParameters
 from .gemini_adapter import GeminiAdapter, GeminiProtocolError
 from .gemini_capabilities import binding_capabilities, validate_provider_parameters
 from .graph_contracts import GraphDiagnosticError, require, uuid4_string
 from .model_contract import (
-    validate_any_model_source_config, validate_provider_record, validate_public_model_binding,
+    resolve_model_source, validate_any_model_source_config, validate_provider_record, validate_public_model_binding,
     validate_public_model_result,
 )
 from .prompt_contract import validate_ready_prompt
 
 
-@dataclass(frozen=True, repr=False)
-class CredentialLease:
-    reference: str
-    evidence: bytes = field(repr=False)
-
-
-class EnvironmentCredentialBroker:
-    """Only a controlled environment reference is supported in this slice."""
-
-    def __init__(self, environ=None):
-        self._environ = os.environ if environ is None else environ
-        self._evidence_key = os.urandom(32)
-
-    def _secret(self, reference):
-        require(reference in ("env:DEEPSEEK_API_KEY", "env:GEMINI_API_KEY"),
-                "model_credential_reference_denied",
-                "Credential reference is outside the installed broker policy")
-        secret = self._environ.get(reference.removeprefix("env:"))
-        require(type(secret) is str and bool(secret.strip()), "model_credential_unavailable",
-                "Controlled model credential is unavailable")
-        return secret
-
-    def _evidence(self, secret):
-        return hmac.new(self._evidence_key, secret.encode("utf-8"), hashlib.sha256).digest()
-
-    def freeze(self, reference) -> CredentialLease:
-        return CredentialLease(reference, self._evidence(self._secret(reference)))
-
-    def authorize(self, lease: CredentialLease) -> str:
-        secret = self._secret(lease.reference)
-        require(hmac.compare_digest(lease.evidence, self._evidence(secret)),
-                "model_credential_changed", "Model credential changed after run preparation")
-        return secret
+_LOGGER = logging.getLogger(__name__)
 
 
 def create_chat_transport(*, provider: dict, parameters: dict, api_key: str,
@@ -133,7 +100,7 @@ class ModelCapabilityAdapter:
             } or ("capacity" in self._binding and code in {
                 "model_fact_acceptance_failed", "context_compaction_cold_input_budget_exceeded",
             }):
-                raise ModelRequestError(code) from None
+                raise ModelRequestError(code, public_diagnostic=getattr(error, "public_diagnostic", None)) from None
             raise
         value = validate_public_model_result(value)
         self._index += 1
@@ -152,6 +119,8 @@ class _Frame:
     node_binding_id: str
     config: dict
     provider: dict = field(repr=False)
+    provider_reference: dict
+    source_config: dict
     credential: CredentialLease = field(repr=False)
     binding: dict | None = None
     producer_node_run_id: str | None = None
@@ -173,6 +142,7 @@ class _Request:
     result: dict | None = None
     outcome: dict | None = None
     error_code: str | None = None
+    blocked_diagnostic: dict | None = None
     dispatched: bool = False
     blocked: bool = False
     input_refs: dict = field(default_factory=dict)
@@ -189,10 +159,13 @@ class PublicModelService:
 
     def __init__(self, *, provider_reader, accept_fact, resolve_input,
                  credential_broker=None, transport_factory=create_chat_transport):
+        require(credential_broker is not None and callable(getattr(credential_broker, "freeze", None))
+                and callable(getattr(credential_broker, "authorize", None)),
+                "model_credential_broker_unavailable", "Private credential broker is not configured", 500)
         self._provider_reader = provider_reader
         self._accept_fact_callback = accept_fact
         self._resolve_input = resolve_input
-        self._broker = credential_broker or EnvironmentCredentialBroker()
+        self._broker = credential_broker
         self._factory = transport_factory or create_chat_transport
         self._frames: dict[tuple[str, str, str], _Frame] = {}
         self._bindings: dict[str, _Frame] = {}
@@ -210,13 +183,12 @@ class PublicModelService:
         for node_id, config in node_configs.items():
             uuid4_string(node_id)
             config = validate_any_model_source_config(config)
-            reference = config["reference"]
-            record = next((record for record in records if all(
-                record.get(key) == reference[key] for key in reference)), None)
-            provider = validate_provider_record(record, reference)
-            validate_provider_parameters(provider["protocol"], config["parameters"])
+            resolved = resolve_model_source(config, records)
+            provider = resolved.pop("provider")
+            provider_reference = resolved.pop("provider_reference")
             lease = self._broker.freeze(provider["credential_ref"])
-            prepared[(*owner, node_id)] = _Frame(owner, node_id, config, provider, lease)
+            prepared[(*owner, node_id)] = _Frame(
+                owner, node_id, resolved, provider, provider_reference, config, lease)
         with self._lock:
             require(not any(key[:2] == owner for key in self._frames),
                     "model_run_already_prepared", "Run model inputs were already prepared")
@@ -290,8 +262,7 @@ class PublicModelService:
         require(capability in context.definition.capabilities, "graph_capability_denied",
                 "Model operation requires a declared capability")
         if capability == "models:resolve" and operation == "bind-native-model":
-            require(type(payload) is dict and ("capacity" in payload) == (operation == "bind-native-model"),
-                    "model_source_invalid", "Model resolution operation differs from its source version")
+            validate_any_model_source_config(payload)
             return self.bind_model(context, payload)
         if capability == "models:call" and operation == "chat":
             require(type(payload) is dict and set(payload) == {"binding_id"},
@@ -331,7 +302,7 @@ class PublicModelService:
             frame = self._frames.get((*owner, context.node_binding_id))
             require(frame is not None, "model_recovery_unavailable",
                     "Prepared model frame is unavailable in this process")
-            require(frame.config == config, "model_input_changed",
+            require(frame.source_config == config, "model_input_changed",
                     "Model source differs from the run preparation")
             if frame.binding is None:
                 frame.producer_node_run_id = uuid4_string(context.node_run_id)
@@ -339,10 +310,10 @@ class PublicModelService:
                     "schema_version": 4 if frame.provider["protocol"] == "gemini" else 2,
                     "kind": "workflow.model-binding",
                     "binding_id": str(uuid4()), "reference": config["reference"],
-                    "parameters": config["parameters"],
+                    "parameters": frame.config["parameters"],
                     "capabilities": binding_capabilities(
-                        frame.provider["protocol"], config["parameters"]),
-                    "capacity": config["capacity"],
+                        frame.provider["protocol"], frame.config["parameters"]),
+                    "capacity": frame.config["capacity"],
                 })
                 self._bindings[frame.binding["binding_id"]] = frame
             require(frame.producer_node_run_id == context.node_run_id, "model_owner_mismatch",
@@ -380,8 +351,8 @@ class PublicModelService:
             frame.output_id = output_id
 
     def _boundary(self, frame):
-        current = self._provider_reader(deepcopy(frame.config["reference"]))
-        provider = validate_provider_record(current, frame.config["reference"])
+        current = self._provider_reader(deepcopy(frame.provider_reference))
+        provider = validate_provider_record(current, frame.provider_reference)
         require(provider["credential_ref"] == frame.provider["credential_ref"],
                 "model_credential_changed", "Provider credential reference changed")
         return self._broker.authorize(frame.credential)
@@ -422,6 +393,46 @@ class PublicModelService:
         require(request.result is not None, "model_request_incomplete",
                 "Model request has no reusable response")
         return validate_public_model_result({**request.result, "fact_refs": request.facts})
+
+    @staticmethod
+    def _blocked_diagnostic(error, step, request, frame):
+        recovery_by_cause = {
+            "model_provider_disabled": "enable_provider",
+            "model_provider_unavailable": "configure_provider",
+            "model_provider_invalid": "configure_provider",
+            "model_credential_changed": "save_provider_key",
+            "model_credential_unavailable": "save_provider_key",
+            "credential_reference_invalid": "save_provider_key",
+            "credential_protection_unavailable": "restore_private_credential_access",
+            "credential_protection_failed": "restore_private_credential_access",
+            "model_retry_policy_invalid": "disable_transport_retries",
+            "model_recovery_unavailable": "start_new_run",
+            "model_fact_acceptance_failed": "verify_original_request",
+            "model_fact_receipt_invalid": "verify_original_request",
+        }
+        cause = getattr(error, "reason_code", None)
+        if cause not in recovery_by_cause:
+            cause = ("model_transport_settings_invalid"
+                     if isinstance(error, ContractValidationError)
+                     and step in ("transport_setup", "transport_validation")
+                     else "internal_error")
+        if cause == "internal_error":
+            _LOGGER.error("model_pre_dispatch_error request_id=%s attempt_id=%s step=%s exception_type=%s",
+                          request.request_id, request.attempt_id, step, type(error).__name__)
+        return {
+            "cause_code": cause, "step": step,
+            "recovery": recovery_by_cause.get(cause, "inspect_server_diagnostics"),
+            "request_id": request.request_id, "attempt_id": request.attempt_id,
+            "configuration_reference": deepcopy(frame.config["reference"]),
+        }
+
+    @staticmethod
+    def _raise_blocked(request):
+        error = GraphDiagnosticError(
+            "model_not_dispatched", "Model request was blocked before transport entry",
+            **(request.blocked_diagnostic or {}))
+        error.public_diagnostic = PublicDiagnostic(error.diagnostics[0])
+        raise error from None
 
     def call_model(self, context, *, binding_id: str, messages: list[dict],
                    tools: list[dict], request_key: str, purpose: str = "normal") -> dict:
@@ -464,7 +475,8 @@ class PublicModelService:
                      "wire_request": deepcopy(prepared["wire_request"]),
                      "transport_arguments": deepcopy(prepared["transport_arguments"]),
                      "projection": prepared["projection"],
-                     "provider_reference": deepcopy(frame.config["reference"]),
+                     "provider_reference": deepcopy(frame.provider_reference),
+                     "configuration_reference": deepcopy(frame.config["reference"]),
                      "parameters": deepcopy(parameters),
                      "input_refs": {"model": context.input_artifact_refs("model"),
                                     "prompt": context.input_artifact_refs("prompt")}}
@@ -481,8 +493,8 @@ class PublicModelService:
             if request is not None:
                 require(request.digest == digest and request.binding_id == binding_id,
                         "model_request_conflict", "Logical request input changed")
-                require(not request.blocked, "model_request_blocked",
-                        "Request failed before dispatch and requires a new logical request")
+                if request.blocked:
+                    self._raise_blocked(request)
                 return self._settle(context, request)
             with self._lock:
                 require(not frame.released, "model_recovery_unavailable",
@@ -490,16 +502,20 @@ class PublicModelService:
                 request = _Request(digest, str(uuid4()), binding_id)
                 request.input_refs = deepcopy(basis["input_refs"])
                 self._requests[key] = request
+            step = "request_fact_acceptance"
             try:
                 request.facts.append(self._accept(
                     context, self._fact(context, request, "request", basis)))
+                step = "attempt_fact_acceptance"
                 request.facts.append(self._accept(context, self._fact(
                     context, request, "attempt",
                     {"attempt_id": request.attempt_id, "attempt_index": 1,
                      "dispatch_state": "intent", "attempts_consumed": 1})))
+                step = "credential_authorization"
                 secret = self._boundary(frame)
                 adapter_field = "compaction_adapter" if purpose == "compaction" else "adapter"
                 selected_adapter = getattr(frame, adapter_field)
+                step = "transport_setup"
                 if selected_adapter is None:
                     implementation = self._factory(provider=deepcopy(frame.provider),
                                                    parameters=deepcopy(parameters),
@@ -510,24 +526,27 @@ class PublicModelService:
                                          FrozenModelParameters.from_mapping(parameters),
                                          provider_address=frame.provider["base_url"]))
                     setattr(frame, adapter_field, selected_adapter)
+                step = "transport_validation"
                 selected_adapter.verify_settings()
                 require(getattr(selected_adapter, "max_retries", 0) == 0,
                         "model_retry_policy_invalid", "Transport must disable SDK retries")
                 # Recheck after construction and immediately before entering transport.
+                step = "dispatch_authorization"
                 self._boundary(frame)
                 with self._lock:
                     require(not frame.released, "model_recovery_unavailable",
                             "Model frame was released before dispatch")
-            except Exception:
+            except Exception as error:
                 request.blocked = True
+                request.blocked_diagnostic = self._blocked_diagnostic(error, step, request, frame)
                 if len(request.facts) == 2:
                     request.outcome = self._fact(context, request, "outcome",
                                                {"classification": "not_dispatched",
-                                                "attempt_id": request.attempt_id})
+                                                "attempt_id": request.attempt_id,
+                                                "diagnostic": deepcopy(request.blocked_diagnostic)})
                     self._accept(context, request.outcome)
                     request.outcome = None
-                raise GraphDiagnosticError(
-                    "model_not_dispatched", "Model request was blocked before transport entry") from None
+                self._raise_blocked(request)
             request.dispatched = True
             try:
                 response = selected_adapter.generate_prepared(messages, tools, prepared)

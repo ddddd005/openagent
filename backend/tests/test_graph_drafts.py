@@ -45,7 +45,7 @@ def test_draft_roundtrip_invalid_editor_text_and_frozen_receipt(service):
     app = GraphApplication(service)
     target = address()
     value = {"raw": "{unclosed", "number": "-", "text": "key is a normal word",
-             "parameters": {"key": "ordinary data", "credential_ref": "env:GEMINI_API_KEY"}}
+             "parameters": {"key": "ordinary data", "credential_ref": "local:" + str(uuid4())}}
     original = deepcopy(value)
     accepted, request = save(app, target, value, key="draft-first")
     record = accepted["result"]
@@ -296,7 +296,7 @@ def test_corrupt_draft_or_receipt_is_not_adopted_or_overwritten(service):
         assert connection.execute("SELECT payload FROM local_editor_drafts").fetchone()[0] == '{"invalid":"retained"}'
 
 
-def test_v15_to_v16_migration_is_additive_without_retirement(tmp_path, monkeypatch):
+def test_schema_initialization_is_additive_without_retirement(tmp_path):
     path = tmp_path / "existing-v15.sqlite"
     with closing(SqliteStore(path)):
         pass
@@ -306,10 +306,8 @@ def test_v15_to_v16_migration_is_additive_without_retirement(tmp_path, monkeypat
                            ("unknown.extension", "original", '{"retained":"extension bytes"}', 1, "time"))
         connection.execute("PRAGMA user_version=15")
         before = connection.execute("SELECT * FROM records").fetchall()
-    monkeypatch.setattr("phase1_agent.storage_retirement.remove_retired_test_data",
-                        lambda connection: pytest.fail("v15 data entered retired cleanup"))
     with closing(SqliteStore(path)) as store:
-        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == STORAGE_VERSION == 16
+        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == STORAGE_VERSION == 17
         assert [tuple(row) for row in store._connection.execute("SELECT * FROM records")] == before
         assert store._connection.execute("SELECT count(*) FROM local_editor_drafts").fetchone()[0] == 0
 

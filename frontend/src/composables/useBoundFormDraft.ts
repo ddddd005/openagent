@@ -15,7 +15,7 @@ export function useBoundFormDraft<T>(binding: FormBinding<T>) {
   const enabled = binding.enabled ?? typeof window !== "undefined";
   const store = enabled ? useFormDraftsStore() : null;
   const loading = ref(false), conflict = ref(false), error = ref("");
-  let generation = 0, restoring = false, currentId = "", currentBasis: unknown;
+  let generation = 0, restoring = false, disposed = false, currentId = "", currentBasis: unknown;
   let conflictedValue: T | null = null, lastValue = "";
 
   const context = computed(() => graphJsonSignature([binding.id(), binding.basis()]));
@@ -61,6 +61,7 @@ export function useBoundFormDraft<T>(binding: FormBinding<T>) {
   }, { deep: true, flush: "sync" });
 
   async function flush() {
+    if (disposed) return false;
     if (!store || !currentId) return true;
     if (loading.value || conflict.value || error.value) return false;
     const token = generation, id = currentId;
@@ -100,7 +101,7 @@ export function useBoundFormDraft<T>(binding: FormBinding<T>) {
   const message = computed(() => error.value || (conflict.value
     ? "配置依据已变化，旧表单草稿保留，尚未应用"
     : loading.value ? "读取本机表单草稿中" : store?.errors[currentId] ?? ""));
-  onBeforeUnmount(() => { generation++; });
+  onBeforeUnmount(() => { disposed = true; generation++; });
   return { loading, conflict, error, message, flush, adoptBasis, context,
     restoreConflict, discardConflict };
 }

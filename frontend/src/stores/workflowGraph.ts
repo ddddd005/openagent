@@ -33,6 +33,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   const dataTypes = ref<GraphDataType[]>([]);
   const catalogLoading = ref(false);
   const catalogError = ref<string | null>(null);
+  const definitionsLoading = ref(false);
   const sessions = ref<Record<string, GraphSession[]>>({});
   const views = ref<Record<string, GraphSession>>({});
   const candidates = ref<Record<string, GraphCandidates>>({});
@@ -48,7 +49,9 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   const pending = computed(() => active.value?.pending ?? null);
   const mutationLocked = computed(() => !!busy.value || applicationBusy.value || !!pending.value || !!workspace.activeWorkflow.copyPending
     || workspace.workflows.some(row => row.copyPending && row.sourceId === workspace.activeWorkflowId));
-  const locked = computed(() => mutationLocked.value || selectingSessionFor.value === workspace.activeWorkflowId);
+  const locked = computed(() => mutationLocked.value || selectingSessionFor.value === workspace.activeWorkflowId
+    || !!workspace.activeWorkflow.archived || !!workspace.activeWorkflow.deleted
+    || !!session.value?.archived || !!session.value?.readonly);
   const primaryAction = computed(() => ["running", "prepared", "pausing"].includes(session.value?.status ?? "") ? "pause"
     : session.value?.available_actions?.includes("resume") || session.value?.status === "paused" ? "resume" : "start");
   const statusLabel = computed(() => busy.value ? "提交中" : primaryAction.value === "pause" ? "暂停"
@@ -101,7 +104,13 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       if (entry.pending !== null) {
         const request = entry.pending as unknown as GraphCommand;
         const body = request.body; const root = entry.document.workflow_definition_id;
-        if (request.action === "save") {
+        if (["definition-archive", "definition-delete", "session-archive", "session-delete"].includes(request.action)) {
+          const target = request.action.startsWith("definition-") ? root : request.source_session_id;
+          const kind = request.action.startsWith("definition-") ? "definitions" : "sessions";
+          if (!graphUuid(target) || request.path !== `/api/graph/${kind}/${target}/${request.action.split("-")[1]}`
+            || Object.keys(body).length !== 2 || !Number.isSafeInteger(body.expected_revision)
+            || Number(body.expected_revision) < 1) return false;
+        } else if (request.action === "save") {
           if (request.path !== "/api/graph/definitions" || !isGraphDocument(body.document)
             || body.document.workflow_definition_id !== root) return false;
         } else if (request.action === "create") {
@@ -191,6 +200,33 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     catch (failure) { if (alive) catalogError.value = failure instanceof Error ? failure.message : "节点目录不可用"; }
     finally { catalogLoading.value = false; }
   }
+  async function loadDefinitions() {
+    if (definitionsLoading.value) return false;
+    definitionsLoading.value = true;
+    const generation = mutationGeneration;
+    try {
+      const rows = await management.queries.definitions(true);
+      if (!alive || generation !== mutationGeneration) return false;
+      for (const row of rows) {
+        const doc = graphClone(row.document), id = doc.workflow_definition_id;
+        const entry = entries.value[id], workflow = workspace.workflows.find(item => item.id === id);
+        if (!entry) {
+          entries.value[id] = { document: doc, saved_document: graphClone(doc), saved_revision: doc.revision,
+            session_id: null, pending: null };
+          history.value[id] = { past: [], future: [] };
+          workspace.registerGraphWorkflow({ id, title: doc.name, description: "", nodeCount: doc.nodes.length,
+            state: "saved", archived: row.archived });
+        } else if (!entry.pending && workflow?.state !== "draft" && doc.revision >= entry.saved_revision) {
+          entry.document = doc; entry.saved_document = graphClone(doc); entry.saved_revision = doc.revision;
+          workspace.updateWorkflowProjection(id, doc.name, doc.nodes.length);
+        }
+        entries.value[id].latest_published_revision = doc.revision;
+        workspace.setWorkflowManagement(id, row.archived);
+      }
+      return await (persistence?.() ?? true);
+    } catch (failure) { report(failure, "读取工作流目录"); return false; }
+    finally { definitionsLoading.value = false; }
+  }
   function report(failure: unknown, action: string) {
     const error = failure instanceof WorkbenchApiError ? failure : new WorkbenchApiError("unavailable", String(failure));
     notices.notify(error.kind, error.reason, action);
@@ -227,6 +263,18 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
           entry.saved_document = graphClone(receipt.document);
           entry.document.revision = receipt.document.revision;
           entry.latest_published_revision = Math.max(entry.latest_published_revision ?? 0, receipt.document.revision);
+        } else if (receipt.kind === "management") {
+          const result = receipt.result;
+          if (result.kind === "workflow.definition-management") {
+            workspace.setWorkflowManagement(id, result.archived, result.deleted);
+            if (result.archived) for (const view of Object.values(views.value)) {
+              if (view.workflow_definition_id === result.workflow_definition_id)
+                observe({ ...view, archived: true, readonly: true, can_submit: false, available_actions: [] });
+            }
+          } else if (result.archived) {
+            const view = views.value[result.workflow_session_id!];
+            if (view) observe({ ...view, archived: true, readonly: true, can_submit: false, available_actions: [] });
+          }
         } else {
           const result = receipt.session;
           if (receipt.historicalDocument) {
@@ -268,6 +316,8 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     entry: id => entries.value[id],
     isDraft: id => workspace.workflows.find(row => row.id === id)?.state === "draft",
     canEdit: id => alive && !busy.value && !applicationBusy.value && !entries.value[id]?.pending
+      && !workspace.workflows.find(row => row.id === id)?.archived
+      && !workspace.workflows.find(row => row.id === id)?.deleted
       && selectingSessionFor.value !== id && !workspace.workflows.find(row => row.id === id)?.copyPending
       && !workspace.workflows.some(row => row.copyPending && row.sourceId === id),
     observedSession: id => views.value[id],
@@ -290,13 +340,65 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     report: failure => report(failure, "工作流会话复制"),
   });
   async function saveWorkflow(id = workspace.activeWorkflowId) {
-    if (busy.value || entries.value[id]?.pending) return false;
+    if (busy.value || entries.value[id]?.pending || workspace.workflows.find(row => row.id === id)?.archived
+      || workspace.workflows.find(row => row.id === id)?.deleted) return false;
     mutationGeneration++;
     busy.value = "save";
     try {
       await management.commands.save({ workflowId: id });
       return true;
     } catch (failure) { report(failure, "保存工作流"); return false; }
+    finally { busy.value = null; }
+  }
+  async function finishManagedDeletion(id: string, request: Pick<GraphCommand, "action" | "source_session_id">) {
+    const entry = entries.value[id];
+    if (!entry || entry.pending) return;
+    if (request.action === "definition-delete") {
+      const ownedSessions = Object.values(views.value)
+        .filter(view => view.workflow_definition_id === entry.document.workflow_definition_id);
+      for (const view of ownedSessions) {
+        delete views.value[view.workflow_session_id]; delete candidates.value[view.workflow_session_id];
+      }
+      if (workspace.activeWorkflowId === id) {
+        const fallback = workspace.workflows.find(row => row.id !== id && !row.copyPending && !row.deleted);
+        if (fallback) workspace.openWorkflow(fallback.id);
+        else { workspace.activeWorkflowId = ""; workspace.selectedWorkflowId = ""; workspace.viewVersion++; }
+      }
+      workspace.removeWorkflow(id);
+      delete entries.value[id]; delete history.value[id]; delete sessions.value[id];
+    } else if (request.action === "session-delete") {
+      const sessionId = request.source_session_id!;
+      sessions.value[id] = (sessions.value[id] ?? []).filter(view => view.workflow_session_id !== sessionId);
+      delete views.value[sessionId]; delete candidates.value[sessionId];
+      if (entry.session_id === sessionId) {
+        entry.session_id = null; delete entry.session_document;
+      }
+    } else return;
+    if (!await (persistence?.() ?? false))
+      throw new WorkbenchApiError("unavailable", "后端已删除，当前目录更新尚未写入本机；未重发删除请求");
+  }
+  async function manageWorkflow(id: string, action: "archive" | "delete") {
+    if (busy.value || applicationBusy.value || !entries.value[id] || entries.value[id].pending) return false;
+    busy.value = `definition-${action}`;
+    try {
+      await management.commands.manageDefinition({ workflowId: id }, action);
+      if (action === "delete") await finishManagedDeletion(id, { action: "definition-delete" });
+      else await refresh(id);
+      return true;
+    } catch (failure) { report(failure, action === "archive" ? "归档工作流" : "删除工作流"); return false; }
+    finally { busy.value = null; }
+  }
+  async function manageSession(sessionId: string, action: "archive" | "delete", id = workspace.activeWorkflowId) {
+    if (busy.value || applicationBusy.value || !entries.value[id] || entries.value[id].pending) return false;
+    busy.value = `session-${action}`;
+    try {
+      await management.commands.manageSession({ workflowId: id }, sessionId, action);
+      if (action === "delete") await finishManagedDeletion(id, {
+        action: "session-delete", source_session_id: sessionId,
+      });
+      else await refresh(id);
+      return true;
+    } catch (failure) { report(failure, action === "archive" ? "归档会话" : "删除会话"); return false; }
     finally { busy.value = null; }
   }
   async function adoptRevision(id = workspace.activeWorkflowId) {
@@ -588,7 +690,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     pollTimer = null;
     const entry = entries.value[id];
     const view = entry?.session_id ? views.value[entry.session_id] : null;
-    if (!["running", "prepared", "pausing"].includes(view?.status ?? "")) return;
+    if (view?.archived || !["running", "prepared", "pausing"].includes(view?.status ?? "")) return;
     pollTimer = setTimeout(async () => {
       if (!alive || generation !== viewGeneration || workspace.activeWorkflowId !== id) return;
       const sessionId = entries.value[id]?.session_id, mutationVersion = mutationGeneration;
@@ -700,7 +802,12 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     }
     if (!entry.pending) return;
     busy.value = "reconcile";
-    try { await dispatch(id, graphClone(entry.pending), true); await refresh(id); schedulePoll(id, viewGeneration); }
+    try {
+      const request = graphClone(entry.pending);
+      await dispatch(id, request, true);
+      await finishManagedDeletion(id, request);
+      if (entries.value[id]) { await refresh(id); schedulePoll(id, viewGeneration); }
+    }
     catch (failure) { report(failure, "核实原工作流请求"); }
     finally { busy.value = null; }
   }
@@ -836,10 +943,10 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       { source_node_id: nodeId, target_node_id: nodeId, action: "reset" }];
     persistence?.();
   }
-  return { entries, catalog, frontendExtensions, packageLock, executionPackageLock, dataTypes, catalogLoading, catalogError, sessions, views, candidates, history, busy, active, document,
+  return { entries, catalog, frontendExtensions, packageLock, executionPackageLock, dataTypes, catalogLoading, catalogError, definitionsLoading, sessions, views, candidates, history, busy, active, document,
     session, pending, locked, editorLocked, primaryAction, statusLabel, selectedNodeIds, selectedEdgeId, canUndo, canRedo, setEventBindings, submitEvent,
     isGeneric, createWorkflow, createWorkflowDraft, createSerialAgentExample, createCompactingSerialAgentExample, typeFor, loadCatalog, setPersistenceGuard, storeSnapshot, restoreSnapshot,
-    saveWorkflow, adoptRevision, copyWorkflow, renameWorkflow, refreshPublishedRevision, addNode, patchNode, patchNodeConfiguration, moveNodes, connect, removeSelection, reorderEdge, undo, duplicateSelection,
+    saveWorkflow, loadDefinitions, manageWorkflow, manageSession, adoptRevision, copyWorkflow, renameWorkflow, refreshPublishedRevision, addNode, patchNode, patchNodeConfiguration, moveNodes, connect, removeSelection, reorderEdge, undo, duplicateSelection,
     replaceNode, setExecutionRoot, setControlDependencies, setObjectBindings, attachFrontendDisplay, patchFrontendSource,
     activate, refresh, createSession, createSavedSession, selectSession, submitPrimary, reconcile, canRetryRejectedCopy, retryRejectedCopy, discardDraft, discardRejectedCopy, writeData, closeRun, setInputs, resetPrivateState, submitAgentAction, loadCandidates, changeCandidate,
     management, editing };

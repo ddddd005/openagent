@@ -38,7 +38,7 @@ describe("node profile selection", () => {
     expect(html).toMatch(/type="submit"[^>]*disabled/);
   });
   it("preselects the only installed current declaration without a version picker", async () => {
-    for (const [id, version] of [["plugin.node", "42"], ["models.source", "4"]]) {
+    for (const [id, version] of [["plugin.node", "42"], ["models.source", "6"]]) {
       const html = await render({ families: buildNodeFamilies([definition(id!, version!)]), familyId: id! });
       expect(html).not.toContain('aria-label="精确声明"');
       expect(html).toContain('aria-label="节点契约"');

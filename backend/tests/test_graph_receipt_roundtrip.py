@@ -226,7 +226,6 @@ def test_current_resource_save_replace_and_delete_roundtrip(service):
 
 
 def test_context_adoption_roundtrip_and_malformed_object_receipts_stay_unresolved(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-receipt-fixture")
     transport = AgentTransportFixture()
     with closing(GraphWorkflowService(tmp_path / "adoption-roundtrip.sqlite",
         public_model_factory=transport.factory,

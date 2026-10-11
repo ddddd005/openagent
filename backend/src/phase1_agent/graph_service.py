@@ -29,7 +29,10 @@ from .graph_information import GraphInformation
 from .graph_events import GraphEvents
 from .graph_failed_retry import GraphFailedRetry
 from .graph_editing_host import GraphEditingHost
-from .graph_provider_host import GraphProviderHost
+from .graph_provider_host import ProviderConfigurationService
+from .content_configuration import ContentConfigurationService
+from .workflow_lifecycle import WorkflowLifecycle
+from .workflow_configuration import WorkflowConfiguration
 
 
 def _uid() -> str:
@@ -70,7 +73,7 @@ class _GraphLease:
         self.file.close()
 
 
-class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost, GraphResourceHost, GraphPlatform, GraphPublic, GraphCandidateHost):
+class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditingHost, GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost, GraphResourceHost, GraphPlatform, GraphPublic, GraphCandidateHost):
     def __init__(self, database_path: str | Path, *, registry=None, fault_injector=None,
                  capability_packages=(), enabled_packages=None, trusted_package_entrypoints=(),
                  public_model_factory=None, credential_protector=None, provider_discovery_client_factory=None):
@@ -142,21 +145,28 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
         self._futures: dict[str, Any] = {}
         self._pauses: set[str] = set()
         self._resuming: set[str] = set()
+        self._management_sessions: set[str] = set()
+        self._management_workflows: set[str] = set()
         self._runtime_hosts = {}
         self._information_routers = {}
         self._acceptance_candidates = {}
         self._failed_retry_candidates = {}
         self._service_runs = {}
         self._service_options = {}
-        from .credential_store import PrivateCredentialStore
         from .model_host_service import MODEL_SERVICE_REF
-        self._credentials = PrivateCredentialStore(str(self.database) + ".credentials.sqlite", credential_protector)
-        self._discovery_client_factory = provider_discovery_client_factory
-        self._service_options[MODEL_SERVICE_REF] = {"credential_broker_factory": self._new_credential_broker}
-        if public_model_factory is not None:
-            self._service_options[MODEL_SERVICE_REF]["transport_factory"] = public_model_factory
         self._closed = False
         try:
+            self.provider_configuration = ProviderConfigurationService(
+                self.database,
+                credential_protector=credential_protector,
+                discovery_client_factory=provider_discovery_client_factory, store_factory=self._store)
+            self.content_configuration = ContentConfigurationService(
+                self.database, store_factory=self._store,
+                type_registry_factory=lambda: self.registry.data_types)
+            self._service_options[MODEL_SERVICE_REF] = {
+                "credential_broker_factory": self.provider_configuration.new_credential_broker}
+            if public_model_factory is not None:
+                self._service_options[MODEL_SERVICE_REF]["transport_factory"] = public_model_factory
             self._recover()
         except BaseException:
             self._executor.shutdown(wait=True)
@@ -192,21 +202,16 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
         return True
 
     def _change(self, operation, key, request, callback):
-        def change(repo):
-            require(not self._package_diagnostics or operation == "graph.run.recover",
-                    "package_missing_dependency", "Restore the saved packages before changing workflows", 409)
-            return callback(repo)
-
         with self._lock, closing(self._store()) as store:
             require(not self._closed, "service_closed", "Graph service is closed", 409)
-            return GraphRecordStore(store).atomic(operation, key, request, change)
+            return GraphRecordStore(store).atomic(operation, key, request, callback)
 
     def node_types(self, *, protocol_version=1):
         catalog = self.registry.catalog()
         if protocol_version == 2:
             return {"schema_version": 2, "node_types": catalog, **self.platform_capabilities()}
         require(protocol_version == 1, "invalid_request", "Unknown node catalog protocol")
-        builtin = {"TEXT", "PROMPT", "JSON", "MODEL_RESOURCE"}
+        builtin = {"TEXT", "PROMPT", "JSON"}
         legacy = []
         for node in catalog:
             ports = [*node["inputs"], *node["outputs"]]
@@ -219,22 +224,42 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
 
     def _document(self, repo, identity, revision=None):
         if revision is None:
-            revisions = [row for row in repo.rows("workflow_definition_revision")
-                         if row["workflow_definition_id"] == identity]
+            revisions = repo.rows("workflow_definition_revision", workflow_definition_id=identity)
             require(bool(revisions), "not_found", "Workflow definition not found", 404)
             revision = max(row["revision"] for row in revisions)
         return repo.get("workflow_definition_revision", workflow_definition_id=identity, revision=revision)["document"]
 
     def get_definition(self, identity, revision=None):
         with self._lock, closing(self._store()) as store:
-            return self._document(GraphRecordStore(store), identity, revision)
+            repo = GraphRecordStore(store)
+            if revision is None and repo.current_configuration(identity) is not None:
+                return self._configuration_document(repo, identity)
+            return self._document(repo, identity, revision)
+
+    def list_definitions(self, *, include_archived=False):
+        require(type(include_archived) is bool, "invalid_request", "Archive filter must be boolean")
+        with self._lock, closing(self._store()) as store:
+            repo = GraphRecordStore(store)
+            latest = {}
+            for row in repo.rows("workflow_definition_revision"):
+                identity = row["workflow_definition_id"]
+                if identity not in latest or row["revision"] > latest[identity]["revision"]:
+                    latest[identity] = row
+            return [
+                {"document": (self._configuration_document(repo, identity)
+                              if repo.current_configuration(identity) is not None else row["document"]),
+                 "archived": self._archived(repo, "definition", identity)}
+                for identity, row in latest.items()
+                if include_archived or not self._archived(repo, "definition", identity)
+            ]
 
     def _save_definition(self, repo, document, expected_revision):
         from .graph_contracts import validate_graph_document
         document = validate_graph_document(document)
+        document.pop("edit_sequence", None)
         _revision(expected_revision, zero=True)
-        existing = [row for row in repo.rows("workflow_definition_revision")
-                    if row["workflow_definition_id"] == document["workflow_definition_id"]]
+        existing = repo.rows("workflow_definition_revision",
+                             workflow_definition_id=document["workflow_definition_id"])
         current = max((row["revision"] for row in existing), default=0)
         require(current == expected_revision, "stale_revision", "Definition changed", 409)
         require(document["revision"] == current + 1, "invalid_request", "Definition revision must advance once")
@@ -243,12 +268,10 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
             if entry is not None:
                 saved = repo.maybe("node_definition", component_id=node["component_id"],
                                    component_version=node["component_version"])
-                require(saved is None or repo.equal(saved["descriptor"], self._runtime_descriptor(entry)),
-                        "node_definition_changed", "Registered declaration differs from its saved version", 409,
-                        node_id=node["node_binding_id"])
-                repo.put("node_definition", graph_record("node_definition",
-                    component_id=node["component_id"], component_version=node["component_version"],
-                    descriptor=self._runtime_descriptor(entry)))
+                if saved is None:
+                    repo.put("node_definition", graph_record("node_definition",
+                        component_id=node["component_id"], component_version=node["component_version"],
+                        descriptor=self._runtime_descriptor(entry)))
             repo.put("node_binding", graph_record("node_binding",
                 workflow_definition_id=document["workflow_definition_id"],
                 workflow_definition_revision=document["revision"], node_binding_id=node["node_binding_id"],
@@ -259,9 +282,19 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
         return document
 
     def save_definition(self, document, *, expected_revision, idempotency_key):
+        def change(repo):
+            from .graph_contracts import validate_graph_document
+            validated = validate_graph_document(document)
+            require(validated["schema_version"] in (1, 2), "graph_configuration_requires_update",
+                    "Schema 3 workflows must use definition.update")
+            require(repo.current_configuration(validated["workflow_definition_id"]) is None,
+                    "graph_configuration_update_required", "This workflow must use definition.update", 409)
+            self._require_definition_active(repo, validated["workflow_definition_id"])
+            return self._save_definition(repo, validated, expected_revision)
+
         return self._change("graph.definition.save", idempotency_key,
             {"document": document, "expected_revision": expected_revision},
-            lambda repo: self._save_definition(repo, document, expected_revision))
+            change)
 
     def _definition(self, node):
         try:
@@ -294,7 +327,7 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
 
     def _private(self, repo, sid):
         return {row["node_binding_id"]: deepcopy(row["private_data"]["payload"])
-                for row in repo.rows("node_session") if row["workflow_session_id"] == sid}
+                for row in repo.rows("node_session", workflow_session_id=sid)}
 
     def _save_private(self, repo, sid, document, private_states):
         nodes = {node["node_binding_id"]: node for node in document["nodes"]}
@@ -315,7 +348,7 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
                 private_data=payload))
 
     def _head(self, repo, sid):
-        refs = [row for row in repo.rows("workflow_ref") if row["workflow_session_id"] == sid]
+        refs = repo.rows("workflow_ref", workflow_session_id=sid)
         require(len(refs) == 1, "storage_contract_violation", "Session must have one Head", 500)
         return refs[0]
 
@@ -323,7 +356,7 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
         head = self._head(repo, sid)
         commit = repo.get("workflow_commit", commit_id=head["head_commit_id"])
         snapshot = repo.get("state_snapshot", state_snapshot_id=commit["state_snapshot_id"])
-        own = [row["chain_run_id"] for row in repo.rows("chain_run") if row["workflow_session_id"] == sid]
+        own = [row["chain_run_id"] for row in repo.rows("chain_run", workflow_session_id=sid)]
         return list(dict.fromkeys([*snapshot["history_refs"], *own]))
 
     def _commit(self, repo, session, *, source, history=None):
@@ -349,6 +382,9 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
 
     def _new_session(self, repo, document, *, state=None, private=None, source=None, history=None,
                      objects=None):
+        self._require_definition_active(repo, document["workflow_definition_id"])
+        require(not self._package_diagnostics, "package_missing_dependency",
+                "Restore the saved packages before initializing session data", 409)
         sid = _uid()
         session = graph_record("workflow_session", workflow_session_id=sid,
             workflow_definition_id=document["workflow_definition_id"], definition_revision=document["revision"],
@@ -371,9 +407,16 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
         return self._view(repo, sid)
 
     def create_session(self, workflow_definition_id, definition_revision, *, idempotency_key):
+        def change(repo):
+            revision = _revision(definition_revision)
+            current = repo.current_configuration(workflow_definition_id)
+            require(current is None or current["fixed_definition_revision"] == revision,
+                    "stale_revision", "A new session must use the current fixed definition", 409)
+            return self._new_session(repo, self._document(repo, workflow_definition_id, revision))
+
         return self._change("graph.session.create", idempotency_key,
             {"workflow_definition_id": workflow_definition_id, "definition_revision": definition_revision},
-            lambda repo: self._new_session(repo, self._document(repo, workflow_definition_id, _revision(definition_revision))))
+            change)
 
     def get_session(self, sid):
         with self._lock, closing(self._store()) as store:
@@ -382,8 +425,8 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
     def list_sessions(self, workflow_definition_id):
         with self._lock, closing(self._store()) as store:
             repo = GraphRecordStore(store)
-            return [self._view(repo, row["workflow_session_id"]) for row in repo.rows("workflow_session")
-                    if row["workflow_definition_id"] == workflow_definition_id]
+            return [self._view(repo, row["workflow_session_id"])
+                    for row in repo.rows("workflow_session", workflow_definition_id=workflow_definition_id)]
 
     def get_run(self, sid, chain_id):
         with self._lock, closing(self._store()) as store:
@@ -395,7 +438,7 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
                     "node_runs": [repo.get("node_run", run_id=identity)
                                   for items in chain.get("node_run_attempts", [[identity] for identity in chain["node_run_ids"]])
                                   for identity in items],
-                    "outputs": [row for row in repo.rows("workflow_output") if row["chain_run_id"] == chain_id],
+                    "outputs": repo.rows("workflow_output", chain_run_id=chain_id),
                     "runtime_facts": self._runtime_facts(store, chain_id),
                     "state_manifests": {"start": self._manifests(repo).get("chain_start", chain_id),
                                         "end": self._manifests(repo).get("chain_end", chain_id)}}
@@ -404,10 +447,11 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
         session = repo.get("workflow_session", workflow_session_id=sid)
         document = self._document(repo, session["workflow_definition_id"], session["definition_revision"])
         available = self._document_available(repo, document)
-        chains = [row for row in repo.rows("chain_run") if row["workflow_session_id"] == sid]
-        all_chains = {row["chain_run_id"]: row for row in repo.rows("chain_run")}
+        chains = repo.rows("chain_run", workflow_session_id=sid)
+        all_chains = {identity: repo.get("chain_run", chain_run_id=identity)
+                      for identity in self._history(repo, sid)}
         selected = self._selected_chain(repo, sid)
-        runs = [row for row in repo.rows("node_run") if selected and row["chain_run_id"] == selected["chain_run_id"]]
+        runs = repo.rows("node_run", chain_run_id=selected["chain_run_id"]) if selected else []
         if selected and (selected["workflow_session_id"] != sid
                          or (selected["workflow_definition_id"], selected["definition_revision"])
                             != (session["workflow_definition_id"], session["definition_revision"])):
@@ -415,9 +459,9 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
             node_mapping = history_node_mapping(repo, sid, selected)
         else:
             node_mapping = {node["node_binding_id"]: node["node_binding_id"] for node in document["nodes"]}
-        outputs = [row for row in repo.rows("workflow_output") if row["workflow_session_id"] == sid]
-        selected_outputs = {row["output_id"]: row for row in repo.rows("workflow_output")
-                            if selected and row["chain_run_id"] == selected["chain_run_id"]}
+        outputs = repo.rows("workflow_output", workflow_session_id=sid)
+        selected_outputs = {row["output_id"]: row
+                            for row in repo.rows("workflow_output", chain_run_id=selected["chain_run_id"])} if selected else {}
         active = next((row for row in chains if row["chain_run_id"] == session["active_chain_run_id"]), None)
         status = active["status"] if active else selected["status"] if selected else "idle"
         actions = ["pause"] if status in ("running", "prepared") else (
@@ -450,12 +494,16 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
                 nodes[-1]["diagnostic"] = {**(nodes[-1]["diagnostic"] or {}), "failure_retry": retry_permission}
         data = ProgramVariableStore(repo.store).current(sid)
         head = self._head(repo, sid)
-        return {**session, "data_revision": data["revision"], "head_revision": head["revision"],
+        archived = (self._archived(repo, "session", sid)
+                    or self._archived(repo, "definition", session["workflow_definition_id"]))
+        available_actions = actions if available else (["close"] if active and "close" in actions else [])
+        return {**session, **self._session_metadata(repo, sid),
+            "data_revision": data["revision"], "head_revision": head["revision"],
             "head_commit_id": head["head_commit_id"], "status": status,
             "selected_chain_run_id": selected["chain_run_id"] if selected else None,
-            "can_submit": active is None and available,
-            "available_actions": actions if available else [],
-            "readonly": not available,
+            "can_submit": active is None and available and not archived,
+            "available_actions": available_actions if not archived else [],
+            "readonly": not available or archived, "archived": archived,
             "nodes": nodes, "chains": chains, "outputs": outputs,
             "data": data, "private_states": self._private(repo, sid), "messages": [],
             "objects": self._objects(repo).current(sid),
@@ -465,6 +513,7 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
 
     def _stable(self, repo, sid, expected_revision, expected_data_revision=None, expected_head_revision=None):
         session = repo.get("workflow_session", workflow_session_id=sid)
+        self._require_session_active(repo, session)
         require(session["revision"] == _revision(expected_revision), "stale_revision", "Session changed", 409)
         require(session["active_chain_run_id"] is None, "active_execution_not_copyable", "Session execution is not settled", 409)
         if expected_data_revision is not None:
@@ -532,7 +581,12 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
         def change(repo):
             from .graph_contracts import validate_graph_document
             target_document = validate_graph_document(document)
+            require(target_document["schema_version"] in (1, 2)
+                    and repo.current_configuration(target_document["workflow_definition_id"]) is None,
+                    "graph_configuration_update_required", "Schema 3 configuration cannot use legacy session copying", 409)
             source = self._stable(repo, sid, expected_session_revision, expected_data_revision, expected_head_revision)
+            require(repo.current_configuration(source["workflow_definition_id"]) is None,
+                    "graph_configuration_update_required", "Schema 3 configuration cannot use legacy session copying", 409)
             require(source["definition_revision"] == _revision(expected_definition_revision), "stale_definition_revision", "Source definition changed", 409)
             require(target_document["workflow_definition_id"] != source["workflow_definition_id"], "invalid_request", "Copy needs a new workflow identity")
             target = self._save_definition(repo, target_document, 0)
@@ -555,6 +609,8 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
                    "mappings": mappings if mappings is not None else []}
         def change(repo):
             session = self._stable(repo, sid, expected_revision, expected_data_revision, expected_head_revision)
+            require(repo.current_configuration(session["workflow_definition_id"]) is None,
+                    "graph_configuration_update_required", "Schema 3 configuration cannot use legacy revision rebinding", 409)
             document = self._document(repo, session["workflow_definition_id"], _revision(definition_revision))
             private = self._map_state(repo, session, document, request["mappings"])
             state = self._copied_data(repo, session)
@@ -581,6 +637,9 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
                    "variables": variables, "shared": shared}
         def change(repo):
             session = repo.get("workflow_session", workflow_session_id=sid)
+            self._require_session_active(repo, session)
+            require(session["active_chain_run_id"] is None, "active_execution_not_editable",
+                    "Session data cannot be edited during an unfinished execution", 409)
             require(session["revision"] == _revision(expected_revision), "stale_revision", "Session changed", 409)
             state = ProgramVariableStore(repo.store).current(sid)
             require(state["revision"] == _revision(expected_data_revision, zero=True), "stale_data_revision", "Data changed", 409)
@@ -613,6 +672,8 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
     def _prepare_run(self, repo, sid, expected_revision, inputs, *, event=None):
         from .graph_contracts import GraphCompiler
         session = self._stable(repo, sid, expected_revision)
+        require(not self._package_diagnostics, "package_missing_dependency",
+                "Restore the saved packages before running workflows", 409)
         document = self._document(repo, session["workflow_definition_id"], session["definition_revision"])
         input_error = "graph_event_payload_invalid" if event else "invalid_request"
         require(type(inputs) is dict, input_error, "External inputs must be named")
@@ -628,7 +689,10 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
         frozen_resources = self._preflight_capabilities(repo, sid, plan)
         chain_id = _uid()
         runtime_resources = frozen_resources.pop("current_global_resources", {})
-        self._resource_frames[chain_id] = runtime_resources
+        from .content_configuration import CONTENT_RESOURCE_TYPES
+        self._resource_frames[chain_id] = {
+            node_id: [record for record in records if record["type_id"] not in CONTENT_RESOURCE_TYPES]
+            for node_id, records in runtime_resources.items()}
         self._prepare_public_capabilities(sid, chain_id, plan, runtime_resources)
         self._execution_registries[chain_id] = self.registry.detached(frozen=True)
         nodes = {node["node_binding_id"]: node for node in document["nodes"]}
@@ -1070,7 +1134,11 @@ class GraphWorkflowService(GraphProviderHost, GraphEditingHost, GraphFailedRetry
         accepted = []
         def change(repo):
             session = repo.get("workflow_session", workflow_session_id=sid)
+            self._require_session_active(repo, session)
             require(session["revision"] == _revision(expected_revision), "stale_revision", "Session changed", 409)
+            if action in ("resume", "retry_archive", "retry_acceptance", "retry_failed_node"):
+                require(not self._package_diagnostics, "package_missing_dependency",
+                        "Restore the saved packages before continuing execution", 409)
             chain_id = session["active_chain_run_id"]
             require(chain_id is not None, "invalid_state", "No active execution", 409)
             chain = repo.get("chain_run", chain_run_id=chain_id)

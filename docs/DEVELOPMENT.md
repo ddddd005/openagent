@@ -6,6 +6,8 @@
 
 本次前端用户化 P1-P6 已本地提交并快进合入 `main`，功能提交为 `0c15587`；本批未推送。两个 BAT 均未改，正式入口仍选 `main`，现在已包含这些功能。合并后重新构建并通过 `-CheckOnly`，未启动产品服务、打开产品库或调用模型。范围见 [P1/P2](FRONTEND-P1-P2-2026-10-09.md)、[P3/P4](FRONTEND-P3-P4-2026-10-09.md)和 [P5/P6 记录](FRONTEND-P5-P6-2026-10-09.md)。
 
+2026-10-11 首批职责整改仅在 `develop` 未提交工作树；下表管理、内容读取、生命周期及清理入口按本批订正。定义派生/自动保存和模型实时契约仍未完成，D/E、节点及调度改动仍需人工确认，精确范围见 [首批实施记录](中期检查/11-首批整改实施与离线验证-2026-10-11.md)。
+
 ## 分支与启动
 
 唯一产品仓库为 `openagent`。仓库外旧 `step1` 及 vendored 第三方源码只作历史/来源参考，不作为产品开发工作区。
@@ -27,7 +29,7 @@
 
 `.local/dev` 名称沿用原稳定库位置，并不表示开发 BAT 使用它。两入口使用可见控制台；不隐藏启动、不自动 `pull`、不切分支、不安装依赖、不杀占端口进程。分支不能隔离运行进程或数据；正在运行的旧服务不会因提交、合并或推送而换版。
 
-新能力先明确范围和对应验收，在 `develop` 实现；通过后优先从干净 `main` 工作区 `git merge --ff-only develop`。若存在分叉、工作区改动或验证失败，先解决原因，不自动覆盖文件或强推。
+新能力先明确范围和对应验收，在 `develop` 实现。本轮后端职责订正全部完成后统一验收、合并，不逐批晋升；真实模型验收使用 DeepSeek，由用户启动页面并填写保存 Key。通过后优先从干净 `main` 工作区 `git merge --ff-only develop`。若存在分叉、工作区改动或验证失败，先解决原因，不自动覆盖文件或强推。
 
 核对远端不能只看可能过期的 `origin/main`。从仓库根目录执行：
 
@@ -52,7 +54,7 @@ git ls-remote --heads origin main
 | 统一应用命令、查询及身份 | `graph_application.py`、`graph_application_contracts.py`、`graph_application_identity.py`、`graph_receipts.py` |
 | 图服务、编译及执行 | `graph_service.py`、`graph_contracts.py`、`graph_execution.py`、`graph_runtime_host.py` |
 | 草稿输入声明 | `graph_input_declarations.py`；管理只读 `definition.inputs`，完整编译失败不丢可编辑声明 |
-| 公共资源预检与冻结 | `graph_resource_host.py`、`resource_contracts.py`、`prepared_request.py` |
+| 公共资源预检与当前内容读取 | `graph_resource_host.py`、`resource_contracts.py`、`prepared_request.py`；模型运行帧仍待契约订正 |
 | 公共 Runtime 与控制 | `runtime.py`、`runtime_hosting.py`、`runtime_control.py`、`runtime_executor_contracts.py` |
 | 能力声明、包选择与注册 | `host_sdk.py`、`capability_packages.py`、`builtin_packages.py`、`capability_registry.py`、`graph_package_selection.py` |
 | 内容、提示词与模型节点 | `tool_package.py`、`prompt_package.py`、`model_package.py` |
@@ -61,7 +63,8 @@ git ls-remote --heads origin main
 | Gemini 协议、思考及签名 | `gemini_adapter.py`、`gemini_capabilities.py`、`provider_metadata.py` |
 | 原生上下文装配与写回 | `context_package.py`、`context_v4_nodes.py`、`context_v4.py`、`context_prompt_v6.py`、`context_receipt.py` |
 | 前端对象与酒馆 | `frontend_package.py`、`frontend_business.py`、`tavern/` |
-| 定义、会话、对象、事实与存储升级 | `storage.py`、`graph_store.py`、`graph_records.py`、`session_objects.py`、`runtime_fact_store.py`、`storage_retirement.py` |
+| 定义、会话、对象、事实与目标生命周期 | `storage.py`、`graph_store.py`、`graph_records.py`、`session_objects.py`、`runtime_fact_store.py`、`workflow_lifecycle.py` |
+| 独立管理组合与内容 | `workflow_host.py`、`content_configuration.py`；管理不先构造图执行宿主 |
 | 本机编辑仓库 | `graph_drafts.py`、`graph_editing_host.py`；经 GraphApplication 分离管理与消费草稿权限 |
 | 私有凭据与模型发现 | `credential_store.py`、`graph_provider_host.py`、`provider_discovery.py`；管理专属、独立保护库、不走公开秘密 outbox |
 | 信息源与事实读取 | `graph_information.py`、`runtime_information.py` |
@@ -71,15 +74,16 @@ git ls-remote --heads origin main
 
 | 修改范围 | 入口 |
 | --- | --- |
-| 应用与工作台 | `App.vue`、`components/GraphWorkbench.vue` |
+| 应用与工作台 | `App.vue`、`components/WorkbenchSidebar.vue`、`components/WorkflowSidebar.vue`、`components/GraphWorkbench.vue` |
 | 图契约与串行示例 | `domain/workflowGraph.ts`、`domain/serialAgentDemo.ts` |
 | 二级节点目录与协议选择 | `domain/nodeCatalog.ts`、`domain/nodeSelection.ts`、`components/NodeProfileDialog.vue` |
 | 连线检查与反馈 | `domain/graphConnections.ts`；画布与 store 共用动态端口、schema、基数和组合环检查 |
 | 图、会话与工作区状态 | `stores/workflowGraph.ts`、`stores/workspace.ts` |
-| 本机草稿、原始表单及旧浏览器归档 | `adapters/localDraftsApi.ts`、`adapters/browserWorkbenchArchives.ts`、`stores/workbenchPersistence.ts`、`stores/formDrafts.ts`、`composables/useBoundFormDraft.ts`；旧读取器只在受限旧导入路径使用 |
+| 本机草稿、原始表单及请求证据 | `adapters/localDraftsApi.ts`、`stores/workbenchPersistence.ts`、`stores/formDrafts.ts`、`composables/useBoundFormDraft.ts`；整包旧浏览器工作台读取/导入已退出 |
 | 应用命令、编辑及信息读取 | `application/workflowCommands.ts`、`application/workflowEditing.ts`、`application/workflowInformation.ts` |
 | HTTP 适配 | `adapters/workflowApplicationApi.ts`、`adapters/workflowGraphApi.ts`、`adapters/workflowResourcesApi.ts` |
-| 供应商与模型编辑 | `components/CurrentProviderPanel.vue`、`components/ModelSourceFields.vue`、`application/workflowResources.ts` |
+| 供应商与全局模型配置编辑 | `components/CurrentProviderPanel.vue`、`components/CurrentModelProfilesPanel.vue`、`application/modelProfiles.ts`、`adapters/workflowModelProfilesApi.ts` |
+| 工作流模型引用 | `components/ModelSourceFields.vue`；只选择全局配置，不编辑参数、容量或发现型号 |
 | 私有 Key 编辑和模型列表 | `components/ProviderCredentialFields.vue`、`application/providerCredentialEditing.ts`、`adapters/providerConfigurationApi.ts` |
 | 提示词成员和运行输入 | `components/PromptMembersEditor.vue`、`components/PromptGroupFields.vue`、`adapters/graphInputDeclarationsApi.ts` |
 | 正文、冻结历史与本机标签 | `components/GraphResult.vue`、`domain/resultPresentation.ts`、`components/GraphHistory.vue`、`stores/managementLabels.ts` |
@@ -92,11 +96,15 @@ git ls-remote --heads origin main
 
 | 路线 | DeepSeek | Gemini |
 | --- | --- | --- |
-| 带容量模型来源 | `models.source@2` / `MODEL_BINDING@2` | `models.source@4` / `MODEL_BINDING@4` |
+| 全局配置引用来源 | `models.source@5` / `MODEL_BINDING@2` | `models.source@6` / `MODEL_BINDING@4` |
 | 普通模型调用 | `models.chat@3` | `models.chat@4` |
 | 原生 Agent | `agents.execute@4` | `agents.execute@8` |
 
 普通提示词材料及 `prompts.assembly` 使用节点版本 `@2`，装配输出已就绪 `PROMPT@2`。格式转换的普通提示词通过独立 `raw_prompt` 端口接入，保留真实产物引用。普通 Chat 消费该契约，不把普通提示词当作持久 Agent 上下文。
+
+本表的模型来源订正于 2026-10-10，目前仅在 `develop`；正式 `main`/BAT 未变。全局 `workflow.model-profile@1` 保存名称、协议、供应商引用、模型参数、手填容量及启用状态。来源 config 仅 `{reference}`，禁止内联参数/容量。注册类型的 references 递归冻结 profile 与 provider；每次新运行读当前值，活动运行不换配置。旧 source@2/@4、MODEL_RESOURCE 及旧模型配置/选择模块退出，不提供迁移。
+
+`ProviderConfigurationService` 独立于图 mixin，可只初始化资源与私有凭据管理，不读取工作流历史。应用组合层显式委派配置操作，内容 CRUD 属于 `ContentConfigurationService`；供应商通信适配器仍仅承担协议收发。供应商先编辑草稿，仅通过“保存供应商”提交完整配置；输入 Key 时不锁定其他字段，同一归属和版本的草稿变化保留内存 Key。填写新 Key 时，`provider.credential.save` 在同一用户动作保存完整字段、Key 与生效引用；Key 留空通过资源保存保留既有密钥。P01 的 `provider.credential.bind` mutation/UI 已移除，仅保留旧请求只读回执，不自动修补部分失败。原身份包含操作名与完整非秘密参数；只读核实不重写 Key、供应商或请求。资源和 Key 收到回执后，先写入已确认表单状态，再释放原请求；失败保留原请求，归档确认后才允许解锁。实际范围见首批实施记录。
 
 当前 `context.output/assembly/merge@4` 与 Agent 的 `PROMPT@6`、`AGENT_CONTEXT_UPDATE` 组成原生上下文路线；`context_receipt.py` 校验真实写入回执。两个串行示例都走这条路线，仅是否连接 `agents.compaction-policy@1` 不同。
 
@@ -126,15 +134,15 @@ Gemini 普通响应及 `agent_message@5` 分离回答正文、可见 `thinking_s
 | 工作流定义及修订 | 节点、配置、端口、包版本与对象绑定；不持有本轮动态上下文 |
 | 工作流会话 | 动态对象、历史及活动链关联，可执行多轮 |
 | chain_run / node_run | 原运行冻结依据、尝试、状态、产物和事实；新草稿不能改写旧运行 |
-| 全局当前资源 | 可复用供应商配置；运行预检解析资源并冻结实际依据 |
+| 全局当前资源 | 各业务独立管理；预检核对身份，提示词/世界书在使用时读取当前值，模型帧仍待契约订正 |
 | 会话对象与上下文 | 显式读写权限、接纳及 CAS 管理 |
 | 前端持久化和缓存 | 编辑副本、原请求恢复材料及展示投影，不替代后端事实 |
 
-模型服务保留受控环境路线；P4 已在主干增加私有 `local:<UUID>` 路线及 broker factory，每次运行冻结凭据代次。公开 provider 新增 schema 3，原 schema 1/2 不重定义。Key 只进独立当前用户保护库，普通草稿、资源、事实及公开身份存档不持有正文；查询原凭据回执不需要 Key。通用 Runtime 不解释 Agent 私有工具语义，也不直接暴露供应商凭据。
+本批 `develop` 只保留页面输入 Key、私有保护库和 `local:<UUID>` 引用路线，删除环境 broker、环境状态查询分支及手工引用选择器。模型服务必须显式注入私有 broker，不默认读取环境变量；每次运行冻结凭据代次，同 Key 重存也会使原 lease 失效。当前 provider 仅 schema 3，不保留旧格式或环境引用兼容。Key 只进独立当前用户保护库，普通草稿、资源、事实及公开身份存档不持有正文；查询原凭据回执不需要 Key。宿主不支持保护时明确拒绝，不降级明文。通用 Runtime 不解释 Agent 私有工具语义，也不直接暴露供应商凭据。
 
 编辑文档、草稿发布基准、最新已发布修订和会话采用修订独立维护；`session_document` 仅保管恢复会话的精确历史定义。保存不自动重绑，历史接纳不重写编辑图。模型列表按已保存供应商身份和序号查询，派发前后检查资源和凭据，发现未知 Gemini 不授予能力。
 
-P5/P6 显示层按精确 kind/schema 读取正文，签名仍经既有过滤器隐藏而不修改 facts。历史节点标题通过该次 run 的 `definition.read(identity, revision)` 获得，不回退到当前编辑图。本机名称和目录归档仅是管理表单 metadata，不加入资源 value 或 session facts；归档不删除定义、会话或共享资源。
+P5/P6 显示层按精确 kind/schema 读取正文，签名仍经既有过滤器隐藏而不修改 facts。历史节点标题通过该次 run 的 `definition.read(identity, revision)` 获得，不回退到当前编辑图。本机名称仍是管理表单 metadata；开发版归档改由后端停止所属运行并保留只读数据，不恢复执行。删除只清目标所属数据，保留全局资源、Key 及原请求证据。
 
 输入声明将“全部可编辑字段”和“当前运行必填集合”分开，节点逐个读取后再尝试编译；失败返回诊断与 `required_for_run: null`。消费端继续使用原受限输入查询，不开放管理草稿。UI 折叠不改变公开输出权限，`editorLocked` 保留不稳定会话限制。
 
@@ -154,11 +162,11 @@ P5/P6 显示层按精确 kind/schema 读取正文，签名仍经既有过滤器�
 
 ## 数据退役
 
-本次源码 `STORAGE_VERSION = 16` 添加独立本机草稿仓库。v15 到 v16 是加表升级，不重复执行退役清理。`0 < old_version < 15` 的既有退役规则仍在单笔升级事务内按确切旧节点 ID/版本、退役包或旧资源身份识别旧路线，沿明确归属/引用形成闭包，整组删除关联记录。包括旧 `workflow.prompt-resource@1`；当前 schema2 提示词与供应商资源、无关联现行记录保留。
+开发版 `STORAGE_VERSION = 17` 添加目标归档状态表，正常初始化不再扫描、删除或改写旧产品内容。旧 `storage_retirement.py` 及其专属测试已移出可执行目录，只保留不可执行[源码参考](中期检查/reference/storage_retirement.py.txt)。`backend/scripts/reset_development_data.py` 负责明确选定开发范围的显式清理，保留 lease、路径核对、独立原请求证据及清理回执。
 
-按用户更新策略，两套旧浏览器工作台先归档到管理端独立 `form` 记录，地址包含来源及原文 SHA-256。原文和地址校验通过、写入确认后才清理对应旧命名空间；未知写入只核实原回执，来源被其他页面改动或清理失败时保留新记录。顶部“旧版存档”只读校验并导出，不自动恢复旧图、升级节点或重发 pending。受限旧导入路径仍使用旧读取器，但不是新浏览器工作台的默认升级方式。
+旧浏览器工作台读取/导入/自动归档及恢复 UI 已移除。资源旧请求仅只读核实，不写 intent、不调用表单完成处理、不刷新恢复旧内容，也不清除原证据键；聊天消费端 `importLegacyPending` 尚待后续订正。浏览器实际清理未执行，不将路径退出等同于已删除存储。
 
-后续破坏性变更应把旧测试工作流的归档或明确清理纳入同批交付和验收，不让退役记录持续干扰用户。普通界面更新不清空当前可用图，未知插件不因目录缺失被猜测删除；原文归档与运行历史删除是不同操作。表单依据按规范化 JSON 内容比较，对象字段顺序不是配置变化；数组顺序、数据类型与真实字段变化仍影响依据。
+已授权的旧开发产品数据及代理临时数据按确切路径/身份清理；临时删除被平台拒绝须登记失败，不绕过拒绝，不清理稳定库、私有 Key、未知请求证据或用户新架构验收内容。日常全局编辑不触发删图。表单依据按规范化 JSON 内容比较，对象字段顺序不是配置变化；数组顺序、数据类型与真实字段变化仍影响依据。
 
 旧固定宿主、兼容工厂、旧上下文/Agent 路线和专用测试已删除。当前包选择为 `current-execution`，没有旧运行 fallback 或旧存储 API 门面。存储版本、数据 schema、节点版本、能力包版本和应用 `0.2.0` 是不同契约，不应混称“软件版本”。
 

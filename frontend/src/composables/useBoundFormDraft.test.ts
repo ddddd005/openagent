@@ -4,9 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { localDraftPorts } from "../adapters/localDraftsApi";
 import { useFormDraftsStore } from "../stores/formDrafts";
 import { memoryLocalDraftStorage } from "../testUtils/localDraftStorage";
-import { newProvider } from "../domain/workflowModelResources";
 import { useBoundFormDraft } from "./useBoundFormDraft";
-import { useResourceFormDraft } from "./useResourceFormDraft";
 
 const renderer = createRenderer<object, object>({
   createElement: () => ({}), createText: () => ({}), createComment: () => ({}),
@@ -159,21 +157,5 @@ describe("bound local forms", () => {
     basis.value = { config: 2 }; await settled();
     expect(editor.binding.conflict.value).toBe(false); expect(raw.value).toBe("raw unchanged");
     expect(await editor.binding.flush()).toBe(true);
-  });
-  it("preserves inactive resource forms and restores them independently", async () => {
-    vi.stubGlobal("window", {});
-    const first = newProvider(), second = newProvider();
-    const editor = mount(() => useResourceFormDraft("provider", newProvider, row => row.value.name));
-    await settled();
-    editor.binding.edit(first); editor.binding.form.value!.value.name = "Unsubmitted first";
-    editor.binding.edit(second); editor.binding.form.value!.value.name = "Unsubmitted second";
-    expect(editor.binding.choices.value).toHaveLength(1);
-    expect(await editor.binding.localDraft.flush()).toBe(true);
-    editor.app.unmount(); freshPinia();
-    const reopened = mount(() => useResourceFormDraft("provider", newProvider, row => row.value.name));
-    await settled();
-    expect(reopened.binding.form.value!.value.name).toBe("Unsubmitted second");
-    reopened.binding.resume(reopened.binding.choices.value[0]!.id);
-    expect(reopened.binding.form.value!.value.name).toBe("Unsubmitted first");
   });
 });

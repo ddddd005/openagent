@@ -1,183 +1,44 @@
 import { describe, expect, it } from "vitest";
-import { graphClone, newGraph, type GraphEntry } from "../domain/workflowGraph";
-import { isSavedWorkbench, readWorkbench, writeWorkbench, type SavedWorkbench } from "./workbenchPersistence";
-
-function fixture() {
-  const document = newGraph("Current graph"), id = document.workflow_definition_id;
-  const value: SavedWorkbench = { schemaVersion: 7, kind: "graph-workbench", revision: 1,
-    savedAt: "2026-10-07T00:00:00.000Z", activeWorkflowId: id, selectedWorkflowId: id,
-    catalog: [{ id, title: document.name, description: "", nodeCount: 0, state: "draft" }],
-    graph: { schema_version: 1, entries: { [id]: { document, saved_revision: 0, session_id: null, pending: null } } } };
-  return { value, id, document };
+import { isSavedWorkbench, type SavedWorkbench } from "./workbenchPersistence";
+import { graphClone, newGraph } from "../domain/workflowGraph";
+function fixture(): SavedWorkbench {
+  const document = newGraph("Current workspace"), id = document.workflow_definition_id;
+  return { schemaVersion: 7, kind: "graph-workbench", revision: 1, savedAt: "2026-10-11T00:00:00Z",
+    activeWorkflowId: id, selectedWorkflowId: id,
+    catalog: [{ id, title: document.name, description: "", nodeCount: 0, state: "saved" }],
+    graph: { schema_version: 1, entries: { [id]: {
+      document, saved_revision: 1, session_id: null, pending: null,
+    } } } };
 }
-function memory(initial: string | null) {
-  let raw = initial;
-  return { getItem: () => raw, setItem: (_key: string, value: string) => { raw = value; } };
-}
-function mixed(value: SavedWorkbench) {
-  const documents = Object.fromEntries(Object.entries(value.graph.entries).map(([id, entry]) => [id, { document: entry.document }]));
-  const entries = Object.fromEntries(Object.entries(value.graph.entries).map(([id, entry]) => {
-    const { document: _document, ...metadata } = graphClone(entry);
-    return [id, metadata];
-  }));
-  return { ...value, schemaVersion: 6, kind: "unified-workbench", documents,
-    graph: { schema_version: 1, entries }, runtime: {}, registrations: [] };
-}
-describe("current-only workbench persistence", () => {
-  it.each([
-    ["models.source", "1"], ["models.source", "3"], ["models.chat", "1"], ["models.chat", "2"],
-    ["agents.execute", "3"], ["agents.execute", "7"], ["agents.delta", "2"],
-    ["context.output", "2"], ["context.assembly", "3"], ["context.merge", "2"], ["context.window", "3"],
-    ["prompts.item", "1"], ["prompts.assembly", "1"], ["prompts.global-reference", "1"],
-  ])("removes an entire retired %s@%s graph without rebinding its nodes", (component_id, component_version) => {
-    const { value, id } = fixture(), retired = newGraph("Retired test graph");
-    retired.nodes.push({ node_binding_id: crypto.randomUUID(), component_id, component_version,
-      title: "Old test", position: { x: 0, y: 0 }, config: {} });
-    value.catalog.push({ id: retired.workflow_definition_id, title: retired.name, description: "", nodeCount: 1 });
-    value.graph.entries[retired.workflow_definition_id] = { document: retired, saved_revision: 1,
-      session_id: crypto.randomUUID(), pending: null };
-    value.activeWorkflowId = value.selectedWorkflowId = retired.workflow_definition_id;
-    const storage = memory(JSON.stringify(value)), raw = storage.getItem();
-    const loaded = readWorkbench(storage);
-    expect(loaded.error).toBeNull(); expect(loaded.rewrite).toBe(true);
-    expect(loaded.value?.catalog.map(row => row.id)).toEqual([id]);
-    expect(loaded.value?.activeWorkflowId).toBe(id);
-    expect(loaded.value?.graph.entries).toEqual({ [id]: value.graph.entries[id] });
-    expect(storage.getItem()).toBe(raw);
-    expect(isSavedWorkbench(loaded.value)).toBe(true);
-    writeWorkbench(storage, loaded.value!, raw);
-    expect(readWorkbench(storage).rewrite).toBe(false);
+describe("current backend workbench format", () => {
+  it("validates one current snapshot without browser migrations", () => {
+    const value = fixture();
+    expect(isSavedWorkbench(value)).toBe(true);
+    expect(isSavedWorkbench({ ...value, schemaVersion: 6, kind: "unified-workbench" })).toBe(false);
+    expect(isSavedWorkbench({ ...value, schemaVersion: 99 })).toBe(false);
   });
-  it.each([
-    ["models.source", "2"], ["models.source", "4"], ["models.chat", "3"], ["models.chat", "4"],
-    ["agents.execute", "4"], ["agents.execute", "8"], ["context.assembly", "4"], ["prompts.assembly", "2"],
-  ])("preserves the current %s@%s route unchanged", (component_id, component_version) => {
-    const { value, document } = fixture();
-    document.nodes.push({ node_binding_id: crypto.randomUUID(), component_id, component_version,
-      title: "Current node", position: { x: 0, y: 0 }, config: {} });
-    value.catalog[0].nodeCount = 1;
-    const raw = JSON.stringify(value);
-    expect(readWorkbench(memory(raw))).toEqual({ value, raw, error: null, rewrite: false });
+  it("accepts an empty directory after the last definition is deleted", () => {
+    expect(isSavedWorkbench({ ...fixture(), activeWorkflowId: "", selectedWorkflowId: "", catalog: [],
+      graph: { schema_version: 1, entries: {} } })).toBe(true);
   });
-  it("roundtrips a current graph without requiring acceptance evidence or projecting fixed stages", () => {
-    const { value } = fixture(), storage = memory(null);
-    const raw = writeWorkbench(storage, value, null);
-    expect(isSavedWorkbench(JSON.parse(raw))).toBe(true);
-    expect(readWorkbench(storage)).toEqual({ value, raw, error: null, rewrite: false });
-    expect(JSON.parse(raw)).not.toHaveProperty("preparations");
+  it("requires exact catalog membership and valid management flags", () => {
+    const value = fixture(), id = value.activeWorkflowId;
+    expect(isSavedWorkbench({ ...value, activeWorkflowId: crypto.randomUUID() })).toBe(false);
+    value.catalog[0].archived = true; value.catalog[0].deleted = false;
+    expect(isSavedWorkbench(value)).toBe(true);
+    expect(isSavedWorkbench({ ...value, graph: { schema_version: 1, entries: {} } })).toBe(false);
+    value.graph.entries[id].pending = { action: "definition-delete",
+      path: `/api/graph/definitions/${id}/delete`,
+      body: { expected_revision: 1, idempotency_key: crypto.randomUUID() } };
+    expect(isSavedWorkbench(value)).toBe(true);
   });
-  it("removes explicit compatibility rows and preserves every current metadata field and frozen pending body", () => {
-    const { value, id, document } = fixture(), legacy = newGraph("Fixed test");
-    const original: GraphEntry & { custom_metadata: unknown } = { document, saved_revision: 1,
-      saved_document: graphClone(document), session_id: crypto.randomUUID(),
-      pending: { action: "save", path: "/api/graph/definitions",
-        body: { document: graphClone(document), expected_revision: 1, idempotency_key: crypto.randomUUID() } },
-      external_inputs: { original: "retained" }, state_mappings: [],
-      custom_metadata: { unrecognized: ["preserve", 7] } };
-    value.graph.entries[id] = original;
-    const prior = mixed(value);
-    prior.catalog.push({ id: legacy.workflow_definition_id, title: "Fixed", description: "", nodeCount: 0, state: "draft" });
-    (prior.documents as Record<string, unknown>)[legacy.workflow_definition_id] = { document: legacy, compatibility: { preparations: [] } };
-    const loaded = readWorkbench(memory(JSON.stringify(prior)));
-    expect(loaded.error).toBeNull(); expect(loaded.rewrite).toBe(true);
-    expect(loaded.value?.catalog.map(row => row.id)).toEqual([id]);
-    expect(loaded.value?.graph.entries[id]).toEqual(original);
-  });
-  it("removes explicitly locked compat graphs but preserves a current entry without any new evidence", () => {
-    const { value, id } = fixture(), prior = mixed(value);
-    const legacy = newGraph("Compat"); legacy.schema_version = 2;
-    legacy.package_lock = [{ package_id: "workflow.compat", version: "1.0.0" }];
-    legacy.object_bindings = []; legacy.execution_roots = []; legacy.control_edges = [];
-    prior.catalog.push({ id: legacy.workflow_definition_id, title: legacy.name, description: "", nodeCount: 0 });
-    prior.documents[legacy.workflow_definition_id] = { document: legacy };
-    prior.graph.entries[legacy.workflow_definition_id] = { saved_revision: 0, session_id: null, pending: null };
-    const loaded = readWorkbench(memory(JSON.stringify(prior)));
-    expect(loaded.error).toBeNull();
-    expect(Object.keys(loaded.value!.graph.entries)).toEqual([id]);
-  });
-  it("removes an exact retired component from a schema6 graph without a compatibility marker or package lock", () => {
-    const { value, id } = fixture(), legacy = newGraph("Early compat graph");
-    legacy.nodes.push({ node_binding_id: crypto.randomUUID(), component_id: "workflow.text",
-      component_version: "1", title: "Retired text", position: { x: 0, y: 0 }, config: { text: "old" } });
-    value.catalog.push({ id: legacy.workflow_definition_id, title: legacy.name, description: "", nodeCount: 1 });
-    value.graph.entries[legacy.workflow_definition_id] = { document: legacy, saved_revision: 1,
-      session_id: crypto.randomUUID(), pending: null };
-    const loaded = readWorkbench(memory(JSON.stringify(mixed(value))));
-    expect(loaded.error).toBeNull(); expect(loaded.rewrite).toBe(true);
-    expect(loaded.value?.catalog.map(row => row.id)).toEqual([id]);
-    expect(loaded.value?.graph.entries).toEqual({ [id]: value.graph.entries[id] });
+  it("rejects retired product nodes rather than reconstructing a compatible workspace", () => {
+    const value = fixture(), entry = value.graph.entries[value.activeWorkflowId];
+    entry.document.nodes.push({ node_binding_id: crypto.randomUUID(), component_id: "workflow.text",
+      component_version: "1", title: "Old", position: { x: 0, y: 0 }, config: {} });
     expect(isSavedWorkbench(value)).toBe(false);
-  });
-  it.each([
-    [6, "saved_document"], [6, "pending_document"],
-    [7, "saved_document"], [7, "pending_document"],
-  ])("removes a schema%s current draft whose %s retains an exact retired definition", (schema, source) => {
-    const { value, id, document } = fixture(), draft = newGraph("Current replacement draft");
-    document.nodes.push({ node_binding_id: crypto.randomUUID(), component_id: "tools.text",
-      component_version: "1", title: "Current text", position: { x: 0, y: 0 },
-      config: { text: "workflow.text@1 workflow.compat legacy.custom" } });
-    value.catalog[0].nodeCount = 1;
-    value.graph.entries[id] = { document, saved_revision: 1, saved_document: graphClone(document),
-      session_id: crypto.randomUUID(), pending: { action: "save", path: "/api/graph/definitions",
-        body: { document: graphClone(document), expected_revision: 1, idempotency_key: crypto.randomUUID() } } };
-    const original = graphClone(value.graph.entries[id]);
-    const retired = graphClone(draft);
-    retired.nodes.push({ node_binding_id: crypto.randomUUID(), component_id: "workflow.text",
-      component_version: "1", title: "Retired text", position: { x: 0, y: 0 }, config: { text: "old" } });
-    const retiringEntry: GraphEntry = { document: draft, saved_revision: 1,
-      session_id: crypto.randomUUID(), pending: null };
-    if (source === "saved_document") retiringEntry.saved_document = retired;
-    else retiringEntry.pending = { action: "save", path: "/api/graph/definitions",
-      body: { document: retired, expected_revision: 1, idempotency_key: crypto.randomUUID() } };
-    value.catalog.push({ id: draft.workflow_definition_id, title: draft.name, description: "", nodeCount: 0 });
-    value.graph.entries[draft.workflow_definition_id] = retiringEntry;
-    value.activeWorkflowId = value.selectedWorkflowId = draft.workflow_definition_id;
-    expect(isSavedWorkbench(value)).toBe(false);
-    const loaded = readWorkbench(memory(JSON.stringify(schema === 6 ? mixed(value) : value)));
-    expect(loaded.error).toBeNull(); expect(loaded.rewrite).toBe(true);
-    expect(loaded.value?.catalog.map(row => row.id)).toEqual([id]);
-    expect(loaded.value?.activeWorkflowId).toBe(id);
-    expect(loaded.value?.selectedWorkflowId).toBe(id);
-    expect(loaded.value?.graph.entries).toEqual({ [id]: original });
-  });
-  it.each([
-    ["legacy.custom", "1"],
-    ["legacy.agent", "1"],
-    ["workflow.text", "999"],
-    ["workflow.text", "01"],
-    ["workflow.agent", "3"],
-  ])("preserves unknown identity %s@%s with current metadata and the complete pending request", (component_id, component_version) => {
-    const { value, id, document } = fixture();
-    document.nodes.push({ node_binding_id: crypto.randomUUID(), component_id, component_version,
-      title: "Trusted extension", position: { x: 0, y: 0 }, config: { custom: "preserved" } });
-    value.catalog[0].nodeCount = 1;
-    const original: GraphEntry & { custom_metadata: unknown } = { document, saved_revision: 1,
-      saved_document: graphClone(document), session_id: crypto.randomUUID(),
-      pending: { action: "save", path: "/api/graph/definitions",
-        body: { document: graphClone(document), expected_revision: 1, idempotency_key: crypto.randomUUID() } },
-      external_inputs: { original: "retained" }, state_mappings: [],
-      custom_metadata: { unrecognized: ["preserve", 7] } };
-    value.graph.entries[id] = original;
-    const loaded = readWorkbench(memory(JSON.stringify(mixed(value))));
-    expect(loaded.error).toBeNull(); expect(loaded.rewrite).toBe(true);
-    expect(loaded.value?.graph.entries[id]).toEqual(original);
-    expect(isSavedWorkbench(loaded.value)).toBe(true);
-    const storage = memory(null), raw = writeWorkbench(storage, loaded.value!, null);
-    expect(readWorkbench(storage)).toEqual({ value: loaded.value, raw, error: null, rewrite: false });
-  });
-  it("blocks unknown or malformed current rows instead of classifying them as disposable old data", () => {
-    const { value, id } = fixture(), prior = mixed(value);
-    prior.documents[id].document.workflow_definition_id = "invalid";
-    const storage = memory(JSON.stringify(prior)), original = storage.getItem();
-    expect(readWorkbench(storage).error).not.toBeNull(); expect(storage.getItem()).toBe(original);
-    expect(readWorkbench(memory(JSON.stringify({ ...value, schemaVersion: 99 }))).error).not.toBeNull();
-  });
-  it("allows explicit fixed-workbench test storage to be replaced and retains CAS and capacity barriers", () => {
-    const old = JSON.stringify({ schemaVersion: 5, kind: "fixed-workbench" });
-    expect(readWorkbench(memory(old))).toEqual({ value: null, raw: old, error: null, rewrite: true });
-    const { value } = fixture(), storage = memory(old);
-    expect(() => writeWorkbench(storage, value, null)).toThrow("其他页面");
-    value.catalog[0].description = "x".repeat(4_000_001);
-    expect(() => writeWorkbench(storage, value, old)).toThrow("容量");
+    const current = graphClone(value);
+    current.graph.entries[value.activeWorkflowId].document.nodes[0].component_id = "independent.current";
+    expect(isSavedWorkbench(current)).toBe(true);
   });
 });

@@ -25,6 +25,7 @@ import { useWorkbenchFrontendHost } from "../composables/useWorkbenchFrontendHos
 import { useCanvasNodeMenu } from "../composables/useCanvasNodeMenu";
 import { useBoundFormDraft } from "../composables/useBoundFormDraft";
 import FormDraftNotice from "./FormDraftNotice.vue";
+import { diagnosticRecovery } from "../domain/diagnosticPresentation";
 const graph = useWorkflowGraphStore();
 const workspace = useWorkspaceStore();
 const persistence = useWorkbenchPersistenceStore();
@@ -323,7 +324,7 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; connecting.va
         <div v-else class="graph-inspector-content">
           <section v-for="output in graph.session?.outputs ?? []" :key="output.output_id"><h3>{{ graph.session?.nodes.find(node => node.node_binding_id === output.node_binding_id)?.label ?? '历史节点' }} / {{ output.port_id }}</h3><GraphResult :value="output.payload" /></section>
           <p v-if="!graph.session?.outputs.length" class="graph-muted">暂无结果</p>
-          <button v-for="(diagnostic, index) in diagnostics" :key="index" class="graph-diagnostic" type="button" @click="locate(diagnostic.node_id)"><strong>{{ diagnostic.reason_code }}</strong><span>{{ diagnostic.message }}</span></button>
+          <button v-for="(diagnostic, index) in diagnostics" :key="index" class="graph-diagnostic" type="button" @click="locate(diagnostic.node_id)"><strong>{{ diagnostic.reason_code ?? diagnostic.code }}</strong><span>{{ diagnostic.message }}</span><span v-if="diagnosticRecovery(diagnostic)">{{ diagnosticRecovery(diagnostic) }}</span><small v-if="diagnostic.step">失败步骤：{{ diagnostic.step }}</small><small v-if="diagnostic.correlation_id">关联编号：{{ diagnostic.correlation_id }}</small></button>
           <button v-if="graph.session?.available_actions?.includes('close')" type="button" class="graph-close-run" @click="graph.closeRun()"><X :size="14" />关闭本次运行</button>
           <GraphSessionData />
         </div>

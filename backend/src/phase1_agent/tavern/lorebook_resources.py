@@ -80,12 +80,16 @@ def activate_lorebook(config, inputs, context):
     )
 
 
-def register_global_lorebook(host):
-    host.register_data_type(DataTypeDefinition(
+def lorebook_resource_definition():
+    return DataTypeDefinition(
         LOREBOOK_RESOURCE_TYPE, 1, lorebook_resource_schema(),
         {"name": "", "enabled": True, "entries": []}, scope="global",
         validator=validate_lorebook_resource,
-    ))
+    )
+
+
+def register_global_lorebook(host):
+    host.register_data_type(lorebook_resource_definition())
     reference = ResourceIdentity("workspace", LOREBOOK_RESOURCE_TYPE, _DEFAULT_RESOURCE_ID).to_dict()
     host.register_node(NodeDefinition(
         "lorebook.global-reference", "1", "全局 Lorebook 引用", "类酒馆",

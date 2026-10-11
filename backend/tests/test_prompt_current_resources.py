@@ -161,9 +161,9 @@ def test_prompt_current_same_uuid_scope_and_type_are_isolated(tmp_path):
     project = prompt_record("project prompt", scope="project:one")
     provider = {
         **ResourceIdentity("workspace", CHAT_PROVIDER_TYPE, workspace["resource_id"]).to_dict(),
-        "data_schema_version": 1, "update_sequence": 1,
+        "data_schema_version": 3, "update_sequence": 1,
         "value": {"name": "Fixture provider", "protocol": "chat", "base_url": "https://example.test",
-                  "credential_ref": "env:DEEPSEEK_API_KEY", "enabled": True},
+                  "credential_ref": None, "enabled": True},
     }
     with closing(GraphWorkflowService(tmp_path / "prompt-identities.sqlite", registry=installed)) as service:
         app = GraphApplication(service)

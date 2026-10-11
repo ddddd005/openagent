@@ -13,6 +13,7 @@ import { memoryLocalDraftStorage } from "../testUtils/localDraftStorage";
 vi.mock("@vue-flow/core", () => ({ MarkerType: { ArrowClosed: "arrowclosed" },
   Position: { Left: "left", Right: "right" }, Handle: { render: () => null }, VueFlow: { render: () => null } }));
 vi.mock("@vue-flow/background", () => ({ Background: { render: () => null } }));
+vi.mock("./WorkbenchSidebar.vue", () => ({ default: { render: () => null } }));
 let pinia: Pinia;
 beforeEach(() => { pinia = createPinia(); setActivePinia(pinia); vi.useFakeTimers(); vi.stubGlobal("fetch", vi.fn()); });
 afterEach(() => { disposePinia(pinia); vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });

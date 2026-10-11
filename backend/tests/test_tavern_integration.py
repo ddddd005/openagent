@@ -97,7 +97,6 @@ def frozen_output(history, node, port="output"):
 
 
 def test_two_lorebooks_own_three_rounds_and_materials_do_not_persist_or_duplicate(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-lorebook")
     transport = NativeTransport()
     database = tmp_path / "recursive.sqlite"
     with closing(GraphWorkflowService(database, public_model_factory=transport.factory)) as service:
@@ -153,7 +152,6 @@ def test_two_lorebooks_own_three_rounds_and_materials_do_not_persist_or_duplicat
 
 
 def test_variable_keyword_is_read_only_and_role_does_not_turn_material_into_history(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-lorebook")
     transport = NativeTransport()
     with closing(GraphWorkflowService(tmp_path / "variables.sqlite",
                                       public_model_factory=transport.factory)) as service:
@@ -178,7 +176,6 @@ def test_variable_keyword_is_read_only_and_role_does_not_turn_material_into_hist
 
 
 def test_single_entry_and_probability_are_frozen_across_acceptance_retry(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-lorebook")
     from phase1_agent import lorebook_engine
     samples = []
 
@@ -221,7 +218,6 @@ def test_single_entry_and_probability_are_frozen_across_acceptance_retry(tmp_pat
 
 @pytest.mark.parametrize("mode", ["constant", "keyword"])
 def test_disabled_or_probability_zero_has_empty_material_output(tmp_path, monkeypatch, mode):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-lorebook")
     transport = NativeTransport()
     with closing(GraphWorkflowService(tmp_path / "empty.sqlite",
                                       public_model_factory=transport.factory)) as service:

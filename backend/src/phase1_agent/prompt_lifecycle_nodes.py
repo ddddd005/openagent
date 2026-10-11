@@ -80,12 +80,16 @@ def _members(config, context, *, kind):
     return merge_lifecycle_prompt_materials([lifecycle_prompt_content(items)])
 
 
-def register_lifecycle_prompt_nodes(host, *, tools) -> None:
-    host.register_data_type(DataTypeDefinition(
+def lifecycle_prompt_resource_definition():
+    return DataTypeDefinition(
         PROMPT_RESOURCE_TYPE, 2,
         object_schema({"enabled": {"type": "boolean"}, "members": lifecycle_members_schema()}),
         {"enabled": True, "members": []}, scope="global", validator=validate_lifecycle_prompt_resource,
-    ))
+    )
+
+
+def register_lifecycle_prompt_nodes(host, *, tools) -> None:
+    host.register_data_type(lifecycle_prompt_resource_definition())
     material_port = lambda name="output", **kwargs: NodePort(name, PROMPT_MATERIALS_TYPE, **kwargs)
     member = {
         "id": _DEFAULT_MEMBER, "text": "", "presentation": default_presentation(),

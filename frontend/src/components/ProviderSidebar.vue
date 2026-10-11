@@ -3,24 +3,24 @@ import { computed } from "vue";
 import { createWorkbenchFrontendHost } from "../application/workflowFrontendPackage";
 import { frontendExtensionIdentity } from "../domain/frontendExtensions";
 import { modelFrontendExtensions } from "../plugins/modelFrontendManifest";
-import { useWorkflowGraphStore } from "../stores/workflowGraph";
-const graph = useWorkflowGraphStore();
-const host = createWorkbenchFrontendHost(() => graph.frontendExtensions, () => graph.packageLock);
-const providerPanelIdentity = frontendExtensionIdentity(modelFrontendExtensions[0]!);
+const providerDeclaration = modelFrontendExtensions[0]!;
+const host = createWorkbenchFrontendHost(() => [providerDeclaration], () => [
+  { package_id: providerDeclaration.package_id, version: providerDeclaration.package_version },
+]);
+const providerPanelIdentity = frontendExtensionIdentity(providerDeclaration);
 const providerPanel = computed(() => host.extensions.value.find(row =>
   frontendExtensionIdentity(row.declaration) === providerPanelIdentity));
 </script>
 
 <template>
-  <section class="provider-sidebar" aria-label="普通图供应商">
+  <section class="provider-sidebar" aria-label="全局供应商">
     <header class="workbench-panel-heading"><h1>供应商</h1></header>
     <div class="provider-sidebar-content">
       <component v-if="providerPanel" :is="providerPanel.component"
         :key="frontendExtensionIdentity(providerPanel.declaration)" />
-      <p v-else-if="graph.catalogLoading" class="provider-sidebar-status" role="status">读取中</p>
       <div v-else class="provider-sidebar-status provider-sidebar-warning" role="status">
         <p>供应商资源不可用</p>
-        <p>{{ graph.catalogError ?? "当前节点目录未提供已启用的可信供应商面板" }}</p>
+        <p>可信供应商面板未安装</p>
       </div>
       <p v-for="issue in host.issues.value" :key="issue" class="provider-sidebar-status provider-sidebar-warning" role="status">{{ issue }}</p>
     </div>

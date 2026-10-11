@@ -19,7 +19,6 @@ from test_models_service_integration import ModelDatabaseFixture
 
 
 def test_default_agent_source_pages_original_facts_and_reopens_exact_binding(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-information-test")
     path = tmp_path / "agent-information.sqlite"
     transport = SummaryTransport()
     with closing(GraphWorkflowService(path, public_model_factory=transport.factory)) as service:

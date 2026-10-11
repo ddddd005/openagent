@@ -3,8 +3,8 @@ import { computed, ref, watch } from "vue";
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-vue-next";
 import RawNumberInput from "./RawNumberInput.vue";
 import { movePromptMember, newPromptMember, type PromptMember, type PromptPresentation } from "../domain/workflowPromptResources";
-const props = defineProps<{ members: PromptMember[]; version: 1 | 2; disabled?: boolean;
-  draftScope: string; draftBasis: Record<string, unknown> }>();
+const props = withDefaults(defineProps<{ members: PromptMember[]; version: 1 | 2; disabled?: boolean;
+  draftScope: string; draftBasis: Record<string, unknown>; persistNumericDrafts?: boolean }>(), { persistNumericDrafts: true });
 const emit = defineEmits<{ validity: [valid: boolean] }>();
 const invalid = ref<Record<string, boolean>>({}), error = ref("");
 const numbers = new Map<string, { adoptBasis(value: unknown): boolean }>();
@@ -48,7 +48,7 @@ function protect(member: PromptMember) {
       <header><strong>条目 {{ index + 1 }}</strong>
         <button type="button" title="上移条目" :aria-label="`条目 ${index + 1} 上移`" :disabled="disabled || !valid || index === 0" @click="move(index, -1)"><ArrowUp :size="15" /></button>
         <button type="button" title="下移条目" :aria-label="`条目 ${index + 1} 下移`" :disabled="disabled || !valid || index === members.length - 1" @click="move(index, 1)"><ArrowDown :size="15" /></button>
-        <button type="button" title="移除草稿条目" aria-label="移除草稿条目" @click="!disabled && members.splice(index, 1)"><Trash2 :size="15" /></button>
+        <button type="button" title="移除条目" aria-label="移除条目" @click="!disabled && members.splice(index, 1)"><Trash2 :size="15" /></button>
       </header>
       <label>正文<textarea v-model="member.text" rows="5" :aria-label="`条目 ${index + 1} 正文`" /></label>
       <div class="row"><label>角色<select v-model="member.presentation.role" :aria-label="`条目 ${index + 1} Role`" @change="protect(member)"><option value="system">system</option><option value="user">user</option><option value="assistant">assistant</option></select></label>
@@ -56,9 +56,9 @@ function protect(member: PromptMember) {
       <div v-if="version === 2" class="row"><label>进入上下文<select v-model="member.lifecycle" :aria-label="`条目 ${index + 1} 生命周期`" @change="protect(member)"><option value="per_request">每次装配</option><option value="context_once">仅一次</option></select></label>
         <label>精简许可<select v-model="member.compaction" :aria-label="`条目 ${index + 1} 精简许可`" :disabled="member.lifecycle !== 'context_once' || member.presentation.role === 'system'"><option value="never">保留原文</option><option value="allowed">允许精简</option></select></label></div>
       <label>位置<div class="segments" role="group" :aria-label="`条目 ${index + 1} 装配位置`"><button v-for="option in ([['before','上下文前'],['middle','上下文中'],['after','上下文后']] as const)" :key="option[0]" type="button" :aria-pressed="member.presentation.placement === option[0]" @click="placement(member, option[0])">{{ option[1] }}</button></div></label>
-      <div class="row"><label v-if="member.presentation.placement === 'middle'">深度<RawNumberInput v-model="member.presentation.depth" :min="0" integer :disabled="disabled" :ref="value => numberRef(scope(member,'depth'), value)"
+      <div class="row"><label v-if="member.presentation.placement === 'middle'">深度<RawNumberInput v-model="member.presentation.depth" :min="0" integer :disabled="disabled" :persist="persistNumericDrafts" :ref="value => numberRef(scope(member,'depth'), value)"
         :draft-scope="scope(member, 'depth')" :draft-basis="draftBasis" :aria-label="`条目 ${index + 1} 中区深度`" @validity="invalid[scope(member,'depth')] = !$event" /></label>
-        <label>顺序<RawNumberInput v-model="member.presentation.order" integer :disabled="disabled" :ref="value => numberRef(scope(member,'order'), value)"
+        <label>顺序<RawNumberInput v-model="member.presentation.order" integer :disabled="disabled" :persist="persistNumericDrafts" :ref="value => numberRef(scope(member,'order'), value)"
           :draft-scope="scope(member,'order')" :draft-basis="draftBasis" :aria-label="`条目 ${index + 1} 装配顺序`" @validity="invalid[scope(member,'order')] = !$event" /></label></div>
       <details><summary>条目技术详情</summary><code>{{ member.id }}</code><pre>{{ JSON.stringify(member.metadata, null, 2) }}</pre></details>
     </section>

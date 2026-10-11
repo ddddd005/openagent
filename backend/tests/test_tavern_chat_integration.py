@@ -204,7 +204,6 @@ def test_tavern_settlement_rollback_reuses_accepted_business_output(tmp_path, mo
 
 
 def test_native_agent_uses_normal_context_then_tavern_only_displays_text(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-tavern-chat")
     fixture = NativeTransport()
     database = tmp_path / "tavern-native.sqlite"
     with closing(GraphWorkflowService(database, public_model_factory=fixture.factory)) as service:

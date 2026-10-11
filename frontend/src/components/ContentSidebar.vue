@@ -3,34 +3,36 @@ import { computed } from "vue";
 import { createWorkbenchFrontendHost } from "../application/workflowFrontendPackage";
 import { frontendExtensionIdentity } from "../domain/frontendExtensions";
 import { promptFrontendExtensions } from "../plugins/promptFrontendManifest";
-import { tavernExtensionsFor } from "../plugins/tavernFrontendManifest";
+import { chatTavernFrontendExtensions } from "../plugins/tavernFrontendManifest";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 const graph = useWorkflowGraphStore();
-const host = createWorkbenchFrontendHost(() => graph.frontendExtensions, () => graph.packageLock);
-const promptPanelIdentity = frontendExtensionIdentity(promptFrontendExtensions[0]!);
+const promptDeclaration = promptFrontendExtensions[0]!;
+const lorebookDeclaration = chatTavernFrontendExtensions[2]!;
+const host = createWorkbenchFrontendHost(() => [promptDeclaration, lorebookDeclaration], () => [
+  { package_id: promptDeclaration.package_id, version: promptDeclaration.package_version },
+  { package_id: lorebookDeclaration.package_id, version: lorebookDeclaration.package_version },
+]);
+const workflowHost = createWorkbenchFrontendHost(() => graph.frontendExtensions, () => graph.packageLock);
+const promptPanelIdentity = frontendExtensionIdentity(promptDeclaration);
 const promptPanel = computed(() => host.extensions.value.find(row =>
   frontendExtensionIdentity(row.declaration) === promptPanelIdentity));
-const lorebookPanel = computed(() => {
-  const declaration = tavernExtensionsFor(graph.packageLock)[2];
-  return declaration ? host.extensions.value.find(row =>
-    frontendExtensionIdentity(row.declaration) === frontendExtensionIdentity(declaration)) : undefined;
-});
-const tavernChatPanel = computed(() => host.extensions.value.find(row =>
+const lorebookPanel = computed(() => host.extensions.value.find(row =>
+  frontendExtensionIdentity(row.declaration) === frontendExtensionIdentity(lorebookDeclaration)));
+const tavernChatPanel = computed(() => workflowHost.extensions.value.find(row =>
   row.declaration.extension_id === "workflow.tavern.chat-launch"));
 </script>
 
 <template>
-  <section class="current-content-sidebar" aria-label="普通图提示词">
+  <section class="current-content-sidebar" aria-label="全局内容">
     <header class="workbench-panel-heading"><h1>内容</h1></header>
     <div class="current-content-sidebar-body">
       <component v-if="tavernChatPanel" :is="tavernChatPanel.component"
         :key="frontendExtensionIdentity(tavernChatPanel.declaration)" />
       <component v-if="promptPanel" :is="promptPanel.component"
         :key="frontendExtensionIdentity(promptPanel.declaration)" />
-      <p v-else-if="graph.catalogLoading" class="content-sidebar-status" role="status">读取中</p>
       <div v-else class="content-sidebar-status content-sidebar-warning" role="status">
         <p>提示词资源不可用</p>
-        <p>{{ graph.catalogError ?? "当前节点目录未提供已启用的可信提示词面板" }}</p>
+        <p>可信提示词面板未安装</p>
       </div>
       <component v-if="lorebookPanel" :is="lorebookPanel.component"
         :key="frontendExtensionIdentity(lorebookPanel.declaration)" />

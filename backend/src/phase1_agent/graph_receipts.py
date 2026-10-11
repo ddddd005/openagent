@@ -10,7 +10,7 @@ from .contract_json import canonical_bytes, loads_strict, validate_json_value
 from .graph_application_contracts import COMMANDS, validate_parameters
 from .graph_application_identity import (
     APPLICATION_IDENTITY_OPERATION, application_command_identity, application_command_receipt,
-    application_identity_key,
+    application_origin_key,
 )
 from .graph_records import uuid_value, validate_graph_record
 from .host_sdk import ObjectBinding, ResourceIdentity, WriteIntent
@@ -64,8 +64,7 @@ def _read_origin(connection, identity):
         "SELECT digest,request_digest,result_refs,result_payload FROM idempotency "
         "WHERE operation=? AND key=?",
         (APPLICATION_IDENTITY_OPERATION,
-         application_identity_key(identity["operation"], identity["operation_scope"],
-                                  identity["idempotency_key"])),
+         application_origin_key(identity)),
     ).fetchone()
     _check(row is not None, "application_identity_missing")
     digest = "workflow-op-v1:" + identity["request_sha256"]
@@ -176,7 +175,91 @@ def _adopted_object(source, parameters, key):
     return value
 
 
+def _configuration_result(parameters, result):
+    from .graph_contracts import validate_graph_document
+
+    _check(set(result) == {
+        "schema_version", "kind", "outcome", "source_workflow_definition_id",
+        "workflow_definition_id", "definition_revision", "edit_sequence",
+        "source_has_effective_session", "changed_categories", "node_id_map",
+        "session_id", "document",
+    } and type(result["schema_version"]) is int and result["schema_version"] == 1
+        and result["kind"] == "workflow.configuration-result")
+    source, target = parameters["workflow_definition_id"], result["workflow_definition_id"]
+    outcome, categories = result["outcome"], result["changed_categories"]
+    _check(result["source_workflow_definition_id"] == source and uuid_value(target)
+           and type(outcome) is str and outcome in ("unchanged", "saved", "derived")
+           and type(result["source_has_effective_session"]) is bool
+           and result["session_id"] is None and _integer(result["definition_revision"], 1)
+           and _integer(result["edit_sequence"], 1))
+    _check(type(categories) is list and categories == [
+        category for category in ("display", "adjustable", "fixed") if category in categories
+    ])
+    document = validate_graph_document(result["document"])
+    submitted = validate_graph_document(parameters["document"])
+    _check(submitted["workflow_definition_id"] == source
+           and document["workflow_definition_id"] == target
+           and document["revision"] == result["definition_revision"]
+           and document.get("edit_sequence") == result["edit_sequence"])
+    expected_document = deepcopy(submitted)
+    expected_document.update(workflow_definition_id=target,
+                             revision=result["definition_revision"],
+                             edit_sequence=result["edit_sequence"])
+    _check(_same(document, expected_document))
+    identities = {node["node_binding_id"]: node["node_binding_id"] for node in document["nodes"]}
+    _check(_same(result["node_id_map"], identities))
+    expected = parameters["expected_edit_sequence"]
+    if outcome == "unchanged":
+        _check(not categories and target == source and expected >= 1
+               and result["edit_sequence"] == expected
+               and document["revision"] == submitted["revision"])
+    elif outcome == "derived":
+        _check(target != source and result["source_has_effective_session"]
+               and "fixed" in categories and expected >= 1
+               and result["edit_sequence"] == result["definition_revision"] == 1)
+    else:
+        _check(target == source and bool(categories)
+               and result["edit_sequence"] == expected + 1)
+        if expected == 0:
+            _check(categories == ["fixed"] and not result["source_has_effective_session"]
+                   and result["definition_revision"] == 1)
+        else:
+            _check(not ("fixed" in categories and result["source_has_effective_session"])
+                   and result["definition_revision"] == submitted["revision"] + ("fixed" in categories))
+
+
 def _validate_result(operation, parameters, result):
+    if operation.startswith("request-evidence."):
+        from .request_evidence import validate_evidence_record
+        validate_evidence_record(result)
+        _check(result["operation"] == parameters["operation"]
+               and result["idempotency_key"] == parameters["idempotency_key"])
+        if operation == "request-evidence.write":
+            _check(result["owner_kind"] == parameters["owner_kind"]
+                   and result["owner_id"] == parameters["owner_id"]
+                   and _same(result["request"], parameters["request"])
+                   and result["resolution"] == "pending")
+        else:
+            _check(result["request_digest"] == parameters["request_digest"]
+                   and result["resolution"] == parameters["resolution"])
+        return
+    if operation == "content.metadata.update":
+        from .content_configuration import validate_content_metadata
+        validate_content_metadata(result)
+        _check(_same(result["reference"], parameters["reference"])
+               and result["display_name"] == parameters["display_name"].strip()
+               and result["metadata_sequence"] == parameters["expected_metadata_sequence"] + 1)
+        return
+    if operation == "session.metadata.update":
+        _check(set(result) == {"schema_version", "kind", "workflow_definition_id",
+                              "workflow_session_id", "name", "metadata_sequence"}
+               and result["schema_version"] == 1 and result["kind"] == "workflow.session-metadata"
+               and uuid_value(result["workflow_definition_id"])
+               and result["workflow_session_id"] == parameters["session_id"]
+               and result["name"] == parameters["name"].strip()
+               and _integer(result["metadata_sequence"], 1)
+               and result["metadata_sequence"] == parameters["expected_metadata_sequence"] + 1)
+        return
     if operation in ("draft.save", "consumer.draft.save"):
         from .graph_drafts import validate_draft_record
         validate_draft_record(result)
@@ -193,6 +276,9 @@ def _validate_result(operation, parameters, result):
         _check(_same(result, parameters["document"]) and uuid_value(result.get("workflow_definition_id"))
                and _integer(result.get("revision"), 1)
                and result["revision"] == parameters["expected_revision"] + 1)
+        return
+    if operation == "definition.update":
+        _configuration_result(parameters, result)
         return
     source = _session_result(result)
     name = operation.removeprefix("consumer.")

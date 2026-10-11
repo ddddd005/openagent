@@ -1,10 +1,8 @@
 import { graphClone, newGraph, type GraphDocument, type GraphNode, type GraphNodeType } from "./workflowGraph";
-import type { ModelCapacity } from "./workflowModelResources";
+import type { ModelProfileIdentity } from "./workflowModelResources";
 
 export interface SerialAgentModelConfig {
-  reference: Record<string, unknown>;
-  parameters: Record<string, unknown>;
-  capacity?: ModelCapacity;
+  reference: ModelProfileIdentity;
 }
 const requiredPackages = ["workflow.content", "workflow.tools", "workflow.prompts",
   "workflow.models", "workflow.agents", "workflow.context", "workflow.frontend-business"];
@@ -42,12 +40,10 @@ function serialAgentDemo(catalog: GraphNodeType[],
       target_node_id: to.node_binding_id });
   }
   const input = node("tools.current-input", "1", "用户输入", 0, 0, { input_name: "text" });
-  const model = node("models.source", "2",
-    modelConfig ? "共享模型" : compacting ? "模型与容量待配置" : "模型资源与模型名待选择", 0, 200);
+  const model = node("models.source", "5", modelConfig ? "共享模型配置" : "模型配置待选择", 0, 200);
   if (modelConfig) model.config = { ...model.config, ...graphClone(modelConfig) };
   else {
     model.config.reference = { ...(model.config.reference as Record<string, unknown>), resource_id: "" };
-    model.config.parameters = { ...(model.config.parameters as Record<string, unknown>), model: "" };
   }
   function agent(label: string, y: number, prompt: string) {
     const execute = node("agents.execute", "4", `Agent ${label}`, 850, y);

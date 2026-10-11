@@ -41,11 +41,10 @@ def input_diagnostics(error, node_id=None):
             }])]
 
 
-def editor_input_declarations(registry, document):
-    document = validate_graph_document(document)
+def collect_document_input_declarations(registry, nodes):
     declarations, diagnostics = {}, []
     # Resolve each draft node independently so one broken node does not hide the rest.
-    for node in document["nodes"]:
+    for node in nodes:
         try:
             values = collect_input_declarations(registry, [node])
             for value in values:
@@ -61,6 +60,12 @@ def editor_input_declarations(registry, document):
                     declarations[value["name"]] = {**value, "conflict": False}
         except Exception as error:
             diagnostics.extend(input_diagnostics(error, node["node_binding_id"]))
+    return list(declarations.values()), diagnostics
+
+
+def editor_input_declarations(registry, document):
+    document = validate_graph_document(document)
+    declarations, diagnostics = collect_document_input_declarations(registry, document["nodes"])
     required = None
     try:
         plan = GraphCompiler(registry).compile(document)
@@ -71,4 +76,4 @@ def editor_input_declarations(registry, document):
         diagnostics.extend(input_diagnostics(error))
     return {"schema_version": 1, "kind": "workflow.input-declarations",
             "workflow_definition_id": document["workflow_definition_id"],
-            "inputs": list(declarations.values()), "required_for_run": required, "diagnostics": diagnostics}
+            "inputs": declarations, "required_for_run": required, "diagnostics": diagnostics}
