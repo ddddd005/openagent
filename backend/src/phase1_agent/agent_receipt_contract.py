@@ -18,6 +18,9 @@ def projection_id(basis: str, part: str) -> str:
 
 
 def validate_agent_receipts(value):
+    if type(value) is dict and value.get("schema_version") == 2:
+        from .model_execution_contracts import validate_agent_receipts_v2
+        return validate_agent_receipts_v2(value)
     validate_json_value(value)
     require(type(value) is dict and set(value) == {
         "schema_version", "kind", "owner", "executor_ref", "snapshot_id", "frozen_prompt_ref",

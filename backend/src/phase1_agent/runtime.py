@@ -27,7 +27,7 @@ from .adapter import DeepSeekAdapter, ProviderResponseError
 from .contract_errors import ContractValidationError, ModelRequestError
 from .contract_graph import validate_message_history, validate_pending_message_history
 from .contract_json import canonical_bytes, content_digest, loads_strict, validate_json_value
-from .contracts import ModelResponse
+from .contracts import ModelResponse, ModelToolCall
 from .contracts_v2 import validate_record
 from .context_compaction import (
     TokenCounter, at_safety_watermark, checkpoint_message, compaction_instruction, compaction_parameters,
@@ -82,6 +82,8 @@ class KernelCheckpoint:
     pending_model_message: dict[str, Any] | None = None
     pending_model_tools: tuple[PendingTool, ...] = ()
     pending_model_provider_ids: tuple[str, ...] = ()
+    request_bridge_id: str | None = None
+    request_boundary_index: int = 0
 
 
 class KernelPaused(Exception):
@@ -121,14 +123,31 @@ def _checkpoint_tag(checkpoint: KernelCheckpoint) -> str:
             "arguments": item.arguments, "call_id": item.call_id,
         } for item in checkpoint.pending_model_tools],
         "pending_model_provider_ids": list(checkpoint.pending_model_provider_ids),
+        "request_bridge_id": checkpoint.request_bridge_id,
+        "request_boundary_index": checkpoint.request_boundary_index,
     }
     return hmac.new(_CHECKPOINT_KEY, canonical_bytes(payload), hashlib.sha256).hexdigest()
 
 
-def verify_checkpoint(checkpoint: KernelCheckpoint, snapshot: dict) -> None:
+def _kernel_snapshot(snapshot):
+    if type(snapshot) is dict and type(snapshot.get("schema_version")) is int and snapshot["schema_version"] == 2:
+        from .model_execution_contracts import validate_input_snapshot_v2
+        return validate_input_snapshot_v2(snapshot)
+    return validate_record("input_snapshot", snapshot)
+
+
+def verify_checkpoint(checkpoint: KernelCheckpoint, snapshot: dict, *, request_bridge=None) -> None:
     """Verify same-process ownership without dispatching any model or tool."""
     try:
-        frozen = validate_record("input_snapshot", snapshot)
+        frozen = _kernel_snapshot(snapshot)
+        schema2 = frozen["schema_version"] == 2
+        if schema2:
+            from .model_execution_requests import ModelExecutionRequests
+            if not isinstance(request_bridge, ModelExecutionRequests):
+                raise ContractValidationError("Schema 2 checkpoint requires its original request bridge")
+            request_bridge.validate_snapshot(frozen)
+        elif request_bridge is not None:
+            raise ContractValidationError("Schema 1 checkpoint cannot consume a schema 2 request bridge")
         seen_provider_ids = {
             block["tool_call_id"] for message in frozen["s0"]
             for block in message["blocks"] if block["kind"] == "tool_call"
@@ -138,7 +157,15 @@ def verify_checkpoint(checkpoint: KernelCheckpoint, snapshot: dict) -> None:
                 or checkpoint.snapshot_digest != content_digest(frozen)
                 or type(checkpoint.model_requests) is not int
                 or type(checkpoint.attempts) is not int
-                or not 0 <= checkpoint.model_requests <= checkpoint.attempts
+                or not (0 <= checkpoint.attempts <= checkpoint.model_requests if schema2
+                        else 0 <= checkpoint.model_requests <= checkpoint.attempts)
+                or type(checkpoint.request_boundary_index) is not int
+                or not 0 <= checkpoint.request_boundary_index <= checkpoint.model_requests
+                or (schema2 and (checkpoint.request_bridge_id != request_bridge.bridge_id
+                                 or checkpoint.model_requests != request_bridge.request_count
+                                 or checkpoint.attempts != request_bridge.attempt_count))
+                or (not schema2 and (checkpoint.request_bridge_id is not None
+                                     or checkpoint.request_boundary_index != 0))
                 or type(checkpoint.final_corrections) is not int
                 or not 0 <= checkpoint.final_corrections <= 1
                 or type(checkpoint.text_feedback) is not int
@@ -299,14 +326,14 @@ class SnapshotKernel:
         self._backoff = backoff
 
     @staticmethod
-    def validate_checkpoint(checkpoint: KernelCheckpoint, snapshot: dict) -> None:
-        verify_checkpoint(checkpoint, snapshot)
+    def validate_checkpoint(checkpoint: KernelCheckpoint, snapshot: dict, *, request_bridge=None) -> None:
+        verify_checkpoint(checkpoint, snapshot, request_bridge=request_bridge)
 
     def run(
         self,
         snapshot: dict,
         tools: Sequence[RegisteredTool],
-        adapter: Any,
+        adapter: Any = None,
         *,
         max_model_requests: int | None = 8,
         max_model_attempts: int | None = None,
@@ -316,6 +343,7 @@ class SnapshotKernel:
         on_tool_event: Callable[[str, str, str | None, str | None], None] | None = None,
         on_fact: Callable[[dict[str, Any]], None] | None = None,
         token_counter: TokenCounter | None = None,
+        request_bridge=None,
     ) -> KernelResult:
         """Run until final_answer or an explicit control/error boundary.
 
@@ -338,6 +366,8 @@ class SnapshotKernel:
         seen_execution_ids: set[str] = set()
         snapshot_digest = ""
         snapshot_id = ""
+        schema2 = False
+        request_boundary_index = 0
 
         def fact(kind: str, payload: dict[str, Any]) -> None:
             if on_fact is None:
@@ -433,6 +463,8 @@ class SnapshotKernel:
                 pending_model_message=copy.deepcopy(pending_model_message),
                 pending_model_tools=tuple(copy.deepcopy(pending_model_tools)),
                 pending_model_provider_ids=tuple(pending_model_provider_ids),
+                request_bridge_id=request_bridge.bridge_id if schema2 else None,
+                request_boundary_index=request_boundary_index,
             )
             return replace(state, integrity_tag=_checkpoint_tag(state))
 
@@ -452,6 +484,11 @@ class SnapshotKernel:
                 contract_fail("control_error")
             if not allowed:
                 pause()
+
+        def request_boundary(kind: str) -> None:
+            nonlocal model_requests, attempts
+            model_requests, attempts = request_bridge.request_count, request_bridge.attempt_count
+            boundary(kind)
 
         def tool_event(kind: str, call_id: str, execution_id: str | None = None,
                        outcome: str | None = None, message: dict | None = None) -> None:
@@ -553,17 +590,30 @@ class SnapshotKernel:
                 raise ValueError("Invalid token counter")
             if isinstance(adapter, DeepSeekAdapter) and adapter.max_retries != 0:
                 raise ValueError("DeepSeekAdapter must use max_retries=0")
-            frozen = validate_record("input_snapshot", snapshot)
+            frozen = _kernel_snapshot(snapshot)
+            schema2 = frozen["schema_version"] == 2
+            if schema2:
+                from .model_execution_requests import ModelExecutionRequests
+                if not isinstance(request_bridge, ModelExecutionRequests) or adapter is not None:
+                    raise ValueError("Schema 2 requires one explicit request bridge and no model adapter")
+                request_bridge.validate_snapshot(frozen)
+                if token_counter is not None:
+                    raise ValueError("Schema 2 measurements belong to the model request service")
+                if checkpoint is None and (request_bridge.request_count or request_bridge.attempt_count):
+                    raise ValueError("An advanced request bridge requires its original kernel checkpoint")
+            elif request_bridge is not None:
+                raise ValueError("Schema 1 cannot consume a schema 2 request bridge")
             snapshot_id = frozen["snapshot_id"]
             snapshot_digest = content_digest(frozen)
             validate_message_history(frozen["s0"])
-            compaction_settings = validate_compaction_settings(
-                frozen["config"]["payload"].get("context_compaction"), frozen["s0"],
-            )
-            declared_output = frozen["model_parameters"].get("max_tokens")
-            if (compaction_settings is not None and type(declared_output) is int
-                    and declared_output > compaction_settings["output_reserve_tokens"]):
-                raise ValueError("Native capacity reserve is smaller than the frozen model output limit")
+            if not schema2:
+                compaction_settings = validate_compaction_settings(
+                    frozen["config"]["payload"].get("context_compaction"), frozen["s0"],
+                )
+                declared_output = frozen["model_parameters"].get("max_tokens")
+                if (compaction_settings is not None and type(declared_output) is int
+                        and declared_output > compaction_settings["output_reserve_tokens"]):
+                    raise ValueError("Native capacity reserve is smaller than the frozen model output limit")
             effective_messages = copy.deepcopy(frozen["s0"])
             definitions = frozen["tool_definitions"]
             registered = {tool.name: tool for tool in tools}
@@ -591,7 +641,7 @@ class SnapshotKernel:
                 for block in message["blocks"] if block["kind"] == "tool_call"
             }
             if checkpoint is not None:
-                verify_checkpoint(checkpoint, frozen)
+                verify_checkpoint(checkpoint, frozen, request_bridge=request_bridge)
                 messages = copy.deepcopy(list(checkpoint.messages))
                 pending_tools = copy.deepcopy(list(checkpoint.pending_tools))
                 if any(type(item) is not PendingTool for item in pending_tools):
@@ -623,6 +673,7 @@ class SnapshotKernel:
                     validate_message_history(frozen["s0"] + messages)
                 model_requests = checkpoint.model_requests
                 attempts = checkpoint.attempts
+                request_boundary_index = checkpoint.request_boundary_index
                 final_corrections = checkpoint.final_corrections
                 text_feedback = checkpoint.text_feedback
                 seen_provider_ids = set(checkpoint.seen_provider_ids)
@@ -936,96 +987,127 @@ class SnapshotKernel:
 
             boundary("before_request")
             closed_history()
-            if max_model_requests is not None and model_requests >= max_model_requests:
+            if not schema2 and max_model_requests is not None and model_requests >= max_model_requests:
                 fail("model_request_budget_exhausted")
-            if max_model_attempts is not None and attempts >= max_model_attempts:
+            if not schema2 and max_model_attempts is not None and attempts >= max_model_attempts:
                 fail("model_attempt_budget_exhausted")
-            maintain_context()
-            request_messages = copy.deepcopy(effective_messages)
-            try:
-                check_prepared_request_capacity(frozen, messages=request_messages)
-            except PromptProcessingError as exc:
-                contract_fail(exc.code, exc)
-            except ContractValidationError as exc:
-                contract_fail("message_contract_error", exc)
-            model_requests += 1
-            request_id = _id()
-            request_tools = copy.deepcopy(wire_tools)
-            fact("model_request", {
-                "request_id": request_id, "request_index": model_requests,
-                "messages": request_messages, "tools": request_tools,
-                "model_parameters": frozen["model_parameters"],
-            })
-            for retry in range(4):
-                if retry:
-                    boundary("before_request")
-                if max_model_attempts is not None and attempts >= max_model_attempts:
-                    fail("model_attempt_budget_exhausted")
-                attempts += 1
-                attempt_id = str(uuid4())
-                fact("model_attempt_started", {
-                    "request_id": request_id, "attempt_id": attempt_id,
-                    "request_index": model_requests, "attempt_index": attempts,
-                    "retry_index": retry,
-                })
-
-                def finish_attempt(
-                    outcome: str, response: ModelResponse | None = None,
-                ) -> None:
-                    fact("model_attempt_finished", {
-                        "request_id": request_id, "attempt_id": attempt_id,
-                        "outcome": outcome,
-                        "usage": response.usage if response is not None else None,
-                        "response_id": response.response_id if response is not None else None,
-                        "model": response.model if response is not None else None,
-                    })
-
+            if schema2:
                 try:
-                    response = adapter.generate(copy.deepcopy(request_messages), copy.deepcopy(request_tools))
-                except asyncio.CancelledError as exc:
-                    finish_attempt("execution_interrupted")
-                    boundary("before_accept")
-                    fail("execution_interrupted", exc)
-                except ProviderResponseError as exc:
-                    finish_attempt("protocol_error")
-                    boundary("before_accept")
-                    fail("protocol_error", exc)
-                except ModelRequestError as exc:
-                    # Accepted service facts own retry permission, not this loop.
-                    finish_attempt("protocol_error" if exc.code == "model_response_invalid" else "model_error")
-                    fail(exc.code, exc)
+                    completed = request_bridge.advance(
+                        f"kernel:{snapshot_id}:{request_boundary_index + 1}",
+                        copy.deepcopy(effective_messages), accepted_messages=copy.deepcopy(messages),
+                        max_model_requests=max_model_requests, max_model_attempts=max_model_attempts,
+                        on_boundary=request_boundary,
+                    )
+                except KernelPaused:
+                    raise
                 except Exception as exc:
-                    if not isinstance(exc, (APIError, httpx.HTTPError, TimeoutError, ConnectionError)):
-                        finish_attempt("adapter_contract_error")
-                        contract_fail("adapter_contract_error", exc)
-                    finish_attempt("model_error")
-                    if not _retryable(exc):
-                        fail("model_error", exc)
-                    boundary("before_accept")
-                    if retry == 3:
-                        fail("model_retry_exhausted", exc)
+                    model_requests, attempts = request_bridge.request_count, request_bridge.attempt_count
+                    # The bridge owns retained original events and model facts. A
+                    # failed event acceptance cannot recursively publish another fact.
+                    state = make_checkpoint()
+                    code = getattr(exc, "reason_code", None) or getattr(exc, "code", None) or "model_request_failed"
+                    raise RunFailed(code, messages, model_requests, attempts, state) from exc
+                model_requests, attempts = request_bridge.request_count, request_bridge.attempt_count
+                effective_messages = copy.deepcopy(completed["messages"])
+                context_operations.extend(copy.deepcopy(completed["operations"]))
+                request_boundary_index += 1
+                result = completed["result"]
+                request_id = result["request_id"]
+                response = ModelResponse(
+                    result["finish_reason"], result["content"],
+                    tuple(ModelToolCall(call["id"], call["name"], call["raw_arguments"], call["type"])
+                          for call in result["tool_calls"]),
+                    copy.deepcopy(result["usage"]), result["response_id"], result["model"],
+                    result["thinking_summary"], copy.deepcopy(result["provider_metadata"]),
+                )
+            else:
+                maintain_context()
+                request_messages = copy.deepcopy(effective_messages)
+                try:
+                    check_prepared_request_capacity(frozen, messages=request_messages)
+                except PromptProcessingError as exc:
+                    contract_fail(exc.code, exc)
+                except ContractValidationError as exc:
+                    contract_fail("message_contract_error", exc)
+                model_requests += 1
+                request_id = _id()
+                request_tools = copy.deepcopy(wire_tools)
+                fact("model_request", {
+                    "request_id": request_id, "request_index": model_requests,
+                    "messages": request_messages, "tools": request_tools,
+                    "model_parameters": frozen["model_parameters"],
+                })
+                for retry in range(4):
+                    if retry:
+                        boundary("before_request")
                     if max_model_attempts is not None and attempts >= max_model_attempts:
                         fail("model_attempt_budget_exhausted")
+                    attempts += 1
+                    attempt_id = str(uuid4())
+                    fact("model_attempt_started", {
+                        "request_id": request_id, "attempt_id": attempt_id,
+                        "request_index": model_requests, "attempt_index": attempts,
+                        "retry_index": retry,
+                    })
+
+                    def finish_attempt(
+                        outcome: str, response: ModelResponse | None = None,
+                    ) -> None:
+                        fact("model_attempt_finished", {
+                            "request_id": request_id, "attempt_id": attempt_id,
+                            "outcome": outcome,
+                            "usage": response.usage if response is not None else None,
+                            "response_id": response.response_id if response is not None else None,
+                            "model": response.model if response is not None else None,
+                        })
+
                     try:
-                        backoff(retry + 1)
-                    except KernelPaused:
-                        raise
+                        response = adapter.generate(copy.deepcopy(request_messages), copy.deepcopy(request_tools))
+                    except asyncio.CancelledError as exc:
+                        finish_attempt("execution_interrupted")
+                        boundary("before_accept")
+                        fail("execution_interrupted", exc)
+                    except ProviderResponseError as exc:
+                        finish_attempt("protocol_error")
+                        boundary("before_accept")
+                        fail("protocol_error", exc)
+                    except ModelRequestError as exc:
+                        # Accepted service facts own retry permission, not this loop.
+                        finish_attempt("protocol_error" if exc.code == "model_response_invalid" else "model_error")
+                        fail(exc.code, exc)
                     except Exception as exc:
-                        contract_fail("control_error", exc)
-                except BaseException as exc:
-                    try:
-                        finish_attempt("host_interrupted")
-                    except KernelContractError as record_error:
-                        note_secondary_failure(
-                            exc, f"Host-interruption fact also failed ({record_error.code}).",
+                        if not isinstance(exc, (APIError, httpx.HTTPError, TimeoutError, ConnectionError)):
+                            finish_attempt("adapter_contract_error")
+                            contract_fail("adapter_contract_error", exc)
+                        finish_attempt("model_error")
+                        if not _retryable(exc):
+                            fail("model_error", exc)
+                        boundary("before_accept")
+                        if retry == 3:
+                            fail("model_retry_exhausted", exc)
+                        if max_model_attempts is not None and attempts >= max_model_attempts:
+                            fail("model_attempt_budget_exhausted")
+                        try:
+                            backoff(retry + 1)
+                        except KernelPaused:
+                            raise
+                        except Exception as exc:
+                            contract_fail("control_error", exc)
+                    except BaseException as exc:
+                        try:
+                            finish_attempt("host_interrupted")
+                        except KernelContractError as record_error:
+                            note_secondary_failure(
+                                exc, f"Host-interruption fact also failed ({record_error.code}).",
+                            )
+                        raise
+                    else:
+                        finish_attempt(
+                            "responded" if isinstance(response, ModelResponse) else "protocol_error",
+                            response if isinstance(response, ModelResponse) else None,
                         )
-                    raise
-                else:
-                    finish_attempt(
-                        "responded" if isinstance(response, ModelResponse) else "protocol_error",
-                        response if isinstance(response, ModelResponse) else None,
-                    )
-                    break
+                        break
 
             if not isinstance(response, ModelResponse):
                 fail("protocol_error")

@@ -91,7 +91,7 @@ def test_frozen_round_based_prompt_remains_readable_without_rewriting_projection
     if version == 6:
         projection = _assemble(result["items"], result["context"], result["current_input"],
                                logical_floors=False)
-        for key, value in zip(("messages", "provenance", "layout", "once_pending_item_ids"), projection):
+        for key, value in zip(("messages", "provenance", "layout"), projection):
             result[key] = value
     before = deepcopy(result)
     assert texts(result) == ["U1", "A1", "M", "U2", "A2", "U3"]

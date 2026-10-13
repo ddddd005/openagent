@@ -1,7 +1,6 @@
 """Canonical native-context assembly with explicit prompt lifetime semantics."""
 
 from copy import deepcopy
-from uuid import UUID
 
 from .agent_receipt_contract import projection_id
 from .content_contracts import text_content
@@ -19,7 +18,7 @@ from .prompt_lifecycle import lifecycle_prompt_content, merge_lifecycle_prompt_m
 
 _FIELDS = frozenset({
     "schema_version", "kind", "stage", "items", "context", "context_ref", "current_input",
-    "current_input_ref", "source_output_refs", "messages", "provenance", "layout", "once_pending_item_ids",
+    "current_input_ref", "source_output_refs", "messages", "provenance", "layout",
 })
 
 
@@ -66,15 +65,29 @@ def native_history_floor_starts(view):
     return starts
 
 
+def injected_once_sources(view):
+    """Stable source identities of once materials already present in this context.
+
+    Deduplication reads the context content itself: a once material that is
+    already part of the persistent view is identified by the same node/member
+    stable identity every prompt material carries. Compaction is not special:
+    once its material is gone from the context, its source is gone too.
+    """
+    identities = set()
+    for message, entry in zip(view["messages"], view["layout"]):
+        if entry["kind"] != "once":
+            continue
+        identity = message["source"].get("item_instance_id")
+        if type(identity) is str:
+            identities.add(identity)
+    return identities
+
+
 def _assemble(items, view, current, *, logical_floors=True):
     active = [item for item in items if item["enabled"]]
-    consumed = set(view["once_injected_item_ids"])
-    pending = sorted({
-        identity for item in active if item["lifecycle"] == "context_once"
-        for identity in item["origin_item_ids"] if identity not in consumed
-    }, key=lambda identity: UUID(identity).int)
+    present = injected_once_sources(view)
     inject = [item for item in active if item["lifecycle"] == "per_request"
-              or not set(item["origin_item_ids"]) & consumed]
+              or not set(item["origin_item_ids"]) & present]
     if not logical_floors:
         rounds = []
         for entry in view["layout"]:
@@ -116,7 +129,7 @@ def _assemble(items, view, current, *, logical_floors=True):
                 provenance.append({"kind": "current_input"})
                 layout.append({"kind": "current", "round_id": None, "compaction": "never"})
         validate_message_history(messages)
-        return messages, provenance, layout, pending
+        return messages, provenance, layout
 
     for item in inject:
         if item["placement"] == "before":
@@ -137,7 +150,7 @@ def _assemble(items, view, current, *, logical_floors=True):
         if item["placement"] == "after":
             material(item)
     validate_message_history(messages)
-    return messages, provenance, layout, pending
+    return messages, provenance, layout
 
 
 def assemble_native_context_prompt(materials, view, current_input, *, context_ref,
@@ -147,7 +160,7 @@ def assemble_native_context_prompt(materials, view, current_input, *, context_re
     items = merge_lifecycle_prompt_materials(materials)["items"]
     current_ref = artifact_ref(current_input_ref)
     current = _current_message(current_input, current_ref)
-    messages, provenance, layout, pending = _assemble(items, view, current)
+    messages, provenance, layout = _assemble(items, view, current)
     return validate_native_context_prompt({
         "schema_version": 6, "kind": "workflow.prompt", "stage": "assembled", "items": items,
         "placement_profile": LOGICAL_FLOOR_PLACEMENT,
@@ -155,7 +168,6 @@ def assemble_native_context_prompt(materials, view, current_input, *, context_re
         "current_input_ref": current_ref,
         "source_output_refs": _artifact_refs([] if source_output_refs is None else source_output_refs),
         "messages": messages, "provenance": provenance, "layout": layout,
-        "once_pending_item_ids": pending,
     })
 
 
@@ -177,11 +189,11 @@ def validate_native_context_prompt(value):
     require(current == expected_current, "context_invalid_current_input",
             "Current input identity and source must match its exact accepted artifact")
     items = merge_lifecycle_prompt_materials([lifecycle_prompt_content(value["items"])])["items"]
-    messages, provenance, layout, pending = _assemble(
+    messages, provenance, layout = _assemble(
         items, view, current, logical_floors=uses_logical_floor_placement(value))
     require(items == value["items"] and messages == value["messages"]
             and provenance == value["provenance"] and layout == value["layout"]
-            and pending == value["once_pending_item_ids"] and refs == value["source_output_refs"],
+            and refs == value["source_output_refs"],
             "context_prompt_not_ready", "Native projection or pending lifetime state was modified")
     require(len(canonical_bytes(value)) <= 4_000_000, "context_prompt_length_failed",
             "Native prompt exceeds its transport envelope budget")

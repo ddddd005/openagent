@@ -18,7 +18,7 @@ from .host_sdk import WriteIntent
 def validate_native_context_view(value):
     validate_json_value(value)
     _fields(value, ("schema_version", "kind", "owner", "basis", "messages", "layout",
-                    "accepted_delta_ids", "applied_delta_ids", "once_injected_item_ids",
+                    "accepted_delta_ids", "applied_delta_ids",
                     "generation", "derivation"))
     require(type(value["schema_version"]) is int and value["schema_version"] == 4
             and value["kind"] == "workflow.context-view", "context_update_invalid",
@@ -56,7 +56,7 @@ def validate_native_context_view(value):
         require(message["role"] != "system" or (
             item["kind"] == "once" and item["compaction"] == "never"),
             "context_update_invalid_layout", "System material remains protected even with once lifecycle")
-    for field in ("accepted_delta_ids", "applied_delta_ids", "once_injected_item_ids"):
+    for field in ("accepted_delta_ids", "applied_delta_ids"):
         _ids(value[field])
     require(not set(value["accepted_delta_ids"]) & set(value["applied_delta_ids"])
             and len(value["accepted_delta_ids"]) + len(value["applied_delta_ids"]) <= MAX_ACCEPTED_DELTAS,
@@ -89,21 +89,21 @@ def read_native_context(record, session_id, object_key, agent_node_id, retained=
     current = validate_effective_context(record["value"])
     if current["view_ref"] is None:
         require(retained is None, "context_invalid_read", "An empty context cannot hide retained history")
-        messages, layout, once, generation = [], [], [], 0
+        messages, layout, generation = [], [], 0
     else:
         retained = validate_native_context_view(retained)
         require(retained["accepted_delta_ids"] + retained["applied_delta_ids"]
                 == current["accepted_delta_ids"], "context_consumption_mismatch",
                 "Retained context must match the exact persistent consumed boundary")
         messages, layout = retained["messages"], retained["layout"]
-        once, generation = retained["once_injected_item_ids"], retained["generation"]
+        generation = retained["generation"]
     return validate_native_context_view({
         "schema_version": 4, "kind": "workflow.context-view",
         "owner": {"workflow_session_id": session_id, "object_key": object_key, "agent_node_id": agent_node_id},
         "basis": {"revision_id": record["revision_id"], "head_revision": record["revision"]},
         "messages": deepcopy(messages), "layout": deepcopy(layout),
         "accepted_delta_ids": current["accepted_delta_ids"], "applied_delta_ids": [],
-        "once_injected_item_ids": deepcopy(once), "generation": generation,
+        "generation": generation,
         "derivation": {"operation": "read", "input_view_ref": current["view_ref"], "update_ref": None},
     })
 
@@ -144,6 +144,19 @@ def build_context_update_view(prompt, operations, receipts, final):
                 if item["kind"] in ("history", "summary", "once")
                 and item["compaction"] == "allowed" and is_compactable_text(message)]
     replayed = replay_context_operations(prompt["messages"], operations, eligible_message_ids=eligible)
+    return _project_context_update_view(prompt, operations, receipts, final, replayed)
+
+
+def _project_context_update_view(prompt, operations, receipts, final, replayed):
+    """Share persistent lifecycle projection after the caller proves its timeline."""
+    initial = validate_native_context_view(prompt["context"])
+    require(initial["owner"]["workflow_session_id"] == receipts["owner"]["workflow_session_id"]
+            and initial["owner"]["agent_node_id"] == receipts["owner"]["node_binding_id"],
+            "context_agent_binding_mismatch", "Context updates belong to their explicitly bound Agent")
+    update_id = projection_id(receipts["owner"]["node_run_id"], "context-update")
+    identities = initial["accepted_delta_ids"] + initial["applied_delta_ids"]
+    require(update_id not in identities and len(identities) < MAX_ACCEPTED_DELTAS,
+            "context_update_already_consumed", "An Agent update cannot be consumed twice")
     require(final == final_from_context_operations(operations), "context_update_final_unproven",
             "The derived final answer must equal its accepted canonical control pair")
     accepted = [operation["message"] for operation in operations if operation["kind"] == "append"]
@@ -183,15 +196,11 @@ def build_context_update_view(prompt, operations, receipts, final):
     if not preserve_final_protocol:
         retained.append(answer)
         layouts[answer_id] = {"kind": "history", "round_id": update_id, "compaction": "allowed"}
-    once = deepcopy(initial["once_injected_item_ids"])
-    for identity in prompt["once_pending_item_ids"]:
-        if identity not in once:
-            once.append(identity)
     return validate_native_context_view({
         **deepcopy(initial), "messages": retained,
         "layout": [deepcopy(layouts[message["message_id"]]) for message in retained],
         "applied_delta_ids": initial["applied_delta_ids"] + [update_id],
-        "once_injected_item_ids": once, "generation": initial["generation"] + replayed["generation_delta"],
+        "generation": initial["generation"] + replayed["generation_delta"],
         "derivation": {"operation": "update", "input_view_ref": prompt["context_ref"], "update_ref": None},
     })
 
@@ -204,8 +213,18 @@ def merge_native_context(view, view_ref, update, update_ref, prompt):
     require(update["basis_view_ref"] == view_ref and update["basis_revision"] == view["basis"]
             and prompt["context_ref"] == view_ref and prompt["context"] == view,
             "context_update_basis_mismatch", "Merge must use the exact view actually frozen for this Agent")
-    expected = build_context_update_view(
-        prompt, update["operations"], update["receipts"], final_from_context_operations(update["operations"]))
+    final = final_from_context_operations(update["operations"])
+    if update["schema_version"] == 2:
+        from .context_update_v2 import _candidate_replay, make_context_update_v2
+        # This projection checks shape only; the consumer must separately prove
+        # accepted executor/M2 facts before adopting a schema 2 artifact.
+        replayed = _candidate_replay(prompt, update["operations"])
+        expected = make_context_update_v2(
+            prompt, update["operations"], update["receipts"], final,
+            effective_messages=replayed["messages"],
+            policy_ref=update["compaction_policy_ref"])["next_view"]
+    else:
+        expected = build_context_update_view(prompt, update["operations"], update["receipts"], final)
     require(update["next_view"] == expected, "context_update_candidate_mismatch",
             "Persistent context must derive from ordered execution and explicit projection")
     result = deepcopy(expected)
@@ -226,13 +245,13 @@ def validate_native_context_artifacts(payload, resolve):
     if previous is None:
         require(derivation["operation"] == "read" and not view["messages"] and not view["layout"]
                 and not view["accepted_delta_ids"] and not view["applied_delta_ids"]
-                and not view["once_injected_item_ids"] and view["generation"] == 0,
+                and view["generation"] == 0,
                 "context_invalid_derivation", "An empty read cannot manufacture persistent context")
     else:
         original = validate_native_context_view(resolve(previous))
         if derivation["operation"] == "read":
             require(all(view[field] == original[field]
-                        for field in ("messages", "layout", "once_injected_item_ids", "generation"))
+                        for field in ("messages", "layout", "generation"))
                     and view["accepted_delta_ids"] == original["accepted_delta_ids"] + original["applied_delta_ids"]
                     and not view["applied_delta_ids"],
                     "context_invalid_derivation", "A read cannot restore compacted original messages")

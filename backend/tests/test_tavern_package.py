@@ -45,7 +45,7 @@ def scan_prompt(text="match"):
         "owner": {"workflow_session_id": uid(800), "object_key": "context", "agent_node_id": uid(801)},
         "basis": {"revision_id": uid(802), "head_revision": 1},
         "messages": [], "layout": [], "accepted_delta_ids": [], "applied_delta_ids": [],
-        "once_injected_item_ids": [], "generation": 0,
+        "generation": 0,
         "derivation": {"operation": "read", "input_view_ref": None, "update_ref": None},
     })
     return assemble_native_context_prompt(

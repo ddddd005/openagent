@@ -40,7 +40,7 @@ _PRODUCT_TABLES = frozenset({
     "idempotency", "global_resource_current", "global_resource_receipts",
     "registered_type_contracts", "graph_project_packages", "provider_key_requests",
     "workflow_information_bindings",
-    "workflow_management",
+    "workflow_management", "workflow_current_configuration",
     "workflow_session_metadata", "content_resource_metadata", "pending_commands",
     "execution_facts", "prompt_heads", "prompt_revisions", "prompt_mutations",
     "variable_bindings", "variable_heads", "variable_states", "variable_registries",

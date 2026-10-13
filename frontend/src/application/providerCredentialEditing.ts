@@ -4,23 +4,23 @@ import { isCredentialRequest, isProviderCredentialRequest, providerConfiguration
   type CredentialRequest, type CredentialStatus, type ProviderCredentialRequest,
   type ProviderCredentialResult } from "../adapters/providerConfigurationApi";
 import { readCurrentProvider } from "../adapters/workflowResourcesApi";
-import type { LocalDraftRecord } from "../adapters/localDraftsApi";
+import type { RequestEvidenceRecord } from "../adapters/requestEvidenceApi";
 import { graphClone, graphJsonSignature, graphObject } from "../domain/workflowGraph";
 import { type CredentialReference, type CurrentProvider, type ProviderIdentity } from "../domain/workflowModelResources";
 
 export interface ProviderCredentialBasis {
   identity: ProviderIdentity; expected_sequence: number; provider_seed: ProviderCredentialRequest["provider_seed"];
 }
-interface CredentialIntent {
+export interface CredentialIntent {
   schema_version: 2; kind: "save" | "bind" | "delete";
   request: ProviderCredentialRequest | CredentialRequest;
   basis_reference: CredentialReference | null;
 }
 type CredentialMutationIntent = CredentialIntent & { kind: "save" | "delete" };
 interface IntentChannel {
-  read(refresh?: boolean): Promise<LocalDraftRecord | null>;
-  write(value: unknown, formatVersion?: number): Promise<LocalDraftRecord>;
-  archive?(value: unknown): Promise<void>;
+  read(refresh?: boolean): Promise<RequestEvidenceRecord | null>;
+  write(value: CredentialIntent | null, formatVersion?: number): Promise<RequestEvidenceRecord>;
+  archive?(value: CredentialIntent): Promise<void>;
 }
 const defaultPorts = { ...providerConfigurationPorts, provider: readCurrentProvider };
 function validIntent(value: unknown): value is CredentialIntent {
@@ -30,6 +30,19 @@ function validIntent(value: unknown): value is CredentialIntent {
   if (value.kind === "delete") return isCredentialRequest(value.request);
   return isProviderCredentialRequest(value.request)
     && (value.kind === "save" || value.request.expected_generation > 0);
+}
+function evidenceIntent(stored: RequestEvidenceRecord, reference: CredentialReference | null): CredentialIntent {
+  const intent: CredentialIntent = { schema_version: 2,
+    kind: stored.operation === "credential.delete" ? "delete"
+      : stored.operation === "provider.credential.save" ? "save" : "bind",
+    request: graphClone(stored.request) as unknown as ProviderCredentialRequest | CredentialRequest,
+    basis_reference: reference };
+  if (!validIntent(intent) || !/^[0-9a-f]{64}$/.test(stored.request_digest)
+    || stored.idempotency_key !== intent.request.idempotency_key
+    || !["credential.delete", "provider.credential.save", "provider.credential.bind"].includes(stored.operation)
+    || stored.resolution !== "pending")
+    throw new Error("原 Key 生效请求格式无法读取，未覆盖");
+  return intent;
 }
 const resultReason: Record<string, string> = {
   provider_binding_conflict: "Key 已保存，但供应商配置写入冲突，保存未完成；原请求仍保留。",
@@ -50,10 +63,12 @@ export function createProviderCredentialEditor(channel: IntentChannel,
   const outcome = ref<ProviderCredentialResult | null>(null);
   const blocked = computed(() => busy.value || !ready.value || !!pending.value);
   let generation = 0, reference: CredentialReference | null = null, basis: ProviderCredentialBasis | null = null;
+  let evidence: RequestEvidenceRecord | null = null;
   async function load(next: CredentialReference | null, nextBasis: ProviderCredentialBasis) {
     reference = next; basis = graphClone(nextBasis);
     const token = ++generation;
-    secret.value = ""; state.value = null; pending.value = null; outcome.value = null; ready.value = false; busy.value = false;
+    secret.value = ""; state.value = null; pending.value = null; evidence = null;
+    outcome.value = null; ready.value = false; busy.value = false;
     error.value = "";
     try {
       const protection = await ports.protection();
@@ -66,10 +81,8 @@ export function createProviderCredentialEditor(channel: IntentChannel,
       }
       const stored = await channel.read(true);
       if (token !== generation) return;
-      if (stored && !stored.deleted) {
-        if (stored.format_version !== 2 || !validIntent(stored.value))
-          throw new Error("原 Key 生效请求格式无法读取，未覆盖");
-        pending.value = stored.value;
+      if (stored) {
+        pending.value = evidenceIntent(stored, next); evidence = graphClone(stored);
         error.value = "原 Key 生效请求待核实，Key 未重发";
       }
       ready.value = true;
@@ -80,8 +93,10 @@ export function createProviderCredentialEditor(channel: IntentChannel,
   async function current(operation: CredentialIntent, token: number) {
     if (token !== generation || graphJsonSignature(pending.value) !== graphJsonSignature(operation)) return false;
     const stored = await channel.read(true);
-    return token === generation && stored !== null && !stored.deleted
-      && graphJsonSignature(stored.value) === graphJsonSignature(operation);
+    return token === generation && stored !== null && evidence !== null
+      && stored.operation === evidence.operation && stored.idempotency_key === evidence.idempotency_key
+      && stored.request_digest === evidence.request_digest
+      && graphJsonSignature(stored.request) === graphJsonSignature(operation.request);
   }
   async function accept(result: ProviderCredentialResult | CredentialStatus, operation: CredentialIntent, token: number) {
     if (!await current(operation, token)) return;
@@ -130,17 +145,44 @@ export function createProviderCredentialEditor(channel: IntentChannel,
   async function dispatch(operation: CredentialMutationIntent, input = "") {
     const token = generation;
     busy.value = true; error.value = ""; outcome.value = null;
+    pending.value = operation; evidence = null;
     try {
-      await channel.write(operation, 2);
+      const stored = await channel.write(operation, 2);
       if (token !== generation) return;
-      pending.value = operation;
-      const result = operation.kind === "delete" ? await ports.delete(operation.request as CredentialRequest)
-        : await ports.saveBound(operation.request as ProviderCredentialRequest, input);
+      pending.value = operation; evidence = graphClone(stored);
+      if (stored.operation !== (operation.kind === "delete" ? "credential.delete" : "provider.credential.save")
+        || stored.idempotency_key !== operation.request.idempotency_key || stored.resolution !== "pending"
+        || !/^[0-9a-f]{64}$/.test(stored.request_digest)
+        || graphJsonSignature(stored.request) !== graphJsonSignature(operation.request)
+        || !await current(operation, token))
+        throw new WorkbenchApiError("unknown", "原 Key 请求证据未准确落盘，Key 未发送");
+      const result = operation.kind === "delete" ? await ports.delete(operation.request as CredentialRequest, stored.request_digest)
+        : await ports.saveBound(operation.request as ProviderCredentialRequest, input, stored.request_digest);
       if (token === generation) { secret.value = ""; await accept(result, operation, token); }
     } catch (failure) {
       if (token !== generation) return;
       secret.value = "";
-      if (failure instanceof WorkbenchApiError && failure.kind === "rejected" && failure.code !== "idempotency_conflict") {
+      if (failure instanceof WorkbenchApiError && failure.kind === "rejected"
+        && failure.code === "request_evidence_pending" && evidence === null) {
+        pending.value = null; ready.value = false;
+        try {
+          const stored = await channel.read(true);
+          if (!stored) throw new Error("另一页面原 Key 请求证据无法读取，未覆盖");
+          if (token !== generation) return;
+          pending.value = evidenceIntent(stored, reference); evidence = graphClone(stored); ready.value = true;
+          error.value = `另一页面原 Key 请求待核实 [${stored.idempotency_key}]；新 Key 未发送`;
+        } catch (readFailure) {
+          if (token === generation) error.value = readFailure instanceof Error ? readFailure.message : "原 Key 请求证据读取失败";
+        }
+        return;
+      }
+      if (failure instanceof WorkbenchApiError && failure.kind === "rejected"
+        && !["idempotency_conflict", "request_evidence_pending"].includes(failure.code ?? "")) {
+        if (evidence === null) {
+          pending.value = null;
+          error.value = failure.message;
+          return;
+        }
         if (await current(operation, token)) {
           try { await channel.write(null, 2); if (token === generation) pending.value = null; }
           catch { error.value = "拒绝结果尚未确认落盘，保留原请求"; return; }
@@ -167,6 +209,16 @@ export function createProviderCredentialEditor(channel: IntentChannel,
     const token = generation;
     busy.value = true;
     try {
+      if (!evidence) {
+        const stored = await channel.read(true);
+        if (!stored || stored.operation !== (operation.kind === "delete" ? "credential.delete" : "provider.credential.save")
+          || stored.idempotency_key !== operation.request.idempotency_key
+          || !/^[0-9a-f]{64}$/.test(stored.request_digest)
+          || graphJsonSignature(stored.request) !== graphJsonSignature(operation.request))
+          throw new WorkbenchApiError("unknown", "准确原 Key 请求证据仍无法核实，未重新提交");
+        if (token !== generation) return;
+        evidence = graphClone(stored);
+      }
       const result = operation.kind === "delete" ? await ports.receipt(operation.request as CredentialRequest)
         : await ports.boundReceipt(operation.request as ProviderCredentialRequest, operation.kind === "bind");
       if (token === generation) await accept(result, operation, token);

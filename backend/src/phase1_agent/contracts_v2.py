@@ -1257,6 +1257,9 @@ def validate_record(record_type: str, value: Mapping[str, Any]) -> dict[str, Any
 
     This performs structural validation, not reference or lifecycle validation.
     """
+    if record_type == "input_snapshot" and type(value) is dict and value.get("schema_version") == 2:
+        from .model_execution_contracts import validate_input_snapshot_v2
+        return validate_input_snapshot_v2(value)
     from .graph_records import is_graph_record, validate_graph_record
     if is_graph_record(record_type, value):
         return validate_graph_record(record_type, value)

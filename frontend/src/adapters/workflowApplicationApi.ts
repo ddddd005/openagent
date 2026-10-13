@@ -20,6 +20,7 @@ export function graphCommandOperation(path: string, body: Record<string, unknown
     throw new WorkbenchApiError("unknown", "原请求包含与路径重复的会话目标，保留原请求");
   const roots: Record<string, string> = {
     "/api/graph/definitions": "definition.save",
+    "/api/graph/definitions/update": "definition.update",
     "/api/graph/sessions": "session.create",
     "/api/graph/resources/save": "resource.save",
     "/api/graph/content/metadata": "content.metadata.update",
@@ -84,6 +85,11 @@ function validateGraphCommandResult(value: unknown, request: ReturnType<typeof g
     "selected_chain_run_id", "reference", "update_sequence", "deleted", "package_lock"];
   const accepted = graphObject(evidence) ? Object.fromEntries(evidenceFields.filter(field => field in evidence)
     .map(field => [field, evidence[field]])) : {};
+  if (graphObject(evidence) && evidence.kind === "workflow.configuration-result") {
+    for (const key of ["outcome", "source_workflow_definition_id", "edit_sequence",
+      "source_has_effective_session", "changed_categories", "node_id_map", "session_id"])
+      accepted[key] = evidence[key];
+  }
   if (graphObject(evidence) && Object.keys(evidence).length === 3
     && "reference" in evidence && "display_name" in evidence && "metadata_sequence" in evidence) {
     accepted.display_name = evidence.display_name;

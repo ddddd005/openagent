@@ -66,10 +66,11 @@ def service(tmp_path):
         instance.close()
 
 
-def update(service, doc, sequence=0, key=None):
+def update(service, doc, sequence=0, key=None, *, confirm=None):
     return service.update_definition(
         doc, workflow_definition_id=doc["workflow_definition_id"],
-        expected_edit_sequence=sequence, idempotency_key=key or str(uuid4()))
+        expected_edit_sequence=sequence, idempotency_key=key or str(uuid4()),
+        confirm_derivation=confirm)
 
 
 def create_session(service, saved):
@@ -136,7 +137,7 @@ def test_fixed_save_without_effective_session_advances_fixed_revision(service):
 
 
 @pytest.mark.parametrize("change", ["policy", "item_id", "structure", "binding", "unknown_config"])
-def test_fixed_changes_derive_for_never_executed_session(service, change):
+def test_fixed_changes_ask_first_and_only_confirmed_consent_derives(service, change):
     saved = update(service, document())
     session = create_session(service, saved)
     source_before = service.get_session(session["workflow_session_id"])
@@ -152,7 +153,18 @@ def test_fixed_changes_derive_for_never_executed_session(service, change):
         node["config"]["reference"] = {"resource_id": str(uuid4())}
     else:
         node["config"]["run_permissions"] = ["write"]
-    after = update(service, changed, 1)
+    asked = update(service, changed, 1)
+    assert asked["outcome"] == "confirmation_required"
+    assert (asked["definition_revision"], asked["edit_sequence"]) == (1, 1)
+    assert asked["workflow_definition_id"] == saved["workflow_definition_id"]
+    assert asked["source_has_effective_session"] is True
+    assert "fixed" in asked["changed_categories"]
+    assert asked["document"]["nodes"][0]["config"] == node["config"]
+    # The ask wrote nothing: no new workflow, no new session, source unchanged.
+    assert service.list_definitions() == [{"document": saved["document"], "archived": False}]
+    assert service.get_definition(saved["workflow_definition_id"]) == saved["document"]
+    assert service.get_session(session["workflow_session_id"]) == source_before
+    after = update(service, changed, 1, confirm=True)
     assert after["outcome"] == "derived"
     assert (after["definition_revision"], after["edit_sequence"]) == (1, 1)
     assert after["workflow_definition_id"] != saved["workflow_definition_id"]
@@ -172,7 +184,11 @@ def test_mixed_derivation_is_atomic_and_target_contains_no_runtime_rows(service)
     changed = deepcopy(saved["document"])
     changed["name"] = "Derived"
     changed["nodes"][0]["config"].update(text="B", id=str(uuid4()))
-    after = update(service, changed, 1)
+    asked = update(service, changed, 1)
+    assert asked["outcome"] == "confirmation_required"
+    assert asked["changed_categories"] == ["display", "adjustable", "fixed"]
+    assert bundle(service) == before
+    after = update(service, changed, 1, confirm=True)
     assert after["changed_categories"] == ["display", "adjustable", "fixed"]
     assert after["document"]["nodes"][0]["config"]["text"] == "B"
     assert service.get_definition(saved["workflow_definition_id"]) == saved["document"]
@@ -209,7 +225,10 @@ def test_unreviewed_member_fields_are_fixed_even_inside_adjustable_field(service
     changed = deepcopy(saved["document"])
     value = changed["nodes"][0]["config"]["members"][0] if group else changed["nodes"][0]["config"]
     value["presentation"]["execution_binding"] = {"node": str(uuid4())}
-    after = update(service, changed, 1)
+    asked = update(service, changed, 1)
+    assert asked["outcome"] == "confirmation_required"
+    assert "fixed" in asked["changed_categories"]
+    after = update(service, changed, 1, confirm=True)
     assert after["outcome"] == "derived"
     assert "fixed" in after["changed_categories"]
 
@@ -239,7 +258,9 @@ def test_any_remaining_unarchived_session_counts_when_another_is_archived(servic
                             idempotency_key=str(uuid4()))
     changed = deepcopy(saved["document"])
     changed["nodes"][0]["config"]["text"] = "B"
-    after = update(service, changed, 1)
+    asked = update(service, changed, 1)
+    assert asked["outcome"] == "confirmation_required"
+    after = update(service, changed, 1, confirm=True)
     assert after["outcome"] == "derived"
     assert service.get_session(other["workflow_session_id"])["definition_revision"] == 1
 
@@ -329,12 +350,15 @@ def test_derived_idempotency_receipt_creates_one_target(service):
     create_session(service, saved)
     changed = deepcopy(saved["document"])
     changed["nodes"][0]["config"]["text"] = "B"
-    first = update(service, changed, 1, "derive-once")
-    assert update(service, changed, 1, "derive-once") == first
+    assert update(service, changed, 1, "ask-once")["outcome"] == "confirmation_required"
+    assert len(service.list_definitions()) == 1
+    first = update(service, changed, 1, "derive-once", confirm=True)
+    assert first["outcome"] == "derived"
+    assert update(service, changed, 1, "derive-once", confirm=True) == first
     assert len(service.list_definitions()) == 2
     changed["name"] = "different request"
     with pytest.raises(ContractValidationError) as error:
-        update(service, changed, 1, "derive-once")
+        update(service, changed, 1, "derive-once", confirm=True)
     assert error.value.reason_code == "idempotency_conflict"
 
 
@@ -355,7 +379,7 @@ def test_configuration_and_fixed_definition_rollback_together(tmp_path, failure)
         changed["nodes"][0]["config"]["text"] = "B"
         state["active"] = True
         with pytest.raises(RuntimeError, match="synthetic write failure"):
-            update(instance, changed, 1, "failed-derive")
+            update(instance, changed, 1, "failed-derive", confirm=True)
         state["active"] = False
         assert bundle(instance) == before
         assert instance.list_definitions() == [{"document": saved["document"], "archived": False}]
@@ -504,3 +528,117 @@ def test_fixed_projection_keeps_item_identity_and_unsupported_fields():
     fixed = fixed_configuration_projection(value, declaration(), {"schema_version": 1, "prompt_mode": "adjustable"})
     assert fixed == {"id": value["id"], "reference": {"id": "fixed"}, "presentation": {"port": "fixed"}}
     assert fixed_configuration_projection(value, declaration(), {"schema_version": 1, "prompt_mode": "fixed"}) == value
+
+
+@pytest.mark.parametrize("mode", ["fixed", "adjustable"])
+def test_policy_switch_is_a_fixed_change_that_asks_first(service, mode):
+    """The fixed/adjustable switch itself classifies as a fixed modification."""
+    saved = update(service, document(mode=mode))
+    session = create_session(service, saved)
+    before = bundle(service)
+    changed = deepcopy(saved["document"])
+    changed["nodes"][0]["configuration_policy"]["prompt_mode"] = "adjustable" if mode == "fixed" else "fixed"
+    asked = update(service, changed, 1)
+    assert asked["outcome"] == "confirmation_required"
+    assert "fixed" in asked["changed_categories"]
+    assert asked["document"]["nodes"][0]["configuration_policy"]["prompt_mode"] == changed["nodes"][0]["configuration_policy"]["prompt_mode"]
+    assert bundle(service) == before
+    assert service.get_session(session["workflow_session_id"])["definition_revision"] == 1
+    after = update(service, changed, 1, confirm=True)
+    assert after["outcome"] == "derived"
+    assert after["document"]["nodes"][0]["configuration_policy"]["prompt_mode"] == changed["nodes"][0]["configuration_policy"]["prompt_mode"]
+    assert service.get_definition(saved["workflow_definition_id"]) == saved["document"]
+
+
+def test_policy_switch_without_effective_session_saves_in_place(service):
+    saved = update(service, document(mode="fixed"))
+    changed = deepcopy(saved["document"])
+    changed["nodes"][0]["configuration_policy"]["prompt_mode"] = "adjustable"
+    after = update(service, changed, 1)
+    assert after["outcome"] == "saved"
+    assert "fixed" in after["changed_categories"]
+    assert after["workflow_definition_id"] == saved["workflow_definition_id"]
+    assert after["definition_revision"] == 2
+
+
+def test_confirmation_declined_leaves_source_and_target_untouched(service):
+    """Declining is simply never confirming: the ask itself wrote nothing."""
+    saved = update(service, document(mode="fixed"))
+    session = create_session(service, saved)
+    before = bundle(service)
+    changed = deepcopy(saved["document"])
+    changed["nodes"][0]["config"]["text"] = "B"
+    asked = update(service, changed, 1, "ask-then-decline")
+    assert asked["outcome"] == "confirmation_required"
+    assert bundle(service) == before
+    assert update(service, changed, 1, "ask-then-decline") == asked
+    assert service.list_definitions() == [{"document": saved["document"], "archived": False}]
+    assert [row["workflow_session_id"] for row in service.list_sessions(saved["workflow_definition_id"])] \
+        == [session["workflow_session_id"]]
+    # A later confirmed submission at the same basis derives exactly one target.
+    after = update(service, changed, 1, confirm=True)
+    assert after["outcome"] == "derived"
+    assert len(service.list_definitions()) == 2
+    assert service.list_sessions(after["workflow_definition_id"]) == []
+
+
+def test_stale_confirmation_basis_is_rejected_without_writing(service):
+    saved = update(service, document(mode="fixed"))
+    create_session(service, saved)
+    changed = deepcopy(saved["document"])
+    changed["nodes"][0]["config"]["text"] = "B"
+    assert update(service, changed, 1)["outcome"] == "confirmation_required"
+    # A real display save moves the basis before the user answers.
+    renamed = deepcopy(saved["document"])
+    renamed["name"] = "Renamed during the question"
+    saved_later = update(service, renamed, 1)
+    assert saved_later["outcome"] == "saved" and saved_later["edit_sequence"] == 2
+    before = bundle(service)
+    with pytest.raises(ContractValidationError) as error:
+        update(service, changed, 1, confirm=True)
+    assert error.value.reason_code == "stale_edit_sequence"
+    assert bundle(service) == before
+    assert len(service.list_definitions()) == 1
+
+
+def test_unchanged_fixed_fields_with_adjustable_edit_never_asks(service):
+    saved = update(service, document())
+    create_session(service, saved)
+    changed = deepcopy(saved["document"])
+    changed["nodes"][0]["config"]["text"] = "B"
+    changed["nodes"][0]["config"]["presentation"]["enabled"] = False
+    after = update(service, changed, 1)
+    assert after["outcome"] == "saved"
+    assert after["changed_categories"] == ["adjustable"]
+
+
+def test_exact_prompt_business_fields_stay_adjustable_for_item_and_group(service):
+    """Position, order, content and every other reviewed field remain adjustable."""
+    saved = update(service, document())
+    create_session(service, saved)
+    changed = deepcopy(saved["document"])
+    config = changed["nodes"][0]["config"]
+    config["text"] = "revised"
+    config["presentation"].update(role="user", placement="middle", depth=2, order=-3, enabled=False)
+    config["metadata"] = {"note": "kept"}
+    config["lifecycle"] = "per_request"
+    config["compaction"] = "allowed"
+    after = update(service, changed, 1)
+    assert after["outcome"] == "saved"
+    assert after["changed_categories"] == ["adjustable"]
+    assert after["edit_sequence"] == 2 and after["definition_revision"] == 1
+
+
+def test_policy_kind_table_drives_classification_not_prompt_branches():
+    from phase1_agent.workflow_configuration import CONFIGURATION_POLICY_KINDS, configuration_policy_kind
+    kind = CONFIGURATION_POLICY_KINDS["prompt"]
+    assert kind.contracts == (("prompts.item", "3"), ("prompts.group", "3"))
+    assert kind.member_contracts == (("prompts.group", "3"),)
+    assert set(kind.fields) == set(PROMPT_CONFIGURATION_FIELDS)
+    assert set(kind.nested_fields[0][1]) == {"role", "placement", "depth", "order", "enabled"}
+    assert configuration_policy_kind(declaration()) is kind
+    # The kind validator rejects an out-of-whitelist member field for every
+    # contract in the kind, without any component-identity branch.
+    with pytest.raises(ContractValidationError) as error:
+        kind.validate_entry({"text": 42}, node_id=str(uuid4()))
+    assert error.value.reason_code == "graph_invalid_config"

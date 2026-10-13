@@ -76,4 +76,23 @@ describe("trusted frontend host protocol", () => {
     expect(registry.entries()).toHaveLength(1);
     expect(resolveFrontendExtensions(workflowFrontendExtensions, packages, []).available).toEqual([]);
   });
+  it("requires schema 3 and independent frontend host 2 for registered node actions", () => {
+    const action = {
+      schema_version: 3, host_protocol_version: 2, extension_id: "workflow.prompts.group-policy",
+      kind: "node-action", entrypoint: "workflow.prompts.workbench.group-policy",
+      component_id: "prompts.group", component_version: "3", package_id: "workflow.prompts", package_version: "2.0.0",
+      binding: { surface: "workbench", slot: "node-actions", target: { component_id: "prompts.group", component_version: "3" } },
+    };
+    expect(isFrontendExtension(action)).toBe(true);
+    expect(isFrontendExtension({ ...action, schema_version: 2, host_protocol_version: 1 })).toBe(false);
+    expect(isFrontendExtension({ ...action, host_protocol_version: 1 })).toBe(false);
+    expect(isFrontendExtension({ ...action, binding: { ...action.binding, target: { ...action.binding.target, component_version: "2" } } })).toBe(false);
+    if (!isFrontendExtension(action)) throw new Error("invalid fixture");
+    const registry = createFrontendImplementationRegistry<string>();
+    registry.register(action, "policy");
+    expect(resolveFrontendExtensions([action], [{ package_id: action.package_id, version: "2.0.0" }],
+      registry.entries().map(row => row.declaration)).available).toEqual([action]);
+    expect(resolveFrontendExtensions([action], [{ package_id: action.package_id, version: "1.0.0" }],
+      registry.entries().map(row => row.declaration)).available).toEqual([]);
+  });
 });

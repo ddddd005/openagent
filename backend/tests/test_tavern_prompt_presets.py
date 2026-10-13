@@ -10,6 +10,7 @@ import pytest
 from phase1_agent.content_contracts import default_presentation, object_schema, stable_item_id
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.contract_json import canonical_bytes
+from phase1_agent.context_prompt_v6 import injected_once_sources as once_sources
 from phase1_agent.global_resources import global_resource_reference
 from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
@@ -226,11 +227,11 @@ def test_real_workflow_edits_keep_once_identity_and_explicit_copy_creates_new_id
         assert first["status"] == "succeeded", first["chains"]
         first_prompt = node_output(first, entries["a"]["assembly"])
         original_once_id = stable_item_id(resolver["node_binding_id"], value["value"]["members"][1]["id"])
-        assert first_prompt["once_pending_item_ids"] == [original_once_id]
+        assert once_sources(first_prompt) == {original_once_id}
         assert [message["blocks"][0]["text"] for message in first_prompt["messages"]] == [
             "PRESET_FIXED_RULE", "PRESET_ORIGINAL_BACKGROUND", "First input."]
         effective = node_output(first, entries["a"]["merge"])
-        assert effective["once_injected_item_ids"] == [original_once_id]
+        assert once_sources({"messages": effective["messages"], "layout": effective["layout"]}) == {original_once_id}
         assert "PRESET_FIXED_RULE" not in str(effective["messages"])
         assert "PRESET_DISABLED_BACKGROUND" not in str(effective["messages"])
         archived = service.get_run(first["workflow_session_id"], first["selected_chain_run_id"])
@@ -245,12 +246,14 @@ def test_real_workflow_edits_keep_once_identity_and_explicit_copy_creates_new_id
         save(app, changed)
         second = native_run(service, first, "Second input.")
         assert second["status"] == "succeeded", second["chains"]
-        assert node_output(second, entries["a"]["assembly"])["once_pending_item_ids"] == []
+        assert once_sources(node_output(second, entries["a"]["assembly"])) == set()
         wire = [message.get("content") for message in transport.calls[-1]["messages"]]
         assert wire.count("PRESET_ORIGINAL_BACKGROUND") == 1
         assert "PRESET_EDITED_BACKGROUND" not in wire
         assert wire.count("PRESET_EDITED_RULE") == 1
-        assert node_output(second, entries["a"]["merge"])["once_injected_item_ids"] == [original_once_id]
+        second_effective = node_output(second, entries["a"]["merge"])
+        assert once_sources({"messages": second_effective["messages"],
+                             "layout": second_effective["layout"]}) == {original_once_id}
 
         copied = deepcopy(changed)
         copied.update(resource_id=str(uuid4()), update_sequence=1)
@@ -265,9 +268,10 @@ def test_real_workflow_edits_keep_once_identity_and_explicit_copy_creates_new_id
         assert third["status"] == "succeeded", third["chains"]
         new_once_id = stable_item_id(resolver["node_binding_id"], copied["value"]["members"][1]["id"])
         assert new_once_id != original_once_id
-        assert node_output(third, entries["a"]["assembly"])["once_pending_item_ids"] == [new_once_id]
+        assert once_sources(node_output(third, entries["a"]["assembly"])) == {new_once_id}
         third_effective = node_output(third, entries["a"]["merge"])
-        assert set(third_effective["once_injected_item_ids"]) == {original_once_id, new_once_id}
+        assert once_sources({"messages": third_effective["messages"],
+                             "layout": third_effective["layout"]}) == {original_once_id, new_once_id}
         wire = [message.get("content") for message in transport.calls[-1]["messages"]]
         assert wire.count("PRESET_ORIGINAL_BACKGROUND") == wire.count("PRESET_EDITED_BACKGROUND") == 1
         assert "PRESET_EDITED_RULE" not in str(third_effective["messages"])
@@ -277,7 +281,7 @@ def test_real_workflow_edits_keep_once_identity_and_explicit_copy_creates_new_id
     with closing(GraphWorkflowService(database, public_model_factory=transport.factory)) as reopened:
         fourth = native_run(reopened, reopened.get_session(sid), "Fourth input after reopen.")
         assert fourth["status"] == "succeeded", fourth["chains"]
-        assert node_output(fourth, entries["a"]["assembly"])["once_pending_item_ids"] == []
+        assert once_sources(node_output(fourth, entries["a"]["assembly"])) == set()
         wire = [message.get("content") for message in transport.calls[-1]["messages"]]
         assert wire.count("PRESET_EDITED_BACKGROUND") == wire.count("PRESET_ORIGINAL_BACKGROUND") == 1
         assert len(transport.calls) == 4 and not transport.summaries

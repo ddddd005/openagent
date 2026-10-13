@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { createProviderCredentialEditor } from "./providerCredentialEditing";
+import { createProviderCredentialEditor, type CredentialIntent } from "./providerCredentialEditing";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import type { CredentialRequest, CredentialStatus, ProviderCredentialRequest, ProviderCredentialResult } from "../adapters/providerConfigurationApi";
-import type { LocalDraftRecord } from "../adapters/localDraftsApi";
+import type { RequestEvidenceRecord } from "../adapters/requestEvidenceApi";
 import { graphClone } from "../domain/workflowGraph";
 import { newProvider, providerIdentity } from "../domain/workflowModelResources";
 
@@ -16,7 +16,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 function fixture() {
-  let record: LocalDraftRecord | null = null;
+  let record: RequestEvidenceRecord | null = null;
   const provider = newProvider();
   provider.value.credential_ref = reference;
   const { credential_ref: _reference, ...configuration } = provider.value;
@@ -29,22 +29,30 @@ function fixture() {
   });
   const writes: unknown[] = [], saved = vi.fn();
   const channel = {
-    read: vi.fn(async () => record), archive: vi.fn(async (_value: unknown) => {}),
-    write: vi.fn(async (value: unknown, format = 2) => {
+    read: vi.fn(async () => record?.resolution === "verified" ? null : record),
+    archive: vi.fn(async (_value: CredentialIntent) => { if (record) record.resolution = "archived"; }),
+    write: vi.fn(async (value: CredentialIntent | null, _format = 2) => {
       writes.push(graphClone(value));
-      record = { schema_version: 1, kind: "workflow.local-draft", address: {
-        scope: "management", kind: "intent", key: "credential:one", workflow_definition_id: null, workflow_session_id: null,
-      }, format_version: format, sequence: (record?.sequence ?? 0) + 1, updated_at: "2026-10-10T00:00:00Z",
-      value: graphClone(value), deleted: value === null };
+      if (value === null) {
+        if (!record) throw new Error("Missing original evidence");
+        if (record.resolution === "pending") record.resolution = "verified";
+        return graphClone(record);
+      }
+      record = { schema_version: 1, kind: "workflow.request-evidence",
+        operation: value.kind === "delete" ? "credential.delete"
+          : value.kind === "bind" ? "provider.credential.bind" : "provider.credential.save",
+        idempotency_key: value.request.idempotency_key, owner_kind: "provider-credential", owner_id: "one",
+        request: graphClone(value.request) as unknown as Record<string, unknown>,
+        request_digest: "a".repeat(64), resolution: "pending" };
       return record;
     }),
   };
   const ports = {
     protection: vi.fn(async () => true), status: vi.fn(async () => status()),
     provider: vi.fn(async () => ({ ...graphClone(provider), update_sequence: 2 })),
-    delete: vi.fn(async (_request: CredentialRequest) => status(2, "missing")),
+    delete: vi.fn(async (_request: CredentialRequest, _digest: string) => status(2, "missing")),
     receipt: vi.fn(async (_request: CredentialRequest) => status(2, "missing")),
-    saveBound: vi.fn(async (_request: ProviderCredentialRequest, _secret: string) => result()),
+    saveBound: vi.fn(async (_request: ProviderCredentialRequest, _secret: string, _digest: string) => result()),
     boundReceipt: vi.fn(async (_request: ProviderCredentialRequest, _bind = false) => result()),
   };
   const editor = createProviderCredentialEditor(channel, saved, ports);
@@ -93,7 +101,7 @@ describe("single-action private Key and effective provider binding", () => {
     expect(f.ports.saveBound).toHaveBeenCalledWith(expect.objectContaining({
       identity: f.basis.identity, expected_sequence: 1, provider_seed: f.basis.provider_seed,
       credential_ref: reference, expected_generation: 1,
-    }), "dummy-memory-key");
+    }), "dummy-memory-key", "a".repeat(64));
     expect(JSON.stringify(f.writes)).not.toContain("dummy-memory-key");
     expect(f.writes[0]).toMatchObject({ schema_version: 2, kind: "save", basis_reference: reference });
     expect(f.writes.at(-1)).toBeNull();
@@ -116,7 +124,7 @@ describe("single-action private Key and effective provider binding", () => {
     await f.editor.save();
     expect(f.ports.saveBound).toHaveBeenCalledWith(expect.objectContaining({
       provider_seed: changed.provider_seed,
-    }), "dummy-memory-key");
+    }), "dummy-memory-key", "a".repeat(64));
     expect(f.saved).toHaveBeenCalledOnce();
     expect(JSON.stringify(f.writes)).not.toContain("dummy-memory-key");
   });
@@ -164,27 +172,62 @@ describe("single-action private Key and effective provider binding", () => {
   it("retains confirmed originals when durable clearing fails, then reconciles without mutation", async () => {
     const f = fixture(); await f.editor.load(reference, f.basis);
     f.ports.status.mockResolvedValue(status(2));
-    f.channel.write.mockImplementationOnce(async value => {
-      f.writes.push(value);
-      return { schema_version: 1 } as LocalDraftRecord;
+    const write = f.channel.write.getMockImplementation()!;
+    f.channel.write.mockImplementation(async (value, format) => {
+      if (value === null) throw new Error("disk unavailable");
+      return write(value, format);
     });
-    // A missing durable intent cannot authorize cleanup or a success callback.
     f.editor.secret.value = "dummy-key"; await f.editor.save();
-    expect(f.editor.pending.value).not.toBeNull(); expect(f.saved).not.toHaveBeenCalled();
-    await f.channel.write(f.editor.pending.value);
-    f.channel.write.mockRejectedValueOnce(new Error("disk unavailable"));
-    await f.editor.reconcile();
     expect(f.editor.pending.value).not.toBeNull(); expect(f.editor.blocked.value).toBe(true);
+    f.channel.write.mockImplementation(write);
     await f.editor.reconcile();
     expect(f.ports.saveBound).toHaveBeenCalledOnce(); expect(f.saved).toHaveBeenCalledTimes(2);
   });
+  it("does not dispatch when saved evidence differs from the original public request", async () => {
+    const f = fixture(); await f.editor.load(reference, f.basis);
+    const write = f.channel.write.getMockImplementation()!;
+    f.channel.write.mockImplementationOnce(async (value, format) => ({
+      ...await write(value, format), request_digest: "invalid",
+    }));
+    f.editor.secret.value = "dummy-key"; await f.editor.save();
+    expect(f.ports.saveBound).not.toHaveBeenCalled();
+    expect(f.saved).not.toHaveBeenCalled(); expect(f.editor.pending.value).not.toBeNull();
+  });
+  it("locks an unknown evidence write and only reads its exact identity without sending the Key", async () => {
+    const f = fixture(); await f.editor.load(reference, f.basis);
+    const write = f.channel.write.getMockImplementation()!;
+    f.channel.write.mockImplementationOnce(async (value, format) => {
+      await write(value, format);
+      throw new WorkbenchApiError("unknown", "Controlled evidence write response loss");
+    });
+    f.ports.boundReceipt.mockRejectedValueOnce(new WorkbenchApiError("unknown", "Original request was never dispatched"));
+    f.editor.secret.value = "dummy-key"; await f.editor.save();
+    const original = graphClone(f.editor.pending.value!.request);
+    expect(f.editor.blocked.value).toBe(true); expect(f.editor.secret.value).toBe("");
+    await f.editor.reconcile();
+    expect(f.ports.boundReceipt).toHaveBeenCalledWith(original, false);
+    expect(f.ports.saveBound).not.toHaveBeenCalled(); expect(f.saved).not.toHaveBeenCalled();
+    expect(f.editor.pending.value!.request).toEqual(original);
+  });
+  it("loads the existing owner request after another page refuses new evidence and never sends the new Key", async () => {
+    const f = fixture(); await f.editor.load(reference, f.basis);
+    const existing: CredentialIntent = { schema_version: 2, kind: "save", basis_reference: reference,
+      request: { ...f.basis, credential_ref: reference, expected_generation: 1, idempotency_key: crypto.randomUUID() } };
+    await f.channel.write(existing);
+    f.channel.write.mockRejectedValueOnce(new WorkbenchApiError("rejected", "Other page has an original request", 409, "request_evidence_pending"));
+    f.editor.secret.value = "dummy-new-key"; await f.editor.save();
+    expect(f.editor.pending.value!.request).toEqual(existing.request);
+    expect(f.editor.error.value).toContain("新 Key 未发送");
+    expect(f.editor.blocked.value).toBe(true);
+    expect(f.ports.saveBound).not.toHaveBeenCalled(); expect(f.saved).not.toHaveBeenCalled();
+  });
   it("does not dispatch after context changes while the intent is being persisted", async () => {
-    const f = fixture(), write = deferred<LocalDraftRecord>();
+    const f = fixture(), write = deferred<RequestEvidenceRecord>();
     await f.editor.load(reference, f.basis); f.editor.secret.value = "dummy-key";
     f.channel.write.mockReturnValueOnce(write.promise);
     const saving = f.editor.save();
     await f.editor.load(null, { ...f.basis, identity: providerIdentity(newProvider()) });
-    write.resolve({} as LocalDraftRecord); await saving;
+    write.resolve({} as RequestEvidenceRecord); await saving;
     expect(f.ports.saveBound).not.toHaveBeenCalled(); expect(f.saved).not.toHaveBeenCalled();
   });
   it("does not clear a new context's memory-only Key when an old accepted response arrives", async () => {
@@ -244,7 +287,10 @@ describe("single-action private Key and effective provider binding", () => {
     const f = fixture(); await f.editor.load(reference, f.basis);
     f.editor.secret.value = "dummy-key"; await f.editor.save();
     expect(f.editor.pending.value).not.toBeNull(); expect(f.saved).not.toHaveBeenCalled();
-    await f.channel.write({ ...f.editor.pending.value, secret: "bad" });
+    f.channel.read.mockResolvedValue({ schema_version: 1, kind: "workflow.request-evidence",
+      operation: "provider.credential.save", idempotency_key: f.editor.pending.value!.request.idempotency_key,
+      owner_kind: "provider-credential", owner_id: "one", resolution: "pending",
+      request: { ...f.editor.pending.value!.request, secret: "bad" }, request_digest: "a".repeat(64) });
     const writes = f.writes.length, reopened = f.reopen(); await reopened.load(reference, f.basis);
     expect(reopened.blocked.value).toBe(true); expect(f.writes.length).toBe(writes);
   });

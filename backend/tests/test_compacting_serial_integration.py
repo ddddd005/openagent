@@ -160,6 +160,19 @@ def effective(view, agents, label):
     return node_output(view, agents[label]["merge"])
 
 
+def once_sources(value):
+    from phase1_agent.context_prompt_v6 import injected_once_sources
+    return injected_once_sources({"messages": value["messages"], "layout": value["layout"]})
+
+
+def new_once_sources(prompt):
+    """Once sources injected from materials, excluding messages already in the context."""
+    frozen = {message["message_id"] for message in prompt["context"]["messages"]}
+    return {message["source"]["item_instance_id"] for message, item in
+            zip(prompt["messages"], prompt["layout"])
+            if item["kind"] == "once" and message["message_id"] not in frozen}
+
+
 def business_calls(fixture, label, request):
     return [call for call in fixture.calls if call["agent"] == label
             and call["request"] == request and call["purpose"] == "business"]
@@ -176,12 +189,8 @@ def assert_clean_persistent_state(view, agents):
     assert view["status"] == "succeeded", view["chains"]
     views = [effective(view, agents, label) for label in ("A", "B")]
     assert views[0]["owner"]["agent_node_id"] != views[1]["owner"]["agent_node_id"]
-    assert views[0]["once_injected_item_ids"] == views[1]["once_injected_item_ids"]
-    assert len(views[0]["once_injected_item_ids"]) == 1
     assert views[0]["applied_delta_ids"] != views[1]["applied_delta_ids"]
     for label, value in zip(("A", "B"), views):
-        assert "ONCE_SERIAL_ORIGINAL" not in str(value["messages"])
-        assert "ONCE_SERIAL_EDITED" not in str(value["messages"])
         assert "GENERATED_" + label + "_LONG" not in str(value["messages"])
         assert "ROLE " not in str(value["messages"])
         assert all(item["kind"] in ("history", "summary", "once") for item in value["layout"])
@@ -230,7 +239,7 @@ def test_serial_native_compaction_preserves_order_tool_ids_once_state_edit_fork_
                            if operation["kind"] == "compact"]
             assert len(compactions) == 2 and compactions[0] == 0
             assert any(operation["kind"] == "append" for operation in update["operations"][compactions[1] + 1:])
-            assert len(node_output(first, agents[label]["assembly"])["once_pending_item_ids"]) == 1
+            assert len(new_once_sources(node_output(first, agents[label]["assembly"]))) == 1
             calls = business_calls(fixture, label, "REQ first")
             last = calls[-1]
             first_tool_ids[label] = inspect_identity(last["messages"], label, "REQ first")
@@ -246,7 +255,7 @@ def test_serial_native_compaction_preserves_order_tool_ids_once_state_edit_fork_
         assert len(fixture.summaries) == 4
         for label in ("A", "B"):
             second_prompt = node_output(second, agents[label]["assembly"])
-            assert second_prompt["once_pending_item_ids"] == []
+            assert len(new_once_sources(second_prompt)) == 1
             second_calls = business_calls(fixture, label, "REQ second")
             assert inspect_identity(second_calls[0]["messages"], label, "REQ first") == first_tool_ids[label]
             assert second["objects"]["context/" + label.lower()]["revision"] == 3
@@ -260,8 +269,9 @@ def test_serial_native_compaction_preserves_order_tool_ids_once_state_edit_fork_
         for label in ("A", "B"):
             frozen = node_output(parent, agents[label]["assembly"])
             assert frozen["items"] != node_output(first, agents[label]["assembly"])["items"]
-            assert frozen["once_pending_item_ids"] == []
-            assert "ONCE_SERIAL_EDITED" not in str(frozen["messages"])
+            # The previous round compacted the material away, so its source is absent again.
+            assert len(new_once_sources(frozen)) == 1
+            assert "ONCE_SERIAL_EDITED" in str(frozen["messages"])
         parent_objects = deepcopy(parent["objects"])
         forked = service.fork_graph_candidate(
             parent["workflow_session_id"], candidate_id=candidate["candidate_id"],
@@ -274,7 +284,7 @@ def test_serial_native_compaction_preserves_order_tool_ids_once_state_edit_fork_
         assert len(fixture.summaries) == 4
         for label in ("A", "B"):
             frozen = node_output(branch, agents[label]["assembly"])
-            assert frozen["once_pending_item_ids"] == []
+            assert len(new_once_sources(frozen)) == 1
             assert "REQ second" not in str(frozen["messages"])
             assert "REQ edited" not in str(frozen["messages"])
             assert inspect_identity(business_calls(fixture, label, "REQ branch")[0]["messages"],
@@ -290,7 +300,7 @@ def test_serial_native_compaction_preserves_order_tool_ids_once_state_edit_fork_
         assert_clean_persistent_state(continued, agents)
         assert len(fixture.summaries) == 4
         for label in ("A", "B"):
-            assert node_output(continued, agents[label]["assembly"])["once_pending_item_ids"] == []
+            assert len(new_once_sources(node_output(continued, agents[label]["assembly"]))) == 1
             assert inspect_identity(business_calls(fixture, label, "REQ reopened")[0]["messages"],
                                     label, "REQ first") == first_tool_ids[label]
 
@@ -306,7 +316,8 @@ def test_serial_bad_second_agent_summary_does_not_commit_first_agent_or_consume_
         failed = run(service, initial, "REQ first")
         assert failed["status"] == "failed", failed["chains"]
         assert failed["objects"] == before
-        assert node_output(failed, agents["A"]["execute"], "context")["next_view"]["once_injected_item_ids"]
+        candidate_view = node_output(failed, agents["A"]["execute"], "context")["next_view"]
+        assert len(once_sources(candidate_view)) == 1
         assert [call["agent"] for call in fixture.summaries] == ["A", "A", "B"]
         assert not business_calls(fixture, "B", "REQ first")
         assert all(record["value"] == {"view_ref": None, "accepted_delta_ids": []}

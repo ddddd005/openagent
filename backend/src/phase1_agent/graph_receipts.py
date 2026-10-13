@@ -188,13 +188,15 @@ def _configuration_result(parameters, result):
     source, target = parameters["workflow_definition_id"], result["workflow_definition_id"]
     outcome, categories = result["outcome"], result["changed_categories"]
     _check(result["source_workflow_definition_id"] == source and uuid_value(target)
-           and type(outcome) is str and outcome in ("unchanged", "saved", "derived")
+           and type(outcome) is str
+           and outcome in ("unchanged", "saved", "derived", "confirmation_required")
            and type(result["source_has_effective_session"]) is bool
            and result["session_id"] is None and _integer(result["definition_revision"], 1)
            and _integer(result["edit_sequence"], 1))
     _check(type(categories) is list and categories == [
         category for category in ("display", "adjustable", "fixed") if category in categories
     ])
+    confirmed = parameters.get("confirm_derivation") is True
     document = validate_graph_document(result["document"])
     submitted = validate_graph_document(parameters["document"])
     _check(submitted["workflow_definition_id"] == source
@@ -213,9 +215,14 @@ def _configuration_result(parameters, result):
         _check(not categories and target == source and expected >= 1
                and result["edit_sequence"] == expected
                and document["revision"] == submitted["revision"])
+    elif outcome == "confirmation_required":
+        _check(target == source and result["source_has_effective_session"] and not confirmed
+               and "fixed" in categories and expected >= 1
+               and result["edit_sequence"] == expected
+               and document["revision"] == submitted["revision"])
     elif outcome == "derived":
         _check(target != source and result["source_has_effective_session"]
-               and "fixed" in categories and expected >= 1
+               and "fixed" in categories and confirmed and expected >= 1
                and result["edit_sequence"] == result["definition_revision"] == 1)
     else:
         _check(target == source and bool(categories)

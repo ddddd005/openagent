@@ -190,7 +190,7 @@ def working_view(messages):
         "schema_version": 1, "kind": "workflow.context-working-view",
         "owner": {"workflow_session_id": uid(101), "object_key": "context", "agent_node_id": uid(102)},
         "basis": {"revision_id": uid(103), "head_revision": 7}, "messages": messages,
-        "accepted_delta_ids": [uid(104)], "applied_delta_ids": [], "once_injected_item_ids": [uid(105)],
+        "accepted_delta_ids": [uid(104)], "applied_delta_ids": [],
         "generation": 3})
 
 
@@ -221,15 +221,14 @@ def prove(initial, packet, new, operation):
         accepted_messages=[new], accepted_compactions=[operation], expected_tools=[], expected_model_parameters={})
 
 
-def test_candidate_proof_preserves_consumed_ids_and_once_ledger_after_text_is_gone():
+def test_candidate_proof_preserves_consumed_ids_after_text_is_gone():
     initial, packet, new, operation = packet_fixture()
     assert prove(initial, packet, new, operation) == packet["next_view"]
-    assert packet["next_view"]["once_injected_item_ids"] == initial["once_injected_item_ids"]
     assert packet["next_view"]["accepted_delta_ids"] == initial["accepted_delta_ids"]
 
 
-@pytest.mark.parametrize("field", ["once_injected_item_ids", "accepted_delta_ids"])
-def test_candidate_cannot_erase_consumption_or_once_injection_when_compacting(field):
+@pytest.mark.parametrize("field", ["applied_delta_ids", "accepted_delta_ids"])
+def test_candidate_cannot_erase_consumption_when_compacting(field):
     initial, packet, new, operation = packet_fixture()
     packet["next_view"][field] = []
     with pytest.raises(GraphDiagnosticError) as rejected:

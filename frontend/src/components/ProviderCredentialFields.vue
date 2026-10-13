@@ -1,30 +1,21 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, watch } from "vue";
 import { RefreshCw, Trash2 } from "lucide-vue-next";
-import { createLocalDraftChannel } from "../adapters/localDraftsApi";
+import { createProviderCredentialEvidenceChannel } from "../adapters/providerCredentialEvidence";
 import { createProviderCredentialEditor } from "../application/providerCredentialEditing";
 import type { CredentialReference } from "../domain/workflowModelResources";
 import type { CurrentProvider } from "../domain/workflowModelResources";
 import type { ProviderCredentialRequest } from "../adapters/providerConfigurationApi";
 import type { ProviderCredentialBasis } from "../application/providerCredentialEditing";
-import { graphJsonSignature, graphObject } from "../domain/workflowGraph";
+import { graphJsonSignature } from "../domain/workflowGraph";
 
 const props = defineProps<{ owner: string; reference: CredentialReference | null; basis: ProviderCredentialBasis; disabled?: boolean;
   acceptSaved: (reference: CredentialReference, provider: CurrentProvider, request: ProviderCredentialRequest) => Promise<void> }>();
 const emit = defineEmits<{ blocked: [value: boolean];
   mutation: [value: boolean]; dirty: [value: boolean] }>();
-const channel = createLocalDraftChannel({ scope: "management", kind: "intent", key: `credential:${props.owner}`,
-  workflow_definition_id: null, workflow_session_id: null });
-const editor = createProviderCredentialEditor({ ...channel, archive: async value => {
-  const archive = createLocalDraftChannel({ scope: "management", kind: "form",
-    key: `archive:provider-key:${props.owner}:${crypto.randomUUID()}`,
-    workflow_definition_id: null, workflow_session_id: null });
-  await archive.write({ schema_version: 1, kind: "workflow.provider-key-request-archive", request: value });
-  const saved = await archive.read(true);
-  if (!saved || saved.deleted || !graphObject(saved.value)
-    || graphJsonSignature(saved.value.request) !== graphJsonSignature(value))
-    throw new Error("原 Key 请求归档未核实，原记录仍保留");
-} }, (reference, provider, request) => props.acceptSaved(reference, provider, request));
+const channel = createProviderCredentialEvidenceChannel(props.owner);
+const editor = createProviderCredentialEditor(channel,
+  (reference, provider, request) => props.acceptSaved(reference, provider, request));
 const { secret, busy, ready, available, error, state, pending, blocked } = editor;
 watch(blocked, value => emit("blocked", value), { immediate: true });
 watch(computed(() => busy.value || !!pending.value), value => emit("mutation", value), { immediate: true });

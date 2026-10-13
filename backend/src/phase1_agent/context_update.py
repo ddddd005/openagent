@@ -233,7 +233,7 @@ def validate_working_context_view(value):
     """Unregistered native view; this is not a runnable graph CONTEXT_VIEW version."""
     validate_json_value(value)
     _fields(value, ("schema_version", "kind", "owner", "basis", "messages",
-                    "accepted_delta_ids", "applied_delta_ids", "once_injected_item_ids", "generation"))
+                    "accepted_delta_ids", "applied_delta_ids", "generation"))
     require(type(value["schema_version"]) is int and value["schema_version"] == 1
             and value["kind"] == "workflow.context-working-view", "context_update_invalid",
             "Native working context requires its exact envelope")
@@ -249,7 +249,7 @@ def validate_working_context_view(value):
     require(type(value["messages"]) is list and len(value["messages"]) <= _MAX_OPERATIONS,
             "context_update_invalid", "Effective messages require a bounded sequence")
     validate_message_history(value["messages"])
-    for field in ("accepted_delta_ids", "applied_delta_ids", "once_injected_item_ids"):
+    for field in ("accepted_delta_ids", "applied_delta_ids"):
         _ids(value[field])
     require(not set(value["accepted_delta_ids"]) & set(value["applied_delta_ids"]),
             "context_update_already_consumed", "New updates cannot already be adopted")
@@ -261,6 +261,9 @@ def validate_working_context_view(value):
 
 
 def validate_context_update(value):
+    if type(value) is dict and type(value.get("schema_version")) is int and value["schema_version"] == 2:
+        from .context_update_v2 import validate_context_update_v2
+        return validate_context_update_v2(value)
     validate_json_value(value)
     _fields(value, ("schema_version", "kind", "owner", "update_id", "basis_view_ref",
                     "basis_revision", "compaction_policy_ref", "operations", "next_view", "receipts"))
@@ -317,7 +320,7 @@ def prove_context_update(initial_view, view_ref, update, *, eligible_message_ids
                 "applied_delta_ids": initial_view["applied_delta_ids"] + [update["update_id"]],
                 "generation": initial_view["generation"] + result["generation_delta"]}
     require(update["next_view"] == expected, "context_update_candidate_mismatch",
-            "The candidate must derive from ordered facts without changing consumption or once-injection ledgers")
+            "The candidate must derive from ordered facts without changing its consumption boundary")
     return deepcopy(expected)
 
 

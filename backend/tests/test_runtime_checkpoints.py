@@ -36,7 +36,7 @@ def state():
         },
         "objects": {
             "context": {"type_id": "test.context", "schema_version": 4, "deleted": False,
-                        "value": {"generation": 2, "once_injected_item_ids": [ENTRY]}},
+                        "value": {"generation": 2, "accepted_delta_ids": [ENTRY]}},
             "nullable": {"type_id": "test.nullable", "schema_version": 1, "deleted": False,
                          "value": None},
         },
@@ -78,10 +78,10 @@ def test_state_preserves_business_envelopes_counters_and_detaches_values():
     checked = validate_runtime_state(original)
     assert checked == original and checked is not original
     checked["node_states"][NODE]["payload"]["count"] = 0
-    checked["objects"]["context"]["value"]["once_injected_item_ids"].clear()
+    checked["objects"]["context"]["value"]["accepted_delta_ids"].clear()
     checked["program_state"]["data"]["test:value"]["definition"]["revision"] = 4
     assert original["node_states"][NODE]["payload"] == {"count": 3, "revision": 9}
-    assert original["objects"]["context"]["value"]["once_injected_item_ids"] == [ENTRY]
+    assert original["objects"]["context"]["value"]["accepted_delta_ids"] == [ENTRY]
     assert original["program_state"]["data"]["test:value"]["definition"]["revision"] == 2
 
 

@@ -48,13 +48,13 @@ def content(*items):
     return merge_lifecycle_prompt_materials([lifecycle_prompt_content(list(items))])
 
 
-def view(messages=None, layout=None, *, consumed=None):
+def view(messages=None, layout=None):
     return validate_native_context_view({
         "schema_version": 4, "kind": "workflow.context-view",
         "owner": {"workflow_session_id": uid(800), "object_key": "context", "agent_node_id": uid(801)},
         "basis": {"revision_id": uid(802), "head_revision": 1},
         "messages": messages or [], "layout": layout or [], "accepted_delta_ids": [],
-        "applied_delta_ids": [], "once_injected_item_ids": consumed or [], "generation": 0,
+        "applied_delta_ids": [], "generation": 0,
         "derivation": {"operation": "read", "input_view_ref": None, "update_ref": None},
     })
 
@@ -64,6 +64,18 @@ def assemble(materials, initial=None, **changes):
         materials, initial or view(), text_content("Current task"),
         context_ref=ref(900), current_input_ref=ref(901), **changes,
     )
+
+
+def persist(materials, initial=None):
+    """The context a round leaves behind: injected material stays as its own message."""
+    prompt = assemble(materials, initial)
+    messages, layout = [], []
+    for message, item in zip(prompt["messages"], prompt["layout"]):
+        if item["kind"] == "current":
+            continue
+        layout.append({**item, "round_id": item["round_id"] or uid(950)})
+        messages.append(message)
+    return view(messages, layout)
 
 
 def loaded():
@@ -184,7 +196,9 @@ def test_global_resource_edits_keep_once_identity_and_do_not_use_resource_sequen
     second = entry.executor({}, {"input": envelope}, context)["output"]
     assert first["items"][0]["origin_item_ids"] == second["items"][0]["origin_item_ids"]
     assert second["items"][0]["text"] == "edited"
-    assert len(assemble([second], view(consumed=first["items"][0]["origin_item_ids"]))["messages"]) == 1
+    following = assemble([second], persist([first]))
+    assert [message["blocks"][0]["text"] for message in following["messages"]] == [
+        "original", "Current task"]
 
 
 def test_tool_materials_are_per_request_and_never_opt_into_compaction():
@@ -202,48 +216,49 @@ def test_tool_materials_are_per_request_and_never_opt_into_compaction():
         assert value["items"][0]["compaction"] == "never"
 
 
-def test_assembly_injects_once_and_fixed_materials_but_only_marks_pending_consumption():
+def test_assembly_injects_once_and_fixed_materials_from_the_current_context_alone():
     once = item(1)
     fixed = item(2, "system rule", role="system", lifecycle="per_request", compaction="never")
     initial = view()
     result = assemble([content(once, fixed)], initial)
     assert [entry["kind"] for entry in result["layout"]].count("once") == 1
     assert [entry["kind"] for entry in result["layout"]].count("fixed") == 1
-    assert result["once_pending_item_ids"] == once["origin_item_ids"]
-    assert initial["once_injected_item_ids"] == []
-    assert result["context"]["once_injected_item_ids"] == []
+    assert "once_pending_item_ids" not in result and "once_injected_item_ids" not in result["context"]
+    assert initial["messages"] == [] and initial["layout"] == []
     assert validate_native_context_prompt(result) == result
     validate_message_history(result["messages"])
 
 
-def test_consumed_once_item_edit_is_not_reinjected_and_branch_inherits_consumption():
+def test_present_once_source_is_not_reinjected_and_branch_reuses_the_same_rule():
     once = item(1)
     first = assemble([content(once)])
-    consumed = view(consumed=once["origin_item_ids"])
+    present = persist([content(once)])
     edited = item(1, "edited original background")
-    next_prompt = assemble([content(edited)], consumed)
-    assert len(next_prompt["messages"]) == 1
-    assert next_prompt["once_pending_item_ids"] == []
-    forked = deepcopy(consumed)
+    next_prompt = assemble([content(edited)], present)
+    assert [message["blocks"][0]["text"] for message in next_prompt["messages"]] == [
+        "background", "Current task"]
+    forked = deepcopy(present)
     forked["owner"]["workflow_session_id"] = uid(850)
-    assert len(assemble([content(edited)], forked)["messages"]) == 1
-    assert first["context"]["once_injected_item_ids"] == []
+    assert [message["blocks"][0]["text"] for message in assemble([content(edited)], forked)["messages"]] == [
+        "background", "Current task"]
+    assert first["messages"][0]["blocks"][0]["text"] == "background"
 
 
-def test_partially_consumed_merged_item_does_not_repeat_text_but_adopts_new_origin_ids_later():
+def test_merged_item_with_any_present_source_is_not_injected_again():
     first, second = item(1), item(2)
-    consumed = view(consumed=first["origin_item_ids"])
-    result = assemble([content(first, second)], consumed)
-    assert len(result["messages"]) == 1
-    assert result["once_pending_item_ids"] == second["origin_item_ids"]
-    assert consumed["once_injected_item_ids"] == first["origin_item_ids"]
+    present = persist([content(first)])
+    merged = merge_lifecycle_prompt_materials([content(first), content(second)])
+    assert len(merged["items"]) == 1 and len(merged["items"][0]["origin_item_ids"]) == 2
+    result = assemble([merged], present)
+    assert [message["blocks"][0]["text"] for message in result["messages"]] == [
+        "background", "Current task"]
+    assert [entry["kind"] for entry in result["layout"]] == ["once", "current"]
 
 
-def test_per_request_text_never_consumes_once_ids_and_disabled_once_item_remains_unconsumed():
+def test_per_request_text_never_deduplicates_and_disabled_once_item_remains_uninjected():
     fixed = item(1, lifecycle="per_request", compaction="never")
     disabled = item(2, enabled=False)
     result = assemble([content(fixed, disabled)])
-    assert result["once_pending_item_ids"] == []
     assert len(result["messages"]) == 2
     assert result["layout"][0]["kind"] == "fixed"
 
@@ -302,12 +317,11 @@ def test_once_system_material_stays_protected_in_native_projection():
     prompt = assemble([content(material)])
     assert prompt["messages"][0]["role"] == "system"
     assert prompt["layout"][0] == {"kind": "once", "round_id": None, "compaction": "never"}
-    assert prompt["once_pending_item_ids"] == material["origin_item_ids"]
 
 @pytest.mark.parametrize("change", [
     lambda result: result["messages"][0]["blocks"][0].update(text="forged"),
     lambda result: result["layout"][0].update(compaction="never"),
-    lambda result: result.update(once_pending_item_ids=[]),
+    lambda result: result.pop("items"),
     lambda result: result["current_input"].update(message_id=uid(999)),
     lambda result: result["provenance"][0].update(lifecycle="per_request"),
 ])

@@ -62,11 +62,13 @@ def service(tmp_path):
         yield instance
 
 
-def submit(app, document, sequence, *, key=None):
+def submit(app, document, sequence, *, key=None, confirm=None):
     request = {
         "workflow_definition_id": document["workflow_definition_id"], "document": deepcopy(document),
         "expected_edit_sequence": sequence, "idempotency_key": key or str(uuid4()),
     }
+    if confirm is not None:
+        request["confirm_derivation"] = confirm
     accepted = app.command("definition.update", request)
     receipt = read_graph_application_receipt(app._service.database, "definition.update", request)
     assert receipt["outcome"] == "matched", receipt
@@ -103,7 +105,15 @@ def test_mixed_derived_save_and_idempotence_leave_source_and_session_unchanged(s
     changed = deepcopy(original)
     changed["nodes"][0]["config"]["text"] = "new adjustable body"
     changed["nodes"][0]["config"]["id"] = str(uuid4())
-    derived, request = submit(app, changed, 1)
+    asked, ask_request = submit(app, changed, 1)
+    assert asked["outcome"] == "confirmation_required"
+    assert asked["changed_categories"] == ["adjustable", "fixed"]
+    assert asked["source_has_effective_session"]
+    # The ask wrote nothing: no derivation, no new target, source and session unchanged.
+    assert service.get_definition(original["workflow_definition_id"]) == original
+    assert service.get_session(session["workflow_session_id"]) == session
+    assert len(service.list_definitions()) == 1
+    derived, request = submit(app, changed, 1, confirm=True)
     assert derived["outcome"] == "derived"
     assert derived["changed_categories"] == ["adjustable", "fixed"]
     assert derived["source_has_effective_session"]
@@ -114,6 +124,7 @@ def test_mixed_derived_save_and_idempotence_leave_source_and_session_unchanged(s
     assert service.get_session(session["workflow_session_id"]) == session
     assert service.list_sessions(target) == []
     assert app.command("definition.update", request)["result"] == derived
+    assert app.command("definition.update", ask_request)["result"] == asked
     assert len(service.list_definitions()) == 2
 
 
@@ -149,6 +160,56 @@ def test_http_entry_and_consumer_scope(service):
             GraphApplication(service).command("definition.update", {
                 **request, "expected_edit_sequence": sequence,
             })
+
+
+def test_confirmation_ask_is_recorded_and_replayable_while_nothing_is_written(service):
+    """The question is a real receipt: replayable, and proven not to have written."""
+    app = GraphApplication(service)
+    created, _ = submit(app, configuration_document(service.registry), 0)
+    original = created["document"]
+    service.create_session(original["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
+    before_read = service.get_definition(original["workflow_definition_id"])
+    changed = deepcopy(original)
+    changed["nodes"][0]["config"]["id"] = str(uuid4())
+    asked, ask_request = submit(app, changed, 1, key="ask-receipt")
+    assert asked["outcome"] == "confirmation_required"
+    assert asked["workflow_definition_id"] == original["workflow_definition_id"]
+    assert asked["edit_sequence"] == 1 and asked["definition_revision"] == 1
+    # The ask is itself a durable receipt and replays identically.
+    assert app.command("definition.update", ask_request)["result"] == asked
+    assert service.get_definition(original["workflow_definition_id"]) == before_read
+    assert len(service.list_definitions()) == 1
+    # The same document with an explicit confirmation derives, under its own key.
+    derived, _ = submit(app, changed, 1, confirm=True)
+    assert derived["outcome"] == "derived"
+    assert len(service.list_definitions()) == 2
+    # An unconfirmed repeat of the document now asks again for the untouched source.
+    again, _ = submit(app, changed, 1)
+    assert again["outcome"] == "confirmation_required"
+    assert service.get_definition(original["workflow_definition_id"]) == before_read
+
+
+def test_confirmation_flag_shape_is_validated_before_effects(service):
+    app = GraphApplication(service)
+    created, _ = submit(app, configuration_document(service.registry), 0)
+    service.create_session(created["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
+    changed = deepcopy(created["document"])
+    changed["nodes"][0]["config"]["id"] = str(uuid4())
+    before = service.get_definition(created["workflow_definition_id"])
+    for value in ("true", 1, None):
+        with pytest.raises(ContractValidationError) as error:
+            app.command("definition.update", {
+                "workflow_definition_id": created["workflow_definition_id"], "document": deepcopy(changed),
+                "expected_edit_sequence": 1, "idempotency_key": str(uuid4()), "confirm_derivation": value,
+            })
+        assert error.value.reason_code == "invalid_request"
+    with pytest.raises(ContractValidationError):
+        app.command("definition.update", {
+            "workflow_definition_id": created["workflow_definition_id"], "document": deepcopy(changed),
+            "expected_edit_sequence": 1, "idempotency_key": str(uuid4()), "confirm": True,
+        })
+    assert service.get_definition(created["workflow_definition_id"]) == before
+    assert len(service.list_definitions()) == 1
 
 
 def test_old_save_cannot_bypass_configuration_authority(service):

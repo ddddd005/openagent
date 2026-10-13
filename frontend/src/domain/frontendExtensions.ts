@@ -1,17 +1,18 @@
 import { graphClone, graphObject } from "./workflowGraph";
 
 export interface FrontendExtension {
-  schema_version: 2;
-  host_protocol_version: 1;
+  schema_version: 2 | 3;
+  host_protocol_version: 1 | 2;
   extension_id: string;
-  kind: "workbench-panel" | "renderer" | "field-editor" | "consumer";
+  kind: "workbench-panel" | "renderer" | "field-editor" | "consumer" | "node-action";
   entrypoint: string;
   component_id: string | null;
   component_version: string | null;
   package_id: string;
   package_version: string;
-  binding: { surface: "workbench" | "consumer"; slot: "panel" | "session-object" | "node-fields" | "public-output"; target: Record<string, unknown> };
+  binding: { surface: "workbench" | "consumer"; slot: "panel" | "session-object" | "node-fields" | "public-output" | "node-actions"; target: Record<string, unknown> };
 }
+export const FRONTEND_HOST_PROTOCOL_VERSION = 2;
 
 function exactKeys(value: Record<string, unknown>, keys: string[]) {
   return Object.keys(value).length === keys.length && keys.every(key => key in value);
@@ -21,7 +22,8 @@ const boundedName = (value: unknown): value is string => typeof value === "strin
 export function isFrontendExtension(value: unknown): value is FrontendExtension {
   if (!graphObject(value) || !exactKeys(value, ["schema_version", "host_protocol_version", "extension_id", "kind",
     "entrypoint", "component_id", "component_version", "package_id", "package_version", "binding"])
-    || value.schema_version !== 2 || value.host_protocol_version !== 1
+    || !(value.schema_version === 2 && value.host_protocol_version === 1
+      || value.schema_version === 3 && value.host_protocol_version === FRONTEND_HOST_PROTOCOL_VERSION)
     || !["extension_id", "package_id", "package_version"].every(key => boundedName(value[key]))
     || typeof value.entrypoint !== "string" || value.entrypoint.length > 512 || value.entrypoint.trim() !== value.entrypoint
     || !/^[A-Za-z_][A-Za-z0-9_.:-]*$/.test(value.entrypoint)
@@ -30,7 +32,9 @@ export function isFrontendExtension(value: unknown): value is FrontendExtension 
   const { surface, slot, target } = value.binding;
   if (slot === "panel") return surface === "workbench" && value.kind === "workbench-panel"
     && value.component_id === null && value.component_version === null && exactKeys(target, []);
-  if (slot === "node-fields") return surface === "workbench" && value.kind === "field-editor"
+  if (slot === "node-fields" || slot === "node-actions") return surface === "workbench"
+    && (slot === "node-fields" ? value.kind === "field-editor"
+      : value.schema_version === 3 && value.kind === "node-action")
     && exactKeys(target, ["component_id", "component_version"]) && boundedName(target.component_id)
     && boundedName(target.component_version) && target.component_id === value.component_id
     && target.component_version === value.component_version;

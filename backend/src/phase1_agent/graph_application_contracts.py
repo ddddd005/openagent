@@ -55,7 +55,8 @@ COMMANDS = (
     operation("definition.save", "save_definition",
               ("document", "expected_revision", "idempotency_key"), status=201),
     operation("definition.update", "update_definition",
-              ("workflow_definition_id", "document", "expected_edit_sequence", "idempotency_key")),
+              ("workflow_definition_id", "document", "expected_edit_sequence", "idempotency_key"),
+              ("confirm_derivation",)),
     operation("definition.archive", "archive_definition",
               ("identity", "expected_revision", "idempotency_key")),
     operation("definition.delete", "delete_definition",
@@ -197,6 +198,9 @@ def validate_parameters(spec, parameters):
         require(type(parameters["expected_edit_sequence"]) is int
                 and 0 <= parameters["expected_edit_sequence"] < 2**53 - 1,
                 "invalid_request", "Configuration expected sequence is invalid")
+    if "confirm_derivation" in parameters:
+        require(type(parameters["confirm_derivation"]) is bool, "invalid_request",
+                "Derivation confirmation must be boolean")
     if spec.name == "credential.delete":
         from .credential_store import credential_id
         credential_id(parameters["credential_ref"])

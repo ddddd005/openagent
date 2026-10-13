@@ -10,11 +10,12 @@ const credential = { schema_version: 1, kind: "workflow.credential-status", cred
   generation: 1, state: "saved" };
 const result = { schema_version: 1, kind: "workflow.provider-credential-save", outcome: "saved",
   reason_code: "provider_credential_bound", credential, provider: { reference: request.identity, update_sequence: 2, deleted: false } };
+const requestDigest = "a".repeat(64);
 function envelope(operation = "provider.credential.save", value = result) {
   return { schema_version: 1, kind: "workflow.application-command", result: structuredClone(value), receipt: {
     schema_version: 1, kind: "workflow.application-receipt", operation,
     operation_scope: "management", idempotency_key: request.idempotency_key, authority: "service_receipt",
-    request_sha256: "a".repeat(64), target: {}, accepted: structuredClone(value),
+    request_sha256: requestDigest, target: {}, accepted: structuredClone(value),
   } };
 }
 function response(value: unknown) { vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(value)))); }
@@ -25,11 +26,11 @@ describe("provider configuration API contracts", () => {
     value.receipt.accepted.credential = { state: "saved", generation: 1, credential_ref: request.credential_ref,
       kind: "workflow.credential-status", schema_version: 1 };
     response(value);
-    expect(await providerConfigurationPorts.saveBound(request, "dummy-key")).toEqual(result);
+    expect(await providerConfigurationPorts.saveBound(request, "dummy-key", requestDigest)).toEqual(result);
     const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0]![1]!.body));
     expect(body).toEqual({ operation: "provider.credential.save", parameters: { ...request, secret: "dummy-key" } });
   });
-  it.each(["schema", "kind", "target", "extra", "accepted", "generation", "identity", "scope", "operation", "provider"])(
+  it.each(["schema", "kind", "target", "extra", "accepted", "generation", "identity", "scope", "operation", "provider", "digest"])(
     "refuses a %s receipt mismatch", async mode => {
       const value = envelope();
       if (mode === "schema") value.receipt.schema_version = 9;
@@ -42,17 +43,18 @@ describe("provider configuration API contracts", () => {
       if (mode === "scope") value.receipt.operation_scope = "consumer";
       if (mode === "operation") value.receipt.operation = "provider.credential.bind";
       if (mode === "provider") value.receipt.accepted.provider.update_sequence = 3;
+      if (mode === "digest") value.receipt.request_sha256 = "b".repeat(64);
       response(value);
-      await expect(providerConfigurationPorts.saveBound(request, "dummy-key")).rejects.toMatchObject({ kind: "unknown" });
+      await expect(providerConfigurationPorts.saveBound(request, "dummy-key", requestDigest)).rejects.toMatchObject({ kind: "unknown" });
     });
   it("keeps a partial or unresolved combined outcome distinct from success", async () => {
     for (const outcome of ["partial", "unresolved"]) {
       const value = { ...result, outcome, reason_code: "provider_binding_not_applied", provider: null };
       response(envelope("provider.credential.save", value as unknown as typeof result));
-      expect(await providerConfigurationPorts.saveBound(request, "dummy-key")).toMatchObject({ outcome, provider: null });
+      expect(await providerConfigurationPorts.saveBound(request, "dummy-key", requestDigest)).toMatchObject({ outcome, provider: null });
     }
     response(envelope("provider.credential.save", { ...result, provider: null } as unknown as typeof result));
-    await expect(providerConfigurationPorts.saveBound(request, "dummy-key")).rejects.toMatchObject({ kind: "unknown" });
+    await expect(providerConfigurationPorts.saveBound(request, "dummy-key", requestDigest)).rejects.toMatchObject({ kind: "unknown" });
   });
   it("queries only the non-secret original request on reconciliation", async () => {
     response(result);
@@ -72,9 +74,9 @@ describe("provider configuration API contracts", () => {
   });
   it("rejects invalid or incomplete provider bases before dispatch", async () => {
     response(result);
-    await expect(providerConfigurationPorts.saveBound({ ...request, provider_seed: provider.value }, "dummy-key"))
+    await expect(providerConfigurationPorts.saveBound({ ...request, provider_seed: provider.value }, "dummy-key", requestDigest))
       .rejects.toMatchObject({ kind: "rejected" });
-    await expect(providerConfigurationPorts.saveBound({ ...request, provider_seed: null }, "dummy-key"))
+    await expect(providerConfigurationPorts.saveBound({ ...request, provider_seed: null }, "dummy-key", requestDigest))
       .rejects.toMatchObject({ kind: "rejected" });
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -83,7 +85,7 @@ describe("provider configuration API contracts", () => {
     const key = { credential_ref, expected_generation, idempotency_key }, deleted = { ...credential, state: "missing" };
     const value = { ...envelope("credential.delete"), result: deleted, receipt: { ...envelope("credential.delete").receipt, accepted: deleted } };
     response(value);
-    expect(await providerConfigurationPorts.delete(key)).toEqual(deleted);
+    expect(await providerConfigurationPorts.delete(key, requestDigest)).toEqual(deleted);
     response(deleted);
     await providerConfigurationPorts.receipt(key);
     expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0]![1]!.body)))

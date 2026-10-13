@@ -65,7 +65,12 @@ function bindingResult(value: unknown, request: ProviderCredentialRequest,
     throw new WorkbenchApiError("unknown", "Key 或供应商绑定缺少回执，保留原请求");
   return value as unknown as ProviderCredentialResult;
 }
-async function boundCommand(request: ProviderCredentialRequest, secret: string) {
+function checkEvidenceDigest(digest: string) {
+  if (!/^[0-9a-f]{64}$/.test(digest))
+    throw new WorkbenchApiError("unknown", "缺少准确原 Key 请求证据，Key 未发送");
+}
+async function boundCommand(request: ProviderCredentialRequest, secret: string, requestDigest: string) {
+  checkEvidenceDigest(requestDigest);
   const operation = "provider.credential.save";
   const value = await workbenchRequest<unknown>("/api/graph/commands", {
     body: { operation, parameters: { ...request, secret } },
@@ -77,8 +82,7 @@ async function boundCommand(request: ProviderCredentialRequest, secret: string) 
     || receipt.kind !== "workflow.application-receipt"
     || !graphObject(receipt.target) || Object.keys(receipt.target).length !== 0
     || receipt.operation_scope !== "management" || receipt.idempotency_key !== request.idempotency_key
-    || receipt.authority !== "service_receipt" || typeof receipt.request_sha256 !== "string"
-    || !/^[0-9a-f]{64}$/.test(receipt.request_sha256))
+    || receipt.authority !== "service_receipt" || receipt.request_sha256 !== requestDigest)
     throw new WorkbenchApiError("unknown", "Key 生效回执不匹配，只能核实原请求");
   const accepted = bindingResult(receipt.accepted, request);
   const result = bindingResult(value.result, request);
@@ -95,7 +99,8 @@ export const providerConfigurationPorts = {
     return value.available;
   },
   async status(reference: string) { return status(await graphApplicationQuery("credential.status", { credential_ref: reference }), reference); },
-  async delete(request: CredentialRequest) {
+  async delete(request: CredentialRequest, requestDigest: string) {
+    checkEvidenceDigest(requestDigest);
     const operation = "credential.delete";
     const value = await workbenchRequest<unknown>("/api/graph/commands",
       { body: { operation, parameters: { ...request } } });
@@ -107,7 +112,7 @@ export const providerConfigurationPorts = {
       || receipt.operation !== operation || receipt.operation_scope !== "management"
       || receipt.idempotency_key !== request.idempotency_key || receipt.authority !== "service_receipt"
       || !graphObject(receipt.target) || Object.keys(receipt.target).length !== 0
-      || typeof receipt.request_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(receipt.request_sha256))
+      || receipt.request_sha256 !== requestDigest)
       throw new WorkbenchApiError("unknown", "凭据删除回执不匹配，只能核实原请求");
     const result = status(value.result, request.credential_ref);
     const accepted = status(receipt.accepted, request.credential_ref);
@@ -126,10 +131,10 @@ export const providerConfigurationPorts = {
       throw new WorkbenchApiError("unknown", "原凭据回执不匹配");
     return result;
   },
-  async saveBound(request: ProviderCredentialRequest, secret: string) {
+  async saveBound(request: ProviderCredentialRequest, secret: string, requestDigest: string) {
     if (!isProviderCredentialRequest(request) || request.provider_seed === null)
       throw new WorkbenchApiError("rejected", "供应商保存需要完整配置");
-    return boundCommand(request, secret);
+    return boundCommand(request, secret, requestDigest);
   },
   async boundReceipt(request: ProviderCredentialRequest, bind = false) {
     const value = await graphApplicationQuery(bind ? "provider.credential.bind-receipt" : "provider.credential.receipt", { request });

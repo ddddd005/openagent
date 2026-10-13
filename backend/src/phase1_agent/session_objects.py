@@ -419,6 +419,118 @@ class SessionObjectStore:
             if not item["deleted"]:
                 self._check_references(sid, ObjectBinding.from_dict(item["binding"]), item["value"], history=history)
 
+    def restore_logical(self, sid, document, logical_objects, *, object_keys, history_authority):
+        """Restore a proven checkpoint projection, retaining fixed bindings and live CAS."""
+        from .historical_artifact_reader import HistoryArtifactAuthority
+        from .host_sdk import bounded_name
+
+        self._transaction()
+        require(uuid_value(sid) and type(document) is dict and type(logical_objects) is dict
+                and type(object_keys) in (list, tuple) and len(object_keys) <= 2048
+                and all(bounded_name(key) for key in object_keys)
+                and len(set(object_keys)) == len(object_keys),
+                "session_object_restore_invalid", "Logical object restore fields are invalid")
+        require(isinstance(history_authority, HistoryArtifactAuthority)
+                and history_authority.connection is self.connection,
+                "session_object_reference_denied",
+                "Logical restoration requires the transaction's trusted checkpoint authority", 403)
+        entries = deepcopy(logical_objects)
+        keys = tuple(object_keys)
+        declarations = document.get("object_bindings", [])
+        require(type(declarations) is list, "session_object_restore_invalid",
+                "Object declarations must be explicit")
+        declared = [ObjectBinding.from_dict(item) for item in declarations]
+        bindings = {binding.object_key: binding for binding in declared}
+        require(len(bindings) == len(declared) and set(keys) <= bindings.keys(),
+                "state_migration_required", "Restore keys differ from the fixed object declarations", 409)
+        history_authority.validate_object_restore(sid, document, entries, keys)
+
+        def checked_value(revision_id):
+            require(uuid_value(revision_id), "storage_contract_violation",
+                    "Object revision identity is invalid", 500)
+            raw = self.connection.execute(
+                "SELECT deleted FROM session_object_values WHERE revision_id=?", (revision_id,),
+            ).fetchone()
+            require(raw is not None and type(raw["deleted"]) is int and raw["deleted"] in (0, 1),
+                    "storage_contract_violation", "Stored object tombstone is invalid", 500)
+            checked = self._value(revision_id)
+            require(not checked["deleted"] or checked["value"] is None,
+                    "storage_contract_violation", "Stored object tombstone must have a null body", 500)
+            if not checked["deleted"]:
+                self.types.validate(checked["type_id"], checked["schema_version"], checked["value"], scope="session")
+            return checked
+
+        prepared = []
+        for key in keys:
+            row, binding = self._binding(sid, key)
+            expected = bindings[key]
+            require(binding.to_dict() == expected.to_dict(),
+                    "state_migration_required", "Logical restore cannot change an object binding", 409)
+            self._check_type(binding)
+            entry = entries.get(key, {"type_id": binding.type_id, "schema_version": binding.schema_version,
+                                      "deleted": True, "value": None})
+            require(type(entry) is dict and set(entry) == {"type_id", "schema_version", "deleted", "value"}
+                    and type(entry["schema_version"]) is int and type(entry["deleted"]) is bool
+                    and (not entry["deleted"] or entry["value"] is None),
+                    "session_object_restore_invalid", "Logical state cannot contain storage revision envelopes")
+            require((entry["type_id"], entry["schema_version"]) == (binding.type_id, binding.schema_version),
+                    "state_migration_required", "Logical object type differs from its fixed binding", 409)
+            deleted = entry["deleted"]
+            value = None if deleted else self.types.validate(
+                binding.type_id, binding.schema_version, entry["value"], scope="session")
+            if not deleted:
+                for reference in self.types.references(binding.type_id, binding.schema_version, value, scope="session"):
+                    reference = validate_reference(reference)
+                    if reference["scope"] == "artifact":
+                        history_authority.resolve_artifact(reference)
+                    elif reference["scope"] == "session":
+                        require(reference["workflow_session_id"] == sid,
+                                "session_object_reference_denied", "Reference escapes the target session", 403)
+                        target, target_binding = self._binding(sid, reference["object_key"])
+                        require(reference["object_key"] in bindings
+                                and target_binding.to_dict() == bindings[reference["object_key"]].to_dict()
+                                and set(binding.readers) <= set(target_binding.readers),
+                                "session_object_reference_denied", "Reference exceeds fixed object permissions", 403)
+                        require(self.connection.execute(
+                            "SELECT 1 FROM session_object_revision_membership "
+                            "WHERE session_id=? AND object_key=? AND revision_id=?",
+                            (sid, reference["object_key"], reference["revision_id"]),
+                        ).fetchone() is not None, "session_object_reference_denied",
+                            "Revision is outside the target object's authorized history", 403)
+                        known = checked_value(reference["revision_id"])
+                        require((known["type_id"], known["schema_version"])
+                                == (target_binding.type_id, target_binding.schema_version),
+                                "session_object_reference_invalid", "Reference target type differs")
+            require(self.connection.execute(
+                "SELECT 1 FROM session_object_revision_membership "
+                "WHERE session_id=? AND object_key=? AND revision_id=?",
+                (sid, key, row["revision_id"]),
+            ).fetchone() is not None, "storage_contract_violation",
+                "Current object head is outside its own revision membership", 500)
+            current = checked_value(row["revision_id"])
+            require((current["type_id"], current["schema_version"]) == (binding.type_id, binding.schema_version)
+                    and type(row["revision"]) is int and 1 <= row["revision"] <= 2**53 - 1,
+                    "storage_contract_violation", "Current object head is invalid", 500)
+            changed = current["deleted"] != deleted or canonical_bytes(current["value"]) != canonical_bytes(value)
+            require(not changed or row["revision"] < 2**53 - 1, "session_object_revision_exhausted",
+                    "Object revision exceeds its protocol limit", 409)
+            prepared.append((key, row, binding, value, deleted, changed))
+        results = []
+        for key, row, binding, value, deleted, changed in prepared:
+            revision, revision_id = row["revision"], row["revision_id"]
+            if changed:
+                revision_id = self._put_value(binding, value, deleted=deleted)
+                revision += 1
+                updated = self.connection.execute(
+                    "UPDATE session_object_bindings SET revision=?,revision_id=? "
+                    "WHERE session_id=? AND object_key=? AND revision=? AND revision_id=? AND binding=?",
+                    (revision, revision_id, sid, key, row["revision"], row["revision_id"], row["binding"]),
+                )
+                require(updated.rowcount == 1, "stale_object_revision", "Object changed during logical restoration", 409)
+                self._grant_revision(sid, key, revision_id)
+            results.append({"object_key": key, "revision": revision, "revision_id": revision_id, "deleted": deleted})
+        return results
+
     def rebind(self, sid, document):
         """Compatible declarations retain values; unbinding retains immutable history."""
         self._transaction()

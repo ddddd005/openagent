@@ -122,6 +122,25 @@ def node_output(view, entry, port="output"):
                 if item["node_binding_id"] == entry["node_binding_id"])
 
 
+def once_sources(value):
+    """Once source identities this assembly actually injected from its materials."""
+    from phase1_agent.context_prompt_v6 import injected_once_sources
+    return injected_once_sources({"messages": value["messages"], "layout": value["layout"]})
+
+
+def new_once_sources(prompt):
+    """Once source identities injected from materials, excluding persisted history."""
+    frozen = {message["message_id"] for message in prompt["context"]["messages"]}
+    return {message["source"]["item_instance_id"] for message, item in
+            zip(prompt["messages"], prompt["layout"])
+            if item["kind"] == "once" and message["message_id"] not in frozen}
+
+
+def once_source(entry):
+    from phase1_agent.content_contracts import stable_item_id
+    return stable_item_id(entry["node_binding_id"], entry["config"]["id"])
+
+
 def rebind(service, view, doc):
     doc = deepcopy(doc)
     doc["revision"] = view["definition_revision"] + 1
@@ -153,9 +172,8 @@ def test_native_graph_two_compactions_project_then_append_and_survive_copy_reope
         assert effective["messages"][-1]["role"] == "assistant"
         assert effective["messages"][-1]["blocks"][0]["text"] == "Native accepted answer"
         assert all(block["kind"] != "tool_call" for message in effective["messages"] for block in message["blocks"])
-        assert len(effective["once_injected_item_ids"]) == 1
         frozen = node_output(first, entries["a"]["assembly"])
-        assert len(frozen["once_pending_item_ids"]) == 1
+        assert new_once_sources(frozen) == {once_source(entries["once"])}
         assert update["basis_view_ref"] == frozen["context_ref"]
         assert first["objects"]["context-a"]["revision"] == 2
         saved = deepcopy(first["objects"]["context-a"])
@@ -167,8 +185,9 @@ def test_native_graph_two_compactions_project_then_append_and_survive_copy_reope
         assert second["status"] == "succeeded", second["chains"]
         assert len(fixture.summaries) == 2
         second_prompt = node_output(second, entries["a"]["assembly"])
-        assert second_prompt["once_pending_item_ids"] == []
-        assert "ONCE_ORIGINAL_SOURCE" not in str(second_prompt["messages"])
+        # The once material was compacted away, so its source is no longer present and re-enters.
+        assert new_once_sources(second_prompt) == {once_source(entries["once"])}
+        assert "ONCE_ORIGINAL_SOURCE" in str(second_prompt["messages"])
         assert any(message["blocks"][0].get("text") == "Current protected task."
                    and layout["kind"] == "history" and layout["compaction"] == "allowed"
                    for message, layout in zip(second_prompt["messages"], second_prompt["layout"]))
@@ -182,12 +201,11 @@ def test_native_graph_two_compactions_project_then_append_and_survive_copy_reope
         assert child_final["status"] == "succeeded", child_final["chains"]
         assert len(fixture.summaries) == 2
         child_prompt = node_output(child_final, entries["a"]["assembly"])
-        assert child_prompt["once_pending_item_ids"] == []
-        assert "ONCE_ORIGINAL_SOURCE" not in str(child_prompt["messages"])
+        assert new_once_sources(child_prompt) == {once_source(entries["once"])}
         assert "Next parent request." not in str(child_prompt["messages"])
 
 
-def test_two_agents_keep_separate_once_ledgers_contexts_and_owners(tmp_path, monkeypatch):
+def test_two_agents_keep_separate_contexts_and_sources(tmp_path, monkeypatch):
     fixture = NativeTransport()
     with closing(GraphWorkflowService(tmp_path / "dual.sqlite", public_model_factory=fixture.factory)) as service:
         ModelDatabaseFixture.write(service, 1)
@@ -196,15 +214,18 @@ def test_two_agents_keep_separate_once_ledgers_contexts_and_owners(tmp_path, mon
         assert first["status"] == "succeeded", first["chains"]
         assert len(fixture.summaries) == 2
         views = [node_output(first, entries[suffix]["merge"]) for suffix in ("a", "b")]
-        assert views[0]["once_injected_item_ids"] == views[1]["once_injected_item_ids"]
         assert views[0]["owner"]["agent_node_id"] != views[1]["owner"]["agent_node_id"]
         assert views[0]["accepted_delta_ids"] + views[0]["applied_delta_ids"] != (
             views[1]["accepted_delta_ids"] + views[1]["applied_delta_ids"])
+        assert all(new_once_sources(node_output(first, entries[suffix]["assembly"])) == {
+            once_source(entries["once"])} for suffix in ("a", "b"))
         second = run(service, first, "Both continue independently.")
         assert second["status"] == "succeeded", second["chains"]
         assert len(fixture.summaries) == 2
         for suffix in ("a", "b"):
-            assert node_output(second, entries[suffix]["assembly"])["once_pending_item_ids"] == []
+            # Each Agent compacts its own context, so each re-injects its absent source.
+            assert new_once_sources(node_output(second, entries[suffix]["assembly"])) == {
+                once_source(entries["once"])}
             assert second["objects"]["context-" + suffix]["revision"] == 3
 
 
@@ -252,7 +273,7 @@ def test_context_acceptance_rollback_retries_without_reexecuting_summary_or_agen
         assert len(fixture.calls) == calls
         assert node_output(final, entries["a"]["agent"], "context") == accepted_update
         assert final["objects"]["context-a"]["revision"] == 2
-        assert len(node_output(final, entries["a"]["merge"])["once_injected_item_ids"]) == 1
+        assert new_once_sources(node_output(final, entries["a"]["assembly"])) == {once_source(entries["once"])}
 
 
 def test_native_write_proof_rejects_wrong_agent_artifact_inputs_and_changed_candidate(tmp_path, monkeypatch):
@@ -286,8 +307,10 @@ def test_native_write_proof_rejects_wrong_agent_artifact_inputs_and_changed_cand
                  lambda detail: detail["producer"].update(node_binding_id=str(uuid4()))),
                 (effective["derivation"]["update_ref"],
                  lambda detail: detail["input_refs"]["model"][0].update(output_id=str(uuid4()))),
-                (effective["derivation"]["update_ref"],
-                 lambda detail: detail["value"]["next_view"].update(once_injected_item_ids=[])),
+                (update["receipts"]["frozen_prompt_ref"],
+                 lambda detail: [item.update(text="FORGED_ONCE_SOURCE")
+                                 for item in detail["value"]["items"]
+                                 if item["lifecycle"] == "context_once"]),
                 (update["receipts"]["frozen_prompt_ref"],
                  lambda detail: detail["value"].update(context_ref={"scope": "artifact", "output_id": str(uuid4())})),
                 (effective["derivation"]["update_ref"],
@@ -317,7 +340,7 @@ def test_native_graph_without_compaction_stores_current_and_final_text_not_fixed
         effective = node_output(final, entries["a"]["merge"])
         assert [message["role"] for message in effective["messages"]] == ["user", "assistant"]
         assert all(item["kind"] == "history" and item["compaction"] == "allowed" for item in effective["layout"])
-        assert effective["generation"] == 0 and effective["once_injected_item_ids"] == []
+        assert effective["generation"] == 0 and not once_sources(effective)
         assert len(fixture.calls) == 1
 
 
@@ -350,7 +373,7 @@ def test_native_graph_middle_depth_reaches_model_and_does_not_persist_material(
         assert [message["blocks"][0]["text"] for message in effective["messages"]] == [
             "First input.", "Native accepted answer", "Second input.",
             "Native accepted answer", "Current input.", "Native accepted answer"]
-        assert not effective["once_injected_item_ids"]
+        assert not once_sources(effective)
         sid, chain = third["workflow_session_id"], third["selected_chain_run_id"]
     with closing(GraphWorkflowService(database, public_model_factory=fixture.factory)) as reopened:
         archived = reopened.get_run(sid, chain)

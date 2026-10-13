@@ -1,3 +1,7 @@
+export interface GraphConfigurationPolicy {
+  schema_version: 1;
+  prompt_mode: "fixed" | "adjustable";
+}
 export interface GraphNode {
   node_binding_id: string;
   component_id: string;
@@ -6,6 +10,7 @@ export interface GraphNode {
   position: { x: number; y: number };
   config: Record<string, unknown>;
   public_outputs?: string[];
+  configuration_policy?: GraphConfigurationPolicy;
 }
 export interface GraphEdge {
   edge_id: string;
@@ -16,9 +21,10 @@ export interface GraphEdge {
   order: number;
 }
 export interface GraphDocument {
-  schema_version: 1 | 2;
+  schema_version: 1 | 2 | 3;
   workflow_definition_id: string;
   revision: number;
+  edit_sequence?: number;
   name: string;
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -317,7 +323,120 @@ function graphBudget(value: unknown) {
   return graphObject(value) && positive(value.max_model_requests) && positive(value.max_model_attempts)
     && ["model_requests", "attempts", "accepted_messages"].every(key => value[key] === undefined || nonnegative(value[key]));
 }
+const graphExactKeys = (value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []) =>
+  required.every(key => Object.hasOwn(value, key))
+  && Object.keys(value).every(key => required.includes(key) || optional.includes(key));
+const canonicalGraphUuid = (value: unknown): value is string => graphUuid(value) && value === value.toLowerCase();
+const graphStorageText = (value: unknown, minimum = 1, maximum = 128): value is string =>
+  typeof value === "string" && [...value].length >= minimum && [...value].length <= maximum;
+const graphStorageName = (value: unknown): value is string => graphStorageText(value) && value.trim() === value;
+function graphStorageStrings(value: unknown): boolean {
+  const pending = [value];
+  while (pending.length) {
+    const item = pending.pop();
+    if (typeof item === "string" && /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(item)) return false;
+    if (Array.isArray(item)) for (const child of item) pending.push(child);
+    else if (graphObject(item)) for (const [key, child] of Object.entries(item)) pending.push(key, child);
+  }
+  return true;
+}
+function graphStorageObjectBindings(value: unknown, ids: Set<string>): value is GraphObjectBinding[] {
+  if (!Array.isArray(value) || value.length > 1024) return false;
+  const keys = new Set<string>();
+  return value.every(binding => {
+    if (!graphObject(binding) || !graphExactKeys(binding, ["object_key", "type_id", "schema_version",
+      "scope", "readers", "writers", "owner_node_id"], ["default_value"])
+      || !graphStorageName(binding.object_key) || keys.has(binding.object_key)
+      || !graphStorageName(binding.type_id) || !positive(binding.schema_version)
+      || binding.scope !== "shared" && binding.scope !== "private"
+      || !["readers", "writers"].every(key => Array.isArray(binding[key]) && binding[key].length <= 512
+        && binding[key].every(id => canonicalGraphUuid(id) && ids.has(id))
+        && new Set(binding[key]).size === binding[key].length)
+      || !(binding.scope === "shared" ? binding.owner_node_id === null
+        : canonicalGraphUuid(binding.owner_node_id) && ids.has(binding.owner_node_id))) return false;
+    if (binding.scope === "private" && [...binding.readers as string[], ...binding.writers as string[]]
+      .some(id => id !== binding.owner_node_id)) return false;
+    keys.add(binding.object_key); return true;
+  });
+}
+function graphStorageEventBindings(value: unknown, ids: Set<string>): value is GraphEventBinding[] {
+  if (!Array.isArray(value) || value.length > 512) return false;
+  const keys = new Set<string>();
+  return value.every(binding => {
+    if (!graphObject(binding) || !graphExactKeys(binding, ["event_id", "schema_version", "display_name",
+      "audience", "target_node_ids", "payload_schema"]) || !graphStorageName(binding.event_id)
+      || !positive(binding.schema_version) || !graphStorageText(binding.display_name)
+      || !binding.display_name.trim() || binding.audience !== "management" && binding.audience !== "consumer"
+      || !Array.isArray(binding.target_node_ids) || !binding.target_node_ids.length || binding.target_node_ids.length > 512
+      || !binding.target_node_ids.every(id => canonicalGraphUuid(id) && ids.has(id))
+      || new Set(binding.target_node_ids).size !== binding.target_node_ids.length
+      || !isLocalEventSchema(binding.payload_schema)) return false;
+    const key = JSON.stringify([binding.event_id, binding.schema_version]);
+    if (keys.has(key)) return false;
+    keys.add(key); return true;
+  });
+}
+export function isGraphConfigurationPolicy(value: unknown): value is GraphConfigurationPolicy {
+  return graphObject(value) && isGraphJsonValue(value)
+    && graphExactKeys(value, ["schema_version", "prompt_mode"])
+    && value.schema_version === 1 && (value.prompt_mode === "fixed" || value.prompt_mode === "adjustable");
+}
+function isGraphSchema3Document(value: Record<string, unknown>): boolean {
+  if (!isGraphJsonValue(value) || !graphStorageStrings(value)
+    || !graphExactKeys(value, ["schema_version", "workflow_definition_id", "revision", "name", "nodes", "edges", "object_bindings"],
+      ["edit_sequence", "package_lock", "execution_roots", "control_edges", "event_bindings"])
+    || !canonicalGraphUuid(value.workflow_definition_id) || !positive(value.revision)
+    || Object.hasOwn(value, "edit_sequence") && !nonnegative(value.edit_sequence)
+    || typeof value.name !== "string" || !graphStorageText(value.name.trim())
+    || !Array.isArray(value.nodes) || value.nodes.length > 512
+    || !Array.isArray(value.edges) || value.edges.length > 4096) return false;
+  const ids = new Set<string>();
+  for (const node of value.nodes) {
+    if (!graphObject(node) || !graphExactKeys(node, ["node_binding_id", "component_id", "component_version",
+      "title", "position", "config", "configuration_policy"], ["public_outputs"])
+      || !canonicalGraphUuid(node.node_binding_id) || ids.has(node.node_binding_id)
+      || !graphStorageText(node.component_id) || !graphStorageText(node.component_version)
+      || !graphStorageText(node.title, 0) || !graphObject(node.position)
+      || !graphExactKeys(node.position, ["x", "y"])
+      || ![node.position.x, node.position.y].every(n => typeof n === "number" && Number.isFinite(n))
+      || !graphObject(node.config) || !isGraphConfigurationPolicy(node.configuration_policy)) return false;
+    if (Object.hasOwn(node, "public_outputs") && (!Array.isArray(node.public_outputs)
+      || node.public_outputs.length > 64 || !node.public_outputs.every(port => typeof port === "string" && port.length > 0)
+      || new Set(node.public_outputs).size !== node.public_outputs.length)) return false;
+    ids.add(node.node_binding_id);
+  }
+  const edges = new Set<string>();
+  if (!value.edges.every(edge => {
+    if (!graphObject(edge) || !graphExactKeys(edge, ["edge_id", "source_node_id", "source_port_id",
+      "target_node_id", "target_port_id", "order"])
+      || !canonicalGraphUuid(edge.edge_id) || edges.has(edge.edge_id)
+      || !canonicalGraphUuid(edge.source_node_id) || !canonicalGraphUuid(edge.target_node_id)
+      || !graphStorageText(edge.source_port_id) || !graphStorageText(edge.target_port_id)
+      || !nonnegative(edge.order)) return false;
+    edges.add(edge.edge_id); return true;
+  })) return false;
+  if (!graphStorageObjectBindings(value.object_bindings, ids)) return false;
+  if (Object.hasOwn(value, "package_lock") && (!Array.isArray(value.package_lock) || value.package_lock.length > 256
+    || !value.package_lock.every(item => graphObject(item) && graphExactKeys(item, ["package_id", "version"])
+      && graphStorageName(item.package_id) && graphStorageName(item.version))
+    || new Set(value.package_lock.map(item => item.package_id)).size !== value.package_lock.length)) return false;
+  if (Object.hasOwn(value, "event_bindings") && (!graphStorageEventBindings(value.event_bindings, ids)
+    || value.event_bindings.length > 0 && !Object.hasOwn(value, "execution_roots"))) return false;
+  const roots = Object.hasOwn(value, "execution_roots") ? value.execution_roots : [];
+  if (!Array.isArray(roots) || roots.length > 512 || !roots.every(id => canonicalGraphUuid(id) && ids.has(id))
+    || new Set(roots).size !== roots.length) return false;
+  const controls = Object.hasOwn(value, "control_edges") ? value.control_edges : [];
+  if (!Array.isArray(controls) || controls.length > 4096 || !controls.every(control => {
+    if (!graphObject(control) || !graphExactKeys(control, ["edge_id", "source_node_id", "target_node_id"])
+      || !canonicalGraphUuid(control.edge_id) || edges.has(control.edge_id)
+      || !canonicalGraphUuid(control.source_node_id) || !ids.has(control.source_node_id)
+      || !canonicalGraphUuid(control.target_node_id) || !ids.has(control.target_node_id)) return false;
+    edges.add(control.edge_id); return true;
+  })) return false;
+  return new TextEncoder().encode(JSON.stringify(value)).length <= 4_000_000;
+}
 export function isGraphDocument(value: unknown): value is GraphDocument {
+  if (graphObject(value) && value.schema_version === 3) return isGraphSchema3Document(value);
   if (!graphObject(value) || value.schema_version !== 1 && value.schema_version !== 2 || !graphUuid(value.workflow_definition_id)
     || !positive(value.revision) || typeof value.name !== "string"
     || !Array.isArray(value.nodes) || !Array.isArray(value.edges)
@@ -438,6 +557,7 @@ export function newGraph(name: string, packageLock: NonNullable<GraphDocument["p
     object_bindings: [], package_lock: graphClone(packageLock), execution_roots: [], control_edges: [] };
 }
 export function upgradeGraph(document: GraphDocument, packageLock: NonNullable<GraphDocument["package_lock"]> = []) {
+  if (document.schema_version === 3) throw new Error("Schema 3 configuration cannot use the legacy graph upgrade.");
   document.schema_version = 2;
   document.object_bindings ??= [];
   document.package_lock ??= graphClone(packageLock);

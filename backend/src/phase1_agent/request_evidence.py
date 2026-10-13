@@ -55,7 +55,14 @@ def validate_evidence_request(operation, idempotency_key, request):
     require(spec is not None and not operation.startswith("request-evidence.")
             and "idempotency_key" in spec.required,
             "invalid_request", "Evidence requires an existing business command")
-    validate_parameters(spec, request)
+    if operation == "provider.credential.save":
+        # This operation's public receipt identifies the original secret-free request.
+        from .graph_provider_host import validate_provider_key_request
+        validate_provider_key_request(request)
+        require(request["provider_seed"] is not None, "invalid_request",
+                "Provider save evidence requires its complete configuration")
+    else:
+        validate_parameters(spec, request)
     validate_json_value(request)
     require(request["idempotency_key"] == idempotency_key,
             "request_evidence_conflict", "Evidence identity differs from the original request", 409)

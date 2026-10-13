@@ -9,6 +9,8 @@ import ProviderCredentialFields from "./ProviderCredentialFields.vue";
 import { createProviderResources, modelResourceControllerKey } from "../application/workflowResources";
 import { localDraftPorts } from "../adapters/localDraftsApi";
 import { memoryLocalDraftStorage } from "../testUtils/localDraftStorage";
+import { memoryRequestEvidence } from "../testUtils/requestEvidence";
+import { requestEvidencePorts } from "../adapters/requestEvidenceApi";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import { graphClone } from "../domain/workflowGraph";
 import { newProvider, providerIdentity } from "../domain/workflowModelResources";
@@ -80,6 +82,10 @@ async function fixture(savedKey = false) {
   vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {}, confirm: vi.fn(() => true) });
   vi.stubGlobal("document", { activeElement: null }); vi.stubGlobal("Document", class {}); vi.stubGlobal("ShadowRoot", class {});
   const memory = memoryLocalDraftStorage();
+  const evidence = memoryRequestEvidence();
+  vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+  vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+  vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
   vi.spyOn(localDraftPorts, "read").mockImplementation(memory.ports.read);
   vi.spyOn(localDraftPorts, "save").mockImplementation(memory.ports.save);
   vi.spyOn(localDraftPorts, "receipt").mockImplementation(memory.ports.receipt);
@@ -119,7 +125,7 @@ async function fixture(savedKey = false) {
   const app = renderer.createApp(compile(CurrentProviderPanel, "CurrentProviderPanel.vue"));
   app.provide(modelResourceControllerKey, resources).provide(Vue.ssrContextKey, { modules: new Set() });
   const root = new HostNode(); apps.push(app); app.mount(root); await flush();
-  return { root, resources, provider, resourceSave, memory, records, get raw() { return raw; },
+  return { root, resources, provider, resourceSave, memory, evidence, records, get raw() { return raw; },
     set lostResponse(value: boolean) { lostResponse = value; } };
 }
 afterEach(() => { apps.splice(0).forEach(app => app.unmount()); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.clearAllMocks(); });
@@ -154,14 +160,15 @@ describe("ordinary provider form editing", () => {
     expect(credentialPorts.saveBound).toHaveBeenCalledOnce();
     expect(credentialPorts.saveBound.mock.calls[0]).toMatchObject([{
       expected_sequence: 0, provider_seed: { name: "Latest name", base_url: "https://edited.invalid/v1", enabled: true },
-    }, "controlled-memory-key"]);
+    }, "controlled-memory-key", expect.stringMatching(/^[0-9a-f]{64}$/)]);
     expect(f.resourceSave).not.toHaveBeenCalled();
     expect(f.records[0]!.value.name).toBe("Latest name");
     expect(text(f.root)).toContain("供应商配置与 Key 已保存");
     expect(label(f.root, "API Key").value).toBe("");
-    for (const request of vi.mocked(f.memory.ports.save).mock.calls.map(call => call[0])) {
-      expect(request.address.kind).toBe("intent");
-      expect(request.address.key).toMatch(/^credential:/);
+    expect(f.memory.ports.save).not.toHaveBeenCalled();
+    for (const request of vi.mocked(f.evidence.ports.write).mock.calls.map(call => call[0])) {
+      expect(request.owner_kind).toBe("provider-credential");
+      expect(request.operation).toBe("provider.credential.save");
       expect(JSON.stringify(request)).not.toContain("controlled-memory-key");
     }
   });
@@ -187,7 +194,7 @@ describe("ordinary provider form editing", () => {
     expect(credentialPorts.saveBound).toHaveBeenCalledOnce();
     expect(label(f.root, "API Key").value).toBe("");
     expect(label(f.root, "新增供应商").props.disabled).toBe(true);
-    const preserved = graphClone([...f.memory.records.values()][0]!.value) as { request: ProviderCredentialRequest };
+    const preserved = graphClone([...f.evidence.records.values()][0]!) as unknown as { request: ProviderCredentialRequest };
     expect(JSON.stringify(preserved)).not.toContain("controlled-memory-key");
     expect(text(f.root)).toContain("Controlled Key response loss");
     await trigger(find(f.root, node => node.tag === "button" && text(node).includes("核实原 Key 请求")), "Click");
