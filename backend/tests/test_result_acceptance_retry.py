@@ -108,10 +108,11 @@ def test_lost_process_candidate_refuses_retry_and_close_releases_retained_result
     assert fixture.closes == 1
     with closing(GraphWorkflowService(path, public_model_factory=fixture.factory)) as reopened:
         lost = reopened.get_session(pending["workflow_session_id"])
-        assert lost["status"] == "recovery_unavailable"
-        assert lost["available_actions"] == ["close"]
+        assert lost["status"] == "archive_failed"
+        assert lost["available_actions"] == ["retry_archive", "close"]
         with pytest.raises(ContractValidationError):
             retry(reopened, lost)
+        assert reopened.get_session(pending["workflow_session_id"]) == lost
         assert len(fixture.calls) == 1
 
 

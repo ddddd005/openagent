@@ -14,7 +14,6 @@
   const workflowId = query.get("graph_workflow"), requestedSession = query.get("graph_session");
   let client = null, definition = null, localBusy = false, reading = false, timer = null;
   let directory = [], contextKey = null, historyKey = null, transcriptGeneration = 0, disposed = false;
-  let transcriptMessages = [];
   let draftReady = false, draftFailure = "";
   const cache = new Map(), drafts = new Map();
   const dirtyDrafts = new Set();
@@ -32,7 +31,6 @@
   });
   const renderer = new TavernChat.ChatRenderer({
     chatElement: $("chat"), messageTemplate: $("message_template"),
-    onFork: entryId => forkEntry(entryId),
     onCopy: async (text, button) => {
       try {
         await navigator.clipboard.writeText(text);
@@ -69,7 +67,7 @@
     if (key === contextKey) return;
     if (contextKey) void rememberDraft().catch(failure => error(failure.message));
     contextKey = key; draftReady = false; draftFailure = ""; cache.clear(); historyKey = null;
-    transcriptGeneration++; transcriptMessages = []; renderer.clear();
+    transcriptGeneration++; renderer.clear();
     const empty = document.createElement("p"); empty.className = "empty-chat"; empty.textContent = "暂无聊天记录";
     $("chat").append(empty);
     $("send_textarea").value = "";
@@ -151,7 +149,6 @@
     $("run-detail").hidden = !view?.nodes.length;
     $("budget").hidden = !view?.available_actions.includes("extend_budget");
     $("requests").disabled = locked; $("attempts").disabled = locked;
-    renderer.renderForks(currentTargets(), locked);
     TavernChat.icons(document);
   }
   function updateUrl() {
@@ -170,13 +167,8 @@
     if (disposed || session !== client.sessionId || generation !== client.generation) return;
     directory = value; renderDirectory();
   }
-  function currentTargets() {
-    return TavernAdapter.roundTargets(transcriptMessages, !client?.pending && client?.candidatesCurrent()
-      ? client.forkCandidates : null);
-  }
   async function loadCandidates() {
-    if (!client?.consumer || client.pending || !client.application?.queries.some(row => row.name === "consumer.candidate.list")
-      || !client.application.commands.some(row => row.name === "consumer.candidate.fork")) return;
+    if (!client?.consumer || client.pending || !client.application?.queries.some(row => row.name === "consumer.candidate.list")) return;
     try { await client.readCandidates(); }
     catch (failure) { if (!disposed) error(failure.message); }
     render();
@@ -193,14 +185,12 @@
       const messages = await TavernAdapter.transcript(client, cache);
       if (!messages || disposed || generation !== transcriptGeneration || view !== client.consumer) return;
       $("chat").querySelector(".empty-chat")?.remove();
-      transcriptMessages = messages;
       renderer.render(messages);
       if (!messages.length) {
         const empty = document.createElement("p"); empty.className = "empty-chat"; empty.textContent = "暂无聊天记录";
         $("chat").append(empty);
       }
       historyKey = key; $("transcript-status").textContent = `${messages.length} 条展示记录`;
-      renderer.renderForks(currentTargets(), localBusy || reading || client.busy || !!client.pending);
     } catch (failure) {
       if (!disposed && generation === transcriptGeneration && view === client.consumer) {
         $("transcript-status").textContent = "聊天记录读取未完成"; error(failure.message);
@@ -223,23 +213,11 @@
       throw new Error("额度增量无效");
     return { add_model_requests: requests, add_model_attempts: attempts };
   }
-  async function forkEntry(entryId) {
-    if (localBusy || reading || !client || client.busy || client.pending) return;
-    const target = currentTargets().get(entryId);
-    if (!target) { error("此记录没有当前可用的完成回合检查点"); return; }
-    if (!confirm(TavernAdapter.forkConfirmation(target))) return;
-    await perform("fork", false, target);
-  }
-  async function perform(action, reconcile = false, target = null) {
+  async function perform(action, reconcile = false) {
     if (localBusy || reading || !client || client.busy || !!client.pending !== reconcile) return;
     if (!reconcile && action === "start"
       && (!client.consumer?.can_submit || TavernAdapter.displayPorts(client.consumer).length !== 1)) {
       error("当前会话或酒馆展示声明不支持发送"); return;
-    }
-    if (!reconcile && action === "fork"
-      && (!target || !client.candidatesCurrent() || !client.forkCandidates.can_fork
-        || !client.forkCandidates.candidates.some(candidate => JSON.stringify(candidate) === JSON.stringify(target.candidate)))) {
-      error("完成回合检查点依据已变化，请刷新"); return;
     }
     if (!reconcile && action === "close" && !confirm("结束当前运行？已接纳的结果保留。")) return;
     if (!reconcile && action === "retry_failed_node"
@@ -254,8 +232,7 @@
           : action === "extend_budget" ? budgetFields() : {};
       const submitted = original?.action === "start" ? Object.values(original.body.inputs)[0]
         : action === "start" ? $("send_textarea").value : null;
-      if (!reconcile && action === "fork") await client.forkCandidate(target.candidate);
-      else await client.command(reconcile ? original.action : action, fields);
+      await client.command(reconcile ? original.action : action, fields);
       if ((original?.action ?? action) === "start" && typeof submitted === "string" && $("send_textarea").value === submitted) {
         $("send_textarea").value = ""; dirtyDrafts.add(contextKey); await rememberDraft();
       }

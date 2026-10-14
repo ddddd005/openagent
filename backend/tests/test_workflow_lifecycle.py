@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from phase1_agent.checkpoint_repository import CheckpointRepository, initialize_checkpoint_tables
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_http import dispatch_graph
@@ -14,7 +15,7 @@ from phase1_agent.graph_records import graph_record
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.graph_store import GraphRecordStore
 from phase1_agent.storage import SqliteStore
-from test_graph_service import create, document, gate_graph, run, text_graph
+from test_graph_service import create, document, gate_graph, run, save_definition_fixture, text_graph
 
 
 @pytest.fixture
@@ -23,9 +24,71 @@ def service(tmp_path):
         yield instance
 
 
+def _save_configuration(service, document, *, key=None):
+    proposed = deepcopy(document)
+    proposed["schema_version"] = 3
+    proposed["package_lock"] = list(service.registry.execution_package_lock)
+    for node in proposed["nodes"]:
+        node["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
+    return service.update_definition(
+        proposed, workflow_definition_id=proposed["workflow_definition_id"],
+        expected_edit_sequence=0, idempotency_key=key or str(uuid4()))
+
+
+def _checkpoint_root(workflow_id, session_id, fixed_revision=1):
+    return {
+        "schema_version": 1,
+        "checkpoint_id": str(uuid4()),
+        "workflow_definition_id": workflow_id,
+        "workflow_session_id": session_id,
+        "fixed_definition_revision": fixed_revision,
+        "parent_checkpoint_id": None,
+        "state_storage": {
+            "mode": "full",
+            "state": {
+                "configuration": {
+                    "workflow_definition_id": workflow_id,
+                    "fixed_definition_revision": fixed_revision,
+                    "nodes": {},
+                },
+                "agent_contexts": {},
+            },
+        },
+    }
+
+
+def _seed_checkpoint_roots(service, sessions):
+    with closing(SqliteStore(service.database)) as store:
+        connection = store._connection
+        connection.execute("BEGIN IMMEDIATE")
+        initialize_checkpoint_tables(connection)
+        checkpoints = []
+        try:
+            for session in sessions:
+                repository = CheckpointRepository(
+                    connection,
+                    workflow_definition_id=session["workflow_definition_id"],
+                    workflow_session_id=session["workflow_session_id"],
+                    fixed_definition_revision=session["definition_revision"],
+                )
+                checkpoint = _checkpoint_root(
+                    session["workflow_definition_id"],
+                    session["workflow_session_id"],
+                    session["definition_revision"],
+                )
+                repository.insert(checkpoint)
+                checkpoints.append(checkpoint)
+            connection.execute("COMMIT")
+        except BaseException:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+    return checkpoints
+
+
 def test_saved_workflow_has_no_session_and_backend_directory_includes_it(service):
     doc = text_graph(service.registry)
-    service.save_definition(doc, expected_revision=0, idempotency_key=str(uuid4()))
+    save_definition_fixture(service, doc)
     assert service.list_sessions(doc["workflow_definition_id"]) == []
     assert service.list_definitions() == [{"document": doc, "archived": False}]
     assert dispatch_graph(service, "GET", "/api/graph/definitions") == (200, service.list_definitions())
@@ -56,7 +119,8 @@ def test_session_archive_keeps_history_but_cannot_run_edit_or_restore(service):
 
 def test_workflow_archive_is_backend_owned_readonly_and_has_no_restore(service):
     doc = text_graph(service.registry)
-    view = create(service, doc)
+    saved = _save_configuration(service, doc)
+    view = service.create_session(doc["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
     status, result = dispatch_graph(service, "POST",
         f"/api/graph/definitions/{doc['workflow_definition_id']}/archive",
         {"expected_revision": 1, "idempotency_key": str(uuid4())})
@@ -67,9 +131,11 @@ def test_workflow_archive_is_backend_owned_readonly_and_has_no_restore(service):
     with pytest.raises(ContractValidationError) as denied:
         service.create_session(doc["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
     assert denied.value.reason_code == "workflow_archived"
-    changed = {**deepcopy(doc), "revision": 2, "name": "Cannot edit archive"}
+    changed = {**deepcopy(saved["document"]), "name": "Cannot edit archive"}
     with pytest.raises(ContractValidationError) as denied:
-        service.save_definition(changed, expected_revision=1, idempotency_key=str(uuid4()))
+        service.update_definition(
+            changed, workflow_definition_id=doc["workflow_definition_id"],
+            expected_edit_sequence=saved["edit_sequence"], idempotency_key=str(uuid4()))
     assert denied.value.reason_code == "workflow_archived"
 
 
@@ -89,6 +155,58 @@ def test_delete_session_removes_only_its_objects_and_retains_sibling(service):
         for table in ("session_object_bindings", "session_object_revision_membership", "program_variable_states"):
             assert store._connection.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE session_id=?", (deleted["workflow_session_id"],)).fetchone()[0] == 0
+
+
+def test_session_delete_removes_only_owned_checkpoints_and_keeps_receipts(service):
+    doc = text_graph(service.registry)
+    _save_configuration(service, doc)
+    create_keys = [str(uuid4()) for _ in range(3)]
+    sessions = [
+        service.create_session(
+            doc["workflow_definition_id"], 1, idempotency_key=key)
+        for key in create_keys
+    ]
+    deleted, sibling, archived = sessions
+    points = _seed_checkpoint_roots(service, sessions)
+    delete_key, archive_key = str(uuid4()), str(uuid4())
+
+    deleted_result = service.delete_session(
+        deleted["workflow_session_id"],
+        expected_revision=deleted["revision"],
+        idempotency_key=delete_key,
+    )
+    assert deleted_result["deleted"]
+    assert service.delete_session(
+        deleted["workflow_session_id"],
+        expected_revision=deleted["revision"],
+        idempotency_key=delete_key,
+    ) == deleted_result
+    archived_result = service.archive_session(
+        archived["workflow_session_id"],
+        expected_revision=archived["revision"],
+        idempotency_key=archive_key,
+    )
+    assert archived_result["archived"]
+    assert service.get_session(sibling["workflow_session_id"]) == sibling
+
+    with closing(SqliteStore(service.database)) as store:
+        rows = store._connection.execute(
+            "SELECT workflow_session_id,checkpoint_id FROM workflow_checkpoints "
+            "ORDER BY workflow_session_id").fetchall()
+        checkpoint_ids = {row["checkpoint_id"] for row in rows}
+        assert points[0]["checkpoint_id"] not in checkpoint_ids
+        assert points[1]["checkpoint_id"] in checkpoint_ids
+        assert points[2]["checkpoint_id"] in checkpoint_ids
+        assert {row["workflow_session_id"] for row in rows} == {
+            sibling["workflow_session_id"], archived["workflow_session_id"],
+        }
+        for operation, key in (
+                *[("graph.session.create", value) for value in create_keys],
+                ("graph.session.delete", delete_key),
+                ("graph.session.archive", archive_key)):
+            assert store._connection.execute(
+                "SELECT 1 FROM idempotency WHERE operation=? AND key=?", (operation, key),
+            ).fetchone() is not None
 
 
 def test_delete_workflow_is_targeted_and_original_receipt_does_not_restore_it(service):
@@ -133,7 +251,7 @@ def test_archive_waits_for_target_stop_and_does_not_block_other_workflow(service
     thread.start()
     other = {**text_graph(service.registry), "name": "Can save while A stops"}
     try:
-        service.save_definition(other, expected_revision=0, idempotency_key=str(uuid4()))
+        _save_configuration(service, other)
     finally:
         release.set()
         thread.join(timeout=10)
@@ -163,8 +281,8 @@ def test_unrelated_damaged_workflow_does_not_block_save_but_target_ownership_is_
         store._connection.execute("INSERT INTO records VALUES(?,?,?,?,?)",
                                   ("workflow_session", str(uuid4()), '{"invalid":"unrelated"}', 0, "2026-10-11"))
     incomplete = document([], [])
-    service.save_definition(incomplete, expected_revision=0, idempotency_key=str(uuid4()))
-    assert service.get_definition(incomplete["workflow_definition_id"]) == incomplete
+    saved = _save_configuration(service, incomplete)
+    assert service.get_definition(incomplete["workflow_definition_id"]) == saved["document"]
     with closing(SqliteStore(service.database)) as store:
         repo = GraphRecordStore(store)
         orphan = graph_record("workflow_session", workflow_session_id=str(uuid4()),

@@ -48,7 +48,7 @@ _PRODUCT_TABLES = frozenset({
     "model_configuration_revisions", "model_configuration_mutations",
     "exposure_configuration_revisions", "exposure_configuration_mutations",
     "workbench_session_owners", "workbench_resource_heads", "workbench_resource_revisions",
-    "workbench_resource_receipts", "program_node_outputs",
+    "workbench_resource_receipts", "program_node_outputs", "workflow_checkpoints",
 })
 _RECEIPT_TABLES = frozenset({
     "idempotency", "program_variable_receipts", "session_object_receipts",

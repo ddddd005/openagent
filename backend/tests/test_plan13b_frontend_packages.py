@@ -62,7 +62,9 @@ def test_complete_package_declares_exact_dependencies_and_four_bindings():
         {"package_id": "workflow.frontend-business", "version": "1.0.0"},
     )
     expected = sorted([
-        {**deepcopy(row), "schema_version": 2, "host_protocol_version": 1,
+        {**deepcopy(row),
+         "schema_version": 3 if row["binding"]["slot"] == "node-fields" else 2,
+         "host_protocol_version": 2 if row["binding"]["slot"] == "node-fields" else 1,
          "package_id": "workflow.frontend", "package_version": "1.0.0"}
         for row in FRONTEND_EXTENSIONS
     ], key=lambda row: row["extension_id"])
@@ -109,7 +111,7 @@ def test_business_only_service_executes_frontend_graph_without_ui(tmp_path):
       local_extension("two", target={"scope": "session", "type_id": "workflow.frontend-state", "schema_version": 1})),
      {"one": "1", "two": "1", "workflow.frontend-business": "1.0.0"},
      "package_duplicate_frontend_binding"),
-    ((local_extension(protocol=2),), {"local": "1"}, "package_extension_protocol_mismatch"),
+    ((local_extension(protocol=3),), {"local": "1"}, "package_extension_protocol_mismatch"),
     ((local_extension(entrypoint="https://example.com/plugin.js"),), {"local": "1"}, "package_invalid_extension"),
 ])
 def test_invalid_bindings_dependencies_and_remote_entrypoints_fail(packages, enabled, reason):
@@ -168,6 +170,21 @@ def test_every_v2_target_requires_exact_registered_version(slot):
     with pytest.raises(HostContractError) as failure:
         installed.load({"workflow.frontend-business": "1.0.0", "invalid-ui": "1"})
     assert failure.value.reason_code == "package_frontend_target_missing"
+
+
+def test_frontend_protocol_two_does_not_raise_package_or_runtime_protocol():
+    from phase1_agent.content_contracts import create_content_package
+
+    extension = deepcopy(next(row for row in FRONTEND_EXTENSIONS if row["binding"]["slot"] == "node-fields"))
+    package = CapabilityPackage(PackageManifest("frontend-v2", "1"), lambda host:
+        host.register_frontend_extension(**extension, host_protocol_version=2))
+    loaded = CapabilityPackageLoader((create_content_package(), create_frontend_business_package(), package)).load(
+        {"workflow.frontend-business": "1.0.0", "frontend-v2": "1"})
+    registered = next(row for row in loaded.frontend_extensions if row["extension_id"] == extension["extension_id"])
+    manifest = next(row for row in loaded.package_manifests if row["package_id"] == "frontend-v2")
+    assert registered["schema_version"] == 3 and registered["host_protocol_version"] == 2
+    assert manifest["host_protocol_version"] == 1
+    assert loaded.to_dict()["host_protocol_version"] == 1
 
 
 def test_same_package_exact_version_cannot_change_a_previously_loaded_binding():

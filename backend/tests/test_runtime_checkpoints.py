@@ -1,4 +1,4 @@
-"""Synthetic, in-memory checkpoint contracts; no runtime or storage writes."""
+"""Offline tests for the 2.2 logical checkpoint state and full/diff rules."""
 
 from copy import deepcopy
 from uuid import uuid4
@@ -7,336 +7,283 @@ import pytest
 
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.runtime_checkpoints import (
-    make_diff, materialize, validate_checkpoint, validate_runtime_state, validate_state_storage,
+    make_diff, materialize, validate_checkpoint, validate_checkpoint_state, validate_state_storage,
 )
 
 
-WORKFLOW, SESSION, NODE, ENTRY, ROUND = (str(uuid4()) for _ in range(5))
+def identity():
+    return str(uuid4())
+
+
+WORKFLOW, SESSION, NODE, OBJECT = (identity() for _ in range(4))
+OWNER = {
+    "workflow_definition_id": WORKFLOW,
+    "workflow_session_id": SESSION,
+    "fixed_definition_revision": 3,
+}
+
+
+def agent_value(generation=0):
+    return {"messages": [], "layout": [], "accepted_delta_ids": [], "generation": generation}
+
+
+def agent_entry(generation=0):
+    return {"value": agent_value(generation)}
 
 
 def state():
     return {
-        "schema_version": 1, "kind": "workflow.runtime-state",
-        "node_states": {
-            NODE: {"owner_component_id": "test.counter", "schema_version": 1,
-                   "payload": {"count": 3, "revision": 9}},
-        },
-        "program_state": {
-            "values": {"name": {"type": "string", "source": "assignment", "value": "old"}},
-            "data": {
-                "test:value": {
-                    "definition": {
-                        "schema_version": 1, "definition_id": str(uuid4()), "revision": 2,
-                        "key": "test:value", "name": "Value", "schema": {},
-                        "writable": True, "public": True,
-                    },
-                    "value": {"items": [1, 2]},
+        "configuration": {
+            "workflow_definition_id": WORKFLOW,
+            "fixed_definition_revision": 3,
+            "nodes": {
+                NODE: {
+                    "component_id": "test.counter",
+                    "component_version": "1",
+                    "config": {"count": 1},
                 },
             },
         },
-        "objects": {
-            "context": {"type_id": "test.context", "schema_version": 4, "deleted": False,
-                        "value": {"generation": 2, "accepted_delta_ids": [ENTRY]}},
-            "nullable": {"type_id": "test.nullable", "schema_version": 1, "deleted": False,
-                         "value": None},
-        },
-        "history": {"selected_round_id": None, "visible_entry_ids": []},
+        "agent_contexts": {OBJECT: agent_entry()},
     }
 
 
-def initial(value=None):
+def root(value=None, owner=None):
+    owner = OWNER if owner is None else owner
     return {
-        "schema_version": 1, "checkpoint_id": str(uuid4()),
-        "workflow_definition_id": WORKFLOW, "workflow_session_id": SESSION,
-        "fixed_definition_revision": 3, "kind": "initial",
-        "parent_checkpoint_id": None, "round_id": None, "chain_run_id": None,
-        "assistant_entry_id": None,
-        "state_storage": {"mode": "full", "state": value if value is not None else state()},
+        "schema_version": 2,
+        "checkpoint_id": identity(),
+        **owner,
+        "parent_checkpoint_id": None,
+        "state_storage": {"mode": "full", "state": deepcopy(state() if value is None else value)},
     }
 
 
-def successful(root, parent, before, after):
+def child(root_point, parent, before, after, owner=None):
+    owner = OWNER if owner is None else owner
     return {
-        "schema_version": 1, "checkpoint_id": str(uuid4()),
-        "workflow_definition_id": WORKFLOW, "workflow_session_id": SESSION,
-        "fixed_definition_revision": 3, "kind": "successful_round",
-        "parent_checkpoint_id": parent["checkpoint_id"], "round_id": ROUND,
-        "chain_run_id": str(uuid4()), "assistant_entry_id": ENTRY,
+        "schema_version": 2,
+        "checkpoint_id": identity(),
+        **owner,
+        "parent_checkpoint_id": parent["checkpoint_id"],
         "state_storage": {
-            "mode": "diff", "base_checkpoint_id": root["checkpoint_id"],
+            "mode": "diff",
+            "base_checkpoint_id": root_point["checkpoint_id"],
             **make_diff(before, after),
         },
     }
 
 
 def materialize_records(target, records):
-    return materialize(target["checkpoint_id"], {row["checkpoint_id"]: row for row in records}.get)
+    return materialize(target["checkpoint_id"],
+                       {point["checkpoint_id"]: point for point in records}.get)
 
 
-def test_state_preserves_business_envelopes_counters_and_detaches_values():
-    original = state()
-    checked = validate_runtime_state(original)
+def test_checkpoint_state_accepts_empty_branches_and_returns_a_detached_value():
+    original = {
+        "configuration": {
+            "workflow_definition_id": WORKFLOW,
+            "fixed_definition_revision": 3,
+            "nodes": {},
+        },
+        "agent_contexts": {},
+    }
+    checked = validate_checkpoint_state(original)
     assert checked == original and checked is not original
-    checked["node_states"][NODE]["payload"]["count"] = 0
-    checked["objects"]["context"]["value"]["accepted_delta_ids"].clear()
-    checked["program_state"]["data"]["test:value"]["definition"]["revision"] = 4
-    assert original["node_states"][NODE]["payload"] == {"count": 3, "revision": 9}
-    assert original["objects"]["context"]["value"]["accepted_delta_ids"] == [ENTRY]
-    assert original["program_state"]["data"]["test:value"]["definition"]["revision"] == 2
-
-
-@pytest.mark.parametrize("path,field", [
-    ((), "revision"), ((), "created_at"), ((), "context"), ((), "counters"),
-    (("program_state",), "revision"), (("node_states", NODE), "data_version"),
-    (("objects", "context"), "revision"), (("objects", "context"), "revision_id"),
-    (("objects", "context"), "binding"),
-])
-def test_runtime_state_rejects_storage_and_duplicate_partitions(path, field):
-    value = state()
-    target = value
-    for key in path:
-        target = target[key]
-    target[field] = 1
-    with pytest.raises(ContractValidationError):
-        validate_runtime_state(value)
-
-
-@pytest.mark.parametrize("path,replacement", [
-    (("schema_version",), True), (("schema_version",), 2), (("kind",), "other"),
-    (("node_states", NODE, "owner_component_id"), ""),
-    (("node_states", NODE, "schema_version"), True),
-    (("objects", "context", "schema_version"), 0),
-    (("objects", "context", "deleted"), 1),
-    (("objects", "context", "type_id"), ""),
-    (("history", "selected_round_id"), "unknown"),
-    (("history", "visible_entry_ids"), [ENTRY, ENTRY]),
-    (("program_state", "values", "name", "value"), 3),
-    (("program_state", "data", "test:value", "definition", "revision"), 0),
-])
-def test_runtime_state_requires_exact_identity_type_and_schema(path, replacement):
-    value = state()
-    target = value
-    for key in path[:-1]:
-        target = target[key]
-    target[path[-1]] = replacement
-    with pytest.raises(ContractValidationError):
-        validate_runtime_state(value)
-
-
-def test_runtime_state_rejects_missing_envelope_and_non_json_body():
-    value = state()
-    del value["node_states"][NODE]["owner_component_id"]
-    with pytest.raises(ContractValidationError):
-        validate_runtime_state(value)
-    value = state()
-    value["node_states"]["not-a-uuid"] = value["node_states"].pop(NODE)
-    with pytest.raises(ContractValidationError):
-        validate_runtime_state(value)
-    value = state()
-    value["objects"]["context"]["value"] = float("nan")
-    with pytest.raises(ContractValidationError):
-        validate_runtime_state(value)
-
-
-def test_diff_materializes_all_partitions_with_null_tombstone_and_deletion():
-    before = state()
-    root = initial(before)
-    after = deepcopy(before)
-    del after["node_states"][NODE]
-    added_node = str(uuid4())
-    after["node_states"][added_node] = {
-        "owner_component_id": "test.new", "schema_version": 1, "payload": {"count": 0},
+    checked["configuration"]["nodes"][NODE] = {
+        "component_id": "test.node", "component_version": "1", "config": {},
     }
-    after["program_state"]["values"] = {
-        "ready": {"type": "boolean", "source": "assignment", "value": False},
-    }
-    after["program_state"]["data"]["test:value"]["value"] = None
-    after["objects"]["context"].update(deleted=True, value=None)
-    del after["objects"]["nullable"]
-    after["history"] = {"selected_round_id": ROUND, "visible_entry_ids": [ENTRY]}
-    changes = make_diff(before, after)
-    assert changes["delete"] == {
-        "node_states": [NODE], "program_values": ["name"], "program_data": [], "objects": ["nullable"],
-    }
-    assert changes["upsert"]["program_data"]["test:value"]["value"] is None
-    assert changes["upsert"]["objects"]["context"] == {
-        "type_id": "test.context", "schema_version": 4, "deleted": True, "value": None,
-    }
-    child = successful(root, root, before, after)
-    assert materialize_records(child, [root, child]) == after
-    assert root["state_storage"]["state"] == before
-    del after["program_state"]["data"]["test:value"]
-    grandchild = successful(root, child, materialize_records(child, [root, child]), after)
-    assert grandchild["state_storage"]["delete"]["program_data"] == ["test:value"]
-    assert materialize_records(grandchild, [root, child, grandchild]) == after
+    assert original["configuration"]["nodes"] == {}
 
 
-def test_diff_replaces_whole_entries_and_arrays_and_ignores_mapping_order():
-    before = state()
-    after = deepcopy(before)
-    after["node_states"][NODE]["payload"] = {"count": 4}
-    after["program_state"]["data"]["test:value"]["value"]["items"] = [2, 1]
-    changes = make_diff(before, after)
-    assert changes["upsert"]["node_states"][NODE] == after["node_states"][NODE]
-    root = initial(before)
-    child = successful(root, root, before, after)
-    assert materialize_records(child, [root, child]) == after
-    reordered = dict(reversed(list(before.items())))
-    assert make_diff(before, reordered) == {
-        "upsert": {key: {} for key in ("node_states", "program_values", "program_data", "objects")},
-        "delete": {key: [] for key in ("node_states", "program_values", "program_data", "objects")},
-    }
-
-
-def test_history_is_whole_projection_optional_when_unchanged():
-    before = state()
-    before["history"] = {"selected_round_id": ROUND, "visible_entry_ids": [ENTRY]}
-    after = deepcopy(before)
-    after["history"] = {"selected_round_id": None, "visible_entry_ids": []}
-    changes = make_diff(before, after)
-    assert changes["upsert"]["history"] == after["history"]
-    assert "history" not in changes["delete"]
-    assert "history" not in make_diff(before, before)["upsert"]
-    changes["upsert"]["history"]["visible_entry_ids"].append(ENTRY)
-    assert after["history"]["visible_entry_ids"] == []
-
-
-def test_unchanged_successful_checkpoint_and_full_root_are_detached():
-    before = state()
-    root = initial(before)
-    child = successful(root, root, before, before)
-    checked = validate_checkpoint(child)
-    assert checked == child and checked is not child
-    restored = materialize_records(child, [root, child])
-    restored["objects"]["context"]["value"]["generation"] = 99
-    assert materialize_records(root, [root]) == before
-    assert materialize_records(child, [root, child]) == before
-
-
-def test_materialize_reads_only_selected_parent_branch():
-    before = state()
-    root = initial(before)
-    left_state, right_state = deepcopy(before), deepcopy(before)
-    left_state["node_states"][NODE]["payload"]["count"] = 10
-    right_state["node_states"][NODE]["payload"]["count"] = 20
-    left = successful(root, root, before, left_state)
-    right = successful(root, root, before, right_state)
-    left_next = deepcopy(left_state)
-    left_next["objects"]["context"]["value"]["generation"] = 7
-    tip = successful(root, left, left_state, left_next)
-    records = {row["checkpoint_id"]: row for row in (right, tip, root, left)}
-    visited = []
-
-    def load(identity):
-        visited.append(identity)
-        return records.get(identity)
-
-    assert materialize(tip["checkpoint_id"], load) == left_next
-    assert visited == [tip["checkpoint_id"], left["checkpoint_id"], root["checkpoint_id"]]
-
-
-@pytest.mark.parametrize("partition", ["node_states", "program_values", "program_data", "objects"])
-def test_diff_rejects_upsert_delete_overlap_and_duplicate_delete(partition):
-    value = state()
-    root = initial(value)
-    child = successful(root, root, value, value)
-    changes = child["state_storage"]
-    logical_partition = {
-        "node_states": value["node_states"], "program_values": value["program_state"]["values"],
-        "program_data": value["program_state"]["data"], "objects": value["objects"],
-    }[partition]
-    key = next(iter(logical_partition))
-    changes["upsert"][partition][key] = deepcopy(logical_partition[key])
-    changes["delete"][partition] = [key]
+def test_checkpoint_record_requires_schema_two():
+    value = root()
+    value["schema_version"] = 1
     with pytest.raises(ContractValidationError):
-        validate_state_storage(changes)
-    changes["upsert"][partition] = {}
-    changes["delete"][partition] = [key, key]
-    with pytest.raises(ContractValidationError):
-        validate_state_storage(changes)
+        validate_checkpoint(value)
 
 
 @pytest.mark.parametrize("mutation", [
-    "full_extra_base", "full_extra_diff", "full_not_initial", "diff_initial",
-    "diff_missing_partition", "diff_history_null", "diff_history_delete",
-    "initial_has_parent", "success_missing_assistant", "boolean_fixed_revision",
-    "deleted_has_body",
+    "legacy_envelope", "extra_state_field", "bad_config_owner", "invalid_node_id",
+    "agent_owner_field", "agent_source_pointer",
 ])
-def test_full_diff_and_checkpoint_envelopes_are_strict(mutation):
+def test_checkpoint_state_rejects_legacy_or_invalid_state(mutation):
     value = state()
-    root = initial(value)
-    child = successful(root, root, value, value)
-    target = child
-    if mutation == "full_extra_base":
-        target = root
-        target["state_storage"]["base_checkpoint_id"] = root["checkpoint_id"]
-    elif mutation == "full_extra_diff":
-        target = root
-        target["state_storage"]["upsert"] = {}
-    elif mutation == "full_not_initial":
-        child["state_storage"] = root["state_storage"]
-    elif mutation == "diff_initial":
-        target = root
-        target["state_storage"] = child["state_storage"]
-    elif mutation == "diff_missing_partition":
-        del child["state_storage"]["upsert"]["objects"]
-    elif mutation == "diff_history_null":
-        child["state_storage"]["upsert"]["history"] = None
-    elif mutation == "diff_history_delete":
-        child["state_storage"]["delete"]["history"] = []
-    elif mutation == "initial_has_parent":
-        target = root
-        root["parent_checkpoint_id"] = child["checkpoint_id"]
-    elif mutation == "success_missing_assistant":
-        child["assistant_entry_id"] = None
-    elif mutation == "boolean_fixed_revision":
-        child["fixed_definition_revision"] = True
-    elif mutation == "deleted_has_body":
-        target = root
-        root["state_storage"]["state"]["objects"]["context"]["deleted"] = True
+    if mutation == "legacy_envelope":
+        value["node_states"] = {}
+    elif mutation == "extra_state_field":
+        value["history"] = {}
+    elif mutation == "bad_config_owner":
+        value["configuration"]["fixed_definition_revision"] = True
+    elif mutation == "invalid_node_id":
+        value["configuration"]["nodes"]["not-a-uuid"] = value["configuration"]["nodes"].pop(NODE)
+    elif mutation == "agent_owner_field":
+        value["agent_contexts"][OBJECT]["agent_node_id"] = identity()
+    else:
+        value["agent_contexts"][OBJECT]["value"]["view_ref"] = None
     with pytest.raises(ContractValidationError):
-        validate_checkpoint(target)
+        validate_checkpoint_state(value)
+
+
+def test_state_rejects_unprojected_agent_source_and_preserves_empty_agent_state():
+    value = state()
+    value["agent_contexts"][OBJECT]["value"]["messages"] = [{
+        "message_id": identity(), "role": "user", "blocks": [{"type": "text", "text": "x"}],
+        "source": {"kind": "request"},
+    }]
+    value["agent_contexts"][OBJECT]["value"]["layout"] = [{
+        "kind": "history", "round_id": identity(), "compaction": "never",
+    }]
+    with pytest.raises(ContractValidationError):
+        validate_checkpoint_state(value)
+    value = state()
+    value["agent_contexts"][OBJECT]["value"] = agent_value()
+    assert validate_checkpoint_state(value)["agent_contexts"][OBJECT]["value"] == agent_value()
+
+
+def test_diff_materializes_configuration_replacement_and_agent_key_changes():
+    before = state()
+    removed = identity()
+    before["agent_contexts"][removed] = agent_entry()
+    after = deepcopy(before)
+    after["configuration"]["nodes"][NODE]["config"]["count"] = 2
+    after["agent_contexts"][OBJECT] = agent_entry(1)
+    added = identity()
+    after["agent_contexts"][added] = agent_entry(0)
+    del after["agent_contexts"][removed]
+    changes = make_diff(before, after)
+    assert changes["upsert"]["configuration"] == after["configuration"]
+    assert changes["upsert"]["agent_contexts"] == {
+        OBJECT: after["agent_contexts"][OBJECT], added: after["agent_contexts"][added],
+    }
+    assert changes["delete"]["agent_contexts"] == [removed]
+    root_point = root(before)
+    point = child(root_point, root_point, before, after)
+    assert materialize_records(point, [root_point, point]) == after
+
+
+def test_diff_is_empty_for_equivalent_mapping_order():
+    before = state()
+    reordered = {
+        "agent_contexts": dict(reversed(list(before["agent_contexts"].items()))),
+        "configuration": {
+            **before["configuration"],
+            "nodes": dict(reversed(list(before["configuration"]["nodes"].items()))),
+        },
+    }
+    assert make_diff(before, reordered) == {
+        "upsert": {"agent_contexts": {}},
+        "delete": {"agent_contexts": []},
+    }
+
+
+def test_materialize_reads_only_the_selected_parent_prefix():
+    before = state()
+    root_point = root(before)
+    left_state, right_state = deepcopy(before), deepcopy(before)
+    left_state["agent_contexts"][OBJECT] = agent_entry(1)
+    right_state["agent_contexts"][OBJECT] = agent_entry(2)
+    left = child(root_point, root_point, before, left_state)
+    right = child(root_point, root_point, before, right_state)
+    tip_state = deepcopy(left_state)
+    tip_state["configuration"]["nodes"][NODE]["config"]["count"] = 5
+    tip = child(root_point, left, left_state, tip_state)
+    records = [right, tip, root_point, left]
+    visited = []
+    by_id = {point["checkpoint_id"]: point for point in records}
+
+    def load(checkpoint_id):
+        visited.append(checkpoint_id)
+        return by_id.get(checkpoint_id)
+
+    assert materialize(tip["checkpoint_id"], load) == tip_state
+    assert visited == [tip["checkpoint_id"], left["checkpoint_id"], root_point["checkpoint_id"]]
+    assert materialize_records(right, records) == right_state
 
 
 @pytest.mark.parametrize("field", [
     "workflow_session_id", "workflow_definition_id", "fixed_definition_revision",
 ])
-def test_materialize_rejects_parent_owner_or_fixed_revision_change(field):
+def test_materialize_rejects_parent_owner_or_revision_change(field):
     before = state()
-    root = initial(before)
-    child = successful(root, root, before, before)
-    root[field] = 4 if field == "fixed_definition_revision" else str(uuid4())
+    root_point = root(before)
+    after = deepcopy(before)
+    after["agent_contexts"][OBJECT] = agent_entry(1)
+    point = child(root_point, root_point, before, after)
+    if field == "fixed_definition_revision":
+        changed_owner = {**OWNER, field: 4}
+    else:
+        changed_owner = {**OWNER, field: identity()}
+    changed_state = deepcopy(before)
+    if field == "workflow_definition_id":
+        changed_state["configuration"]["workflow_definition_id"] = changed_owner[field]
+    elif field == "fixed_definition_revision":
+        changed_state["configuration"]["fixed_definition_revision"] = changed_owner[field]
+    changed_root = root(changed_state, changed_owner)
+    point["parent_checkpoint_id"] = changed_root["checkpoint_id"]
+    point["state_storage"]["base_checkpoint_id"] = changed_root["checkpoint_id"]
     with pytest.raises(ContractValidationError) as caught:
-        materialize_records(child, [root, child])
+        materialize_records(point, [changed_root, point])
     assert caught.value.reason_code == "runtime_checkpoint_lineage_invalid"
 
 
-def test_materialize_rejects_wrong_base_cycle_missing_or_wrong_loaded_identity():
+def test_materialize_rejects_wrong_base_cycle_missing_delete_and_wrong_loaded_identity():
     before = state()
-    root = initial(before)
-    child = successful(root, root, before, before)
-    child["state_storage"]["base_checkpoint_id"] = str(uuid4())
+    root_point = root(before)
+    point = child(root_point, root_point, before, before)
+    point["state_storage"]["base_checkpoint_id"] = identity()
     with pytest.raises(ContractValidationError, match="baseline"):
-        materialize_records(child, [root, child])
-    child["state_storage"]["base_checkpoint_id"] = root["checkpoint_id"]
-    child["parent_checkpoint_id"] = child["checkpoint_id"]
+        materialize_records(point, [root_point, point])
+    point["state_storage"]["base_checkpoint_id"] = root_point["checkpoint_id"]
+    point["parent_checkpoint_id"] = point["checkpoint_id"]
     with pytest.raises(ContractValidationError, match="cyclic"):
-        materialize_records(child, [root, child])
-    child["parent_checkpoint_id"] = root["checkpoint_id"]
-    with pytest.raises(ContractValidationError) as caught:
-        materialize_records(child, [child])
-    assert caught.value.reason_code == "runtime_checkpoint_not_found"
-    assert caught.value.status_code == 404
-    with pytest.raises(ContractValidationError, match="another identity"):
-        materialize(child["checkpoint_id"], lambda _: root)
-
-
-def test_materialize_rejects_delete_missing_from_parent_and_invalid_target_id():
-    before = state()
-    root = initial(before)
-    child = successful(root, root, before, before)
-    child["state_storage"]["delete"]["objects"] = ["absent"]
+        materialize_records(point, [root_point, point])
+    point["parent_checkpoint_id"] = root_point["checkpoint_id"]
+    point["state_storage"]["delete"]["agent_contexts"] = [identity()]
     with pytest.raises(ContractValidationError, match="absent"):
-        materialize_records(child, [root, child])
+        materialize_records(point, [root_point, point])
+    with pytest.raises(ContractValidationError, match="another identity"):
+        materialize(point["checkpoint_id"], lambda _: root_point)
     with pytest.raises(ContractValidationError):
-        materialize("invalid", lambda _: pytest.fail("Invalid target must not load records"))
+        materialize(point["checkpoint_id"], lambda _: None)
+
+
+@pytest.mark.parametrize("mutation", [
+    "full_has_parent", "diff_has_no_parent", "diff_partition_extra",
+    "diff_upsert_delete_overlap", "duplicate_delete", "config_owner_mismatch",
+])
+def test_checkpoint_and_diff_envelopes_are_exact(mutation):
+    before = state()
+    root_point = root(before)
+    after = deepcopy(before)
+    after["agent_contexts"][OBJECT] = agent_entry(1)
+    point = child(root_point, root_point, before, after)
+    if mutation == "full_has_parent":
+        root_point["parent_checkpoint_id"] = identity()
+    elif mutation == "diff_has_no_parent":
+        point["parent_checkpoint_id"] = None
+    elif mutation == "diff_partition_extra":
+        point["state_storage"]["upsert"]["objects"] = {}
+    elif mutation == "diff_upsert_delete_overlap":
+        point["state_storage"]["delete"]["agent_contexts"] = [OBJECT]
+    elif mutation == "duplicate_delete":
+        point["state_storage"]["delete"]["agent_contexts"] = [OBJECT, OBJECT]
+    elif mutation == "config_owner_mismatch":
+        point["state_storage"]["upsert"]["configuration"] = deepcopy(before["configuration"])
+        point["state_storage"]["upsert"]["configuration"]["workflow_definition_id"] = identity()
+    with pytest.raises(ContractValidationError):
+        validate_checkpoint(point if mutation != "full_has_parent" else root_point)
+
+
+def test_materialize_rejects_missing_root_and_parent_delete_absence():
+    before = state()
+    root_point = root(before)
+    after = deepcopy(before)
+    after["agent_contexts"].clear()
+    point = child(root_point, root_point, before, after)
+    with pytest.raises(ContractValidationError) as caught:
+        materialize(point["checkpoint_id"], lambda identity: point if identity == point["checkpoint_id"] else None)
+    assert caught.value.reason_code == "runtime_checkpoint_not_found"
+    point["state_storage"]["delete"]["agent_contexts"] = [identity()]
+    with pytest.raises(ContractValidationError, match="absent"):
+        materialize_records(point, [root_point, point])

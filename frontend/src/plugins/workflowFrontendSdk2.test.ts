@@ -35,8 +35,14 @@ function fixture() {
   });
   let observed: GraphConfigurationDocument | null = document;
   const submit = vi.fn(async (request: GraphConfigurationUpdateRequest) => result(request)), accept = vi.fn();
+  const confirmDerivation = vi.fn(async () => result({
+    workflow_definition_id: workflowId, expected_edit_sequence: 1,
+    document: graphClone(document), idempotency_key: crypto.randomUUID(),
+  }));
+  const declineDerivation = vi.fn();
   const sdk = createWorkflowConfigurationSdk({ document: () => observed, locked: () => false,
-    extensions: () => [{ declaration, configurationFields: ["text"] }], submit, accept });
+    extensions: () => [{ declaration, configurationFields: ["text"] }], submit, accept,
+    confirmDerivation, declineDerivation });
   return { workflowId, nodeId, document, declaration, input, result, submit, accept, sdk,
     select: (value: GraphConfigurationDocument | null) => { observed = value; } };
 }
@@ -52,16 +58,16 @@ describe("uninstalled frontend host 2 configuration SDK", () => {
     expect(f.document.nodes[0]!.config.text).toBe("Before");
     expect(f.accept).toHaveBeenCalledWith(value, request);
   });
-  it("accepts a derived target by the captured source even after selection changes", async () => {
+  it("rejects an unconfirmed derived result even after selection changes", async () => {
     const f = fixture(), target = crypto.randomUUID();
     f.submit.mockImplementation(async request => {
       f.select({ ...f.document, workflow_definition_id: crypto.randomUUID() });
       return f.result(request, target);
     });
-    const value = await f.sdk.submitNodeConfiguration(f.input);
-    expect(value.workflow_definition_id).toBe(target);
-    expect(f.accept.mock.calls[0]![1].workflow_definition_id).toBe(f.workflowId);
-    expect(value.session_id).toBeNull();
+    await expect(f.sdk.submitNodeConfiguration(f.input))
+      .rejects.toMatchObject({ kind: "unknown", code: "graph_configuration_receipt_invalid" });
+    expect(f.submit).toHaveBeenCalledOnce();
+    expect(f.accept).not.toHaveBeenCalled();
   });
   it.each(["stale", "other-node", "old-host", "unowned-field", "policy-in-fields"] as const)(
     "rejects %s before submitting", async reason => {

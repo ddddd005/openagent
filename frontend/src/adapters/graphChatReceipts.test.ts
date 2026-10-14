@@ -24,13 +24,22 @@ function pending(action = "start") {
     : { action, workflow_session_id: session, path: `/api/graph/sessions/${session}/consumer/runs`,
       body: { expected_revision: 1, idempotency_key: key, inputs: { text: "original" } } };
 }
+function pendingFork() {
+  return { action: "fork", workflow_session_id: session,
+    path: `/api/graph/sessions/${session}/consumer/candidates/fork`,
+    body: { candidate_id: another, expected_revision: 7, expected_data_revision: 2,
+      expected_head_revision: 3, idempotency_key: key },
+    candidate: { candidate_id: another, chain_run_id: chain, source_session_id: session,
+      source_workflow_definition_id: workflow, source_definition_revision: 1 } };
+}
+type ClientPending = ReturnType<typeof pending> | ReturnType<typeof pendingFork>;
 function storage(original: any) {
   const saved = memoryConsumerDraftPort();
   saved.seed(stateAddress, { schema_version: 1, kind: "workflow.chat-client",
     workflow_definition_id: workflow, workflow_session_id: session, pending: original });
   return saved;
 }
-function client(request: any, original = pending()) {
+function client(request: any, original: ClientPending = pending()) {
   const saved = storage(original), keyFactory = consumerKeyFactory();
   const value = new GraphChatClient({ workflowId: workflow, draftPort: saved, request, keyFactory });
   value.accept(consumer());
@@ -50,8 +59,55 @@ function matched(original: any) {
       target: original.workflow_session_id ? { session_id: original.workflow_session_id } : {},
       accepted: { ...receipt } }, result: { receipt } };
 }
+function matchedFork(original: any) {
+  const request = commandEnvelope(original, workflow);
+  const receipt = { workflow_definition_id: workflow, definition_revision: 1, workflow_session_id: another,
+    session_revision: 1, chain_run_id: null, status: "succeeded", idempotency_key: key, operation: "fork",
+    fork_source: { workflow_session_id: session, candidate_id: another, chain_run_id: chain,
+      workflow_definition_id: workflow, definition_revision: 1 } };
+  return { schema_version: 1, kind: "workflow.application-receipt-read", outcome: "matched",
+    reason_code: "receipt_matched", receipt: { schema_version: 1, kind: "workflow.application-receipt",
+      operation: request.operation, operation_scope: "consumer", idempotency_key: key,
+      request_sha256: "a".repeat(64), authority: "service_receipt", target: { session_id: session },
+      accepted: { ...receipt } }, result: { receipt } };
+}
 
 describe("static graph chat receipt-only pending custody", () => {
+  it("does not create or send a new candidate fork command", async () => {
+    const saved = storage(null), request = vi.fn(), keyFactory = consumerKeyFactory(key);
+    const value = new GraphChatClient({ workflowId: workflow, sessionId: session, draftPort: saved,
+      request, keyFactory });
+    value.accept(consumer());
+    await expect(value.command("fork", { candidate: pendingFork().candidate })).rejects.toThrow("已退役");
+    expect(() => value.request("/api/graph/consumer/commands", { method: "POST",
+      body: JSON.stringify(commandEnvelope(pendingFork(), workflow)) })).toThrow("已退役");
+    expect(request).not.toHaveBeenCalled(); expect(saved.save).not.toHaveBeenCalled();
+    expect(keyFactory).not.toHaveBeenCalled(); expect(value.pending).toBeNull();
+  });
+
+  it("reconciles an original candidate-fork request through receipt reads only", async () => {
+    const original = pendingFork(), request = vi.fn().mockResolvedValue(matchedFork(original));
+    const { value, saved, keyFactory } = client(request, original);
+    await value.command("fork", { candidate: { candidate_id: key } });
+    expect(request).toHaveBeenCalledOnce();
+    const [path, options] = request.mock.calls[0]!;
+    expect(path).toBe("/api/graph/consumer/receipts/read");
+    expect(options.method).toBe("POST");
+    const envelope = JSON.parse(options.body);
+    expect(envelope.operation).toBe("consumer.candidate.fork");
+    expect(envelope.parameters).toEqual({ ...original.body, session_id: session });
+    expect(envelope.parameters.idempotency_key).toBe(original.body.idempotency_key);
+    expect(value.pending).toBeNull(); expect(value.sessionId).toBe(another);
+    expect(saved.value(stateAddress).pending).toBeNull();
+    expect(keyFactory).toHaveBeenCalledOnce();
+    const draftWrite = saved.save.mock.calls[0]![0];
+    expect(draftWrite.address).toEqual(stateAddress);
+    expect(draftWrite.value).toMatchObject({ kind: "workflow.chat-client", workflow_session_id: another, pending: null });
+    expect(draftWrite.idempotency_key).toBe(keyFactory.mock.results[0]!.value);
+    expect(draftWrite.idempotency_key).not.toBe(original.body.idempotency_key);
+    expect(draftWrite.value.pending).toBeNull();
+  });
+
   it.each([404, 410, 409, 503, "network"] as const)("retains raw pending on receipt read failure %s", async status => {
     const failure = status === "network" ? new Error("offline") : httpFailure({ message: "receipt read failed" }, status);
     const request = vi.fn().mockRejectedValue(failure), { value, saved, original, keyFactory } = client(request);

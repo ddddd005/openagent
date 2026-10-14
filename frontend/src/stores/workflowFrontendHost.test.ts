@@ -18,7 +18,10 @@ describe("frontend catalog fail-closed lifecycle", () => {
     vi.stubGlobal("fetch", fetcher);
     await graph.loadCatalog(); graph.createWorkflow();
     const input = graph.addNode("tools.current-input@1", { x: 0, y: 0 })!;
-    expect(graph.attachFrontendDisplay({ sourceNodeId: input, sourcePortId: "output", objectKey: "frontend", role: "user" })).toBeTruthy();
+    const registrar = graph.addNode("tools.output@2", { x: 300, y: 0 })!;
+    const objectKey = graph.document!.object_bindings!.find(binding =>
+      binding.registrar_node_id === registrar)!.object_key;
+    expect(graph.attachFrontendDisplay({ sourceNodeId: input, sourcePortId: "output", objectKey, role: "user" })).toBeTruthy();
     expect(graph.packageLock).toEqual(frontendProjectLock);
     expect(graph.document!.package_lock).toEqual(frontendExecutionLock);
     expect(graph.document!.package_lock!.some(pkg => pkg.package_id === "workflow.frontend")).toBe(false);

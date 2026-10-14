@@ -103,11 +103,13 @@ def test_hard_cold_input_and_window_limits_are_checked_independently(
         }
 
 
-def test_summary_reserve_is_min_output_limit_1024_and_never_recursively_triggers():
+def test_summary_reserve_uses_global_output_limit_and_never_recursively_triggers():
     settings = synthetic_settings(purpose="compaction")
     result = measure_prepared_request(mock_prepared(settings, 300_000), settings)
-    assert result["measurement"]["total_tokens"] == 301_024
+    assert result["measurement"]["total_tokens"] == 332_000
     assert result["requires_compaction"] is False
+    assert settings["budget"]["summary_output_limit_tokens"] == 32_000
+    assert settings["parameters"]["max_tokens"] == 32_000
     profile = synthetic_profile()
     profile["runtime"]["output_limit_tokens"] = 512
     settings = synthetic_settings(profile, purpose="compaction")

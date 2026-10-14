@@ -107,7 +107,9 @@ def test_prompt_package_declares_exact_current_panel_and_reference_editor_withou
     capabilities = CapabilityPackageLoader((create_content_package(), package)).load(
         {"workflow.prompts": "1.0.0"})
     expected = sorted([
-        {**deepcopy(row), "schema_version": 2, "host_protocol_version": 1,
+        {**deepcopy(row),
+         "schema_version": 3 if row["binding"]["slot"] == "node-fields" else 2,
+         "host_protocol_version": 2 if row["binding"]["slot"] == "node-fields" else 1,
          "package_id": "workflow.prompts", "package_version": "1.0.0"}
         for row in PROMPT_FRONTEND_EXTENSIONS
     ], key=lambda row: row["extension_id"])
@@ -125,10 +127,28 @@ def test_prompt_package_declares_exact_current_panel_and_reference_editor_withou
         "component_id": "prompts.global-reference", "component_version": "2"}
     loaded_manifest = next(row for row in capabilities.package_manifests
                            if row["package_id"] == "workflow.prompts")
-    assert loaded_manifest["exports"] == manifest["exports"]
+    loaded_exports = loaded_manifest["exports"]
+    assert loaded_exports["data_types"] == manifest["exports"]["data_types"]
+    assert loaded_exports["frontend_extensions"] == manifest["exports"]["frontend_extensions"]
+    node_key = lambda row: (row["component_id"], row["component_version"])
+    assert sorted(loaded_exports["nodes"], key=node_key) == sorted(manifest["exports"]["nodes"], key=node_key)
     assert capabilities.registry.execution_package_lock == capabilities.package_lock
     assert capabilities.registry.get("workflow.global-content", "2") is None
     assert capabilities.registry.data_types.get("workflow.global-content", 1, scope="global") is None
+
+
+def test_item_v3_is_a_new_adjustable_contract_and_item_v2_descriptor_stays_unchanged():
+    registry = loaded().registry
+    item2 = registry.get("prompts.item", "2").definition
+    item3 = registry.get("prompts.item", "3").definition
+    assert item2.adjustable_configuration is None
+    assert item3.default_config == item2.default_config
+    assert item3.config_schema == item2.config_schema
+    assert item3.adjustable_configuration == {
+        "schema_version": 1, "policy": "prompt",
+        "fields": ["text", "presentation", "metadata", "lifecycle", "compaction"],
+    }
+    assert item3.inputs == item2.inputs and item3.outputs == item2.outputs
 
 
 def test_material_order_is_independent_of_input_arrays_and_uses_integer_uuid_tiebreak():

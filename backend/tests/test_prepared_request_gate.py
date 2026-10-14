@@ -72,7 +72,7 @@ def public_snapshot():
             "context", EFFECTIVE_CONTEXT_TYPE, 4, "shared",
             readers=(uid(3),), writers=(uid(3),),
         ).to_dict(),
-        "value": {"view_ref": None, "accepted_delta_ids": []},
+        "value": {"messages": [], "layout": [], "accepted_delta_ids": [], "generation": 0},
     }
     prompt = assemble_native_context_prompt(
         [], read_native_context(record, uid(1), "context", uid(3)), text_content("question"),
@@ -94,7 +94,8 @@ def public_snapshot():
         "capacity": {"context_window_tokens": 100000, "output_reserve_tokens": 128,
                      "summary_max_tokens": 128, "max_cold_input_tokens": 100000},
     }
-    return make_public_agent_snapshot(context, {}, prompt, binding, registered), registered
+    return make_public_agent_snapshot(context, {}, prompt, binding, registered,
+                                      schema_version=1), registered
 
 
 def family_snapshot(family):

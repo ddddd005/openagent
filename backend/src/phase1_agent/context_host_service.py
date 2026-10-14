@@ -31,12 +31,10 @@ class NativeContextHostService:
             require(type(payload) is dict and set(payload) == {"object_key"},
                     "context_invalid_read", "Context read requires its exact object key")
             item = context.object_read(payload["object_key"])
-            reference = item["value"]["view_ref"]
-            view = None if reference is None else self.environment.resolve_artifact(context, reference)["value"]
-            return {"object": item, "view": view}
+            return {"object": item, "view": item["value"]}
         require(capability == "context:validate" and operation == "validate-context",
                 "host_service_operation_denied", "Native context operation is not declared")
-        from .context_v4 import validate_native_context_artifacts
+        from .context_v4 import validate_native_context_artifacts_v5
         view = payload["view"]
         origin = self.environment.resolve_input(context, "view")
         require(payload["view_ref"]["output_id"] == origin["output_id"] and origin["value"] == view,
@@ -49,7 +47,7 @@ class NativeContextHostService:
                     and payload["context"] == update_origin["value"]
                     and payload["context"]["owner"] == update_origin["producer"],
                     "context_delta_owner_mismatch", "Update must equal its exact accepted Agent producer", 409)
-        validate_native_context_artifacts(
+        validate_native_context_artifacts_v5(
             payload, lambda reference: self.environment.resolve_artifact(context, reference)["value"])
         return {"validated": True}
 

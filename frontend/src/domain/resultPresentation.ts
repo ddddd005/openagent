@@ -6,7 +6,9 @@ export function resultTexts(value: unknown): ResultText[] {
   if (!graphObject(value)) return [];
   if (value.kind === "workflow.text" && value.schema_version === 2 && typeof value.text === "string")
     return [{ label: "正文", text: value.text }];
-  if (value.kind === "workflow.model-result" && (value.schema_version === 1 || value.schema_version === 2) && typeof value.content === "string")
+  if (value.kind === "workflow.model-result"
+    && (value.schema_version === 1 || value.schema_version === 2 || value.schema_version === 3)
+    && typeof value.content === "string")
     return [{ label: "回答", text: value.content }];
   if ((value.kind === "workflow.prompt" && value.schema_version === 2
     || value.kind === "workflow.prompt-materials" && value.schema_version === 1) && Array.isArray(value.items))

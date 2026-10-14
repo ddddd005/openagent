@@ -98,10 +98,20 @@ describe("uninstalled configuration application and SDK2", () => {
     expect(f.document.nodes[0].config.text).toBe("Before");
   });
   it("adds a formal derived directory target, preserves source and follows it without a session", async () => {
-    const target = crypto.randomUUID(), f = fixture({ update: async request => result(request, target) });
+    const target = crypto.randomUUID(), f = fixture();
+    f.update.mockImplementation(async request =>
+      request.confirm_derivation ? result(request, target) : ask(request));
     f.app.select(f.document.workflow_definition_id, crypto.randomUUID());
     await f.entry.initialize();
-    const accepted = await f.app.sdk.submitNodeConfiguration(f.input);
+    const question = await f.app.sdk.submitNodeConfiguration(f.input);
+    expect(question.outcome).toBe("confirmation_required");
+    const original = f.update.mock.calls[0]![0];
+    expect(original).not.toHaveProperty("confirm_derivation");
+    const accepted = await f.app.sdk.confirmDerivation(f.document.workflow_definition_id);
+    const confirmed = f.update.mock.calls[1]![0];
+    expect(f.update).toHaveBeenCalledTimes(2);
+    expect(confirmed.confirm_derivation).toBe(true);
+    expect(confirmed.idempotency_key).not.toBe(original.idempotency_key);
     expect(f.app.document(f.document.workflow_definition_id)).toEqual(f.document);
     expect(f.app.current.value).toEqual(accepted.document);
     expect(f.app.selection.value).toEqual({ workflowId: target, sessionId: null });
@@ -134,20 +144,29 @@ describe("uninstalled configuration application and SDK2", () => {
   });
   it.each(["workflow", "session"] as const)("does not follow late derivation after a %s selection change", async switchKind => {
     const target = crypto.randomUUID(), delivered = deferred<GraphConfigurationResult>(), f = fixture();
-    f.update.mockImplementation(() => delivered.promise);
+    f.update.mockImplementationOnce(async request => ask(request));
+    f.update.mockImplementationOnce(() => delivered.promise);
     await f.entry.initialize();
-    const saving = f.app.sdk.submitNodeConfiguration(f.input);
-    await vi.waitFor(() => expect(f.update).toHaveBeenCalledTimes(1));
+    const question = await f.app.sdk.submitNodeConfiguration(f.input);
+    expect(question.outcome).toBe("confirmation_required");
+    const original = f.update.mock.calls[0]![0];
+    expect(original).not.toHaveProperty("confirm_derivation");
+    const deriving = f.app.sdk.confirmDerivation(f.document.workflow_definition_id);
+    await vi.waitFor(() => expect(f.update).toHaveBeenCalledTimes(2));
+    const confirmed = f.update.mock.calls[1]![0];
+    expect(confirmed.confirm_derivation).toBe(true);
+    expect(confirmed.idempotency_key).not.toBe(original.idempotency_key);
     const selected = switchKind === "workflow" ? source() : f.document;
     if (switchKind === "workflow") f.app.observe(selected);
     const sessionId = crypto.randomUUID();
     f.app.select(selected.workflow_definition_id, sessionId);
-    delivered.resolve(result(f.update.mock.calls[0][0], target));
-    await saving;
+    delivered.resolve(result(confirmed, target));
+    await deriving;
     expect(f.app.selection.value).toEqual({ workflowId: selected.workflow_definition_id, sessionId });
     expect(f.app.current.value).toEqual(selected);
     expect(f.app.document(target)?.nodes[0].config.text).toBe("After");
     expect(f.app.document(f.document.workflow_definition_id)).toEqual(f.document);
+    expect(f.app.directory.value.some(row => row.workflowId === target)).toBe(true);
   });
   it("accepts shared adjustable current after a session switch and preserves the newly selected session", async () => {
     const delivered = deferred<GraphConfigurationResult>(), f = fixture();

@@ -211,12 +211,53 @@ def variable_graph(registry, *, ordered=True, reverse_ids=False):
 
 
 @pytest.mark.parametrize("reverse_ids", [False, True])
-def test_unordered_variable_read_write_is_rejected_independently_of_uuid_order(reverse_ids):
+def test_shared_object_access_without_graph_dependency_is_not_rejected(reverse_ids):
     registry = installed()
-    doc, *_ = variable_graph(registry, ordered=False, reverse_ids=reverse_ids)
-    with pytest.raises(ContractValidationError) as caught:
-        GraphCompiler(registry).compile(doc)
-    assert caught.value.reason_code == "graph_unordered_object_access"
+    config_schema = {
+        "type": "object", "properties": {"object_key": {"type": "string"}},
+        "required": ["object_key"], "additionalProperties": False,
+    }
+    for component, access, capability in (
+        ("test.object-reader", "read", "objects:read"),
+        ("test.object-writer", "write", "objects:write"),
+    ):
+        registry.register(NodeDefinition(
+            component, "1", component, "Test", {"object_key": VARIABLE_KEY}, config_schema,
+            capabilities=(capability,),
+            object_accesses=({
+                "config_field": "object_key", "multiple": False, "access": access,
+                "type_id": "workflow.variable", "schema_version": 1,
+            },),
+        ), lambda config, inputs, context: {})
+    reader_number, writer_number = (20, 10) if reverse_ids else (10, 20)
+    reader = node(registry, "test.object-reader", reader_number, object_key=VARIABLE_KEY)
+    writer = node(registry, "test.object-writer", writer_number, object_key=VARIABLE_KEY)
+    registry.register(NodeDefinition(
+        "test.object-terminal", "1", "Terminal", "Test", {}, {"type": "object"}, is_output=True,
+    ), lambda config, inputs, context: {})
+    terminal = node(registry, "test.object-terminal", 30)
+    binding = ObjectBinding(
+        VARIABLE_KEY, "workflow.variable", 1, "shared",
+        readers=(reader["node_binding_id"],), writers=(writer["node_binding_id"],),
+    ).to_dict()
+    doc = document(
+        [reader, writer, terminal], bindings=[binding],
+        roots=[reader["node_binding_id"], writer["node_binding_id"]],
+    )
+    doc["control_edges"] = [{
+        "edge_id": str(uuid4()), "source_node_id": source["node_binding_id"],
+        "target_node_id": terminal["node_binding_id"],
+    } for source in (reader, writer)]
+
+    plan = GraphCompiler(registry).compile(doc)
+    assert set(plan.ordered_node_ids) == {
+        reader["node_binding_id"], writer["node_binding_id"], terminal["node_binding_id"],
+    }
+    unauthorized = deepcopy(doc)
+    unauthorized["object_bindings"][0]["writers"] = []
+    with pytest.raises(ContractValidationError) as denied:
+        GraphCompiler(registry).compile(unauthorized)
+    assert denied.value.reason_code == "session_object_access_denied"
 
 
 @pytest.mark.parametrize("reverse_ids", [False, True])

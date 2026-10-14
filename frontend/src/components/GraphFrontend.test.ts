@@ -25,6 +25,10 @@ function fixture() {
   const id = graph.createWorkflow();
   return { pinia, graph, id, dispose: () => { graph.$dispose(); useWorkspaceStore(pinia).$dispose(); } };
 }
+function addRegisteredFrontendItem(graph: ReturnType<typeof useWorkflowGraphStore>) {
+  const registrar = graph.addNode("tools.output@2", { x: 300, y: 0 })!;
+  return graph.document!.object_bindings!.find(binding => binding.registrar_node_id === registrar)!.object_key;
+}
 function appFor(component: Parameters<typeof createSSRApp>[0], graph: ReturnType<typeof useWorkflowGraphStore>,
   pinia: ReturnType<typeof createPinia>, props?: Record<string, unknown>) {
   return createSSRApp(component, props).use(pinia)
@@ -50,11 +54,12 @@ describe("frontend workbench controls and display", () => {
   it("reuses the schema editor for role/object fields and exposes the actual TEXT@2 source edges", async () => {
     const { pinia, graph, dispose } = fixture();
     const source = graph.addNode("tools.current-input@1", { x: 0, y: 0 })!;
-    graph.attachFrontendDisplay({ sourceNodeId: source, sourcePortId: "output", objectKey: "frontend", role: "user" });
+    const objectKey = addRegisteredFrontendItem(graph);
+    graph.attachFrontendDisplay({ sourceNodeId: source, sourcePortId: "output", objectKey, role: "user" });
     const node = graph.document!.nodes.find(row => row.component_id === "frontend.state.append")!;
     const html = await renderToString(appFor(GraphNodeConfiguration, graph, pinia, { node,
       definition: graph.typeFor(node)!, document: graph.document!, catalog: graph.catalog }));
-    expect(html).toContain("object_key"); expect(html).toContain("role");
+    expect(html).toContain("会话数据项"); expect(html).toContain(objectKey); expect(html).toContain("role");
     expect(html).toContain("展示文本来源"); expect(html).toContain("Input / output");
     expect(html).toContain("移除此文本来源"); expect(html).toContain("添加文本来源");
     expect(html).toContain('value="&quot;user&quot;"');
@@ -63,12 +68,13 @@ describe("frontend workbench controls and display", () => {
   it("keeps generic fields and objects available without declared UI or an exact target match", async () => {
     const { pinia, graph, id, dispose } = fixture();
     const source = graph.addNode("tools.current-input@1", { x: 0, y: 0 })!;
-    graph.attachFrontendDisplay({ sourceNodeId: source, sourcePortId: "output", objectKey: "frontend", role: "user" });
+    const objectKey = addRegisteredFrontendItem(graph);
+    graph.attachFrontendDisplay({ sourceNodeId: source, sourcePortId: "output", objectKey, role: "user" });
     const node = graph.document!.nodes.find(row => row.component_id === "frontend.state.append")!;
     graph.frontendExtensions = [];
     const fields = await renderToString(appFor(GraphNodeConfiguration, graph, pinia, { node,
       definition: graph.typeFor(node)!, document: graph.document!, catalog: graph.catalog }));
-    expect(fields).toContain("object_key"); expect(fields).toContain("role");
+    expect(fields).toContain("会话数据项"); expect(fields).toContain(objectKey); expect(fields).toContain("role");
     expect(fields).not.toContain("展示文本来源");
     const session = frontendSession(id);
     graph.entries[id].session_id = session.workflow_session_id; graph.views[session.workflow_session_id] = session;

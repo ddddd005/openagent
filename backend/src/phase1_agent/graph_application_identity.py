@@ -56,6 +56,7 @@ def native_command_request(operation, parameters):
         "consumer.event.submit": "graph.consumer.event.submit",
         "run.control": "graph.run.control",
         "session.copy": "graph.session.copy",
+        "checkpoint.fork": "graph.checkpoint.fork",
         "session.rebind": "graph.session.rebind",
         "session.data.update": "graph.session.data",
         "candidate.select": "graph.candidate.select",
@@ -155,6 +156,11 @@ def persist_application_command_identity(connection, *, table, operation, key, r
 def application_accepted_result(result):
     if type(result) is not dict:
         return {}
+    checkpoint_fork_fields = {
+        "target_session_id", "target_checkpoint_id", "target_commit_id", "target_workflow_ref_id",
+    }
+    if set(result) == checkpoint_fork_fields:
+        return deepcopy(result)
     if type(result.get("receipt")) is dict:
         return deepcopy(result["receipt"])
     if result.get("kind") == "workflow.local-draft":

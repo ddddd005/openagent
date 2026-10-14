@@ -13,18 +13,20 @@ from .model_request_contracts import (
 )
 
 
-def calculate_budget(capacity: object, runtime: object, *, transport_output_limit: int,
+def calculate_budget(capacity: object, runtime: object, *, transport_output_limit: int | None,
                      purpose: str = "normal") -> dict:
     capacity, runtime = validate_model_capacity(capacity), validate_model_runtime(runtime)
     require(purpose in ("normal", "compaction"), "model_request_invalid", "Request purpose is unsupported")
-    require(type(transport_output_limit) is int and 0 < transport_output_limit <= MAX_SAFE_INTEGER,
-            "model_transport_capability_unavailable", "Transport requires an explicit positive output limit")
+    require(transport_output_limit is None
+            or type(transport_output_limit) is int and 0 < transport_output_limit <= MAX_SAFE_INTEGER,
+            "model_transport_capability_unavailable", "Transport output limit must be an exact positive limit or null")
     window, maximum = capacity["context_window_tokens"], capacity["max_output_tokens"]
     context = window if runtime["context_length_tokens"] is None else runtime["context_length_tokens"]
     output, threshold = runtime["output_limit_tokens"], runtime["compaction_threshold_bps"]
-    require(context <= window and output <= min(maximum, transport_output_limit) and output < window,
+    effective_output = maximum if transport_output_limit is None else min(maximum, transport_output_limit)
+    require(context <= window and output <= effective_output and output < window,
             "model_capacity_invalid", "Runtime context or output exceeds the declared model/transport capacity")
-    summary = min(output, 1024)
+    summary = output
     return {
         "context_length_tokens": context, "compaction_threshold_bps": threshold,
         "trigger_total_tokens": (context * threshold + 9999) // 10_000,

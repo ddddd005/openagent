@@ -165,8 +165,8 @@ def test_real_origin_matches_without_storage_initialization_and_preserves_every_
     assert raw_database(path) == before
 
 
-def test_original_create_receipt_survives_real_definition_rebind(tmp_path, monkeypatch):
-    path = tmp_path / "rebind.sqlite"
+def test_original_create_receipt_survives_later_publication_and_new_session(tmp_path, monkeypatch):
+    path = tmp_path / "new-revision-session.sqlite"
     operation, parameters, origin = seed_created(path)
     original = origin["result"]
     with closing(new_service(path)) as instance:
@@ -175,15 +175,14 @@ def test_original_create_receipt_survives_real_definition_rebind(tmp_path, monke
             "document": document(instance, revision=2), "expected_revision": 1,
             "idempotency_key": "custody-definition-second",
         })
-        rebound = app.command("session.rebind", {
-            "session_id": original["workflow_session_id"], "definition_revision": 2,
-            "expected_revision": original["revision"],
-            "expected_data_revision": original["data_revision"],
-            "expected_head_revision": original["head_revision"],
-            "idempotency_key": "custody-rebind",
+        current = app.command("session.create", {
+            "workflow_definition_id": original["workflow_definition_id"],
+            "definition_revision": 2,
+            "idempotency_key": "custody-session-second-revision",
         })["result"]
-        assert rebound["definition_revision"] == 2
-        assert rebound["head_commit_id"] != original["head_commit_id"]
+        assert current["workflow_session_id"] != original["workflow_session_id"]
+        assert current["definition_revision"] == 2
+        assert instance.get_session(original["workflow_session_id"])["definition_revision"] == 1
     before = raw_database(path)
     prohibit_coordinators(monkeypatch)
     assert_matched(read_receipt(path, operation, parameters), origin)

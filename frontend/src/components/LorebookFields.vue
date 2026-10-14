@@ -9,35 +9,17 @@ import { isLorebookConfig, lorebookBindingErrors, lorebookLimits, lorebookVariab
   moveLorebookEntry, newLorebookEntry, type LorebookConfig, type LorebookEntry } from "../domain/lorebook";
 import { tavernExtensionsFor } from "../plugins/tavernFrontendManifest";
 import { useWorkflowFrontendSdk, type WorkflowNodeConfigurationRequest } from "../plugins/workflowFrontendSdk";
-import { useBoundFormDraft } from "../composables/useBoundFormDraft";
-import FormDraftNotice from "./FormDraftNotice.vue";
 import RawNumberInput from "./RawNumberInput.vue";
-import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 
 const props = defineProps<{ node: GraphNode; document: GraphDocument; disabled?: boolean }>();
 const sdk = useWorkflowFrontendSdk();
 const draft = ref<LorebookConfig | null>(null), basis = ref<WorkflowNodeConfigurationRequest | null>(null);
 const status = ref(""), error = ref("");
-const persistence = typeof window !== "undefined" ? useWorkbenchPersistenceStore() : null;
-const draftScope = computed(() => `node:${props.document.workflow_definition_id}:${props.node.node_binding_id}:lorebook`);
-const draftBasis = computed(() => ({ workflowId: props.document.workflow_definition_id, nodeId: props.node.node_binding_id,
-  component: props.node.component_id, version: props.node.component_version,
-  config: props.node.config, bindings: props.document.object_bindings ?? [] }));
+const draftIdentity = computed(() => `node:${props.node.node_binding_id}:lorebook`);
 const numericValidity = ref<Record<string, boolean>>({});
-const numberInputs = new Map<string, InstanceType<typeof RawNumberInput>>();
-const presentationInputs = new Map<string, InstanceType<typeof RolePlacementFields>>();
-function numberInput(key: string, value: unknown) {
-  if (value) numberInputs.set(key, value as InstanceType<typeof RawNumberInput>);
-  else numberInputs.delete(key);
-}
-function presentationInput(key: string, value: unknown) {
-  if (value) presentationInputs.set(key, value as InstanceType<typeof RolePlacementFields>);
-  else presentationInputs.delete(key);
-}
 const group = computed(() => props.node.component_id === "lorebook.group");
 const entries = computed(() => !draft.value ? [] : "entries" in draft.value ? draft.value.entries : [draft.value.entry]);
-const disabled = computed(() => !!props.disabled || sdk.locked.value || !draft.value || !basis.value
-  || localDraft.loading.value || localDraft.conflict.value);
+const disabled = computed(() => !!props.disabled || sdk.locked.value || !draft.value || !basis.value);
 const bindings = computed(() => lorebookVariableBindings(props.document, props.node.node_binding_id));
 const missingBindings = computed(() => draft.value?.object_keys.filter(key =>
   !bindings.value.some(binding => binding.object_key === key)) ?? []);
@@ -46,11 +28,11 @@ const numericValid = computed(() => entries.value.every(entry =>
   numericValidity.value[`${entry.id}:scan`] !== false
   && (!entry.probability_enabled || numericValidity.value[`${entry.id}:probability`] !== false)
   && numericValidity.value[`${entry.id}:presentation`] !== false));
-const localDraft = useBoundFormDraft<LorebookConfig | null>({
-  id: () => draftScope.value,
-  basis: () => draftBasis.value,
-  capture: () => draft.value, restore: value => { draft.value = value; },
-});
+function current(request: WorkflowNodeConfigurationRequest) {
+  return sdk.workflowId.value === request.workflowId && props.document.workflow_definition_id === request.workflowId
+    && props.node.node_binding_id === request.nodeId && props.node.component_id === request.componentId
+    && props.node.component_version === request.componentVersion && sdk.lifecycle.value === request.lifecycle;
+}
 watch(() => [sdk.workflowId.value, sdk.lifecycle.value, sdk.packages.value, props.node.node_binding_id,
   props.node.component_id, props.node.component_version, props.node.config], () => {
   error.value = ""; status.value = "";
@@ -99,35 +81,30 @@ async function apply() {
     error.value = "检查条目身份、关键词数量、扫描深度、概率和呈现字段；尚未应用"; return;
   }
   if (bindingErrors.value.length) { error.value = bindingErrors.value.join("；"); return; }
-  const requestBasis = graphClone(basis.value), captured = graphClone(draft.value), context = localDraft.context.value;
-  if (!await (persistence ? persistence.flushAll() : localDraft.flush())) { error.value = "Lorebook 表单尚未写入本机"; return; }
-  if (disabled.value || !numericValid.value || context !== localDraft.context.value
+  const requestBasis = graphClone(basis.value), captured = graphClone(draft.value);
+  if (disabled.value || !numericValid.value
     || JSON.stringify(basis.value) !== JSON.stringify(requestBasis)
     || JSON.stringify(draft.value) !== JSON.stringify(captured) || bindingErrors.value.length) {
     error.value = "配置依据或输入已变化，尚未应用，请重新确认"; return;
   }
   const patch = "entry" in captured ? { entry: graphClone(captured.entry), object_keys: [...captured.object_keys] }
     : { entries: graphClone(captured.entries), object_keys: [...captured.object_keys] };
-  const nextDraftBasis = { workflowId: props.document.workflow_definition_id, nodeId: requestBasis.nodeId,
-    component: requestBasis.componentId, version: requestBasis.componentVersion,
-    config: { ...graphClone(requestBasis.expectedConfig), ...graphClone(patch) },
-    bindings: graphClone(props.document.object_bindings ?? []) };
-  const result = sdk.configureNode({ ...requestBasis, patch });
-  let adopted = true;
-  if (result?.workflowId === requestBasis.workflowId && result.nodeId === requestBasis.nodeId) {
-    adopted = localDraft.adoptBasis(nextDraftBasis);
-    for (const input of numberInputs.values()) if (!input.adoptBasis(nextDraftBasis)) adopted = false;
-    for (const input of presentationInputs.values()) if (!input.adoptBasis(nextDraftBasis)) adopted = false;
+  const request = { ...requestBasis, patch };
+  let result;
+  try { result = await sdk.configureNode(request); }
+  catch (failure) {
+    if (current(request)) error.value = failure instanceof Error ? failure.message : "Lorebook 配置提交失败";
+    return;
   }
-  status.value = result ? result.workflowId === requestBasis.workflowId ? adopted ? "Lorebook 配置已更新"
-    : "Lorebook 配置已更新，表单草稿依据尚未同步；原草稿保留" : "Lorebook 配置已写入新副本"
-    : "配置依据已变化或当前不可编辑，请重新选择节点";
+  if (!current(request)) return;
+  status.value = result?.outcome === "cancelled" ? "已取消；工作流配置未修改"
+    : result ? result.workflowId === requestBasis.workflowId
+      ? "Lorebook 配置已保存到当前工作流" : "Lorebook 配置已保存到新工作流"
+      : "配置依据已变化或当前不可编辑，请重新选择节点";
 }
 </script>
 <template>
   <form class="lorebook-fields" aria-label="Lorebook 配置" @submit.prevent="apply">
-    <FormDraftNotice :message="localDraft.message.value" :conflict="localDraft.conflict.value"
-      @restore="localDraft.restoreConflict" @discard="localDraft.discardConflict" />
     <p v-if="!draft" class="warning" role="status">Lorebook 配置无效，原配置保持不变</p>
     <fieldset :disabled="disabled">
       <section v-for="(entry, index) in entries" :key="entry.id" class="lorebook-entry" :aria-label="`Lorebook 条目 ${index + 1}`">
@@ -146,8 +123,7 @@ async function apply() {
             <option value="keyword">关键词触发</option><option value="constant">常驻</option>
           </select></label>
           <label>扫描深度<RawNumberInput :model-value="entry.scan_depth" :min="0" :max="lorebookLimits.scanDepth" integer
-            :ref="value => numberInput(`${entry.id}:scan`, value)"
-            :disabled="disabled" :draft-scope="`${draftScope}:entry:${entry.id}:scan`" :draft-basis="draftBasis"
+            :disabled="disabled" :identity="`${draftIdentity}:entry:${entry.id}:scan`"
             :aria-label="`条目 ${index + 1} 扫描深度`" @update:model-value="patchEntry(index, { scan_depth: $event })"
             @validity="numericValidity[`${entry.id}:scan`] = $event" /></label>
         </div>
@@ -165,15 +141,13 @@ async function apply() {
         <div class="field-row probability-row">
           <label class="toggle"><input :checked="entry.probability_enabled" type="checkbox" :aria-label="`条目 ${index + 1} 概率开关`" @change="patchEntry(index, { probability_enabled: ($event.target as HTMLInputElement).checked })" />概率开启</label>
           <label>概率 %<RawNumberInput :model-value="entry.probability" :min="0" :max="100"
-            :ref="value => numberInput(`${entry.id}:probability`, value)"
-            :disabled="disabled || !entry.probability_enabled" :draft-scope="`${draftScope}:entry:${entry.id}:probability`"
-            :draft-basis="draftBasis" :aria-label="`条目 ${index + 1} 概率值`"
+            :disabled="disabled || !entry.probability_enabled" :identity="`${draftIdentity}:entry:${entry.id}:probability`"
+            :aria-label="`条目 ${index + 1} 概率值`"
             @update:model-value="patchEntry(index, { probability: $event })"
             @validity="numericValidity[`${entry.id}:probability`] = $event" /></label>
         </div>
         <RolePlacementFields :model-value="entry.presentation" label="注入呈现" depth-label="插入深度"
-          :ref="value => presentationInput(entry.id, value)"
-          :disabled="disabled" :draft-scope="`${draftScope}:entry:${entry.id}:presentation`" :draft-basis="draftBasis"
+          :disabled="disabled" :identity="`${draftIdentity}:entry:${entry.id}:presentation`"
           :label-prefix="`条目 ${index + 1}`" @update:model-value="presentation(index, $event)"
           @validity="numericValidity[`${entry.id}:presentation`] = $event" />
         <details><summary>条目技术详情</summary><small class="entry-id">{{ entry.id }}</small></details>
@@ -195,7 +169,7 @@ async function apply() {
     <p v-for="diagnosis in bindingErrors" :key="diagnosis" class="warning" role="status">{{ diagnosis }}</p>
     <p v-if="error" class="warning" role="status">{{ error }}</p>
     <p v-if="status" role="status">{{ status }}</p>
-    <button type="submit" :disabled="disabled"><Save :size="14" />应用 Lorebook 配置</button>
+    <button type="submit" :disabled="disabled"><Save :size="14" />保存 Lorebook 配置</button>
   </form>
 </template>
 <style scoped>

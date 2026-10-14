@@ -9,7 +9,8 @@ import pytest
 
 from phase1_agent.agent_executor import PublicAgentExecutor
 from phase1_agent.content_contracts import text_content
-from phase1_agent.context_prompt_v6 import assemble_native_context_prompt, injected_once_sources
+from phase1_agent.context_contract import project_agent_context_message
+from phase1_agent.context_prompt_v6 import assemble_native_context_prompt
 from phase1_agent.context_v4 import merge_native_context, validate_native_context_view
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.contract_json import canonical_bytes
@@ -30,6 +31,28 @@ from test_prompt_lifecycle import content, item
 
 
 REFERENCE = ExecutorReference.from_dict(AGENT_EXECUTOR_REF_V2)
+
+
+def _message_text(message):
+    if all(block["kind"] == "text" for block in message["blocks"]):
+        return "\n".join(block["text"] for block in message["blocks"])
+    return None
+
+
+def _once_content(item):
+    return item["role"], item["text"]
+
+
+def _injected_once_contents(prompt):
+    frozen = {message["message_id"] for message in prompt["context"]["messages"]}
+    return {(message["role"], _message_text(message)) for message, entry in
+            zip(prompt["messages"], prompt["layout"])
+            if entry["kind"] == "once" and message["message_id"] not in frozen}
+
+
+def _persisted_once_contents(view):
+    return {(message["role"], _message_text(message)) for message, entry in
+            zip(view["messages"], view["layout"]) if entry["kind"] == "once"}
 
 
 class KernelIntegratedHost(IntegratedHost):
@@ -61,7 +84,7 @@ class KernelHarness:
             "owner": {"workflow_session_id": self.context.workflow_session_id,
                       "object_key": "context", "agent_node_id": self.context.node_binding_id},
             "basis": {"revision_id": str(uuid4()), "head_revision": 1},
-            "messages": [human("previous context " * 500)],
+            "messages": [project_agent_context_message(human("previous context " * 500))],
             "layout": [{"kind": "history", "round_id": str(uuid4()), "compaction": "allowed"}],
             "accepted_delta_ids": [], "applied_delta_ids": [],
             "generation": 0,
@@ -245,10 +268,9 @@ def test_real_kernel_tools_compaction_receipts_and_authorized_update_proof(kerne
         merge_native_context(merged, update_ref, packet, update_ref, host.prompt)
     assert before == (host.integrated.read_count, len(host.mock.communications),
                       len(host.mock.broker.freeze_calls), host.integrated.facts())
-    # Compaction is not special: this round compacted the once material away, so
-    # its source identity is no longer present in the persistent view.
-    assert host.once["item_instance_id"] not in injected_once_sources(packet["next_view"])
-    assert injected_once_sources(host.prompt) == {host.once["item_instance_id"]}
+    # The accepted view keeps once content only while it remains in the layout.
+    assert _once_content(host.once) not in _persisted_once_contents(packet["next_view"])
+    assert _injected_once_contents(host.prompt) == {_once_content(host.once)}
     assert packet["next_view"]["messages"][-1]["blocks"] == [{"kind": "text", "text": "Accepted answer"}]
     assert not any("FIXED_MATERIAL" in block.get("text", "")
                    for message in packet["next_view"]["messages"] for block in message["blocks"])

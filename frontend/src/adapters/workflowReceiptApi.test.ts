@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { graphCommandOperation, readGraphReceipt } from "./workflowApplicationApi";
+import { graphCommandOperation, readGraphReceipt, sendGraphCommand } from "./workflowApplicationApi";
 import { readCurrentProviderReceipt } from "./workflowResourcesApi";
 import { readCurrentPromptReceipt } from "./promptResourcesApi";
 import { graphClone } from "../domain/workflowGraph";
 import { newProvider, providerIdentity } from "../domain/workflowModelResources";
 import { newPromptResource, promptIdentity } from "../domain/workflowPromptResources";
-import { graphReceiptReadResponse } from "../testUtils/graphApplicationServer";
+import { graphReceiptReadResponse, stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -22,6 +22,80 @@ function fixture() {
 }
 
 describe("receipt-only graph transport", () => {
+  it("refuses new rebind writes but reads the frozen retired request only through receipts", async () => {
+    const sessionId = crypto.randomUUID(), definitionId = crypto.randomUUID();
+    const path = `/api/graph/sessions/${sessionId}/rebind`;
+    const body = { definition_revision: 2, expected_revision: 3, expected_data_revision: 2,
+      expected_head_revision: 1, mappings: [{ source_node_id: "old", target_node_id: "new", action: "reset" }],
+      idempotency_key: crypto.randomUUID() };
+    const original = graphClone(body);
+    const operation = "session.rebind";
+    const result = { workflow_definition_id: definitionId, definition_revision: 2,
+      workflow_session_id: sessionId, revision: 4, data_revision: 2, head_revision: 2, status: "idle" };
+    const fetcher = vi.fn(async (route: string, options: RequestInit) => {
+      expect(route).toBe("/api/graph/receipts/read");
+      expect(JSON.parse(String(options.body))).toEqual({ operation,
+        parameters: { ...body, session_id: sessionId } });
+      return graphReceiptReadResponse(operation, { ...body, session_id: sessionId }, result);
+    });
+    vi.stubGlobal("fetch", fetcher);
+
+    expect(() => graphCommandOperation(path, body)).toThrow("已退役");
+    await expect(sendGraphCommand(path, body)).rejects.toMatchObject({ kind: "rejected" });
+    expect(await readGraphReceipt(path, body)).toEqual(result);
+    expect(body).toEqual(original);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it.each(["session.rebind", "candidate.select", "candidate.fork"])(
+    "does not let the application test fixture invoke retired %s writes", async operation => {
+    const handler = vi.fn(async () => new Response("{}"));
+    stubGraphApplicationFetch(handler);
+    const request = { operation, parameters: {
+      session_id: crypto.randomUUID(), idempotency_key: crypto.randomUUID(),
+    } };
+
+    await expect(fetch("/api/graph/commands", { method: "POST", body: JSON.stringify(request) }))
+      .rejects.toThrow(`Retired ${operation} writes`);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("refuses new candidate select/fork commands while retaining their old receipt coordinates", async () => {
+    const sessionId = crypto.randomUUID(), candidateId = crypto.randomUUID();
+    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+    for (const action of ["select", "fork"]) {
+      const path = `/api/graph/sessions/${sessionId}/candidates/${action}`;
+      const body = { candidate_id: candidateId, expected_revision: 3, expected_data_revision: 2,
+        expected_head_revision: 1, idempotency_key: crypto.randomUUID() };
+      expect(() => graphCommandOperation(path, body)).toThrow("已退役");
+      await expect(sendGraphCommand(path, body)).rejects.toMatchObject({ kind: "rejected" });
+      expect(fetcher).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(["select", "fork"] as const)("maps an old candidate %s request only for read-only receipt reconciliation", async action => {
+    const sessionId = crypto.randomUUID(), definitionId = crypto.randomUUID(), candidateId = crypto.randomUUID();
+    const operation = `candidate.${action}`, path = `/api/graph/sessions/${sessionId}/candidates/${action}`;
+    const body = { candidate_id: candidateId, expected_revision: 3, expected_data_revision: 2,
+      expected_head_revision: 1, idempotency_key: crypto.randomUUID() };
+    const result = { workflow_definition_id: definitionId, definition_revision: 1,
+      workflow_session_id: action === "fork" ? crypto.randomUUID() : sessionId,
+      revision: action === "fork" ? 1 : 4, data_revision: action === "fork" ? 0 : 3,
+      head_revision: action === "fork" ? 1 : 2, status: "succeeded",
+      selected_chain_run_id: crypto.randomUUID(),
+      ...(action === "fork" ? { source: { kind: "fork_candidate", workflow_session_id: sessionId,
+        candidate_commit_id: candidateId } } : {}) };
+    const fetcher = vi.fn(async (route: string, options: RequestInit) => {
+      expect(route).toBe("/api/graph/receipts/read");
+      expect(JSON.parse(String(options.body))).toEqual({ operation,
+        parameters: { ...body, session_id: sessionId } });
+      return graphReceiptReadResponse(operation, { ...body, session_id: sessionId }, result);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    expect(await readGraphReceipt(path, body)).toEqual(result);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("reads the exact frozen command without sending a mutation or altering its inputs", async () => {
     const { path, body, command, result } = fixture(), before = graphClone(body);
     const fetcher = vi.fn(async (route: string, options: RequestInit) => {

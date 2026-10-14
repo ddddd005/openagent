@@ -559,7 +559,7 @@ def test_event_records_cannot_claim_other_binding_or_completion_checkpoint(event
         validate_graph_bundle(forged)
 
 
-def test_paused_event_recovery_never_reexecutes_original_request_and_close_keeps_round_head(event_service):
+def test_paused_event_reopen_preserves_status_and_never_reexecutes_request(event_service):
     service, harness = event_service
     doc = event_document(service)
     round_view = run(service, create(service, doc))
@@ -577,14 +577,15 @@ def test_paused_event_recovery_never_reexecutes_original_request_and_close_keeps
     database = service.database
     service.close()
     with closing(GraphWorkflowService(database, capability_packages=(harness.package(),))) as restored:
-        failed = restored.get_session(round_view["workflow_session_id"])
-        assert failed["status"] == "recovery_unavailable"
-        assert failed["selected_chain_run_id"] == round_view["selected_chain_run_id"]
+        reopened = restored.get_session(round_view["workflow_session_id"])
+        assert reopened["status"] == "paused"
+        assert reopened["selected_chain_run_id"] == round_view["selected_chain_run_id"]
+        assert reopened["chains"][-1]["status"] == "paused"
         assert restored.submit_event(round_view["workflow_session_id"], **parameters(round_view, doc)) == accepted
         assert restored._futures == {}
         assert len(harness.calls) == 1
-        closed = restored.control(failed["workflow_session_id"], action="close",
-                                  expected_revision=failed["revision"], idempotency_key="close-recovered-event")
+        closed = restored.control(reopened["workflow_session_id"], action="close",
+                                  expected_revision=reopened["revision"], idempotency_key="close-reopened-event")
         assert closed["head_commit_id"] == round_view["head_commit_id"]
         assert closed["selected_chain_run_id"] == round_view["selected_chain_run_id"]
 

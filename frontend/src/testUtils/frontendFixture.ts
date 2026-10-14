@@ -11,6 +11,12 @@ export const frontendCatalog: GraphNodeType[] = [
   { ...base, component_id: "tools.current-input", display_name: "Input", outputs: [port("output", "TEXT", 2)] },
   { ...base, component_id: "tools.regex", display_name: "Processed", inputs: [port("input", "TEXT", 2)],
     outputs: [port("output", "TEXT", 2)] },
+  { ...base, component_id: "tools.output", display_name: "Legacy Output", default_config: { mode: "text" },
+    config_schema: { properties: { mode: { enum: ["text", "prompt", "json"] } } }, is_output: true },
+  { ...base, component_id: "tools.output", component_version: "2", display_name: "Output",
+    config_schema: { properties: { mode: { enum: ["text", "prompt", "json"] } } },
+    default_config: { mode: "text" }, is_output: true,
+    provided_session_item_types: [{ type_id: frontendStateType, schema_version: 1 }] },
   { ...base, component_id: "frontend.state.output", display_name: "Read", default_config: { object_key: "frontend" },
     config_schema: { properties: { object_key: { type: "string" } } },
     outputs: [port("view", "FRONTEND_VIEW")], object_accesses: [{ ...access, access: "read" }] },
@@ -22,7 +28,8 @@ export const frontendCatalog: GraphNodeType[] = [
   { ...base, component_id: "frontend.presentation", display_name: "Display",
     inputs: [port("view", "FRONTEND_VIEW")], outputs: [port("display", "FRONTEND_DISPLAY")] },
 ];
-export const frontendLock = [{ package_id: "workflow.content", version: "1.0.0" }, frontendPackage];
+export const frontendLock = [{ package_id: "workflow.content", version: "1.0.0" },
+  { package_id: "workflow.tools", version: "1.0.0" }, frontendPackage];
 export const frontendExecutionLock = frontendLock;
 export const frontendProjectLock = [...frontendExecutionLock, { package_id: "workflow.frontend", version: "1.0.0" }];
 export function frontendEntry(): FrontendDisplayEntry {

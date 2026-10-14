@@ -48,23 +48,23 @@ function activeNodes(document: GraphDocument, catalog: GraphNodeType[], extra: s
   return dependencies(document).ancestors([...targets, ...(document.execution_roots ?? []), ...extra]);
 }
 function objectAccesses(document: GraphDocument, catalog: GraphNodeType[], key: string, active: Set<string>) {
-  return document.nodes.filter(node => active.has(node.node_binding_id)).flatMap(node => {
+  for (const node of document.nodes) {
+    if (!active.has(node.node_binding_id)) continue;
     const type = definitionFor(catalog, node);
     if (!type && document.object_bindings?.some(binding => binding.object_key === key
       && [...binding.readers, ...binding.writers].includes(node.node_binding_id)))
-      throw new Error("既有对象访问节点的类型缺失，无法证明接线顺序，请先恢复目录。");
-    return (type?.object_accesses ?? []).filter(access => {
+      throw new Error("既有对象访问节点的类型缺失，无法验证访问契约，请先恢复目录。");
+    for (const access of type?.object_accesses ?? []) {
       const value = node.config[String(access.config_field)];
-      return access.multiple ? Array.isArray(value) && value.includes(key) : value === key;
-    }).map(access => {
+      const matches = access.multiple ? Array.isArray(value) && value.includes(key) : value === key;
+      if (!matches) continue;
       const binding = document.object_bindings?.find(row => row.object_key === key);
       if (binding && (binding.type_id !== access.type_id || binding.schema_version !== access.schema_version
         || access.access !== "write" && !binding.readers.includes(node.node_binding_id)
         || access.access !== "read" && !binding.writers.includes(node.node_binding_id)))
         throw new Error("既有对象访问契约或权限与绑定不匹配，请先显式修复对象绑定。");
-      return { id: node.node_binding_id, write: access.access !== "read" };
-    });
-  });
+    }
+  }
 }
 function assertNoCycles(document: GraphDocument, active: Set<string>) {
   const { links } = dependencies(document), visiting = new Set<string>(), visited = new Set<string>();
@@ -77,15 +77,21 @@ function assertNoCycles(document: GraphDocument, active: Set<string>) {
   };
   for (const id of active) visit(id);
 }
-function assertObjectOrder(document: GraphDocument, catalog: GraphNodeType[], key: string) {
-  const active = activeNodes(document, catalog), { precedes } = dependencies(document);
+function assertObjectAccess(document: GraphDocument, catalog: GraphNodeType[], key: string) {
+  const active = activeNodes(document, catalog);
   assertNoCycles(document, active);
-  const accesses = objectAccesses(document, catalog, key, active);
-  for (const access of accesses) for (const other of accesses) {
-    if (access.id !== other.id && (access.write || other.write)
-      && !precedes(access.id, other.id) && !precedes(other.id, access.id))
-      throw new Error("既有前端对象读写顺序不明确。请先手工确认读写依赖，或选择新对象键；不会自动重排已有节点。");
-  }
+  objectAccesses(document, catalog, key, active);
+}
+
+function prepareFrontendEdit(document: GraphDocument, packageLock: NonNullable<GraphDocument["package_lock"]>) {
+  if (document.schema_version !== 3) return upgradeGraph(document, packageLock);
+  document.object_bindings ??= [];
+  document.package_lock ??= graphClone(packageLock);
+  const knownPackages = new Set(document.package_lock.map(item => item.package_id));
+  document.package_lock.push(...graphClone(packageLock.filter(item => !knownPackages.has(item.package_id))));
+  document.execution_roots ??= [];
+  document.control_edges ??= [];
+  return document;
 }
 
 // Mutates only the editing entry's detached document; the caller accepts this entire change once.
@@ -102,25 +108,19 @@ export function wireFrontendDisplay(document: GraphDocument, catalog: GraphNodeT
     throw new Error("前端对象键须为 1–128 个字符，且首尾不能包含空格。");
   if (!["user", "assistant", "system"].includes(request.role)) throw new Error("请选择已登记的展示角色。");
   const existing = document.object_bindings?.find(binding => binding.object_key === request.objectKey);
-  if (existing && (existing.type_id !== frontendStateType || existing.schema_version !== 1 || existing.scope !== "shared"))
+  if (!existing) throw new Error("展示链必须选择图中已登记的准确 frontend-state@1 对象键。");
+  if (existing.type_id !== frontendStateType || existing.schema_version !== 1 || existing.scope !== "shared")
     throw new Error("此对象键已被其他类型或私有对象占用，请选择共享的 workflow.frontend-state@1 对象或新键。");
   const activatedBefore = activeNodes(document, catalog, [source.node.node_binding_id]);
   assertNoCycles(document, activatedBefore);
+  if (existing) objectAccesses(document, catalog, request.objectKey, activatedBefore);
   const { precedes } = dependencies(document);
-  let previousWriter: string | undefined;
-  if (existing) {
-    const accesses = objectAccesses(document, catalog, request.objectKey, activatedBefore);
-    if (accesses.length) {
-      const tails = [...new Set(accesses.filter(access => access.write && accesses.every(other => other.id === access.id
-        || precedes(other.id, access.id))).map(access => access.id))];
-      if (tails.length !== 1) throw new Error("既有前端对象访问未形成明确的末次写入。请先在图中确认读写顺序，或选择新对象键；不会自动重排已有节点。");
-      previousWriter = tails[0];
-    }
-  }
   const create = (component: string, x: number, y: number, config: Record<string, unknown>): GraphNode => {
     const type = catalog.find(row => row.component_id === component && row.component_version === "1")!;
     return { node_binding_id: crypto.randomUUID(), component_id: component, component_version: "1",
-      title: type.display_name, position: { x, y }, config: { ...graphClone(type.default_config), ...config } };
+      title: type.display_name, position: { x, y }, config: { ...graphClone(type.default_config), ...config },
+      ...(document.schema_version === 3
+        ? { configuration_policy: { schema_version: 1 as const, prompt_mode: "fixed" as const } } : {}) };
   };
   const x = Math.max(...document.nodes.map(node => node.position.x), source.node.position.x) + 300;
   const read = create("frontend.state.output", x, source.node.position.y - 170, { object_key: request.objectKey });
@@ -141,10 +141,7 @@ export function wireFrontendDisplay(document: GraphDocument, catalog: GraphNodeT
     throw new Error("此对象的公开展示节点当前未启用，请先显式设置其执行根；不会自动激活旧展示链。");
   if (precedes(presentation.node_binding_id, source.node.node_binding_id))
     throw new Error("所选来源依赖既有展示节点，重接展示会形成循环。");
-  upgradeGraph(document, packageLock);
-  const predecessors = previousWriter ? [previousWriter] : [];
-  document.control_edges!.push(...predecessors.map(id => ({ edge_id: crypto.randomUUID(), source_node_id: id,
-    target_node_id: read.node_binding_id })));
+  prepareFrontendEdit(document, packageLock);
   document.nodes.push(read, append);
   if (!document.nodes.includes(presentation)) document.nodes.push(presentation);
   presentation.public_outputs = [...new Set([...(presentation.public_outputs ?? []), "display"])];
@@ -155,13 +152,9 @@ export function wireFrontendDisplay(document: GraphDocument, catalog: GraphNodeT
     edge(source.node.node_binding_id, source.port.port_id, append.node_binding_id, "content"),
     edge(append.node_binding_id, "view", presentation.node_binding_id, "view"));
   document.execution_roots = [...new Set([...document.execution_roots!, presentation.node_binding_id])];
-  if (existing) {
-    existing.readers.push(read.node_binding_id, append.node_binding_id);
-    existing.writers.push(append.node_binding_id);
-  } else document.object_bindings!.push({ object_key: request.objectKey, type_id: frontendStateType, schema_version: 1,
-    scope: "shared", owner_node_id: null, readers: [read.node_binding_id, append.node_binding_id],
-    writers: [append.node_binding_id], default_value: { entries: [], view_ref: null } });
-  assertObjectOrder(document, catalog, request.objectKey);
+  existing.readers.push(read.node_binding_id, append.node_binding_id);
+  existing.writers.push(append.node_binding_id);
+  assertObjectAccess(document, catalog, request.objectKey);
   const allowed = new Set([...activatedBefore, read.node_binding_id, append.node_binding_id, presentation.node_binding_id]);
   if ([...activeNodes(document, catalog)].some(id => !allowed.has(id)))
     throw new Error("接线将激活其他旧节点，请先手工确认执行依赖。");
@@ -189,6 +182,6 @@ export function editFrontendSource(document: GraphDocument, catalog: GraphNodeTy
   } else document.edges.push({ edge_id: crypto.randomUUID(), source_node_id: source.nodeId,
     source_port_id: source.portId, target_node_id: nodeId, target_port_id: "content",
     order: incoming.length ? Math.max(...incoming.map(edge => edge.order)) + 1 : 0 });
-  assertObjectOrder(document, catalog, String(node.config.object_key));
+  assertObjectAccess(document, catalog, String(node.config.object_key));
   return true;
 }

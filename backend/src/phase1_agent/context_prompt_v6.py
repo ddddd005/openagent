@@ -5,7 +5,7 @@ from copy import deepcopy
 from .agent_receipt_contract import projection_id
 from .content_contracts import text_content
 from .context_contract import artifact_ref
-from .contract_graph import validate_message_history
+from .contract_graph import validate_context_message_history
 from .contract_json import canonical_bytes, validate_json_value
 from .contracts_v2 import validate_record
 from .graph_contracts import require
@@ -22,10 +22,13 @@ _FIELDS = frozenset({
 })
 
 
-def _material_message(item):
+def _material_message(item, projection_namespace):
     return validate_record("agent_message", {
         "schema_version": 3,
-        "message_id": projection_id(item["item_instance_id"], "prompt-material:" + item["lifecycle"]),
+        "message_id": projection_id(
+            projection_namespace,
+            "prompt-material:" + item["lifecycle"] + ":" + item["item_instance_id"],
+        ),
         "role": item["role"],
         "source": {"kind": "prompt", "prompt_id": item["item_instance_id"], "revision": 1,
                    "item_instance_id": item["item_instance_id"], "group_instance_id": None},
@@ -53,41 +56,37 @@ def native_history_floor_starts(view):
     for index, (message, entry) in enumerate(zip(view["messages"], view["layout"])):
         if entry["kind"] != "history":
             continue
-        root = message["role"] == "user" and message["source"]["kind"] in (
-            "human", "upstream_node", "prompt")
+        root = message["role"] == "user"
         key = (entry["round_id"], "root" if root else "delta")
         if key != previous:
             starts.append(index)
             previous = key
     starts.append(len(view["messages"]))
     for start, end in zip(starts, starts[1:]):
-        validate_message_history(view["messages"][start:end])
+        validate_context_message_history(view["messages"][start:end])
     return starts
 
 
-def injected_once_sources(view):
-    """Stable source identities of once materials already present in this context.
-
-    Deduplication reads the context content itself: a once material that is
-    already part of the persistent view is identified by the same node/member
-    stable identity every prompt material carries. Compaction is not special:
-    once its material is gone from the context, its source is gone too.
-    """
-    identities = set()
-    for message, entry in zip(view["messages"], view["layout"]):
-        if entry["kind"] != "once":
-            continue
-        identity = message["source"].get("item_instance_id")
-        if type(identity) is str:
-            identities.add(identity)
-    return identities
+def _once_text_key(message):
+    if (message["role"] in ("system", "user", "assistant")
+            and all(block["kind"] == "text" for block in message["blocks"])):
+        return message["role"], "\n".join(block["text"] for block in message["blocks"])
+    return None
 
 
 def _assemble(items, view, current, *, logical_floors=True):
     active = [item for item in items if item["enabled"]]
-    present = injected_once_sources(view)
-    inject = [item for item in active if item["lifecycle"] == "per_request"
-              or not set(item["origin_item_ids"]) & present]
+    present = {key for key in (_once_text_key(message) for message in view["messages"])
+               if key is not None}
+    inject = []
+    for item in active:
+        if item["lifecycle"] == "per_request":
+            inject.append(item)
+            continue
+        key = (item["role"], item["text"])
+        if item["lifecycle"] == "context_once" and key not in present:
+            inject.append(item)
+            present.add(key)
     if not logical_floors:
         rounds = []
         for entry in view["layout"]:
@@ -103,7 +102,7 @@ def _assemble(items, view, current, *, logical_floors=True):
     messages, provenance, layout = [], [], []
 
     def material(item):
-        messages.append(_material_message(item))
+        messages.append(_material_message(item, view["basis"]["revision_id"]))
         provenance.append({
             "kind": "material", "item_instance_id": item["item_instance_id"],
             "origin_item_ids": deepcopy(item["origin_item_ids"]), "source": deepcopy(item["source"]),
@@ -128,7 +127,7 @@ def _assemble(items, view, current, *, logical_floors=True):
                 messages.append(deepcopy(current))
                 provenance.append({"kind": "current_input"})
                 layout.append({"kind": "current", "round_id": None, "compaction": "never"})
-        validate_message_history(messages)
+        validate_context_message_history(messages)
         return messages, provenance, layout
 
     for item in inject:
@@ -149,14 +148,14 @@ def _assemble(items, view, current, *, logical_floors=True):
     for item in inject:
         if item["placement"] == "after":
             material(item)
-    validate_message_history(messages)
+    validate_context_message_history(messages)
     return messages, provenance, layout
 
 
 def assemble_native_context_prompt(materials, view, current_input, *, context_ref,
                                    current_input_ref, source_output_refs=None):
-    from .context_v4 import validate_native_context_view
-    view = validate_native_context_view(view)
+    from .context_v4 import validate_native_context_view_v5
+    view = validate_native_context_view_v5(view)
     items = merge_lifecycle_prompt_materials(materials)["items"]
     current_ref = artifact_ref(current_input_ref)
     current = _current_message(current_input, current_ref)
@@ -172,13 +171,23 @@ def assemble_native_context_prompt(materials, view, current_input, *, context_re
 
 
 def validate_native_context_prompt(value):
+    from .context_v4 import validate_native_context_view_v5
+    return _validate_native_context_prompt(value, validate_native_context_view_v5)
+
+
+def validate_native_context_prompt_legacy_v4(value):
+    """Validate a historical PROMPT@6 envelope embedding CONTEXT_VIEW@4."""
     from .context_v4 import validate_native_context_view
+    return _validate_native_context_prompt(value, validate_native_context_view)
+
+
+def _validate_native_context_prompt(value, view_validator):
     validate_json_value(value)
     require(type(value) is dict and set(value) - {"placement_profile"} == _FIELDS
             and type(value["schema_version"]) is int and value["schema_version"] == 6
             and value["kind"] == "workflow.prompt" and value["stage"] == "assembled",
             "context_prompt_not_ready", "Native assembly requires exact PROMPT@6")
-    view = validate_native_context_view(value["context"])
+    view = view_validator(value["context"])
     artifact_ref(value["context_ref"])
     current_ref = artifact_ref(value["current_input_ref"])
     refs = _artifact_refs(value["source_output_refs"])
@@ -198,6 +207,26 @@ def validate_native_context_prompt(value):
     require(len(canonical_bytes(value)) <= 4_000_000, "context_prompt_length_failed",
             "Native prompt exceeds its transport envelope budget")
     return deepcopy(value)
+
+
+def agent_computation_input(context, value):
+    """Accept the exact assembled prompt, then expose only Agent computation fields."""
+    refs = context.input_artifact_refs("prompt")
+    require(len(refs) == 1, "agent_input_unbound", "Agent requires one exact accepted prompt artifact")
+    reference = artifact_ref({"scope": "artifact", "output_id": refs[0]["output_id"]})
+    record = context.host_call("artifacts:read", "resolve-input", {"port": "prompt"})
+    require(type(record) is dict and set(record) == {"value", "producer", "output_id"}
+            and record["output_id"] == reference["output_id"]
+            and canonical_bytes(record["value"]) == canonical_bytes(value),
+            "agent_input_mismatch", "Agent prompt differs from its exact accepted immutable artifact")
+    prompt = validate_native_context_prompt(record["value"])
+    require(prompt["context"]["owner"]["workflow_session_id"] == context.workflow_session_id,
+            "context_session_mismatch", "Prompt belongs to another workflow session")
+    return {
+        "messages": deepcopy(prompt["messages"]),
+        "layout": deepcopy(prompt["layout"]),
+        "current_input_ref": deepcopy(prompt["current_input_ref"]),
+    }
 
 
 def native_context_prompt_references(value):

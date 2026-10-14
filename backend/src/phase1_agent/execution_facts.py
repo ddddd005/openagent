@@ -9,7 +9,10 @@ from typing import Any
 from uuid import UUID
 
 from .contract_errors import ContractValidationError
-from .contract_graph import validate_message_history, validate_pending_message_history
+from .contract_graph import (
+    validate_context_message_history, validate_message_history,
+    validate_pending_message_history,
+)
 from .contract_json import canonical_bytes, loads_strict, validate_json_value
 from .contracts_v2 import validate_record
 from .context_compaction import (
@@ -125,8 +128,7 @@ def validate_execution_fact(value: dict[str, Any]) -> dict[str, Any]:
         _require(_uuid(payload["request_id"]) and _integer(payload["request_index"]),
                  "Invalid model request identity or index")
         _require(type(payload["messages"]) is list, "Request messages must be a JSON array")
-        for message in payload["messages"]:
-            validate_record("agent_message", message)
+        validate_context_message_history(payload["messages"])
         _require(type(payload["tools"]) is list
                  and all(type(tool) is dict for tool in payload["tools"])
                  and type(payload["model_parameters"]) is dict,
@@ -373,7 +375,7 @@ class ExecutionFactHistory:
         _require(not self._pending_calls, "Model request bypassed unaccepted tool settlements")
         _require(self._active_compaction is None,
                  "Model request bypassed an unfinished context replacement")
-        validate_message_history(payload["messages"])
+        validate_context_message_history(payload["messages"])
         if self._snapshot is not None:
             _require(canonical_bytes(payload["messages"]) ==
                      canonical_bytes(self._effective),

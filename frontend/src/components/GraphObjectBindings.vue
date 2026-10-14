@@ -1,26 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { isGraphObjectBindings, type GraphDocument, type GraphDataType } from "../domain/workflowGraph";
-import { useBoundFormDraft } from "../composables/useBoundFormDraft";
-import FormDraftNotice from "./FormDraftNotice.vue";
 const props = defineProps<{ document: GraphDocument; types: GraphDataType[]; disabled?: boolean }>();
 const emit = defineEmits<{ change: [value: unknown] }>();
 const draft = ref("[]");
 const error = ref<string | null>(null);
 const selectedType = ref("");
 const applying = ref(false);
-const locked = computed(() => props.disabled || applying.value || localDraft.loading.value || localDraft.conflict.value);
+const locked = computed(() => props.disabled || applying.value);
 const types = computed(() => props.types.filter(type => type.scope === "session"));
 const typeKey = (type: GraphDataType) => `${type.type_id}@${type.schema_version}`;
-const localDraft = useBoundFormDraft({
-  id: () => `object-bindings:${props.document.workflow_definition_id}`,
-  basis: () => ({ workflowId: props.document.workflow_definition_id, bindings: props.document.object_bindings ?? [] }),
-  capture: () => ({ draft: draft.value, selectedType: selectedType.value }),
-  restore: value => {
-    if (typeof value?.draft !== "string" || typeof value?.selectedType !== "string") throw new Error("对象绑定草稿格式不兼容");
-    draft.value = value.draft; selectedType.value = value.selectedType;
-  },
-});
 watch(() => [props.document.workflow_definition_id, JSON.stringify(props.document.object_bindings ?? [])],
   () => { draft.value = JSON.stringify(props.document.object_bindings ?? [], null, 2); error.value = null; },
   { immediate: true });
@@ -30,14 +19,13 @@ function parsed() {
     throw new Error("检查对象键、类型版本、节点 UUID 与权限；私有对象仅允许所有者读取和写入。");
   return value;
 }
-async function apply() {
+function apply() {
   if (locked.value) return;
   applying.value = true;
-  const context = localDraft.context.value, nodes = JSON.stringify(props.document.nodes);
-  try { const value = parsed(); if (!await localDraft.flush()) throw new Error("对象绑定草稿尚未写入本机");
-    if (context !== localDraft.context.value || nodes !== JSON.stringify(props.document.nodes) || props.disabled) return;
+  try {
+    const value = parsed();
+    if (props.disabled) return;
     error.value = null;
-    localDraft.adoptBasis({ workflowId: props.document.workflow_definition_id, bindings: value });
     emit("change", value); }
   catch (failure) { error.value = failure instanceof Error ? failure.message : "请输入有效的绑定 JSON"; }
   finally { applying.value = false; }
@@ -60,13 +48,11 @@ function add() {
 <template>
   <section class="graph-object-bindings" aria-label="会话对象绑定编辑">
     <h3>会话对象绑定</h3>
-    <FormDraftNotice :message="localDraft.message.value" :conflict="localDraft.conflict.value"
-      @restore="localDraft.restoreConflict" @discard="localDraft.discardConflict" />
-    <p>绑定声明对象类型和节点权限。节点配置中的对象键须与此处一致；保存工作流后生效。</p>
+    <p>绑定声明对象类型和节点权限。节点配置中的对象键须与此处一致；更改仅保留在当前内存工作流中。</p>
     <label>添加已加载的会话类型<select v-model="selectedType" :disabled="locked">
       <option value="">选择类型</option><option v-for="type in types" :key="typeKey(type)" :value="typeKey(type)">{{ typeKey(type) }}</option>
     </select></label>
-    <button type="button" :disabled="locked || !selectedType" @click="add">加入绑定草稿</button>
+    <button type="button" :disabled="locked || !selectedType" @click="add">加入绑定</button>
     <label>对象绑定 JSON<textarea v-model="draft" rows="16" spellcheck="false" :disabled="locked" /></label>
     <p>readers / writers 填节点 UUID；private 的 owner_node_id 与权限必须属于同一个节点。新私有绑定按声明的默认值初始化。</p>
     <p v-if="error" class="error" role="alert">{{ error }}</p>

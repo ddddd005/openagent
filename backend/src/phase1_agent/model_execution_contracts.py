@@ -16,7 +16,9 @@ from .context_compaction import (
 from .context_compaction_policy import DEFAULT_COMPACTION_PROMPT, frame_checkpoint
 from .context_contract import artifact_ref
 from .contract_errors import require, uuid4_string
-from .contract_graph import validate_message_history, validate_pending_message_history
+from .contract_graph import (
+    validate_context_message_history, validate_pending_context_message_history,
+)
 from .contract_json import validate_json_value
 from .contracts_v2 import CONTRACT_SCHEMAS, _check_snapshot_schemas, validate_record
 from .model_request_budget import (
@@ -101,7 +103,7 @@ def validate_input_snapshot_v2(value):
         artifact_ref(payload["frozen_compaction_policy_ref"])
     require(type(value["s0"]) is list and 0 < len(value["s0"]) <= 4096,
             "agent_snapshot_invalid", "Snapshot requires a bounded canonical initial view")
-    validate_message_history(value["s0"])
+    validate_context_message_history(value["s0"])
     layout = descriptor["layout"]
     require(type(layout) is list and len(layout) == len(value["s0"]), "agent_snapshot_invalid",
             "Layout must retain every frozen message position")
@@ -123,7 +125,7 @@ def validate_agent_receipts_v2(value):
     validate_json_value(value)
     _fields(value, {
         "schema_version", "kind", "owner", "executor_ref", "snapshot_id", "frozen_prompt_ref",
-        "model_ref", "unit_id", "fact_ids", "model_requests",
+        "model_ref", "compaction_policy_ref", "unit_id", "fact_ids", "model_requests",
     }, "agent_invalid_receipts")
     require(type(value["schema_version"]) is int and value["schema_version"] == 2
             and value["kind"] == "workflow.agent-receipts"
@@ -134,6 +136,8 @@ def validate_agent_receipts_v2(value):
         uuid4_string(value[field])
     artifact_ref(value["frozen_prompt_ref"])
     artifact_ref(value["model_ref"])
+    if value["compaction_policy_ref"] is not None:
+        artifact_ref(value["compaction_policy_ref"])
     _ids(value["fact_ids"])
     requests = value["model_requests"]
     require(type(requests) is list and 0 < len(requests) <= 4096, "agent_invalid_receipts",
@@ -162,7 +166,7 @@ def validate_model_execution_request(request):
             and type(request["messages"]) is list and 0 < len(request["messages"]) <= 4096
             and type(request["tools"]) is list and len(request["tools"]) <= 128,
             "model_execution_invalid", "Request requires an index and complete bounded canonical input")
-    validate_message_history(request["messages"])
+    validate_context_message_history(request["messages"])
     _fields(request["reserved_model_fact_ids"], _STAGES)
     _ids([request["reserved_model_fact_ids"][stage] for stage in _STAGES], maximum=3)
     return deepcopy(request)
@@ -177,7 +181,8 @@ def _transport(settings, resolve_transport, *, tools):
     capability = validate_transport_capability(
         definition.capability, protocol=settings["protocol"], model=settings["parameters"]["model"],
         thinking=settings["parameters"]["thinking"], requires_tools=bool(tools))
-    require(settings["budget"]["normal_output_limit_tokens"] <= capability["output_limit_tokens"]
+    require((capability["output_limit_tokens"] is None
+             or settings["budget"]["normal_output_limit_tokens"] <= capability["output_limit_tokens"])
             and settings["capabilities"]["tools"] == capability["tools"],
             "model_execution_settings_mismatch", "Historical settings differ from their transport capability")
     return definition
@@ -299,7 +304,7 @@ def snapshot_wire_tools(snapshot):
 
 def compaction_eligible_message_ids(snapshot, messages, accepted_messages=()):
     snapshot = validate_input_snapshot_v2(snapshot)
-    validate_message_history(messages)
+    validate_context_message_history(messages)
     require(type(accepted_messages) in (list, tuple) and len(accepted_messages) <= 4096,
             "model_execution_append_unproven", "Accepted increments require a bounded canonical sequence")
     accepted = [validate_record("agent_message", message) for message in accepted_messages]
@@ -327,7 +332,9 @@ def compaction_eligible_message_ids(snapshot, messages, accepted_messages=()):
                  if message["role"] == "assistant" and message["source"]["kind"] == "model"
                  and is_compactable_text(message)}
     return [message["message_id"] for message in messages if is_compactable_text(message) and (
-        message["source"]["kind"] == "context_checkpoint" or message["message_id"] in generated or (
+        message.get("source", {}).get("kind") == "context_checkpoint"
+        or (item := layout.get(message["message_id"])) and item["kind"] == "summary"
+        or message["message_id"] in generated or (
             (item := layout.get(message["message_id"])) and item["kind"] in ("history", "summary", "once")
             and item.get("compaction", "allowed") == "allowed" and item["round_id"] not in retained))]
 
@@ -452,7 +459,7 @@ def replay_model_context_operations(snapshot, operations, *, owner, model_facts,
     messages, appended, compactions = deepcopy(snapshot["s0"]), [], []
     seen = {message["message_id"] for message in messages}
     seen_compactions = {message["source"]["compaction_id"] for message in messages
-                        if message["source"]["kind"] == "context_checkpoint"}
+                        if message.get("source", {}).get("kind") == "context_checkpoint"}
     pending = []
     for operation in operations:
         if type(operation) is dict and operation.get("kind") == "append":
@@ -474,9 +481,9 @@ def replay_model_context_operations(snapshot, operations, *, owner, model_facts,
                                 "model_execution_tool_unclosed", "Tool settlement must retain accepted call order")
                         pending.pop(0)
             if pending:
-                validate_pending_message_history(messages, pending)
+                validate_pending_context_message_history(messages, pending)
             else:
-                validate_message_history(messages)
+                validate_context_message_history(messages)
             continue
         require(not pending, "model_execution_tool_unclosed", "Maintenance requires a closed tool boundary")
         value = validate_compaction_proof(

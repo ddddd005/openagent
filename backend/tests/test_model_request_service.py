@@ -400,6 +400,22 @@ def test_success_outcome_acceptance_retry_uses_original_response_and_three_exact
     assert {fact["fact_id"] for fact in stored} == {ref["fact_id"] for ref in result["fact_refs"]}
 
 
+def test_host_recovery_retries_only_the_retained_model_fact_acceptance(harness):
+    harness.fail_stage = "outcome"
+    prepared = harness.prepare()
+    with pytest.raises(DiagnosticError) as error:
+        harness.dispatch(prepared)
+    assert error.value.reason_code == "model_fact_acceptance_failed"
+    assert harness.service.has_pending_acceptance(harness.context) is True
+    assert len(harness.communications) == 1
+
+    result = harness.service.retry_acceptance(harness.context)
+    assert result["fact_refs"] == [{"fact_id": prepared["reserved_model_fact_ids"][stage]}
+                                   for stage in ("request", "attempt", "outcome")]
+    assert harness.service.has_pending_acceptance(harness.context) is False
+    assert len(harness.communications) == 1
+
+
 @pytest.mark.parametrize("stage", ["request", "attempt"])
 def test_pre_dispatch_fact_failure_preserves_controlled_cause_and_never_communicates(harness, stage):
     prepared = harness.prepare()

@@ -69,7 +69,8 @@ def create_global_tavern_package():
         register_inline_lorebook(host)
         register_global_lorebook(host)
         for extension in GLOBAL_TAVERN_FRONTEND_EXTENSIONS:
-            host.register_frontend_extension(**extension, host_protocol_version=1)
+            protocol = 2 if extension["binding"]["slot"] == "node-fields" else 1
+            host.register_frontend_extension(**extension, host_protocol_version=protocol)
 
     return CapabilityPackage(PackageManifest(
         original.manifest.package_id, TAVERN_PACKAGE_VERSION,
@@ -96,7 +97,8 @@ def create_chat_tavern_package():
         register_global_lorebook(host)
         register_tavern_chat(host)
         for extension in CHAT_TAVERN_FRONTEND_EXTENSIONS:
-            host.register_frontend_extension(**extension, host_protocol_version=1)
+            protocol = 2 if extension["binding"]["slot"] == "node-fields" else 1
+            host.register_frontend_extension(**extension, host_protocol_version=protocol)
 
     return CapabilityPackage(PackageManifest(
         original.manifest.package_id, CHAT_TAVERN_PACKAGE_VERSION,

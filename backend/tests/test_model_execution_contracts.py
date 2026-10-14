@@ -359,6 +359,7 @@ def receipt_fixture(host):
     return {"schema_version": 2, "kind": "workflow.agent-receipts", "owner": host.owner,
             "executor_ref": deepcopy(AGENT_EXECUTOR_REF_V2), "snapshot_id": host.snapshot["snapshot_id"],
             "frozen_prompt_ref": payload["frozen_prompt_ref"], "model_ref": payload["model_ref"],
+            "compaction_policy_ref": payload["frozen_compaction_policy_ref"],
             "unit_id": str(uuid4()), "fact_ids": [str(uuid4())], "model_requests": [{
                 "request_id": request["request_id"], "settings_id": request["settings_id"],
                 "fact_ids": [request["reserved_model_fact_ids"][stage] for stage in ("request", "attempt", "outcome")],

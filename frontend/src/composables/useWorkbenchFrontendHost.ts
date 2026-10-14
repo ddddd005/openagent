@@ -6,10 +6,13 @@ import { workbenchFrontendHostKey } from "../application/workbenchFrontendHost";
 import { readFrontendArtifact } from "../application/workflowFrontendDisplay";
 import { workflowFrontendSdkKey } from "../plugins/workflowFrontendSdk";
 import { createNodeConfigurationAccess } from "../application/workflowNodeConfiguration";
+import { createWorkflowConfigurationApplication } from "../application/workflowConfiguration";
 
 export function useWorkbenchFrontendHost() {
   const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
   const host = createWorkbenchFrontendHost(() => graph.frontendExtensions, () => graph.packageLock);
+  const configuration = createWorkflowConfigurationApplication({ extensions: () => host.extensions.value });
+  graph.installWorkflowConfigurationApplication(configuration);
   const lifecycle = computed(() => JSON.stringify([workspace.activeWorkflowId, graph.session?.workflow_session_id,
     host.extensions.value.map(row => row.declaration)]));
   provide(workbenchFrontendHostKey, host);

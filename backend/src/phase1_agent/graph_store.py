@@ -13,8 +13,9 @@ from .storage import SqliteStore, _record_id
 
 
 class GraphRecordStore:
-    def __init__(self, store: SqliteStore):
+    def __init__(self, store: SqliteStore, *, definition_registry=None):
         self.store = store
+        self.definition_registry = definition_registry
         self._changed_sessions = set()
         self._changed_definitions = set()
 
@@ -112,9 +113,13 @@ class GraphRecordStore:
                 if key in descriptors:
                     continue
                 descriptors.add(key)
-                descriptor = self.maybe("node_definition", component_id=key[0], component_version=key[1])
-                if descriptor is not None:
-                    bundle.setdefault("node_definition", []).append(descriptor)
+                definition = (self.definition_registry.get_definition(*key)
+                              if self.definition_registry is not None else None)
+                if definition is not None:
+                    from .graph_records import graph_record
+                    bundle.setdefault("node_definition", []).append(graph_record(
+                        "node_definition", component_id=key[0], component_version=key[1],
+                        descriptor=definition.to_dict()))
         validate_graph_bundle(bundle)
 
     def remove_node_state(self, sid: str, node_id: str) -> None:

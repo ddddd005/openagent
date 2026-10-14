@@ -51,16 +51,20 @@ def test_reset_clears_all_product_data_preserves_evidence_vault_and_new_content(
         connection.execute("INSERT INTO registered_type_contracts VALUES('global','type',1,'digest','{}')")
         connection.execute("INSERT INTO workflow_current_configuration VALUES(?,?,?,?,?,?)",
                            ("old-workflow", 3, 1, "Old configuration", "{}", "{}"))
+        connection.execute("INSERT INTO workflow_checkpoints VALUES(?,?,?,?,?,?,?)",
+                           (1, "old-checkpoint", "old-workflow", "old-session", 1, None, "{}"))
     result = reset.reset_development_database(tmp_path)
     assert result["private_vault_touched"] is False
     assert result["before"]["records"] == 1
     assert result["before"]["global_resource_current"] == 4
     assert result["before"]["workflow_current_configuration"] == 1
+    assert result["before"]["workflow_checkpoints"] == 1
     assert all(value == 0 for value in result["after"].values())
     assert result["cleanup_failures"] == []
     assert vault.read_bytes() == b"private vault must remain untouched"
     assert evidence_rows(result, "records") == []
     assert evidence_rows(result, "workflow_current_configuration") == []
+    assert evidence_rows(result, "workflow_checkpoints") == []
     assert evidence_rows(result, "idempotency")[0]["key"] == "old-unknown"
     with closing(SqliteStore(path)) as store:
         store._connection.execute("INSERT INTO records VALUES(?,?,?,?,?)",

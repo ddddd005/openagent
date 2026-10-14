@@ -9,6 +9,7 @@ class WorkflowHost:
         self.database = Path(database_path).resolve()
         self._lock = RLock()
         self._graph = None
+        self._management_graph = None
         self._providers = None
         self._content = None
         self._evidence = None
@@ -69,7 +70,42 @@ class WorkflowHost:
                 self._graph = GraphWorkflowService(self.database)
             return self._graph
 
+    @property
+    def graph_management_service(self):
+        with self._lock:
+            if self._graph is not None:
+                return self._graph
+            if self._management_graph is None:
+                from .graph_service import GraphManagementService
+                self._management_graph = GraphManagementService(self.database)
+            return self._management_graph
+
+    def _lifecycle_service(self):
+        return self._graph if self._graph is not None else self.graph_management_service
+
+    def archive_definition(self, identity, *, expected_revision, idempotency_key):
+        with self._lock:
+            return self._lifecycle_service().archive_definition(
+                identity, expected_revision=expected_revision, idempotency_key=idempotency_key)
+
+    def delete_definition(self, identity, *, expected_revision, idempotency_key):
+        with self._lock:
+            return self._lifecycle_service().delete_definition(
+                identity, expected_revision=expected_revision, idempotency_key=idempotency_key)
+
+    def archive_session(self, sid, *, expected_revision, idempotency_key):
+        with self._lock:
+            return self._lifecycle_service().archive_session(
+                sid, expected_revision=expected_revision, idempotency_key=idempotency_key)
+
+    def delete_session(self, sid, *, expected_revision, idempotency_key):
+        with self._lock:
+            return self._lifecycle_service().delete_session(
+                sid, expected_revision=expected_revision, idempotency_key=idempotency_key)
+
     def close(self):
         with self._lock:
             if self._graph is not None:
                 self._graph.close()
+            if self._management_graph is not None and self._management_graph is not self._graph:
+                self._management_graph.close()

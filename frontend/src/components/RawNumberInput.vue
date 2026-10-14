@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
-import { useBoundFormDraft } from "../composables/useBoundFormDraft";
 import { parseRawNumber } from "../domain/rawNumber";
-import FormDraftNotice from "./FormDraftNotice.vue";
 
 defineOptions({ inheritAttrs: false });
 const props = withDefaults(defineProps<{
@@ -13,10 +11,8 @@ const props = withDefaults(defineProps<{
   integer?: boolean;
   required?: boolean;
   disabled?: boolean;
-  draftScope?: string;
-  draftBasis?: unknown;
-  persist?: boolean;
-}>(), { required: true, draftScope: "", persist: true });
+  identity?: string;
+}>(), { required: true });
 const emit = defineEmits<{
   "update:modelValue": [value: number];
   "update:rawValue": [value: string];
@@ -25,30 +21,18 @@ const emit = defineEmits<{
 const input = ref<HTMLInputElement | null>(null);
 const initialValue = () => props.rawValue ?? (props.modelValue === null || props.modelValue === undefined ? "" : String(props.modelValue));
 const raw = ref(initialValue());
-const localDraft = useBoundFormDraft<string>({
-  id: () => props.draftScope,
-  basis: () => props.draftBasis ?? null,
-  enabled: props.persist && !!props.draftScope && props.rawValue === undefined && typeof window !== "undefined",
-  reset: () => { raw.value = initialValue(); },
-  capture: () => raw.value,
-  restore: value => {
-    if (typeof value !== "string") throw new Error("数字字段草稿格式不兼容，原文仍保留");
-    raw.value = value;
-    publishNumber();
-  },
-});
+watch(() => props.identity, () => { raw.value = initialValue(); }, { flush: "sync" });
 const text = computed(() => props.rawValue ?? raw.value);
 const parsed = computed(() => parseRawNumber(text.value, props));
-const draftBlocked = computed(() => localDraft.loading.value || localDraft.conflict.value || !!localDraft.error.value);
-const valid = computed(() => !!props.disabled || parsed.value.valid && !draftBlocked.value);
-const validationMessage = computed(() => props.disabled ? "" : localDraft.message.value || parsed.value.error);
+const valid = computed(() => !!props.disabled || parsed.value.valid);
+const validationMessage = computed(() => props.disabled ? "" : parsed.value.error);
 
 function publishNumber() {
   const result = parseRawNumber(raw.value, props);
   if (result.valid && result.value !== null) emit("update:modelValue", result.value);
 }
 function edit(event: Event) {
-  if (props.disabled || draftBlocked.value) return;
+  if (props.disabled) return;
   const value = (event.target as HTMLInputElement).value;
   raw.value = value;
   if (props.rawValue !== undefined) emit("update:rawValue", value);
@@ -65,15 +49,13 @@ watch([valid, validationMessage], () => {
   emit("validity", valid.value);
   void nextTick(() => input.value?.setCustomValidity?.(valid.value ? "" : validationMessage.value || "数字字段尚未安全载入"));
 }, { immediate: true, flush: "sync" });
-defineExpose({ valid, adoptBasis: localDraft.adoptBasis });
+defineExpose({ valid });
 </script>
 
 <template>
   <input ref="input" v-bind="$attrs" type="text" :inputmode="integer ? 'numeric' : 'decimal'"
-    :value="text" :disabled="disabled || draftBlocked" :required="required"
+    :value="text" :disabled="disabled" :required="required"
     :aria-invalid="!valid || undefined" :title="validationMessage || undefined" @input="edit" />
-  <FormDraftNotice v-if="persist && draftScope && rawValue === undefined" :message="localDraft.message.value"
-    :conflict="localDraft.conflict.value" @restore="localDraft.restoreConflict" @discard="localDraft.discardConflict" />
 </template>
 
 <style scoped>

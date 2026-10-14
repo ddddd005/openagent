@@ -7,7 +7,7 @@ from typing import Any, Callable, Sequence
 from uuid import UUID
 
 from .contract_errors import ContractValidationError
-from .contract_graph import validate_message_history
+from .contract_graph import validate_context_message_history
 from .contract_json import canonical_bytes, validate_json_value
 from .contracts_v2 import validate_record
 from .context_compaction_policy import frame_checkpoint
@@ -134,10 +134,11 @@ def should_compact(capacity: dict, policy: dict) -> bool:
 
 
 def is_compactable_text(message: dict) -> bool:
+    source = message.get("source", {})
     return (message["role"] in ("user", "assistant")
             and message.get("provider_metadata") is None
             and all(block["kind"] == "text" for block in message["blocks"])
-            and message["source"]["kind"] not in (
+            and source.get("kind") not in (
                 "protocol_feedback", "context_compaction_instruction", "upstream_node",
             ))
 
@@ -160,7 +161,7 @@ def eligible_compaction_ids(
     depth = config["keep_depth"]
     retained = set(rounds[-depth:]) if depth else set()
     generated = {message["message_id"] for message in accepted_messages
-                 if message["role"] == "assistant" and message["source"]["kind"] == "model"
+                 if message["role"] == "assistant" and message.get("source", {}).get("kind") == "model"
                  and is_compactable_text(message)}
     selected = []
     for message in effective_messages:
@@ -168,7 +169,8 @@ def eligible_compaction_ids(
             continue
         identity = message["message_id"]
         item = layout.get(identity)
-        checkpoint = message["source"]["kind"] == "context_checkpoint"
+        checkpoint = (message.get("source", {}).get("kind") == "context_checkpoint"
+                      or item is not None and item["kind"] == "summary")
         if checkpoint or identity in generated or (
             item and item["kind"] in ("history", "summary", "once")
             and item.get("compaction", "allowed") == "allowed"
@@ -225,7 +227,7 @@ def replace_compacted_messages(messages: list[dict], covered: list[str],
                 inserted = True
         else:
             result.append(deepcopy(message))
-    validate_message_history(result)
+    validate_context_message_history(result)
     return result
 
 
@@ -280,7 +282,7 @@ def validate_compaction_request(value: Any, compaction_id: str) -> dict:
              and type(value["tools"]) is list and all(type(tool) is dict for tool in value["tools"])
              and type(value["model_parameters"]) is dict,
              "Invalid context compaction request evidence")
-    validate_message_history(value["messages"])
+    validate_context_message_history(value["messages"])
     instruction = value["messages"][-1]
     _require(instruction["role"] == "user"
              and instruction["source"] == {

@@ -72,8 +72,8 @@ function fixture(initial = [newPromptResource()]) {
   const document = { ...newGraph("Prompt reference fields"), nodes: [node],
     package_lock: [{ package_id: "workflow.prompts", version: "1.0.0" }] };
   const locked = ref(false), lifecycle = ref("original");
-  const configureNode = vi.fn((_request: WorkflowNodeConfigurationRequest) =>
-    ({ workflowId: document.workflow_definition_id, nodeId: node.node_binding_id }));
+  const configureNode = vi.fn(async (_request: WorkflowNodeConfigurationRequest) =>
+    ({ workflowId: document.workflow_definition_id, nodeId: node.node_binding_id, outcome: "saved" as const }));
   const sdk: WorkflowFrontendSdk = {
     workflowId: computed(() => document.workflow_definition_id), document: computed(() => document),
     catalog: computed(() => []), packages: computed(() => document.package_lock), session: computed(() => null),

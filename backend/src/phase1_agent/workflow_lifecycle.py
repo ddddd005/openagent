@@ -47,6 +47,8 @@ class WorkflowLifecycle:
         def change(repo):
             session = repo.get("workflow_session", workflow_session_id=sid)
             self._require_session_active(repo, session)
+            require(session["active_chain_run_id"] is None, "active_execution_not_editable",
+                    "Session metadata cannot be edited during an unfinished execution", 409)
             current = self._session_metadata(repo, sid)
             require(current["metadata_sequence"] == expected_metadata_sequence,
                     "stale_metadata_sequence", "Session name changed", 409)
@@ -164,6 +166,9 @@ class WorkflowLifecycle:
                           "session_object_receipts", "workflow_runtime_facts"):
                 if table in tables:
                     connection.execute(f'DELETE FROM "{table}" WHERE session_id=?', (sid,))
+            if "workflow_checkpoints" in tables:
+                connection.execute(
+                    "DELETE FROM workflow_checkpoints WHERE workflow_session_id=?", (sid,))
             for table, column in (("graph_state_manifests", "payload"),
                                   ("workflow_information_bindings", "owner")):
                 if table in tables:
@@ -212,6 +217,8 @@ class WorkflowLifecycle:
         operation = f"graph.{kind}.{action}"
         request = {("identity" if kind == "definition" else "session"): identity,
                    "expected_revision": expected_revision}
+        execution_chains = set()
+        known_chains = {}
         with self._lock, closing(self._store()) as store:
             repo = GraphRecordStore(store)
             if store.read_receipt(operation, key) is not None:
@@ -228,6 +235,11 @@ class WorkflowLifecycle:
                 sessions = [session]
                 marker = self._management_sessions
                 workflow_id = session["workflow_definition_id"]
+            if delete:
+                execution_chains = {
+                    chain["chain_run_id"] for session in sessions
+                    for chain in repo.rows("chain_run", workflow_session_id=session["workflow_session_id"])
+                }
             require(identity not in marker, "management_pending", "Target management is already in progress", 409)
             marker.add(identity)
         try:
@@ -238,6 +250,10 @@ class WorkflowLifecycle:
                     self._require_deletion_resolved(repo, sessions)
                 self._close_owned_runs(repo, sessions)
                 if delete:
+                    for original in sessions:
+                        chain_id = original["active_chain_run_id"]
+                        if chain_id is not None:
+                            known_chains[chain_id] = repo.get("chain_run", chain_run_id=chain_id)
                     self._delete_owned_sessions(repo, sessions)
                     if kind == "definition":
                         connection = repo.store._connection
@@ -261,12 +277,19 @@ class WorkflowLifecycle:
             for session in sessions:
                 chain_id = session["active_chain_run_id"]
                 if chain_id is not None:
-                    self._release_public_capabilities(session["workflow_session_id"], chain_id)
+                    self._release_public_capabilities(
+                        session["workflow_session_id"], chain_id,
+                        known_chain=known_chains.get(chain_id) if delete else None)
                     self._pauses.discard(chain_id)
                     self._resource_frames.pop(chain_id, None)
                     self._execution_registries.pop(chain_id, None)
                     self._acceptance_candidates.pop(chain_id, None)
                     self._failed_retry_candidates.pop(chain_id, None)
+            if delete:
+                with self._lock:
+                    for chain_id in execution_chains:
+                        self._futures.pop(chain_id, None)
+                        self._execution_errors.pop(chain_id, None)
             return result
         finally:
             with self._lock:

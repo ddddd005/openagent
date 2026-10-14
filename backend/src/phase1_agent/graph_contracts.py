@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field
+import heapq
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 from jsonschema import Draft202012Validator, SchemaError, ValidationError
@@ -23,6 +24,42 @@ MAX_GRAPH_NODES = 512
 MAX_GRAPH_EDGES = 4096
 MAX_CONTENT_CHARS = 1_000_000
 MAX_GRAPH_BYTES = 4_000_000
+
+
+def normalize_checkpoint_save(config_schema: dict, declaration: dict) -> dict:
+    """Validate and canonically order the registered configuration paths."""
+    require(type(config_schema) is dict, "graph_invalid_checkpoint_save",
+            "Checkpoint-save config schema must be an object")
+    require(type(declaration) is dict and set(declaration) == {"config_paths"},
+            "graph_invalid_checkpoint_save", "Checkpoint-save declaration fields differ")
+    paths = declaration["config_paths"]
+    require(type(paths) is list, "graph_invalid_checkpoint_save",
+            "Checkpoint config paths must be an array")
+
+    normalized = []
+    for path in paths:
+        require(type(path) is list and bool(path)
+                and all(type(segment) is str and bool(segment) for segment in path),
+                "graph_invalid_checkpoint_save",
+                "Checkpoint paths must be nonempty arrays of property names")
+        schema = config_schema
+        for segment in path:
+            properties = schema.get("properties") if type(schema) is dict else None
+            require(type(properties) is dict and segment in properties,
+                    "graph_invalid_checkpoint_save",
+                    "Checkpoint path does not follow declared config schema properties")
+            schema = properties[segment]
+        normalized.append(tuple(path))
+
+    normalized.sort()
+    seen = set()
+    for path in normalized:
+        require(path not in seen
+                and all(path[:length] not in seen for length in range(1, len(path))),
+                "graph_invalid_checkpoint_save",
+                "Checkpoint config paths must not repeat or overlap")
+        seen.add(path)
+    return {"config_paths": [list(path) for path in normalized]}
 
 
 def _validate_event_schema_references(schema: dict) -> None:
@@ -135,7 +172,10 @@ def validate_graph_document(value: Any) -> dict:
             authorized_nodes = set(binding.readers) | set(binding.writers)
             if binding.owner_node_id is not None:
                 authorized_nodes.add(binding.owner_node_id)
-            require(authorized_nodes <= node_ids, "graph_invalid_document", "Object permission names a missing node")
+            if binding.registrar_node_id is not None:
+                authorized_nodes.add(binding.registrar_node_id)
+            require(authorized_nodes <= node_ids, "graph_invalid_document",
+                    "Object binding names a missing owner, registrar or authorized node")
         validate_package_lock(value.get("package_lock", []))
         roots = value.get("execution_roots", [])
         require(type(roots) is list and len(roots) <= MAX_GRAPH_NODES
@@ -322,6 +362,9 @@ class NodeDefinition:
     service_requirements: tuple[dict, ...] = ()
     config_node_references: tuple[dict, ...] = ()
     adjustable_configuration: dict | None = None
+    checkpoint_save: dict = field(default_factory=lambda: {"config_paths": []})
+    execution_class: str = "working"
+    provided_session_item_types: tuple[dict, ...] = ()
 
     def ports(self, config: dict) -> tuple[tuple[NodePort, ...], tuple[NodePort, ...]]:
         if self.port_modes:
@@ -335,10 +378,12 @@ class NodeDefinition:
         value = {key: copy.deepcopy(getattr(self, key)) for key in (
             "component_id", "component_version", "display_name", "category", "default_config",
             "config_schema", "is_output", "private_state_schema", "private_state_default",
+            "execution_class",
         )}
         value.update({"inputs": [port.to_dict() for port in self.inputs],
                       "outputs": [port.to_dict() for port in self.outputs],
                       "capabilities": list(self.capabilities), "executable": executable})
+        value["checkpoint_save"] = normalize_checkpoint_save(self.config_schema, self.checkpoint_save)
         if self.port_modes:
             value["port_modes"] = {
                 mode: {"inputs": [port.to_dict() for port in ports[0]],
@@ -355,7 +400,33 @@ class NodeDefinition:
             value["config_node_references"] = copy.deepcopy(list(self.config_node_references))
         if self.adjustable_configuration is not None:
             value["adjustable_configuration"] = copy.deepcopy(self.adjustable_configuration)
+        if self.provided_session_item_types:
+            value["provided_session_item_types"] = copy.deepcopy(list(self.provided_session_item_types))
         return value
+
+
+def normalize_provided_session_item_types(value: Any, data_types: TypeRegistry) -> tuple[dict, ...]:
+    require(type(value) is tuple and len(value) <= 128,
+            "graph_invalid_session_item_declaration",
+            "Provided session item declarations must be a bounded tuple")
+    normalized = []
+    identities = set()
+    for item in value:
+        require(type(item) is dict and set(item) == {"type_id", "schema_version"}
+                and bounded_name(item["type_id"]) and type(item["schema_version"]) is int
+                and 1 <= item["schema_version"] <= 2**53 - 1,
+                "graph_invalid_session_item_declaration",
+                "Provided session item declarations require exact type identities")
+        identity = item["type_id"], item["schema_version"]
+        require(identity not in identities,
+                "graph_invalid_session_item_declaration",
+                "Provided session item type is duplicated")
+        require(data_types.get(*identity, scope="session") is not None,
+                "graph_missing_session_item_type",
+                "Provided session item type is not registered in the session scope")
+        identities.add(identity)
+        normalized.append({"type_id": item["type_id"], "schema_version": item["schema_version"]})
+    return tuple(normalized)
 
 
 @dataclass(frozen=True)
@@ -379,6 +450,7 @@ class NodeRegistry:
 
     def __init__(self, data_types: TypeRegistry | None = None) -> None:
         self._nodes: dict[tuple[str, str], RegisteredNode] = {}
+        self._trusted_scopes: dict[tuple[str, str], str] = {}
         self.executors = ExecutorRegistry()
         self.services = HostServiceRegistry()
         self.information_sources = InformationSourceRegistry()
@@ -403,10 +475,18 @@ class NodeRegistry:
                  resource_input_ports: tuple[str, ...] = (),
                  executor_ref: ExecutorReference | None = None,
                  settlement_builder: Callable | None = None,
-                 failed_retry_validator: Callable[[dict, dict], dict] | None = None) -> None:
+                 failed_retry_validator: Callable[[dict, dict], dict] | None = None,
+                 *, trusted_scope: str = "host") -> None:
+        require(isinstance(definition, NodeDefinition), "graph_invalid_type",
+                "Node registration requires a node definition")
+        require(type(trusted_scope) is str and bounded_name(trusted_scope),
+                "graph_invalid_registration_scope", "Node registration requires a trusted scope")
         key = definition.component_id, definition.component_version
         require(not self._frozen, "host_registry_frozen", "The active node registry is frozen")
         require(key not in self._nodes, "graph_duplicate_type", "Node implementation is already registered")
+        require(type(definition.execution_class) is str
+                and definition.execution_class in {"working", "non_working"},
+                "graph_invalid_execution_class", "Node execution class must be working or non_working")
         require(executor is None or callable(executor), "graph_invalid_type", "Node executor must be callable")
         require(executor_ref is None or isinstance(executor_ref, ExecutorReference),
                 "runtime_invalid_executor", "Hosted node requires an exact executor reference")
@@ -456,6 +536,12 @@ class NodeRegistry:
                 and all(bounded_name(port) for port in resource_input_ports),
                 "graph_invalid_type", "Resource input ports must be distinct names")
         Draft202012Validator.check_schema(definition.config_schema)
+        definition = replace(
+            definition,
+            checkpoint_save=normalize_checkpoint_save(definition.config_schema, definition.checkpoint_save),
+            provided_session_item_types=normalize_provided_session_item_types(
+                definition.provided_session_item_types, self.data_types),
+        )
         Draft202012Validator.check_schema(definition.private_state_schema)
         self.validate_private_state(definition, definition.private_state_default)
         for inputs, outputs in [(definition.inputs, definition.outputs), *definition.port_modes.values()]:
@@ -471,9 +557,47 @@ class NodeRegistry:
                                           external_inputs_validator, external_inputs_declaration,
                                           resource_dependencies_declaration, resource_preflight_validator,
                                           resource_input_ports, executor_ref, settlement_builder, failed_retry_validator)
+        self._trusted_scopes[key] = trusted_scope
+
+    def update_declarations(self, definition: NodeDefinition, *, trusted_scope: str = "host") -> None:
+        """Replace only checkpoint and execution declarations within their trusted scope."""
+        require(not self._frozen, "host_registry_frozen", "The active node registry is frozen")
+        require(isinstance(definition, NodeDefinition), "graph_invalid_type",
+                "Declaration update requires a node definition")
+        require(type(trusted_scope) is str and bounded_name(trusted_scope),
+                "graph_invalid_registration_scope", "Declaration update requires a trusted scope")
+        require(type(definition.execution_class) is str
+                and definition.execution_class in {"working", "non_working"},
+                "graph_invalid_execution_class", "Node execution class must be working or non_working")
+        key = definition.component_id, definition.component_version
+        current = self._nodes.get(key)
+        require(current is not None, "graph_missing_node_type", "Declaration update requires a registered node")
+        require(self._trusted_scopes.get(key) == trusted_scope,
+                "graph_declaration_update_scope", "Node declarations can only be updated by their trusted scope")
+        normalized = replace(
+            definition,
+            checkpoint_save=normalize_checkpoint_save(definition.config_schema, definition.checkpoint_save),
+            provided_session_item_types=normalize_provided_session_item_types(
+                definition.provided_session_item_types, self.data_types),
+        )
+        executable = current.executor is not None or current.executor_ref is not None
+        previous_contract = current.definition.to_dict(executable=executable)
+        candidate_contract = normalized.to_dict(executable=executable)
+        for field_name in ("checkpoint_save", "execution_class"):
+            previous_contract.pop(field_name, None)
+            candidate_contract.pop(field_name, None)
+        require(canonical_bytes(previous_contract) == canonical_bytes(candidate_contract),
+                "graph_declaration_update_contract_changed",
+                "Declaration updates cannot change other node contracts")
+        self._nodes[key] = replace(current, definition=copy.deepcopy(normalized))
 
     def get(self, component_id: str, component_version: str) -> RegisteredNode | None:
-        return self._nodes.get((component_id, component_version))
+        value = self._nodes.get((component_id, component_version))
+        return replace(value, definition=copy.deepcopy(value.definition)) if value is not None else None
+
+    def get_definition(self, component_id: str, component_version: str) -> NodeDefinition | None:
+        value = self._nodes.get((component_id, component_version))
+        return copy.deepcopy(value.definition) if value is not None else None
 
     def catalog(self) -> list[dict]:
         result = []
@@ -493,6 +617,7 @@ class NodeRegistry:
     def detached(self, *, frozen: bool = False) -> NodeRegistry:
         registry = NodeRegistry.__new__(NodeRegistry)
         registry._nodes = copy.deepcopy(self._nodes)
+        registry._trusted_scopes = copy.deepcopy(self._trusted_scopes)
         registry.executors = self.executors.detached(frozen=frozen)
         registry.services = self.services.detached(frozen=frozen)
         registry.information_sources = self.information_sources.detached(frozen=frozen)
@@ -547,6 +672,41 @@ class GraphPlan:
     definitions: dict[str, NodeDefinition]
 
 
+def validate_session_item_registrations(document: dict, registry: NodeRegistry) -> None:
+    """Require one explicit object binding for each declared provider instance."""
+    nodes = {node["node_binding_id"]: node for node in document["nodes"]}
+    expected = set()
+    for identity, node in nodes.items():
+        definition = registry.get_definition(node["component_id"], node["component_version"])
+        if definition is None:
+            continue
+        expected.update((identity, item["type_id"], item["schema_version"])
+                        for item in definition.provided_session_item_types)
+
+    registered = set()
+    for raw in document.get("object_bindings", []):
+        binding = ObjectBinding.from_dict(raw)
+        registrar = binding.registrar_node_id
+        if registrar is None:
+            continue
+        require(registrar in nodes, "session_object_registrar_missing",
+                "Object registrar must name an existing node instance", node_id=registrar)
+        node = nodes[registrar]
+        definition = registry.get_definition(node["component_id"], node["component_version"])
+        require(definition is not None, "session_object_registrar_unavailable",
+                "Object registrar node definition is unavailable", node_id=registrar)
+        identity = registrar, binding.type_id, binding.schema_version
+        require(identity in expected, "session_object_registration_mismatch",
+                "Registered object type is not declared by its registrar node", node_id=registrar)
+        require(identity not in registered, "session_object_registration_duplicate",
+                "Registrar instance already provides this exact session item type", node_id=registrar)
+        registered.add(identity)
+
+    for identity in expected:
+        require(identity in registered, "session_object_registration_missing",
+                "Provider node is missing its declared session item registration", node_id=identity[0])
+
+
 class GraphCompiler:
     def __init__(self, registry: NodeRegistry):
         self.registry = registry
@@ -578,6 +738,7 @@ class GraphCompiler:
 
     def _compile(self, document: dict, *, external_inputs: dict | None = None,
                  targets: list[str] | None = None) -> GraphPlan:
+        validate_session_item_registrations(document, self.registry)
         available_packages = {item["package_id"]: item["version"] for item in self.registry.package_lock}
         require(all(available_packages.get(item["package_id"]) == item["version"]
                     for item in document.get("package_lock", [])),
@@ -596,13 +757,27 @@ class GraphCompiler:
             validate_json_value(external_inputs)
             require(type(external_inputs) is dict, "graph_invalid_external_inputs", "External inputs must be named values")
         nodes = {node["node_binding_id"]: node for node in document["nodes"]}
-        if targets is None:
-            targets = ([] if document.get("event_bindings") else
-                       [identity for identity, node in nodes.items()
-                        if (entry := self.registry.get(node["component_id"], node["component_version"]))
-                        and entry.definition.is_output])
-            targets = [*targets, *document.get("execution_roots", [])]
-        targets = sorted(set(targets))
+        ordinary = targets is None
+        if ordinary:
+            connected = {
+                edge[key]
+                for edge in (*document["edges"], *document.get("control_edges", []))
+                for key in ("source_node_id", "target_node_id")
+            }
+            targets = [
+                identity for identity, node in nodes.items()
+                if identity in connected
+                and ((definition := self.registry.get_definition(
+                    node["component_id"], node["component_version"])) is None
+                     or definition.execution_class == "working")
+            ]
+            require(any(
+                (definition := self.registry.get_definition(
+                    nodes[identity]["component_id"], nodes[identity]["component_version"]))
+                is not None and definition.is_output
+                for identity in targets
+            ), "graph_no_outputs", "Workflow has no connected working output node")
+        targets = list(dict.fromkeys(targets))
         require(bool(targets), "graph_no_outputs", "Workflow has no execution targets")
         incoming: dict[str, list[dict]] = {}
         for edge in document["edges"]:
@@ -611,7 +786,15 @@ class GraphCompiler:
         for edge in document.get("control_edges", []):
             control_incoming.setdefault(edge["target_node_id"], []).append(edge)
         affected_outputs: dict[str, list[str]] = {}
-        for target in targets:
+        diagnostic_targets = [
+            identity for identity in targets
+            if not ordinary or (
+                (definition := self.registry.get_definition(
+                    nodes[identity]["component_id"], nodes[identity]["component_version"]))
+                is not None and definition.is_output
+            )
+        ]
+        for target in diagnostic_targets:
             pending, reached = [target], set()
             while pending:
                 identity = pending.pop()
@@ -623,7 +806,6 @@ class GraphCompiler:
                 pending.extend(edge["source_node_id"] for edge in control_incoming.get(identity, []))
         closure: set[str] = set()
         visiting: set[str] = set()
-        order: list[str] = []
         definitions: dict[str, NodeDefinition] = {}
         bindings: dict[str, dict[str, list[dict]]] = {}
 
@@ -639,6 +821,10 @@ class GraphCompiler:
             require(entry is not None and (entry.executor is not None or entry.executor_ref is not None
                     and self.registry.executors.get(entry.executor_ref) is not None),
                     "graph_missing_node_type", "Node implementation is missing or unavailable",
+                    node_id=identity, dependent_outputs=[target])
+            require(not ordinary or entry.definition.execution_class == "working",
+                    "graph_non_working_dependency",
+                    "An ordinary working node depends on a non-working node",
                     node_id=identity, dependent_outputs=[target])
             try:
                 self.registry.validate_config(entry, node["config"])
@@ -700,10 +886,9 @@ class GraphCompiler:
                 require(len({edge["order"] for edge in edges}) == len(edges), "graph_input_order_conflict",
                         "Input source order is repeated", node_id=identity, port_id=port.port_id,
                         dependent_outputs=[target])
-            definitions[identity], bindings[identity] = entry.definition, node_bindings
+            definitions[identity], bindings[identity] = copy.deepcopy(entry.definition), node_bindings
             visiting.remove(identity)
             closure.add(identity)
-            order.append(identity)
 
         try:
             for target in targets:
@@ -714,10 +899,40 @@ class GraphCompiler:
                     diagnostic["node_id"], diagnostic["dependent_outputs"],
                 )
             raise
+        creation_order = {
+            node["node_binding_id"]: index for index, node in enumerate(document["nodes"])
+        }
+        predecessors = {
+            identity: {
+                edge["source_node_id"]
+                for edge in (*incoming.get(identity, []), *control_incoming.get(identity, []))
+            }
+            for identity in closure
+        }
+        successors = {identity: set() for identity in closure}
+        for identity, sources in predecessors.items():
+            for source in sources:
+                successors[source].add(identity)
+        ready = [
+            (creation_order[identity], identity)
+            for identity, sources in predecessors.items() if not sources
+        ]
+        heapq.heapify(ready)
+        ordered: list[str] = []
+        remaining = {identity: len(sources) for identity, sources in predecessors.items()}
+        while ready:
+            _, identity = heapq.heappop(ready)
+            ordered.append(identity)
+            for dependent in successors[identity]:
+                remaining[dependent] -= 1
+                if remaining[dependent] == 0:
+                    heapq.heappush(ready, (creation_order[dependent], dependent))
+        require(len(ordered) == len(closure), "graph_dependency_cycle",
+                "Graph has a dependency cycle")
+
         object_bindings = {raw["object_key"]: ObjectBinding.from_dict(raw)
                            for raw in document.get("object_bindings", [])}
-        object_accesses: dict[str, dict[str, bool]] = {}
-        for identity in order:
+        for identity in ordered:
             node = nodes[identity]
             for access in definitions[identity].object_accesses:
                 value = node["config"].get(access["config_field"])
@@ -736,23 +951,4 @@ class GraphCompiler:
                     require((access["access"] == "write" or identity in binding.readers)
                             and (access["access"] == "read" or identity in binding.writers),
                             "session_object_access_denied", "Node lacks declared object access", node_id=identity)
-                    writes = access["access"] != "read"
-                    accesses = object_accesses.setdefault(key, {})
-                    accesses[identity] = accesses.get(identity, False) or writes
-        ancestors: dict[str, set[str]] = {}
-        for identity in order:
-            predecessors = [edge["source_node_id"] for edge in incoming.get(identity, [])]
-            predecessors += [edge["source_node_id"] for edge in control_incoming.get(identity, [])]
-            ancestors[identity] = set(predecessors)
-            for predecessor in predecessors:
-                ancestors[identity].update(ancestors[predecessor])
-        for key, accesses in object_accesses.items():
-            members = list(accesses)
-            for index, identity in enumerate(members):
-                for previous in members[:index]:
-                    require(not (accesses[identity] or accesses[previous])
-                            or previous in ancestors[identity] or identity in ancestors[previous],
-                            "graph_unordered_object_access",
-                            f"Object {key} has unordered read/write nodes; add an explicit dependency",
-                            node_id=identity, dependent_outputs=affected_outputs.get(identity, []))
-        return GraphPlan(document, tuple(targets), tuple(order), bindings, definitions)
+        return GraphPlan(document, tuple(targets), tuple(ordered), bindings, definitions)

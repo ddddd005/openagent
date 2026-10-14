@@ -588,7 +588,7 @@ def test_checkpoint_kinds_and_control_targets():
         validate_record("control_command", command)
 
 
-def test_budget_extension_requires_explicit_positive_increment_and_limit():
+def test_historical_budget_extension_record_remains_readable():
     command = examples()["control_command"]
     command["action"] = "extend_budget"
     command["payload"] = {
@@ -615,6 +615,10 @@ def test_budget_extension_requires_explicit_positive_increment_and_limit():
     command["payload"] = {"additional_model_requests": 1, "max_total_model_requests": 10}
     with pytest.raises(ContractValidationError):
         validate_record("control_command", command)
+    active = examples()["workflow_operation"]
+    active["kind"] = "extend_budget"
+    with pytest.raises(ContractValidationError):
+        validate_record("workflow_operation", active)
 
 
 def test_schema_failure_reports_only_record_path_and_keyword():
@@ -820,6 +824,10 @@ def test_workflow_operation_record_matches_pure_control_envelope():
     operation = examples()["workflow_operation"]
     operation["created_at"] = "2026-09-29T08:30:00.000Z"
     validate_record("workflow_operation", operation)
+    retired = copy.deepcopy(operation)
+    retired["kind"] = "extend_budget"
+    with pytest.raises(ContractValidationError):
+        validate_record("workflow_operation", retired)
     for change in (
         lambda r: r["expected_revisions"][0].update(id=uid(999)),
         lambda r: r["expected_revisions"][0].update(revision=True),

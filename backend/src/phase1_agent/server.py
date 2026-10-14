@@ -117,9 +117,27 @@ def management_request(method, path, data):
     """Select object management without constructing graph execution authority."""
     if method == "GET" and path in ("/api/graph/application", "/api/graph/consumer/application"):
         return True
+    if method == "GET" and path.startswith("/api/graph/"):
+        return True
+    if method == "POST" and path == "/api/graph/definitions":
+        return True
     if method == "POST" and path in (
         "/api/graph/resources/read", "/api/graph/resources/list",
         "/api/graph/resources/save", "/api/graph/resources/delete",
+        "/api/graph/registrations/list",
+    ):
+        return True
+    if method == "POST" and path in (
+        "/api/graph/definitions/update", "/api/graph/sessions", "/api/graph/consumer/sessions",
+    ):
+        return True
+    if method == "POST" and (
+        re.fullmatch(r"/api/graph/definitions/[^/]+/(archive|delete)", path)
+        or re.fullmatch(
+            r"/api/graph/sessions/[^/]+/(data|archive|delete|objects/read|objects/write|"
+            r"objects/artifacts/read|information/read|manifests/read|"
+            r"outputs/read|outputs/history|events/bindings|events/read|"
+            r"consumer/events/bindings|consumer/events/read)", path)
     ):
         return True
     if method != "POST" or path not in (
@@ -133,9 +151,15 @@ def management_request(method, path, data):
     operation = data["operation"]
     if type(operation) is not str:
         return True
+    if path.endswith("/queries"):
+        return True
     operations = COMMANDS if path.endswith("/commands") else QUERIES
     return (operation.startswith(("provider.", "credential.", "resource.", "content.metadata.", "request-evidence."))
-            or operation not in {item.name for item in operations})
+            or operation in {
+                "consumer.draft.save", "definition.update", "definition.archive", "definition.delete",
+                "session.create", "consumer.session.create", "session.metadata.update", "session.data.update",
+                "session.archive", "session.delete", "object.write", "checkpoint.fork",
+            } or operation not in {item.name for item in operations})
 
 
 class LocalHTTPServer(ThreadingHTTPServer):
@@ -178,9 +202,9 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
             if graph_services[0] is not None:
                 return graph_services[0]
             if management_services[0] is None:
+                from .graph_service import GraphWorkflowService
                 from .workflow_host import WorkflowHost
-                management_services[0] = (service if isinstance(service, WorkflowHost)
-                                          or hasattr(service, "provider_configuration")
+                management_services[0] = (service if isinstance(service, (WorkflowHost, GraphWorkflowService))
                                           else WorkflowHost(service.database))
             return management_services[0]
 

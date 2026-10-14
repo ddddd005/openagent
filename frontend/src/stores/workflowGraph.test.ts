@@ -189,6 +189,81 @@ describe("generic workbench execution and document transactions", () => {
     expect(calls[2].body.inputs).toEqual({}); expect(graph.session?.status).toBe("succeeded");
     expect(useWorkspaceStore().activeWorkflow.state).toBe("saved");
   });
+  it("restores an old rebind outbox and reconciles the same owner, body and key without replay", async () => {
+    const { graph, id } = fixture();
+    const document = graphClone(graph.entries[id].document);
+    const view = session(document);
+    document.revision = 2;
+    graph.entries[id].document = document;
+    graph.entries[id].saved_document = graphClone(document);
+    graph.entries[id].saved_revision = 2;
+    graph.entries[id].session_id = view.workflow_session_id;
+    graph.views[view.workflow_session_id] = view;
+    const original = { path: `/api/graph/sessions/${view.workflow_session_id}/rebind`,
+      body: { definition_revision: 2, expected_revision: view.revision,
+        expected_data_revision: view.data_revision, expected_head_revision: view.head_revision,
+        mappings: [], idempotency_key: crypto.randomUUID() }, action: "rebind" };
+    graph.entries[id].pending = graphClone(original);
+    expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(true);
+    expect(graph.entries[id].pending).toEqual(original);
+    const accepted = { ...view, definition_revision: 2, revision: 2 };
+    const paths: string[] = [], receiptReads: unknown[] = [];
+    stubGraphApplicationFetch(vi.fn(async (path, init) => {
+      paths.push(path);
+      if (path === "/api/graph/receipts/read") {
+        const envelope = JSON.parse(init.body);
+        expect(envelope.operation).toBe("session.rebind");
+        const { session_id, ...body } = envelope.parameters;
+        expect(session_id).toBe(view.workflow_session_id);
+        receiptReads.push(body);
+        return graphReceiptReadResponse(envelope.operation, envelope.parameters, accepted);
+      }
+      return new Response(JSON.stringify(path.endsWith("/sessions") ? [accepted] : accepted));
+    }));
+
+    await graph.reconcile(id);
+
+    expect(receiptReads).toEqual([original.body]);
+    expect(paths[0]).toBe("/api/graph/receipts/read");
+    expect(paths).not.toContain(original.path);
+    expect(graph.entries[id].pending).toBeNull();
+    expect(graph.session?.workflow_session_id).toBe(view.workflow_session_id);
+    expect(graph.session?.definition_revision).toBe(2);
+  });
+  it("keeps an unresolved old rebind outbox and never submits it", async () => {
+    const { graph, id } = fixture();
+    const document = graphClone(graph.entries[id].document);
+    const view = session(document);
+    document.revision = 2;
+    graph.entries[id].document = document;
+    graph.entries[id].saved_document = graphClone(document);
+    graph.entries[id].saved_revision = 2;
+    graph.entries[id].session_id = view.workflow_session_id;
+    graph.views[view.workflow_session_id] = view;
+    const original = { path: `/api/graph/sessions/${view.workflow_session_id}/rebind`,
+      body: { definition_revision: 2, expected_revision: view.revision,
+        expected_data_revision: view.data_revision, expected_head_revision: view.head_revision,
+        mappings: [], idempotency_key: crypto.randomUUID() }, action: "rebind" };
+    graph.entries[id].pending = graphClone(original);
+    const paths: string[] = [], requests: unknown[] = [];
+    stubGraphApplicationFetch(vi.fn(async (path, init) => {
+      paths.push(path);
+      if (path !== "/api/graph/receipts/read") throw new Error(`Unexpected request: ${path}`);
+      const envelope = JSON.parse(init.body);
+      requests.push(envelope);
+      return new Response(JSON.stringify({ schema_version: 1, kind: "workflow.application-receipt-read",
+        outcome: "unresolved", reason_code: "not_found" }));
+    }));
+
+    await graph.reconcile(id);
+
+    expect(paths).toEqual(["/api/graph/receipts/read"]);
+    expect(requests).toEqual([{ operation: "session.rebind", parameters: {
+      ...original.body, session_id: view.workflow_session_id,
+    } }]);
+    expect(graph.entries[id].pending).toEqual(original);
+    expect(graph.session?.workflow_session_id).toBe(view.workflow_session_id);
+  });
   it("keeps a lost copy command across reload and reads its same UUID and body", async () => {
     const { graph, id, text } = fixture(); const workspace = useWorkspaceStore();
     const doc = graph.document!; const view = session(doc);
@@ -319,8 +394,9 @@ describe("generic workbench execution and document transactions", () => {
       `/api/graph/sessions/${view.workflow_session_id}/copy`]);
     expect(target.copyPending).toBe(false); expect(graph.entries[target.id].pending).toBeNull();
   });
-  it("requires an explicit save and explicit adoption before starting edited definitions", async () => {
+  it("keeps an old session on its fixed revision and starts edited definitions in a fresh session", async () => {
     const { graph, id, text } = fixture(); const view = session(graph.document!);
+    const created = { ...view, workflow_session_id: crypto.randomUUID(), definition_revision: 2, revision: 1 };
     graph.entries[id].saved_revision = 1; graph.entries[id].saved_document = graphClone(graph.document!);
     graph.entries[id].session_id = view.workflow_session_id; graph.views[view.workflow_session_id] = view;
     graph.patchNode(text, { config: { text: "second edit" } });
@@ -328,20 +404,26 @@ describe("generic workbench execution and document transactions", () => {
     stubGraphApplicationFetch( vi.fn(async (path, init) => {
       calls.push(path); const body = init.body ? JSON.parse(init.body) : {};
       if (path === "/api/graph/definitions") return new Response(JSON.stringify(body.document));
-      if (path.endsWith("/rebind")) return new Response(JSON.stringify({ ...view, definition_revision:2, revision:2 }));
-      if (path.endsWith("/runs")) return new Response(JSON.stringify({ ...view, definition_revision:2, revision:3, status:"succeeded" }));
+      if (path === "/api/graph/sessions") return new Response(JSON.stringify(created));
+      if (path.endsWith("/runs")) return new Response(JSON.stringify({ ...created, revision: 2, status: "succeeded" }));
+      if (path.endsWith(view.workflow_session_id)) return new Response(JSON.stringify(view));
+      if (path.endsWith(created.workflow_session_id)) return new Response(JSON.stringify(created));
       return new Response(JSON.stringify(view));
     }));
     await graph.submitPrimary(); expect(calls).toEqual([]);
     expect(await graph.saveWorkflow()).toBe(true);
     expect(graph.session!.definition_revision).toBe(1);
     await graph.submitPrimary();
-    expect(calls.some(path => path.endsWith("/rebind"))).toBe(false);
+    expect(calls).toEqual(["/api/graph/definitions", `/api/graph/sessions/${view.workflow_session_id}`]);
+    expect(await graph.createSession()).toBe(true);
+    expect(calls.at(-1)).toBe("/api/graph/sessions");
+    expect(graph.session!.workflow_session_id).toBe(created.workflow_session_id);
+    expect(graph.session!.definition_revision).toBe(2);
     calls.length = 0;
-    expect(await graph.adoptRevision()).toBe(true);
     await graph.submitPrimary();
-    expect(calls).toEqual([`/api/graph/sessions/${view.workflow_session_id}`, `/api/graph/sessions/${view.workflow_session_id}/rebind`,
-      `/api/graph/sessions/${view.workflow_session_id}`, `/api/graph/sessions/${view.workflow_session_id}/runs`]);
+    expect(calls).toEqual([`/api/graph/sessions/${created.workflow_session_id}`,
+      `/api/graph/sessions/${created.workflow_session_id}/runs`]);
+    expect(calls.some(path => path.endsWith("/rebind"))).toBe(false);
   });
   it("preserves definitive graph diagnostics and blocks mutations when request persistence fails", async () => {
     const { graph } = fixture(); graph.setPersistenceGuard(() => false);

@@ -1,11 +1,15 @@
 import { graphApplicationQuery, readGraphReceipt, sendGraphCommand } from "./workflowApplicationApi";
 import { WorkbenchApiError } from "./workbenchApi";
 import { graphObject, graphUuid } from "../domain/workflowGraph";
-import { isCurrentModelProfile, isModelProfileIdentity, modelProfileIdentity, modelProfileType,
-  sameModelProfileIdentity, type CurrentModelProfile } from "../domain/workflowModelResources";
+import { isCurrentModelProfile, isLegacyModelProfileRecord, isModelProfileIdentity, modelProfileIdentity,
+  modelProfileType, sameModelProfileIdentity, type CurrentModelProfile, type LegacyModelProfileRecord,
+  type ModelProfileIdentity } from "../domain/workflowModelResources";
 
 export interface ModelProfileSaveRequest {
   record: CurrentModelProfile; expected_sequence: number; idempotency_key: string;
+}
+export interface LegacyModelProfileSaveRequest {
+  record: LegacyModelProfileRecord; expected_sequence: number; idempotency_key: string;
 }
 export async function listModelProfiles(): Promise<CurrentModelProfile[]> {
   const value = await graphApplicationQuery("resource.list", { type_id: modelProfileType });
@@ -19,18 +23,32 @@ export function isModelProfileSaveRequest(value: unknown): value is ModelProfile
     && Number.isSafeInteger(value.expected_sequence)
     && Number(value.expected_sequence) >= 0 && value.record.update_sequence === Number(value.expected_sequence) + 1;
 }
-function acceptance(value: unknown, request: ModelProfileSaveRequest) {
+export function isLegacyModelProfileSaveRequest(value: unknown): value is LegacyModelProfileSaveRequest {
+  return graphObject(value) && Object.keys(value).length === 3 && isLegacyModelProfileRecord(value.record)
+    && graphUuid(value.idempotency_key) && value.idempotency_key === value.idempotency_key.toLowerCase()
+    && Number.isSafeInteger(value.expected_sequence)
+    && Number(value.expected_sequence) >= 0 && value.record.update_sequence === Number(value.expected_sequence) + 1;
+}
+function acceptance(value: unknown, reference: ModelProfileIdentity, sequence: number) {
   if (!graphObject(value) || Object.keys(value).length !== 3 || !isModelProfileIdentity(value.reference)
-    || !sameModelProfileIdentity(value.reference, modelProfileIdentity(request.record))
-    || value.update_sequence !== request.record.update_sequence || value.deleted !== false)
+    || !sameModelProfileIdentity(value.reference, reference)
+    || value.update_sequence !== sequence || value.deleted !== false)
     throw new WorkbenchApiError("unknown", "模型配置回执与原请求不匹配，保留原请求");
   return value;
 }
 export async function saveModelProfile(request: ModelProfileSaveRequest) {
   if (!isModelProfileSaveRequest(request)) throw new WorkbenchApiError("rejected", "模型配置字段无效");
-  return acceptance(await sendGraphCommand("/api/graph/resources/save", { ...request }), request);
+  return acceptance(await sendGraphCommand("/api/graph/resources/save", { ...request }),
+    modelProfileIdentity(request.record), request.record.update_sequence);
 }
 export async function readModelProfileReceipt(request: ModelProfileSaveRequest) {
   if (!isModelProfileSaveRequest(request)) throw new WorkbenchApiError("rejected", "原模型配置请求无效");
-  return acceptance(await readGraphReceipt("/api/graph/resources/save", { ...request }), request);
+  return acceptance(await readGraphReceipt("/api/graph/resources/save", { ...request }),
+    modelProfileIdentity(request.record), request.record.update_sequence);
+}
+export async function readLegacyModelProfileReceipt(request: LegacyModelProfileSaveRequest) {
+  if (!isLegacyModelProfileSaveRequest(request))
+    throw new WorkbenchApiError("rejected", "旧模型配置原请求字段无效");
+  return acceptance(await readGraphReceipt("/api/graph/resources/save", { ...request }),
+    modelProfileIdentity(request.record), request.record.update_sequence);
 }

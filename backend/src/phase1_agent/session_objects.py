@@ -15,6 +15,12 @@ from .graph_records import require, uuid_value
 from .host_sdk import ObjectBinding, WriteIntent, validate_reference
 
 
+_CHECKPOINT_TARGET_RECORDS = (
+    "state_snapshot", "workflow_commit", "workflow_ref",
+    "chain_run", "node_run", "workflow_output",
+)
+
+
 def initialize_object_tables(connection) -> None:
     for statement in (
         "CREATE TABLE IF NOT EXISTS session_object_bindings ("
@@ -181,6 +187,167 @@ class SessionObjectStore:
                         item["type_id"], item["schema_version"], item["value"],
                         self._write_context(sid, key, None, "initialize", history=history),
                     )
+
+    def _checkpoint_current_value(self, sid, key, expected_binding):
+        """Read an exact fixed object through the trusted checkpoint boundary."""
+        self._transaction()
+        row = self.connection.execute(
+            "SELECT * FROM session_object_bindings WHERE session_id=? AND object_key=?", (sid, key),
+        ).fetchone()
+        if row is None:
+            return None
+        binding = ObjectBinding.from_dict(loads_strict(row["binding"]))
+        require(binding.to_dict() == expected_binding.to_dict(),
+                "session_object_binding_mismatch",
+                "Checkpoint object differs from its fixed binding", 409, object_key=key)
+        self._check_type(binding)
+        require(self.connection.execute(
+            "SELECT 1 FROM session_object_revision_membership "
+            "WHERE session_id=? AND object_key=? AND revision_id=?",
+            (sid, key, row["revision_id"]),
+        ).fetchone() is not None,
+            "storage_contract_violation",
+            "Checkpoint object head is outside its session history", 500, object_key=key)
+        value = self._value(row["revision_id"])
+        require((value["type_id"], value["schema_version"])
+                == (binding.type_id, binding.schema_version),
+                "storage_contract_violation",
+                "Checkpoint object head has another exact type", 500, object_key=key)
+        if value["deleted"]:
+            return {**value, "revision": row["revision"], "binding": binding.to_dict()}
+        value["value"] = self.types.validate(
+            binding.type_id, binding.schema_version, value["value"], scope="session")
+        self._check_references(sid, binding, value["value"])
+        return {**value, "revision": row["revision"], "binding": binding.to_dict()}
+
+    def _initialize_checkpoint_values(self, sid, document, values, expected_cas):
+        """Install inline checkpoint values only over pristine initialized object heads."""
+        self._transaction()
+        require(uuid_value(sid) and type(document) is dict
+                and type(values) is dict and type(expected_cas) is dict
+                and set(values) == set(expected_cas),
+                "checkpoint_target_cas_invalid",
+                "Checkpoint initialization requires exact target values and CAS heads", 409)
+        from .graph_store import GraphRecordStore
+        repo = GraphRecordStore(self.store)
+        session = repo.get("workflow_session", workflow_session_id=sid)
+        require(session["revision"] == 1 and session["source"] == {"kind": "new"}
+                and session["active_chain_run_id"] is None
+                and (session["workflow_definition_id"], session["definition_revision"])
+                == (document.get("workflow_definition_id"), document.get("revision")),
+                "checkpoint_target_not_fresh",
+                "Checkpoint values can initialize only a newly created fixed-definition session", 409)
+        definition = repo.get(
+            "workflow_definition_revision",
+            workflow_definition_id=session["workflow_definition_id"],
+            revision=session["definition_revision"],
+        )
+        require(repo.equal(definition["document"], document),
+                "checkpoint_target_definition_mismatch",
+                "Checkpoint target must use its exact persisted fixed definition", 409)
+        for record_type in _CHECKPOINT_TARGET_RECORDS:
+            require(not repo.rows(record_type, workflow_session_id=sid),
+                    "checkpoint_target_not_fresh",
+                    "Checkpoint target already has committed or execution state", 409)
+        require(self.connection.execute(
+            "SELECT 1 FROM graph_state_manifests "
+            "WHERE json_extract(payload,'$.workflow_session_id')=? LIMIT 1", (sid,),
+        ).fetchone() is None,
+            "checkpoint_target_not_fresh",
+            "Checkpoint target already has a saved session-state manifest", 409)
+        for table in ("program_variable_heads", "program_variable_states", "program_variable_bindings"):
+            require(self.connection.execute(
+                f"SELECT 1 FROM {table} WHERE session_id=? LIMIT 1", (sid,),
+            ).fetchone() is None,
+                "checkpoint_target_not_fresh",
+                "Checkpoint target already has program-variable state", 409)
+        require(self.connection.execute(
+            "SELECT 1 FROM program_variable_receipts "
+            "WHERE json_extract(payload,'$.session_id')=? LIMIT 1", (sid,),
+        ).fetchone() is None,
+            "checkpoint_target_not_fresh",
+            "Checkpoint target already has program-variable write receipts", 409)
+        bindings_list = [ObjectBinding.from_dict(raw) for raw in document.get("object_bindings", [])]
+        bindings = {binding.object_key: binding for binding in bindings_list}
+        require(len(bindings) == len(bindings_list) and set(values) <= bindings.keys(),
+                "checkpoint_target_context_binding_mismatch",
+                "Checkpoint values must match unique fixed target bindings", 409)
+        current = self.current(sid)
+        require(set(current) == set(bindings)
+                and all(item["revision"] == 1 for item in current.values())
+                and self.connection.execute(
+                    "SELECT 1 FROM session_object_receipts WHERE session_id=? LIMIT 1", (sid,),
+                ).fetchone() is None,
+                "checkpoint_target_not_fresh",
+                "Checkpoint values require pristine initialized target objects", 409)
+        heads = {
+            row["object_key"]: row["revision_id"]
+            for row in self.connection.execute(
+                "SELECT object_key,revision_id FROM session_object_bindings WHERE session_id=?", (sid,),
+            ).fetchall()
+        }
+        memberships = {
+            (row["object_key"], row["revision_id"])
+            for row in self.connection.execute(
+                "SELECT object_key,revision_id FROM session_object_revision_membership WHERE session_id=?",
+                (sid,),
+            ).fetchall()
+        }
+        require(memberships == set(heads.items()),
+                "checkpoint_target_not_fresh",
+                "Checkpoint target objects must have only their initial revision membership", 409)
+        for key, binding in bindings.items():
+            item = current[key]
+            require(item["binding"] == binding.to_dict()
+                    and (item["type_id"], item["schema_version"])
+                    == (binding.type_id, binding.schema_version)
+                    and not item["deleted"],
+                    "checkpoint_target_context_binding_mismatch",
+                    "Target object differs from its exact fixed binding", 409,
+                    object_key=key)
+            self._check_type(binding)
+
+        prepared = []
+        for key in sorted(values):
+            binding = bindings[key]
+            item = current[key]
+            expected = expected_cas[key]
+            require(type(expected) is dict and set(expected) == {"revision", "revision_id"}
+                    and type(expected["revision"]) is int
+                    and expected["revision"] == item["revision"] == 1
+                    and uuid_value(expected["revision_id"])
+                    and expected["revision_id"] == item["revision_id"]
+                    and item["binding"] == binding.to_dict()
+                    and (item["type_id"], item["schema_version"])
+                    == (binding.type_id, binding.schema_version)
+                    and not item["deleted"],
+                    "checkpoint_target_cas_stale",
+                    "Target object differs from its actual initialization head", 409,
+                    object_key=key)
+            value = self.types.validate(binding.type_id, binding.schema_version, values[key], scope="session")
+            self._check_references(sid, binding, value)
+            require(item["revision"] < 2**53 - 1, "session_object_revision_exhausted",
+                    "Object revision exceeds its protocol limit", 409)
+            prepared.append((key, binding, item, value))
+
+        results = {}
+        for key, binding, item, value in prepared:
+            revision_id = self._put_value(binding, value)
+            revision = item["revision"] + 1
+            updated = self.connection.execute(
+                "UPDATE session_object_bindings SET revision=?,revision_id=? "
+                "WHERE session_id=? AND object_key=? AND revision=? AND revision_id=? AND binding=?",
+                (revision, revision_id, sid, key, item["revision"], item["revision_id"],
+                 canonical_bytes(binding.to_dict()).decode("utf-8")),
+            )
+            require(updated.rowcount == 1, "stale_object_revision",
+                    "Target object changed during checkpoint initialization", 409,
+                    object_key=key)
+            self._grant_revision(sid, key, revision_id)
+            results[key] = {
+                "object_key": key, "revision": revision, "revision_id": revision_id, "deleted": False,
+            }
+        return results
 
     def _artifact_history(self, sid):
         from .graph_store import GraphRecordStore

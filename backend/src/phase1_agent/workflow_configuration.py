@@ -250,20 +250,11 @@ def initialize_configuration_tables(connection):
 
 class WorkflowConfiguration:
     def _configuration_descriptor(self, repo, node):
-        entry = self.registry.get(node["component_id"], node["component_version"])
-        saved = repo.maybe("node_definition", component_id=node["component_id"],
-                           component_version=node["component_version"])
-        if saved is not None:
-            if entry is not None:
-                registered = self._runtime_descriptor(entry)
-                persisted = deepcopy(saved["descriptor"])
-                registered.pop("executable", None)
-                persisted.pop("executable", None)
-                require(repo.equal(persisted, registered),
-                        "node_definition_changed", "Registered declaration differs from its saved version", 409,
-                        node_id=node["node_binding_id"])
-            return saved["descriptor"]
-        return self._runtime_descriptor(entry) if entry is not None else None
+        definition = self.registry.get_definition(node["component_id"], node["component_version"])
+        require(definition is not None, "graph_missing_node_type",
+                "Current trusted node definition is unavailable", 409,
+                node_id=node["node_binding_id"])
+        return definition.to_dict()
 
     def _configuration_document(self, repo, identity):
         current = repo.current_configuration(identity)
@@ -282,6 +273,8 @@ class WorkflowConfiguration:
                     node["config"].pop(field, None)
                 node["config"].update(deepcopy(current["adjustable_config"][identity]))
                 validate_node_configuration(node, descriptor)
+        from .graph_contracts import validate_session_item_registrations
+        validate_session_item_registrations(document, self.registry)
         return document
 
     def _write_configuration(self, repo, document, edit_sequence):
@@ -318,6 +311,8 @@ class WorkflowConfiguration:
             proposed = validate_graph_document(document)
             require(proposed["schema_version"] == 3, "graph_invalid_document",
                     "Configuration updates require graph document schema 3")
+            from .graph_contracts import validate_session_item_registrations
+            validate_session_item_registrations(proposed, self.registry)
             require(proposed["workflow_definition_id"] == workflow_definition_id, "invalid_request",
                     "Submitted document identity must equal the source workflow")
             require("edit_sequence" not in proposed or proposed["edit_sequence"] == expected_edit_sequence,

@@ -2,7 +2,6 @@ import { WorkbenchApiError } from "../adapters/workbenchApi";
 import { graphClone, graphSignature, isGraphDocument,
   type GraphCommand, type GraphDocument, type GraphEntry, type GraphSession } from "../domain/workflowGraph";
 import type { WorkflowTarget } from "./workflowManagement";
-import { createGraphCommand } from "./workflowCommands";
 
 export interface WorkflowEditingPorts {
   entry(workflowId: string): GraphEntry | undefined;
@@ -12,7 +11,7 @@ export interface WorkflowEditingPorts {
   acceptDraft(workflowId: string, document: GraphDocument): void;
   stageCopy(sourceId: string, targetId: string, document: GraphDocument, baseline: GraphDocument, copying: boolean): void;
   open(workflowId: string): void;
-  persist(): boolean | Promise<boolean>;
+  persist?(): boolean | Promise<boolean>;
   dispatch(workflowId: string, command: GraphCommand): Promise<unknown>;
   copying(active: boolean): void;
   report(failure: unknown): void;
@@ -30,7 +29,6 @@ export function createWorkflowEditing(ports: WorkflowEditingPorts) {
       || ["prepared", "running", "pausing", "paused"].includes(view.status)))
       throw new WorkbenchApiError("unavailable", "当前会话未稳定，刷新或结束运行后再编辑");
     ports.acceptDraft(workflowId, graphClone(next));
-    void Promise.resolve(ports.persist()).catch(ports.report);
     return workflowId;
   }
   function copy({ workflowId }: WorkflowTarget) {
@@ -40,25 +38,16 @@ export function createWorkflowEditing(ports: WorkflowEditingPorts) {
     if (entry.session_id && (!view || !view.can_submit
       || ["prepared", "running", "pausing", "paused"].includes(view.status)))
       throw new WorkbenchApiError("unavailable", "当前会话未稳定，不能复制工作流");
+    if (view)
+      throw new WorkbenchApiError("unavailable", "会话复制写入暂不可用；未创建副本或提交请求");
     const next = graphClone(entry.document);
     const targetId = crypto.randomUUID();
     next.workflow_definition_id = targetId;
     next.revision = 1;
     next.name = `${next.name}（副本）`;
     const baseline = graphClone({ ...entry.document, workflow_definition_id: targetId, revision: 1, name: next.name });
-    ports.stageCopy(workflowId, targetId, graphClone(next), baseline, !!view);
-    if (!view) {
-      ports.open(targetId);
-      void Promise.resolve(ports.persist()).catch(ports.report);
-    } else {
-      ports.copying(true);
-      const command = createGraphCommand(`/api/graph/sessions/${view.workflow_session_id}/copy`, {
-        document: next, expected_session_revision: view.revision, expected_data_revision: view.data_revision,
-        expected_definition_revision: view.definition_revision, expected_head_revision: view.head_revision,
-        mappings: entry.state_mappings ?? [],
-      }, "copy");
-      void ports.dispatch(targetId, command).catch(ports.report).finally(() => ports.copying(false));
-    }
+    ports.stageCopy(workflowId, targetId, graphClone(next), baseline, false);
+    ports.open(targetId);
     return targetId;
   }
   return { edit, copy };

@@ -13,6 +13,8 @@ COMPACTION_POLICY_COMPONENT = "agents.compaction-policy"
 _CONFIG_FIELDS = frozenset({
     "enabled", "trigger_tokens", "keep_depth", "summary_prompt", "target_tokens",
 })
+_CONFIG_FIELDS_V2 = frozenset({"enabled", "keep_depth", "summary_prompt"})
+_CONFIG_FIELD_ORDER_V2 = ("enabled", "keep_depth", "summary_prompt")
 _MAX_SAFE_INTEGER = 2**53 - 1
 _MAX_SUMMARY_PROMPT_CHARS = 100_000
 
@@ -47,11 +49,23 @@ def compaction_policy_config() -> dict:
     }
 
 
+def compaction_policy_config_v2() -> dict:
+    return {"enabled": True, "keep_depth": 2, "summary_prompt": ""}
+
+
 def default_compaction_policy() -> dict:
     return {
         "schema_version": 1, "kind": "workflow.context-compaction-policy",
         **compaction_policy_config(),
     }
+
+
+def default_compaction_policy_v2() -> dict:
+    from .model_request_contracts import validate_compaction_policy
+    return validate_compaction_policy({
+        "schema_version": 2, "kind": "workflow.context-compaction-policy",
+        **compaction_policy_config_v2(),
+    })
 
 
 def compaction_policy_schema(*, envelope: bool = True) -> dict:
@@ -125,6 +139,20 @@ def compaction_policy_node_definition() -> NodeDefinition:
     )
 
 
+def compaction_policy_node_definition_v2() -> NodeDefinition:
+    from .model_request_contracts import compaction_policy_schema as request_compaction_policy_schema
+    definition = request_compaction_policy_schema()
+    config_schema = object_schema({
+        field: deepcopy(definition["properties"][field]) for field in _CONFIG_FIELD_ORDER_V2
+    })
+    return NodeDefinition(
+        COMPACTION_POLICY_COMPONENT, "2", "上下文精简策略", "Agent",
+        compaction_policy_config_v2(), config_schema,
+        outputs=(NodePort("output", COMPACTION_POLICY_TYPE, data_schema_version=2),),
+        input_storage="references",
+    )
+
+
 def _execute_policy(config, inputs, context):
     return {"output": validate_compaction_policy({
         "schema_version": 1, "kind": "workflow.context-compaction-policy",
@@ -132,17 +160,29 @@ def _execute_policy(config, inputs, context):
     })}
 
 
+def _execute_policy_v2(config, inputs, context):
+    from .model_request_contracts import validate_compaction_policy
+    require(type(config) is dict and set(config) == _CONFIG_FIELDS_V2,
+            "context_compaction_policy_invalid", "Agent policy 2 fields are invalid")
+    return {"output": validate_compaction_policy({
+        "schema_version": 2, "kind": "workflow.context-compaction-policy", **config,
+    })}
+
+
 def register_compaction_policy(host) -> None:
+    from .model_request_contracts import (
+        compaction_policy_schema as request_compaction_policy_schema,
+        validate_compaction_policy as validate_request_compaction_policy,
+    )
     host.register_data_type(DataTypeDefinition(
-        COMPACTION_POLICY_TYPE, 1, compaction_policy_schema(), scope="content",
-        validator=validate_compaction_policy, max_bytes=1_000_000,
+        COMPACTION_POLICY_TYPE, 2, request_compaction_policy_schema(), scope="content",
+        validator=validate_request_compaction_policy, max_bytes=1_000_000,
     ))
-    host.register_node(compaction_policy_node_definition(), _execute_policy,
-                       config_validator=validate_compaction_policy_config)
+    host.register_node(compaction_policy_node_definition_v2(), _execute_policy_v2)
 
 
 def compaction_policy_exports() -> dict:
     return {
-        "data_types": [{"scope": "content", "type_id": COMPACTION_POLICY_TYPE, "schema_version": 1}],
-        "nodes": [{"component_id": COMPACTION_POLICY_COMPONENT, "component_version": "1"}],
+        "data_types": [{"scope": "content", "type_id": COMPACTION_POLICY_TYPE, "schema_version": 2}],
+        "nodes": [{"component_id": COMPACTION_POLICY_COMPONENT, "component_version": "2"}],
     }

@@ -219,8 +219,18 @@ def test_actual_feedback_and_final_correction_keep_the_original_request_proof(tm
         facts, models = host.executor_facts(packet), host.model_facts(packet)
         assert host.prove(packet, facts, models)["value"] == {"text": "Accepted answer"}
         if first_result == "plain_response":
-            assert not any(message["source"]["kind"] == "protocol_feedback"
-                           for message in packet["next_view"]["messages"])
+            feedback = next(
+                fact["payload"]["payload"]["message"]
+                for fact in facts
+                if fact["payload"]["kind"] == "message_accepted"
+                and fact["payload"]["payload"]["message"].get("source", {}).get("kind")
+                == "protocol_feedback"
+            )
+            feedback_text = "\n".join(
+                block["text"] for block in feedback["blocks"] if block["kind"] == "text")
+            assert feedback_text == "Call final_answer with a valid JSON answer."
+            assert not any(block.get("text") == feedback_text
+                           for message in packet["next_view"]["messages"] for block in message["blocks"])
         else:
             assert event(facts, "tool_settled")["message"]["blocks"][0]["content"] == {
                 "error": "Invalid final answer."}

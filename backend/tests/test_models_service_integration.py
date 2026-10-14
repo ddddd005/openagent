@@ -57,9 +57,19 @@ class ModelDatabaseFixture:
         }
         service.save_global_resource(record, expected_sequence=sequence - 1, idempotency_key=str(uuid4()))
         if service.get_global_resource(source_config()["reference"]) is None:
+            saved_profile = {
+                "name": "Unit model configuration", "provider": profile_config()["provider"],
+                "model": {"id": "deepseek-test", "capacity": {
+                    "context_window_tokens": 400_000, "input_limit_tokens": 300_000,
+                    "max_output_tokens": 32_000,
+                }},
+                "runtime": {"thinking": "disabled", "context_length_tokens": 300_000,
+                            "compaction_threshold_bps": 8500, "output_limit_tokens": 32_000},
+                "enabled": True,
+            }
             service.save_global_resource({
-                **source_config()["reference"], "data_schema_version": 1, "update_sequence": 1,
-                "value": profile_config(),
+                **source_config()["reference"], "data_schema_version": 2, "update_sequence": 1,
+                "value": saved_profile,
             }, expected_sequence=0, idempotency_key=str(uuid4()))
         return record
 
@@ -129,7 +139,8 @@ class ModelDatabaseFixture:
 
     @staticmethod
     def create(service, document):
-        service.save_definition(document, expected_revision=0, idempotency_key=str(uuid4()))
+        from test_graph_service import save_definition_fixture
+        save_definition_fixture(service, document)
         return service.create_session(document["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
 
     @staticmethod

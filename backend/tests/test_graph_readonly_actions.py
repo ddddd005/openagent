@@ -49,7 +49,7 @@ def completed(service, document):
     return view
 
 
-def test_readonly_consumer_preserves_outputs_and_candidates_refuse_missing_exact_component(
+def test_readonly_consumer_preserves_outputs_and_candidates_are_readonly_without_selection_validation(
     tmp_path, monkeypatch,
 ):
     path = tmp_path / "readonly.sqlite"
@@ -81,7 +81,7 @@ def test_readonly_consumer_preserves_outputs_and_candidates_refuse_missing_exact
             assert consumer["outputs"][0]["payload"]["text"] == "Retained"
         candidates = service.list_graph_candidates(sid)["candidates"]
         assert candidates and all(not item["can_select"] for item in candidates)
-        assert candidates[0]["diagnostic"]["reason_code"] == "historical_definition_unavailable"
+        assert candidates[0]["diagnostic"] is None
         assert service.get_session(sid) == before
 
 

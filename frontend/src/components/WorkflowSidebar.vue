@@ -16,7 +16,8 @@ const tavernTemplateAvailable = computed(() => graph.packageLock.some(row =>
   row.package_id === "workflow.tavern" && row.version === "1.2.0")
   && graph.frontendExtensions.some(row => row.extension_id === "workflow.tavern.chat-launch"));
 watch(() => persistence.ready, ready => {
-  if (ready && typeof window !== "undefined") void graph.loadDefinitions();
+  if (ready && typeof window !== "undefined")
+    void graph.loadDefinitions().then(() => persistence.selectLoadedWorkflow());
 }, { immediate: true });
 async function manageWorkflow(id: string, action: "archive" | "delete") {
   const message = action === "archive"
@@ -27,17 +28,14 @@ async function manageWorkflow(id: string, action: "archive" | "delete") {
   if (!await graph.manageWorkflow(id, action)) navigationError.value = "目标操作未完成，请查看实际错误或核实原请求。";
 }
 let navigationGeneration = 0;
-async function leaveEditor(change: () => void) {
+function leaveEditor(change: () => void) {
   const token = ++navigationGeneration, workflowId = workspace.activeWorkflowId;
-  if (!await persistence.save()) {
-    navigationError.value = "当前编辑尚未写入本机，保留此页面"; return;
-  }
   if (token !== navigationGeneration || workflowId !== workspace.activeWorkflowId) return;
   navigationError.value = "";
   change();
 }
 function nodeCount(workflowId: string) { return graph.entries[workflowId]?.document.nodes.length ?? 0; }
-async function openWorkflow(id: string) { await leaveEditor(() => workspace.openWorkflow(id)); }
+function openWorkflow(id: string) { leaveEditor(() => workspace.openWorkflow(id)); }
 </script>
 
 <template>

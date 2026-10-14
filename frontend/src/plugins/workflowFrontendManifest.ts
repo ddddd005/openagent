@@ -9,7 +9,9 @@ export const workflowFrontendExtensions: FrontendExtension[] = [
   ["public-output", "consumer", "consumer.public-output", "consumer", "public-output",
     { scope: "content", type_id: "FRONTEND_DISPLAY", schema_version: 1 }, null, null],
 ].map(([id, kind, entrypoint, surface, slot, target, component_id, component_version]) => ({
-  schema_version: 2, host_protocol_version: 1, extension_id: `workflow.frontend.${id}`,
+  schema_version: slot === "node-fields" ? 3 : 2,
+  host_protocol_version: slot === "node-fields" ? 2 : 1,
+  extension_id: `workflow.frontend.${id}`,
   kind, entrypoint: `workflow.frontend.${entrypoint}`, component_id, component_version,
   package_id: "workflow.frontend", package_version: "1.0.0", binding: { surface, slot, target },
 })) as FrontendExtension[];

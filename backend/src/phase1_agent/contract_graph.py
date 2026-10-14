@@ -14,7 +14,9 @@ from referencing.exceptions import Unresolvable
 
 from .contract_errors import ContractValidationError
 from .contract_json import canonical_bytes, loads_strict
-from .contracts_v2 import CONTRACT_SCHEMAS, validate_record
+from .contracts_v2 import (
+    CONTRACT_SCHEMAS, is_runtime_tool_observation_block, validate_record,
+)
 
 
 def _require(condition: bool, message: str) -> None:
@@ -23,14 +25,18 @@ def _require(condition: bool, message: str) -> None:
 
 
 def _validate_message_sequence(
-    messages: list[dict[str, Any]], expected_pending: tuple[str, ...],
+    messages: list[dict[str, Any]], expected_pending: tuple[str, ...], *, context_history: bool = False,
 ) -> None:
     pending: dict[str, str] = {}
     seen_messages: set[str] = set()
     seen_calls: set[str] = set()
     seen_executions: set[str] = set()
     for raw in messages:
-        message = validate_record("agent_message", raw)
+        if context_history:
+            from .contracts_v2 import validate_context_history_message
+            message = validate_context_history_message(raw)
+        else:
+            message = validate_record("agent_message", raw)
         identity = message["message_id"]
         _require(identity not in seen_messages, "Duplicate message identity")
         seen_messages.add(identity)
@@ -48,11 +54,13 @@ def _validate_message_sequence(
                 _require(call_id in pending, "Tool result has no pending call")
                 _require(call_id == next(iter(pending)), "Tool results must retain call order")
                 _require(block["status"] in ("success", "error"), "Unknown outcomes are not settled model results")
-                if message["schema_version"] == 2:
+                if (message.get("schema_version") == 2
+                        or "source" not in message and is_runtime_tool_observation_block(block)):
                     _require(pending[call_id] != "final_answer",
                              "Final control call cannot receive a synthetic tool observation")
                 execution_id = block["tool_execution_id"]
-                _require(message["source"]["tool_execution_id"] == execution_id,
+                _require("source" not in message
+                         or message["source"]["tool_execution_id"] == execution_id,
                          "Tool source and result execution differ")
                 if execution_id is not None:
                     _require(execution_id not in seen_executions, "Duplicate tool execution identity")
@@ -81,6 +89,24 @@ def validate_pending_message_history(
     _require(len(set(pending_call_ids)) == len(pending_call_ids),
              "Pending call identities cannot contain duplicates")
     _validate_message_sequence(messages, tuple(pending_call_ids))
+
+
+def validate_context_message_history(messages: list[dict[str, Any]]) -> None:
+    """Check a mixed native prompt history with explicitly source-free old context."""
+    _validate_message_sequence(messages, (), context_history=True)
+
+
+def validate_pending_context_message_history(
+    messages: list[dict[str, Any]], pending_call_ids: tuple[str, ...] | list[str],
+) -> None:
+    """Check a native frozen prefix plus live messages with pending tool calls."""
+    _require(type(pending_call_ids) in (tuple, list) and bool(pending_call_ids),
+             "Pending call identities must be a nonempty ordered sequence")
+    _require(all(type(identity) is str and bool(identity) for identity in pending_call_ids),
+             "Pending call identities must be nonempty strings")
+    _require(len(set(pending_call_ids)) == len(pending_call_ids),
+             "Pending call identities cannot contain duplicates")
+    _validate_message_sequence(messages, tuple(pending_call_ids), context_history=True)
 
 
 def validate_turn_final(turn: dict[str, Any], snapshot: dict[str, Any]) -> None:

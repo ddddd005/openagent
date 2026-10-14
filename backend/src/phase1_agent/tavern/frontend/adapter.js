@@ -131,36 +131,6 @@
       if (items?.length) message.thinking_summary = items.join("\n\n");
     }
   }
-  function roundTargets(messages, packet) {
-    const targets = new Map();
-    if (!packet?.can_fork) return targets;
-    const groups = new Map();
-    for (const [index, message] of messages.entries()) {
-      const producer = message.producer;
-      if (!producer || !GraphChat.uuid(producer.workflow_session_id) || !GraphChat.uuid(producer.chain_run_id)) continue;
-      const key = JSON.stringify([producer.workflow_session_id, producer.chain_run_id]);
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push({ message, index });
-    }
-    let round = 0;
-    for (const [key, members] of groups) {
-      const candidate = packet.candidates.find(row =>
-        JSON.stringify([row.source_session_id, row.chain_run_id]) === key);
-      if (!candidate) continue;
-      const target = { candidate: clone(candidate), round: ++round,
-        records: members.map(row => row.index + 1) };
-      for (const member of members) targets.set(member.message.entry_id, target);
-    }
-    return targets;
-  }
-  function forkConfirmation(target) {
-    return `从第 ${target.round} 个完成回合检查点创建分叉？\n\n`
-      + `相关展示记录：${target.records.map(number => "#" + number).join(", ")}\n`
-      + `完成回合：${target.candidate.chain_run_id}\n`
-      + `检查点：${target.candidate.candidate_id}\n`
-      + `工作流定义 r${target.candidate.source_definition_revision}\n\n`
-      + "新会话继承该完整回合的检查点；父会话不变。";
-  }
   function createRequest(fetcher) {
     const allowed = new Map([
       ["/api/graph/consumer/application", "GET"],
@@ -171,6 +141,12 @@
     return async (path, options = {}) => {
       if (allowed.get(path) !== (options.method ?? "GET")) throw new Error("酒馆传输入口未授权");
       const mutation = path === "/api/graph/consumer/commands";
+      if (mutation) {
+        let envelope;
+        try { envelope = JSON.parse(options.body); } catch {}
+        if (envelope?.operation === "consumer.candidate.fork")
+          throw new Error("候选历史分叉入口已退役；未提交新请求");
+      }
       let response;
       try {
         response = await fetcher(path, { ...options, credentials: "same-origin", cache: "no-store",
@@ -192,5 +168,5 @@
       request: createRequest(fetcher) });
   }
   root.TavernAdapter = { MAX_TEXT, type, namespace, storageForTavern, textInput, inputsFor,
-    displayPorts, collectEntries, transcript, attachThinking, roundTargets, forkConfirmation, createRequest, createClient };
+    displayPorts, collectEntries, transcript, attachThinking, createRequest, createClient };
 })(globalThis);

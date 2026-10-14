@@ -4,7 +4,9 @@ import { renderToString } from "@vue/server-renderer";
 import { createModelProfiles, modelProfilesKey, useModelProfiles } from "./modelProfiles";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import { readModelProfileReceipt, saveModelProfile, type ModelProfileSaveRequest } from "../adapters/workflowModelProfilesApi";
-import { newModelProfile, newProvider, modelProfileIdentity, type CurrentModelProfile } from "../domain/workflowModelResources";
+import { modelProfileType, newModelProfile, newProvider, modelProfileIdentity,
+  type CurrentModelProfile, type LegacyModelProfileRecord } from "../domain/workflowModelResources";
+import type { LegacyModelProfileSaveRequest } from "../adapters/workflowModelProfilesApi";
 import { graphReceiptReadResponse } from "../testUtils/graphApplicationServer";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -13,10 +15,25 @@ const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 function profile(): CurrentModelProfile {
   const value = newModelProfile(newProvider());
   value.value.name = "Shared configuration";
-  value.value.parameters.model = "offline-test-chat";
-  value.value.capacity.context_window_tokens = 4096;
-  value.value.capacity.max_cold_input_tokens = 2048;
+  value.value.model.id = "offline-test-chat";
+  value.value.model.capacity = { context_window_tokens: 4096, input_limit_tokens: 2048, max_output_tokens: 1024 };
+  value.value.runtime.context_length_tokens = 3000;
+  value.value.runtime.output_limit_tokens = 512;
   return value;
+}
+function legacyRequest(): LegacyModelProfileSaveRequest {
+  const provider = newProvider();
+  const record: LegacyModelProfileRecord = {
+    envelope_version: 1, scope: "workspace", type_id: modelProfileType, resource_id: crypto.randomUUID(),
+    data_schema_version: 1, update_sequence: 2,
+    value: { name: "Original schema one model", protocol: "chat",
+      provider: { envelope_version: 1, scope: provider.scope, type_id: "workflow.chat-provider",
+        resource_id: provider.resource_id },
+      parameters: { model: "legacy-model", thinking: "disabled", stream: false, max_tokens: 1024 },
+      capacity: { context_window_tokens: 4096, output_reserve_tokens: 1024,
+        summary_max_tokens: 128, max_cold_input_tokens: 2048 }, enabled: true },
+  };
+  return { record, expected_sequence: 1, idempotency_key: crypto.randomUUID() };
 }
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (failure: unknown) => void;
@@ -39,11 +56,39 @@ function sorted(value: unknown): unknown {
 }
 
 describe("global named model configuration coordination", () => {
+  it("reconciles a strict schema-one pending receipt without resolving or rewriting its original", async () => {
+    const original: LegacyModelProfileSaveRequest = legacyRequest();
+    let raw: string | null = JSON.stringify(original);
+    const list = vi.fn(async () => []), save = vi.fn(), readReceipt = vi.fn();
+    const readLegacyReceipt = vi.fn(async () => ({
+      reference: modelProfileIdentity(original.record), update_sequence: original.record.update_sequence, deleted: false,
+    }));
+    const writePending = vi.fn((value: string | null) => { raw = value; });
+    const resources = createModelProfiles({ list, save, readReceipt, readLegacyReceipt,
+      readPending: () => raw, writePending });
+
+    await resources.initialize();
+    expect(resources.legacyRaw.value).toBe(JSON.stringify(original));
+    expect(resources.pending.value).toBeNull();
+    expect(resources.locked.value).toBe(true);
+    expect(await resources.reconcileLegacyPending()).toBe(true);
+
+    expect(readLegacyReceipt).toHaveBeenCalledWith(original);
+    expect(readReceipt).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(writePending).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+    expect(raw).toBe(JSON.stringify(original));
+    expect(resources.legacyRaw.value).toBe(JSON.stringify(original));
+    expect(resources.locked.value).toBe(true);
+    expect(resources.error.value).toContain("未恢复配置或重新提交");
+  });
+
   it("persists the complete cloned CAS intent before dispatch and clears before refresh", async () => {
     let raw: string | null = null;
     const order: string[] = [], original = profile(), requests: ModelProfileSaveRequest[] = [];
     original.scope = "project"; original.update_sequence = 4;
-    original.value.parameters.temperature = 0.25;
+    original.value.runtime.output_limit_tokens = 700;
     const initial = clone(original);
     const resources = createModelProfiles({
       readPending: () => raw, writePending: value => { order.push(value === null ? "clear" : "persist"); raw = value; },
@@ -69,7 +114,7 @@ describe("global named model configuration coordination", () => {
       save: async request => {
         sent.push(clone(request));
         request.record.value.name = "Changed port copy";
-        request.record.value.capacity.context_window_tokens = 99999;
+        request.record.value.model.capacity.context_window_tokens = 99999;
         throw new WorkbenchApiError("unknown", "No acceptance received");
       },
       readReceipt: async request => {
@@ -82,8 +127,8 @@ describe("global named model configuration coordination", () => {
     expect(await resources.save(original, 0)).toBe(false);
     const durable = raw;
     original.value.name = "Changed caller";
-    original.value.parameters.temperature = 2;
-    original.value.capacity.context_window_tokens = 50000;
+    original.value.runtime.output_limit_tokens = 700;
+    original.value.model.capacity.context_window_tokens = 50000;
     expect(resources.pending.value?.record.value).toEqual(initial.value);
     expect(await resources.save(profile(), 0)).toBe(false); expect(raw).toBe(durable);
     const reopened = createModelProfiles(ports);
@@ -136,7 +181,7 @@ describe("global named model configuration coordination", () => {
     expect(await resources.save(original, 3)).toBe(false);
     expect(resources.pending.value).toBeNull(); expect(resources.locked.value).toBe(false); expect(raw()).toBeNull();
     await resources.refresh(); reject = false;
-    const edited = clone(resources.records.value[0]!); edited.value.parameters.temperature = 1;
+    const edited = clone(resources.records.value[0]!); edited.value.runtime.output_limit_tokens = 700;
     expect(await resources.save(edited, 4)).toBe(true);
     expect(save.mock.calls).toHaveLength(2);
     const first = save.mock.calls[0]![0] as unknown as ModelProfileSaveRequest;
@@ -144,7 +189,7 @@ describe("global named model configuration coordination", () => {
     expect(first).toMatchObject({ expected_sequence: 3, record: { update_sequence: 4 } });
     expect(second).toMatchObject({ expected_sequence: 4, record: { update_sequence: 5 } });
     expect(first.idempotency_key).not.toBe(second.idempotency_key);
-    expect(original.value.parameters.temperature).toBeUndefined();
+    expect(original.value.runtime.output_limit_tokens).toBe(512);
   });
 
   it.each(["unknown", "unavailable", "idempotency_conflict"])("keeps an unresolved first result: %s", async kind => {
@@ -180,7 +225,7 @@ describe("global named model configuration coordination", () => {
 
   it("does not dispatch when the configuration or durable intent is unavailable", async () => {
     const save = vi.fn();
-    const invalid = profile(); invalid.value.capacity.context_window_tokens = 0;
+    const invalid = profile(); invalid.value.model.capacity.context_window_tokens = 0;
     const { resources } = fixture({ save, writePending: () => { throw new Error("Local intent unavailable"); } });
     expect(await resources.save(invalid, 0)).toBe(false);
     expect(await resources.save(profile(), 0)).toBe(false);

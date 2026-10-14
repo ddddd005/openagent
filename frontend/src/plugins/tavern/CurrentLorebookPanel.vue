@@ -21,8 +21,6 @@ onBeforeUnmount(resources.setCompletionHandler(async request => {
 const formError = ref("");
 const numbersValid = ref(true);
 const numberScope = computed(() => `resource:lorebook:${form.value?.scope}:${form.value?.resource_id}`);
-const numberBasis = computed(() => ({ resourceId: form.value?.resource_id ?? null,
-  scope: form.value?.scope ?? null, sequence: expectedSequence.value, format: 1 }));
 watch(() => form.value ? lorebookIdentityKey(lorebookIdentity(form.value)) : null, () => { numbersValid.value = true; });
 function edit(record: CurrentLorebookResource | null) {
   if (locked.value) return;
@@ -93,8 +91,7 @@ onMounted(() => { void resources.refresh(); });
         <label>名称<input v-model="form.value.name" type="text" maxlength="128" aria-label="Lorebook 资源名称" /></label>
         <label class="toggle"><input v-model="form.value.enabled" type="checkbox" />启用资源</label>
         <LorebookEntries :key="lorebookIdentityKey(lorebookIdentity(form))" v-model="form.value.entries" :disabled="locked"
-          :persist-numeric-drafts="false"
-          :draft-scope="numberScope" :draft-basis="numberBasis" @validity="numbersValid = $event" />
+          :identity="numberScope" @validity="numbersValid = $event" />
       </fieldset>
       <p v-if="formError" class="warning" role="status">{{ formError }}</p>
       <button type="submit" :disabled="locked || !numbersValid"><Save :size="14" />{{ expectedSequence ? '保存全局 Lorebook' : '创建全局 Lorebook' }}</button>

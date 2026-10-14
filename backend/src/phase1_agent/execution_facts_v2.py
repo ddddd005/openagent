@@ -7,7 +7,9 @@ from jsonschema import Draft202012Validator
 from .context_compaction import replace_compacted_messages
 from .context_prompt_v6 import validate_native_context_prompt
 from .context_v4 import final_from_context_operations
-from .contract_graph import validate_message_history, validate_pending_message_history
+from .contract_graph import (
+    validate_context_message_history, validate_pending_context_message_history,
+)
 from .contract_json import canonical_bytes, loads_strict, validate_json_value
 from .contracts_v2 import validate_record
 from .execution_facts import _timestamp
@@ -165,6 +167,7 @@ def prove_execution_facts_v2(executor_facts, prompt, binding, receipts, *, model
     if policy is not None:
         policy = validate_compaction_policy(policy)
     require(config["context_compaction"]["policy"] == policy
+            and receipts["compaction_policy_ref"] == policy_ref
             and config["frozen_compaction_policy_ref"] == policy_ref
             and ((policy is None) == (policy_ref is None)),
             "agent_snapshot_mismatch", "Compaction differs from its exact accepted policy")
@@ -277,9 +280,9 @@ def prove_execution_facts_v2(executor_facts, prompt, binding, receipts, *, model
             accepted.append(message)
             operations.append({"kind": "append", "message": message})
             if pending:
-                validate_pending_message_history(effective, [call["tool_call_id"] for call in pending])
+                validate_pending_context_message_history(effective, [call["tool_call_id"] for call in pending])
             else:
-                validate_message_history(effective)
+                validate_context_message_history(effective)
         elif kind == "tool_dispatch":
             uuid4_string(value["tool_execution_id"])
             require(pending and dispatch is None and settled is None and not uncertain

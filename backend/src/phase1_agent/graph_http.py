@@ -46,7 +46,7 @@ def dispatch_platform(service, method, path, data):
         require(method == "POST" and type(data) is dict, "invalid_request", "Platform request fields differ")
         kind, name = global_routes[suffix]
         return (_query if kind == "query" else _command)(application, name, data)
-    match = re.fullmatch(prefix + r"/sessions/([^/]+)/(objects|objects/read|objects/write|objects/artifacts/read|information/read|manifests/read|context/adopt)", path)
+    match = re.fullmatch(prefix + r"/sessions/([^/]+)/(objects|objects/read|objects/write|objects/artifacts/read|information/read|manifests/read)", path)
     if match is None:
         return None
     require(uuid_value(match[1]), "not_found", "Session not found", 404)
@@ -56,8 +56,7 @@ def dispatch_platform(service, method, path, data):
               "objects/write": ("command", "object.write"),
               "objects/artifacts/read": ("query", "object.artifact.read"),
               "information/read": ("query", "information.read"),
-              "manifests/read": ("query", "manifest.read"),
-              "context/adopt": ("command", "context.adopt")}
+              "manifests/read": ("query", "manifest.read")}
     require(method == "POST" and match[2] in routes, "not_found", "Platform route not found", 404)
     require(type(data) is dict, "invalid_request", "Platform request fields differ")
     kind, name = routes[match[2]]
@@ -96,6 +95,14 @@ def dispatch_graph(service, method, path, data=None):
     if method == "GET" and history:
         require(uuid_value(history[1]) and uuid_value(history[2]), "not_found", "Execution not found", 404)
         return _query(application, "run.read", {"chain_id": history[2]}, history[1])
+    checkpoints = re.fullmatch(prefix + r"/sessions/([^/]+)/checkpoints(?:/([^/]+))?", path)
+    if method == "GET" and checkpoints:
+        require(uuid_value(checkpoints[1]), "not_found", "Session not found", 404)
+        if checkpoints[2] is None:
+            return _query(application, "checkpoint.list", session_id=checkpoints[1])
+        require(uuid_value(checkpoints[2]), "not_found", "Checkpoint not found", 404)
+        return _query(application, "checkpoint.read",
+                      {"checkpoint_id": checkpoints[2]}, checkpoints[1])
     match = re.fullmatch(prefix + r"/definitions/([^/]+)(?:/revisions/([1-9][0-9]{0,15})|/(sessions|consumer|consumer-sessions))?", path)
     if method == "GET" and match:
         require(uuid_value(match[1]), "not_found", "Definition not found", 404)
@@ -107,7 +114,7 @@ def dispatch_graph(service, method, path, data=None):
             return _query(application, "definition.sessions", {"workflow_definition_id": match[1]})
         return _query(application, "definition.read",
                       {"identity": match[1], "revision": int(match[2]) if match[2] else None})
-    match = re.fullmatch(prefix + r"/sessions/([^/]+)(?:/(runs|control|copy|rebind|archive|delete|data|consumer|consumer/runs|consumer/control|actions|consumer/actions|outputs/public|outputs/read|outputs/history|candidates|candidates/select|candidates/fork|events/submit|events/bindings|events/read|consumer/events/submit|consumer/events/bindings|consumer/events/read))?", path)
+    match = re.fullmatch(prefix + r"/sessions/([^/]+)(?:/(runs|control|copy|archive|delete|data|consumer|consumer/runs|consumer/control|actions|consumer/actions|outputs/public|outputs/read|outputs/history|candidates|events/submit|events/bindings|events/read|consumer/events/submit|consumer/events/bindings|consumer/events/read))?", path)
     if match:
         require(uuid_value(match[1]), "not_found", "Session not found", 404)
         reads = {None: "session.read", "consumer": "consumer.read", "outputs/public": "output.list",
@@ -115,18 +122,16 @@ def dispatch_graph(service, method, path, data=None):
         if method == "GET" and match[2] in reads:
             return _query(application, reads[match[2]], session_id=match[1])
     require(method == "POST", "not_found", "Graph route not found", 404)
-    global_commands = {"/definitions": "definition.save", "/definitions/update": "definition.update",
-                       "/sessions": "session.create",
+    global_commands = {"/definitions/update": "definition.update", "/sessions": "session.create",
                        "/consumer/sessions": "consumer.session.create"}
     route = path[len(prefix):]
     if route in global_commands:
         return _command(application, global_commands[route], data)
     commands = {"runs": "run.start", "control": "run.control", "copy": "session.copy",
                 "archive": "session.archive", "delete": "session.delete",
-                "rebind": "session.rebind", "data": "session.data.update",
+                "data": "session.data.update",
                 "consumer/runs": "consumer.run.start", "consumer/control": "consumer.run.control",
-                "events/submit": "event.submit", "consumer/events/submit": "consumer.event.submit",
-                "candidates/select": "candidate.select", "candidates/fork": "candidate.fork"}
+                "events/submit": "event.submit", "consumer/events/submit": "consumer.event.submit"}
     queries = {"outputs/read": "output.read", "outputs/history": "output.history",
                "events/bindings": "event.bindings", "consumer/events/bindings": "consumer.event.bindings",
                "events/read": "event.read", "consumer/events/read": "consumer.event.read"}

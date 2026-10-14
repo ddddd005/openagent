@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { Archive, Plus, RefreshCw, Check, Trash2, X } from "lucide-vue-next";
+import { Archive, Plus, RefreshCw, Trash2 } from "lucide-vue-next";
 import { computed, ref, watch } from "vue";
-import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { useWorkspaceStore } from "../stores/workspace";
 import { useSessionMetadata } from "../application/sessionMetadata";
@@ -32,7 +31,7 @@ watch([() => graph.session?.workflow_session_id, () => selectedMetadata.value?.r
 }, { immediate: true });
 const nameLocked = computed(() => !selectedMetadata.value || selectedMetadata.value.locked.value
   || !selectedMetadata.value.record.value || selectedMetadata.value.loading.value || !!selectedMetadata.value.readError.value
-  || !!graph.session?.archived || !!workspace.activeWorkflow.archived);
+  || !!graph.session?.archived || !!workspace.activeWorkflow.archived || !graph.session?.can_submit);
 async function saveName() {
   if (!nameLocked.value) await selectedMetadata.value?.save(name.value);
 }
@@ -43,7 +42,6 @@ async function abandonNameRequest() {
   const target = selectedMetadata.value;
   if (target) await target.abandon(window.confirm("归档并解除原会话名称请求的锁定？这不会撤销已发生的保存，也不会重新提交。"));
 }
-const persistence = useWorkbenchPersistenceStore(), confirming = ref(false);
 const showArchived = ref(false);
 const listedSessions = computed(() => (graph.sessions[workspace.activeWorkflowId] ?? [])
   .filter(row => showArchived.value || !row.archived));
@@ -56,14 +54,6 @@ async function manageSession(action: "archive" | "delete") {
 }
 const mismatch = computed(() => !!graph.session && (graph.session.definition_revision !== graph.active?.saved_revision
   || graph.session.workflow_definition_id !== graph.document?.workflow_definition_id));
-const basis = computed(() => JSON.stringify([workspace.activeWorkflowId, graph.active?.saved_revision,
-  graph.session?.workflow_session_id, graph.session?.revision]));
-watch(basis, () => { confirming.value = false; });
-async function adopt() {
-  const fixed = basis.value;
-  if (await persistence.flushAll() && confirming.value && basis.value === fixed
-    && await graph.adoptRevision()) confirming.value = false;
-}
 </script>
 <template>
   <section class="graph-sessions" aria-label="工作流会话">
@@ -77,16 +67,11 @@ async function adopt() {
       <button type="button" title="新建会话" aria-label="新建会话" :disabled="graph.locked" @click="graph.createSession()"><Plus :size="15" /></button>
     </header>
     <div v-if="graph.active" class="revision-state" aria-label="工作流修订状态">
-      <span>草稿基准 r{{ graph.active.saved_revision }} · 已发布 r{{ graph.active.latest_published_revision ?? graph.active.saved_revision }}</span>
+      <span>配置基准 r{{ graph.active.saved_revision }} · 当前固定版本 r{{ graph.active.latest_published_revision ?? graph.active.saved_revision }}</span>
       <span v-if="graph.session">当前会话 r{{ graph.session.definition_revision }}</span>
-      <button type="button" title="核对最新已发布修订" aria-label="核对最新已发布修订" :disabled="graph.locked || !graph.active.saved_revision" @click="graph.refreshPublishedRevision()"><RefreshCw :size="13" /></button>
-      <p v-if="(graph.active.latest_published_revision ?? 0) > graph.active.saved_revision" role="status">另一页面已发布新修订，当前草稿基准仍保留；保存冲突不会覆盖对方。</p>
-      <button v-if="mismatch && !confirming" type="button" :disabled="graph.locked" @click="confirming = true"><Check :size="13" />采用已保存修订</button>
-      <div v-if="confirming && mismatch" role="alert">
-        <p>会话将迁移到当前保存修订。配置不兼容的节点可能要求明确重建状态；旧运行与编辑草稿保留。</p>
-        <button type="button" :disabled="graph.locked" @click="adopt"><Check :size="13" />确认采用</button>
-        <button type="button" aria-label="取消采用修订" @click="confirming = false"><X :size="13" /></button>
-      </div>
+      <button type="button" title="核对最新固定版本" aria-label="核对最新固定版本" :disabled="graph.locked || !graph.active.saved_revision" @click="graph.refreshPublishedRevision()"><RefreshCw :size="13" /></button>
+      <p v-if="(graph.active.latest_published_revision ?? 0) > graph.active.saved_revision" role="status">正式配置已更新，当前编辑依据仍保留。</p>
+      <p v-if="mismatch" role="status">当前会话与已保存修订不一致。</p>
     </div>
     <div class="graph-session-list"><button v-for="(session, index) in listedSessions" :key="session.workflow_session_id" class="graph-session-row" :class="{ active: graph.active?.session_id === session.workflow_session_id }" type="button" :disabled="!!graph.busy || !!graph.pending" @click="graph.selectSession(session.workflow_session_id)"><strong>{{ sessionName(session.workflow_session_id, `会话 ${index + 1}`) }}</strong><small>{{ session.archived ? '已归档 · 只读' : resultStatusLabel(session.status) }} · r{{ session.definition_revision }}</small></button><p v-if="!listedSessions.length">暂无会话</p></div>
     <details v-if="graph.session && selectedMetadata" class="session-details">

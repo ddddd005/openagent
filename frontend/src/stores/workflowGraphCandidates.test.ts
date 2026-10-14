@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkspaceStore } from "./workspace";
-import { graphClone, type GraphSession } from "../domain/workflowGraph";
+import { graphClone, type GraphCommand, type GraphSession } from "../domain/workflowGraph";
+
 function fixture() {
   const graph = useWorkflowGraphStore(); graph.setPersistenceGuard(() => true);
   const id = graph.createWorkflow(), sid = crypto.randomUUID(), candidate = crypto.randomUUID(), chain = crypto.randomUUID();
@@ -21,90 +22,139 @@ function fixture() {
   graph.candidates[sid] = directory;
   return { graph, id, sid, view, directory, candidate, chain };
 }
+function pendingCandidateFork(sid: string, view: GraphSession, candidateId: string, chain: string): GraphCommand {
+  return { path: `/api/graph/sessions/${sid}/candidates/fork`,
+    body: { candidate_id: candidateId, expected_revision: view.revision, expected_data_revision: view.data_revision,
+      expected_head_revision: view.head_revision, idempotency_key: crypto.randomUUID() },
+    action: "candidate-fork", source_session_id: sid, expected_chain_run_id: chain,
+    expected_definition_id: view.workflow_definition_id, expected_definition_revision: view.definition_revision };
+}
 beforeEach(() => setActivePinia(createPinia()));
 afterEach(() => { useWorkflowGraphStore().$dispose(); useWorkspaceStore().$dispose(); vi.unstubAllGlobals(); });
 
-describe("workflow candidate boundaries", () => {
-  it("submits a complete session/data/Head CAS without chat or Agent fields", async () => {
-    const { graph, view, directory, candidate, chain } = fixture();
-    const changed = { ...view, revision: 4, head_revision: 3, data_revision: 3, selected_chain_run_id: chain,
-      data: { revision: 3, values: {}, data: { note: { value: "candidate" } } } };
-    const fetcher = vi.fn(async (path, options) => new Response(JSON.stringify(path.includes("/revisions/")
-      ? graph.document : path.endsWith("/candidates")
-      ? { ...directory, session_revision: 4, head_revision: 3 } : changed)));
-    stubGraphApplicationFetch( fetcher);
-    expect(await graph.changeCandidate(candidate)).toBe(true);
-    const request = JSON.parse(fetcher.mock.calls[0][1].body);
-    expect(fetcher.mock.calls[0][0]).toBe(`/api/graph/sessions/${view.workflow_session_id}/candidates/select`);
-    expect(request).toEqual({ candidate_id: candidate, expected_revision: 3, expected_data_revision: 2,
-      expected_head_revision: 2, idempotency_key: expect.any(String) });
+describe("workflow candidate retirement", () => {
+  it("keeps candidate listing read-only and removes candidate mutation APIs", async () => {
+    const { graph, id, sid, directory } = fixture();
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => new Response(JSON.stringify(directory)));
+    stubGraphApplicationFetch(fetcher);
+    await expect(graph.loadCandidates(id)).resolves.toEqual(directory);
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[0]![0]).toBe(`/api/graph/sessions/${sid}/candidates`);
+    expect(fetcher.mock.calls[0]![1]?.method).toBe("GET");
+    expect("changeCandidate" in graph).toBe(false);
+    expect("restoreCandidate" in graph.management.commands).toBe(false);
+  });
+
+  it("reloads and reconciles an original select request through receipts only", async () => {
+    const { graph, id, sid, view, candidate, chain } = fixture();
+    const selected = { ...view, revision: 4, data_revision: 3, head_revision: 3,
+      selected_chain_run_id: chain, data: { revision: 3, values: {}, data: { note: { value: "candidate" } } } };
+    const request: GraphCommand = {
+      path: `/api/graph/sessions/${sid}/candidates/select`,
+      body: { candidate_id: candidate, expected_revision: 3, expected_data_revision: 2,
+        expected_head_revision: 2, idempotency_key: crypto.randomUUID() },
+      action: "candidate-select", source_session_id: sid, expected_chain_run_id: chain,
+      expected_definition_id: view.workflow_definition_id, expected_definition_revision: 1,
+    };
+    graph.entries[id].pending = graphClone(request);
+    expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(true);
+    expect(graph.entries[id].pending).toEqual(request);
+    const historicalDefinition = graphClone(graph.document!); historicalDefinition.revision = 1;
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === "/api/graph/receipts/read") {
+        const envelope = JSON.parse(String(init?.body));
+        return graphReceiptReadResponse(envelope.operation, envelope.parameters, selected);
+      }
+      if (path === `/api/graph/definitions/${view.workflow_definition_id}/revisions/1`)
+        return new Response(JSON.stringify(historicalDefinition));
+      if (path === `/api/graph/definitions/${view.workflow_definition_id}/sessions`)
+        return new Response(JSON.stringify([selected]));
+      return new Response(JSON.stringify(selected));
+    });
+    stubGraphApplicationFetch(fetcher);
+    await graph.reconcile(id);
+    expect(fetcher.mock.calls[0]![0]).toBe("/api/graph/receipts/read");
+    expect(fetcher.mock.calls.some(([path]) => path === request.path)).toBe(false);
+    expect(graph.entries[id].pending).toBeNull();
     expect(graph.session?.selected_chain_run_id).toBe(chain);
     expect(graph.session?.data.data).toEqual({ note: { value: "candidate" } });
   });
 
-  it("restores and reads the original unknown candidate request after reload", async () => {
-    const { graph, id, view, directory, candidate, chain } = fixture();
-    stubGraphApplicationFetch( vi.fn().mockRejectedValue(new Error("lost")));
-    expect(await graph.changeCandidate(candidate)).toBe(false);
-    const original = graphClone(graph.entries[id].pending!);
-    expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(true);
-    const selected = { ...view, selected_chain_run_id: chain, revision: 4, head_revision: 3 };
-    const fetcher = vi.fn(async (path, options) => {
-      if (path === "/api/graph/receipts/read") {
-        const request = JSON.parse(options.body);
-        return graphReceiptReadResponse(request.operation, request.parameters, selected);
-      }
-      return new Response(JSON.stringify(path.includes("/revisions/")
-        ? graph.document : path.endsWith("/candidates") ? directory : selected));
-    });
-    stubGraphApplicationFetch( fetcher); await graph.reconcile(id);
-    expect(JSON.parse(fetcher.mock.calls[0][1].body).parameters).toEqual({ ...original.body, session_id: view.workflow_session_id });
-    expect(fetcher.mock.calls[0][0]).toBe("/api/graph/receipts/read");
-    expect(graph.entries[id].pending).toBeNull();
-  });
-
-  it("accepts a same-workflow fork only with the original candidate provenance", async () => {
-    const { graph, view, directory, candidate, chain } = fixture();
+  it("accepts an original same-workflow fork receipt only with its frozen candidate provenance", async () => {
+    const { graph, id, sid, view, candidate, chain } = fixture();
     const forkId = crypto.randomUUID();
-    const fork = { ...view, workflow_session_id: forkId, revision: 1, head_revision: 1, selected_chain_run_id: chain,
-      source: { kind: "fork_candidate", workflow_session_id: view.workflow_session_id, candidate_commit_id: candidate } };
-    stubGraphApplicationFetch( vi.fn(async (path) => new Response(JSON.stringify(path.includes("/revisions/")
-      ? graph.document : path.endsWith("/candidates")
-      ? { ...directory, workflow_session_id: forkId, session_revision: 1, head_revision: 1 } : fork))));
-    expect(await graph.changeCandidate(candidate, true)).toBe(true);
-    expect(graph.session?.workflow_session_id).toBe(forkId);
-    expect(graph.views[view.workflow_session_id].workflow_session_id).toBe(view.workflow_session_id);
-    expect(graph.session?.source?.candidate_commit_id).toBe(candidate);
-  });
-
-  it("keeps a fork pending when a valid-looking session belongs to another candidate", async () => {
-    const { graph, view, candidate, chain } = fixture();
-    stubGraphApplicationFetch( vi.fn(async () => new Response(JSON.stringify({ ...view, workflow_session_id: crypto.randomUUID(),
-      selected_chain_run_id: chain, source: { kind: "fork_candidate", workflow_session_id: view.workflow_session_id,
-        candidate_commit_id: crypto.randomUUID() } }))));
-    expect(await graph.changeCandidate(candidate, true)).toBe(false);
-    expect(graph.pending?.body.candidate_id).toBe(candidate);
-    expect(graph.session?.workflow_session_id).toBe(view.workflow_session_id);
-  });
-
-  it("does not let an original replay receipt regress a later candidate observation", async () => {
-    const { graph, view, candidate, chain } = fixture();
-    stubGraphApplicationFetch( vi.fn().mockRejectedValue(new Error("lost")));
-    await graph.changeCandidate(candidate);
-    const laterChain = crypto.randomUUID();
-    const later = { ...view, revision: 8, head_revision: 6, selected_chain_run_id: laterChain };
-    graph.views[view.workflow_session_id] = later;
-    stubGraphApplicationFetch( vi.fn(async (path, options) => {
+    const fork = { ...view, workflow_session_id: forkId, revision: 1, head_revision: 1,
+      selected_chain_run_id: chain, source: { kind: "fork_candidate", workflow_session_id: sid,
+        candidate_commit_id: candidate } };
+    const original = pendingCandidateFork(sid, view, candidate, chain);
+    graph.entries[id].pending = graphClone(original);
+    expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(true);
+    expect(graph.entries[id].pending).toEqual(original);
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
       if (path === "/api/graph/receipts/read") {
-        const request = JSON.parse(options.body);
-        return graphReceiptReadResponse(request.operation, request.parameters, {
-          ...view, revision: 4, selected_chain_run_id: chain,
-        });
+        const envelope = JSON.parse(String(init?.body));
+        return graphReceiptReadResponse(envelope.operation, envelope.parameters, fork);
       }
-      return new Response(JSON.stringify(path.includes("/revisions/") ? graph.document
-        : path.endsWith("/sessions") ? [later] : later));
-    }));
-    await graph.reconcile();
+      if (path === `/api/graph/definitions/${view.workflow_definition_id}/revisions/1`)
+        return new Response(JSON.stringify(graph.document));
+      return new Response(JSON.stringify(fork));
+    });
+    stubGraphApplicationFetch(fetcher);
+    await graph.reconcile(id);
+    expect(fetcher.mock.calls[0]![0]).toBe("/api/graph/receipts/read");
+    expect(fetcher.mock.calls.some(([path]) => path.endsWith("/candidates/fork"))).toBe(false);
+    expect(graph.session?.workflow_session_id).toBe(forkId);
+    expect(graph.session?.source?.candidate_commit_id).toBe(candidate);
+    expect(graph.views[sid]).toEqual(view);
+  });
+
+  it("keeps a fork pending when its otherwise valid receipt names another candidate", async () => {
+    const { graph, id, sid, view, candidate, chain } = fixture();
+    const forkId = crypto.randomUUID();
+    const original = pendingCandidateFork(sid, view, candidate, chain);
+    graph.entries[id].pending = graphClone(original);
+    const fork = { ...view, workflow_session_id: forkId, revision: 1, head_revision: 1,
+      selected_chain_run_id: chain, source: { kind: "fork_candidate", workflow_session_id: sid,
+        candidate_commit_id: crypto.randomUUID() } };
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === "/api/graph/receipts/read") {
+        const envelope = JSON.parse(String(init?.body));
+        return graphReceiptReadResponse(envelope.operation, envelope.parameters, fork);
+      }
+      return new Response(JSON.stringify(fork));
+    });
+    stubGraphApplicationFetch(fetcher);
+    await graph.reconcile(id);
+    expect(fetcher.mock.calls).toHaveLength(1);
+    expect(fetcher.mock.calls[0]![0]).toBe("/api/graph/receipts/read");
+    expect(graph.pending).toEqual(original);
+    expect(graph.session?.workflow_session_id).toBe(sid);
+  });
+
+  it("does not let a frozen fork receipt regress a later fork-session observation", async () => {
+    const { graph, id, sid, view, candidate, chain } = fixture();
+    const forkId = crypto.randomUUID(), laterChain = crypto.randomUUID();
+    const original = pendingCandidateFork(sid, view, candidate, chain);
+    graph.entries[id].pending = graphClone(original);
+    const fork = { ...view, workflow_session_id: forkId, revision: 1, head_revision: 1,
+      selected_chain_run_id: chain, source: { kind: "fork_candidate", workflow_session_id: sid,
+        candidate_commit_id: candidate } };
+    const later = { ...fork, revision: 8, data_revision: 5, head_revision: 6,
+      selected_chain_run_id: laterChain };
+    graph.views[forkId] = later;
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === "/api/graph/receipts/read") {
+        const envelope = JSON.parse(String(init?.body));
+        return graphReceiptReadResponse(envelope.operation, envelope.parameters, fork);
+      }
+      if (path === `/api/graph/definitions/${view.workflow_definition_id}/revisions/1`)
+        return new Response(JSON.stringify(graph.document));
+      return new Response(JSON.stringify(later));
+    });
+    stubGraphApplicationFetch(fetcher);
+    await graph.reconcile(id);
+    expect(fetcher.mock.calls[0]![0]).toBe("/api/graph/receipts/read");
+    expect(graph.pending).toBeNull();
     expect(graph.session?.revision).toBe(8);
     expect(graph.session?.selected_chain_run_id).toBe(laterChain);
   });

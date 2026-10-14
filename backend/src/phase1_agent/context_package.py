@@ -17,20 +17,31 @@ def _exact_input(context, port):
 def create_context_package():
     def register(host):
         from .context_host_service import NATIVE_CONTEXT_SERVICE_DEFINITION, create_native_context_host_service
+        from .agent_receipt_contract import (
+            agent_receipts_data_type_definition, agent_receipts_data_type_definition_v2,
+        )
         from .context_receipt import validate_context_receipt
+        from .context_receipt import validate_context_receipt_v2
         from .context_contract import preserve_artifact_references
         from .context_v4_nodes import register_native_context
         from .host_sdk import DataTypeDefinition
         host.register_service(NATIVE_CONTEXT_SERVICE_DEFINITION, create_native_context_host_service)
         host.register_data_type(DataTypeDefinition(
             "CONTEXT_COMMIT", 2, {"type": "object"}, scope="content",
+            validator=validate_context_receipt_v2, references=lambda value: [value["view_ref"]],
+            reference_mapper=preserve_artifact_references, max_bytes=4_000_000))
+        host.register_data_type(DataTypeDefinition(
+            "CONTEXT_COMMIT", 3, {"type": "object"}, scope="content",
             validator=validate_context_receipt, references=lambda value: [value["view_ref"]],
             reference_mapper=preserve_artifact_references, max_bytes=4_000_000))
+        host.register_shared_data_type(agent_receipts_data_type_definition())
+        host.register_shared_data_type(agent_receipts_data_type_definition_v2())
         register_native_context(host)
 
     from .context_host_service import NATIVE_CONTEXT_SERVICE_REF
     return CapabilityPackage(PackageManifest(
         CONTEXT_PACKAGE_ID, "1.0.0", (PackageDependency("workflow.content", "1.0.0"),
-                                    PackageDependency("workflow.prompts", "1.0.0")),
+                                    PackageDependency("workflow.prompts", "1.0.0"),
+                                    PackageDependency("workflow.models", "1.0.0")),
         exports={"services": [NATIVE_CONTEXT_SERVICE_REF.to_dict()]},
         schema_version=3), register)

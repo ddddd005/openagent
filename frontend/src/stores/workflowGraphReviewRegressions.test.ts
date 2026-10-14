@@ -150,7 +150,6 @@ describe("reviewed graph receipt and operation races", () => {
     stubGraphApplicationFetch( vi.fn(async (path, init) => {
       if (path.endsWith(next.workflow_session_id)) return choice.promise;
       if (path === "/api/graph/definitions") return response(JSON.parse(init.body).document);
-      if (path.endsWith("/rebind")) return response({ ...current, definition_revision: 2, revision: 2 });
       return response(current);
     }));
     const selecting = graph.selectSession(next.workflow_session_id);

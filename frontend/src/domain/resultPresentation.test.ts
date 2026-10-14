@@ -18,4 +18,9 @@ describe("user result presentation", () => {
     expect(resultTexts({ kind: "workflow.model-result", schema_version: 99, content: "future" })).toEqual([]);
     expect(resultTexts([{ kind: "workflow.text", schema_version: 2, text: "input" }])).toEqual([{ label: "正文", text: "input" }]);
   });
+  it("presents content from model result schema 3 without exposing other facts", () => {
+    expect(resultTexts({ kind: "workflow.model-result", schema_version: 3,
+      content: "Schema 3 answer", fact_refs: [{ fact_id: crypto.randomUUID() }] }))
+      .toEqual([{ label: "回答", text: "Schema 3 answer" }]);
+  });
 });

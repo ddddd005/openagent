@@ -13,7 +13,7 @@ from .contract_json import canonical_bytes, loads_strict
 from .graph_records import GRAPH_VERSIONS, is_graph_record, require, validate_graph_transition
 
 
-STORAGE_VERSION = 19
+STORAGE_VERSION = 20
 _IDENTITIES = {
     "node_definition": ("component_id", "component_version"),
     "node_binding": ("workflow_definition_id", "workflow_definition_revision", "node_binding_id"),
@@ -84,6 +84,7 @@ class SqliteStore:
             from .workflow_lifecycle import initialize_session_metadata
             from .content_configuration import initialize_content_metadata
             from .workflow_configuration import initialize_configuration_tables
+            from .checkpoint_repository import initialize_checkpoint_tables
             initialize_object_tables(self._connection)
             initialize_global_resource_tables(self._connection)
             initialize_type_contract_tables(self._connection)
@@ -92,6 +93,7 @@ class SqliteStore:
             initialize_session_metadata(self._connection)
             initialize_content_metadata(self._connection)
             initialize_configuration_tables(self._connection)
+            initialize_checkpoint_tables(self._connection)
             self._connection.execute(
                 "CREATE TABLE IF NOT EXISTS workflow_management ("
                 "object_kind TEXT NOT NULL CHECK(object_kind IN ('definition','session')), "

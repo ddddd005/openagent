@@ -89,10 +89,9 @@ function result(value: unknown, request: LocalDraftSaveRequest): LocalDraftRecor
   return graphClone(record);
 }
 export async function saveLocalDraft(request: LocalDraftSaveRequest): Promise<LocalDraftRecord> {
-  const value = await workbenchRequest("/api/graph/commands", {
-    body: { operation: "draft.save", parameters: graphClone(request) },
-  });
-  return result(value, request);
+  void request;
+  throw new WorkbenchApiError("rejected", "持久编辑草稿写入已退役；当前输入仅保留在内存中",
+    undefined, "local_draft_write_retired");
 }
 export async function readLocalDraftReceipt(request: LocalDraftSaveRequest): Promise<LocalDraftRecord> {
   const value = await workbenchRequest<unknown>("/api/graph/receipts/read", {

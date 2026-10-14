@@ -7,29 +7,42 @@ import { modelProfileIdentity, newModelProfile, newProvider } from "../domain/wo
 const request = (): WorkflowNodeConfigurationRequest => ({
   workflowId: crypto.randomUUID(), nodeId: crypto.randomUUID(), componentId: "models.source", componentVersion: "5",
   expectedConfig: {}, patch: { reference: modelProfileIdentity(newModelProfile(newProvider())) },
-  extensionId: "workflow.models.node-fields-v5", lifecycle: "origin",
+  extensionId: "workflow.models.node-fields-v7", lifecycle: "origin",
 });
 describe("trusted package configuration access", () => {
   it("rejects asynchronous late edits after workflow/lifecycle changes or package unload", () => {
     const original = request(); let workflowId = original.workflowId, lifecycle = original.lifecycle;
     let extensions = modelFrontendExtensions;
-    const patch = vi.fn(() => ({ workflowId: "actual-copy", nodeId: original.nodeId }));
+    const patch = vi.fn(async (_request: WorkflowNodeConfigurationRequest) =>
+      ({ workflowId: "actual-copy", nodeId: original.nodeId, outcome: "saved" as const }));
     const configure = createNodeConfigurationAccess({ workflowId: () => workflowId, lifecycle: () => lifecycle,
       trustedExtensions: () => extensions, patch });
-    expect(configure(original)).toEqual({ workflowId: "actual-copy", nodeId: original.nodeId });
-    lifecycle = "new-generation"; expect(configure(original)).toBeNull();
-    lifecycle = original.lifecycle; workflowId = crypto.randomUUID(); expect(configure(original)).toBeNull();
-    workflowId = original.workflowId; extensions = []; expect(configure(original)).toBeNull();
-    expect(patch).toHaveBeenCalledTimes(1); expect(patch.mock.calls[0]).toEqual([original]);
+    return configure(original).then(result => {
+      expect(result).toEqual({ workflowId: "actual-copy", nodeId: original.nodeId, outcome: "saved" });
+      lifecycle = "new-generation"; return configure(original);
+    }).then(result => {
+      expect(result).toBeNull();
+      lifecycle = original.lifecycle; workflowId = crypto.randomUUID(); return configure(original);
+    }).then(result => {
+      expect(result).toBeNull();
+      workflowId = original.workflowId; extensions = []; return configure(original);
+    }).then(result => {
+      expect(result).toBeNull();
+      expect(patch).toHaveBeenCalledTimes(1); expect(patch.mock.calls[0]![0]).toEqual(original);
+    });
   });
   it("rejects mismatched declaration identities/components/versions and panels", () => {
-    const original = request(), patch = vi.fn();
+    const original = request(), patch = vi.fn(async () => null);
     const configure = createNodeConfigurationAccess({ workflowId: () => original.workflowId, lifecycle: () => original.lifecycle,
       trustedExtensions: () => modelFrontendExtensions, patch });
-    expect(configure({ ...original, extensionId: "workflow.models.workbench-panel" })).toBeNull();
-    expect(configure({ ...original, componentVersion: "4" })).toBeNull();
-    expect(configure({ ...original, componentId: "agents.execute" })).toBeNull();
-    expect(configure({ ...original, extensionId: "arbitrary" })).toBeNull();
-    expect(patch).not.toHaveBeenCalled();
+    return Promise.all([
+      configure({ ...original, extensionId: "workflow.models.workbench-panel" }),
+      configure({ ...original, componentVersion: "4" }),
+      configure({ ...original, componentId: "agents.execute" }),
+      configure({ ...original, extensionId: "arbitrary" }),
+    ]).then(results => {
+      expect(results).toEqual([null, null, null, null]);
+      expect(patch).not.toHaveBeenCalled();
+    });
   });
 });

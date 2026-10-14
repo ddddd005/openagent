@@ -28,19 +28,7 @@ from .model_request_contracts import (
     build_model_settings, validate_model_binding, validate_model_result,
     validate_operation_payload,
 )
-
-
-@dataclass(frozen=True, repr=False)
-class ModelRequestTransport:
-    """Exact trusted transport selection captured once at prepare, without a Key."""
-
-    capability: dict
-    projection_version: str
-    projector: object
-    create_transport: object
-    counter: object = None
-    estimator_id: str | None = None
-    estimator_version: str | None = None
+from .model_request_transport import ModelRequestTransport
 
 
 @dataclass(repr=False)
@@ -481,6 +469,29 @@ class ModelRequestService:
         request.measurements[content_digest(result)] = deepcopy(result)
         return result
 
+    def has_pending_acceptance(self, context) -> bool:
+        owner = self._owner(context)
+        with self._lock:
+            return any(request.owner == owner and request.outcome is not None
+                       and set(request.accepted_facts) == {"request", "attempt"}
+                       for request in self._requests.values())
+
+    def retry_acceptance(self, context):
+        owner = self._owner(context)
+        with self._lock:
+            matches = [(key, request) for key, request in self._requests.items()
+                       if request.owner == owner and request.outcome is not None
+                       and set(request.accepted_facts) == {"request", "attempt"}]
+        require(len(matches) == 1, "model_recovery_unavailable",
+                "No unique accepted model request outcome is retained")
+        key, request = matches[0]
+        _, authorization = self._authorization(
+            context, "models:call", "dispatch-request", request.binding["binding_id"])
+        with self._request_lock(key):
+            require(request.authorization_digest == content_digest(authorization),
+                    "model_request_conflict", "Accepted model input changed before outcome recovery")
+            return self._settle(context, request)
+
     def _close_private(self, request):
         adapter, lease = request.adapter, request.lease
         request.provider = None
@@ -514,3 +525,9 @@ class ModelRequestService:
                   for _, request in requests if request.cleanup_errors}
         require(not failed, "model_private_release_failed",
                 "Run release retains private resources whose cleanup failed", cleanup_errors=failed)
+
+    @property
+    def active_frame_count(self):
+        with self._lock:
+            return len({request.owner[:2] for request in self._requests.values()
+                        if request.owner[:2] not in self._released})

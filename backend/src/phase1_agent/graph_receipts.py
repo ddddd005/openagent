@@ -7,7 +7,7 @@ import sqlite3
 
 from .contract_errors import ContractValidationError
 from .contract_json import canonical_bytes, loads_strict, validate_json_value
-from .graph_application_contracts import COMMANDS, validate_parameters
+from .graph_application_contracts import COMMANDS, RETIRED_RECEIPT_COMMANDS, validate_parameters
 from .graph_application_identity import (
     APPLICATION_IDENTITY_OPERATION, application_command_identity, application_command_receipt,
     application_origin_key,
@@ -17,7 +17,7 @@ from .host_sdk import ObjectBinding, ResourceIdentity, WriteIntent
 from .storage import _record_id
 
 
-_COMMANDS = {spec.name: spec for spec in COMMANDS}
+_COMMANDS = {spec.name: spec for spec in (*COMMANDS, *RETIRED_RECEIPT_COMMANDS)}
 _SESSION_FIELDS = {
     "schema_version", "execution_model", "workflow_session_id", "workflow_definition_id",
     "definition_revision", "revision", "source", "active_chain_run_id",
@@ -160,7 +160,7 @@ def _object_receipt(saved):
         and type(saved["deleted"]) is bool)
 
 
-def _adopted_object(source, parameters, key):
+def _adopted_object(source, parameters, key, expected_value):
     objects = source.get("objects")
     _check(type(objects) is dict and key in objects)
     value = objects[key]
@@ -168,10 +168,10 @@ def _adopted_object(source, parameters, key):
            and value.get("deleted") is False and _integer(value.get("revision"), 1)
            and uuid_value(value.get("revision_id")))
     binding = ObjectBinding.from_dict(value["binding"])
-    _check(binding.object_key == key and parameters["node_id"] in binding.writers
-           and _same(value["value"].get("view_ref"), {
-               "scope": "artifact", "output_id": parameters["view_output_id"],
-           }))
+    from .context_contract import EFFECTIVE_CONTEXT_TYPE
+    _check(binding.object_key == key and binding.type_id == EFFECTIVE_CONTEXT_TYPE
+           and binding.schema_version == 4 and parameters["node_id"] in binding.writers
+           and _same(value["value"], expected_value))
     return value
 
 
@@ -235,7 +235,7 @@ def _configuration_result(parameters, result):
                    and result["definition_revision"] == submitted["revision"] + ("fixed" in categories))
 
 
-def _validate_result(operation, parameters, result):
+def _validate_result(operation, parameters, result, connection=None):
     if operation.startswith("request-evidence."):
         from .request_evidence import validate_evidence_record
         validate_evidence_record(result)
@@ -286,6 +286,14 @@ def _validate_result(operation, parameters, result):
         return
     if operation == "definition.update":
         _configuration_result(parameters, result)
+        return
+    if operation == "checkpoint.fork":
+        fields = {
+            "target_session_id", "target_checkpoint_id", "target_commit_id", "target_workflow_ref_id",
+        }
+        _check(type(result) is dict and set(result) == fields)
+        _check(all(uuid_value(result[field]) for field in fields))
+        _check(result["target_session_id"] != parameters["session_id"])
         return
     source = _session_result(result)
     name = operation.removeprefix("consumer.")
@@ -347,28 +355,17 @@ def _validate_result(operation, parameters, result):
                     and saved["revision"] == intent.expected_revision + 1
                     and saved["deleted"] == (intent.operation == "delete"))
         else:
+            key, expected_value, basis_revision = _context_adoption_projection(
+                connection, parameters, source)
             _check(len(result["results"]) <= 1)
+            current = _adopted_object(source, parameters, key, expected_value)
             if result["results"]:
                 saved = result["results"][0]
                 _object_receipt(saved)
-                current = _adopted_object(source, parameters, saved["object_key"])
-                _check(saved["deleted"] is False and saved["revision"] == current["revision"]
-                       and saved["revision_id"] == current["revision_id"])
-            else:
-                _check(type(source.get("objects")) is dict)
-                candidates = [key for key, value in source["objects"].items()
-                              if type(value) is dict and type(value.get("binding")) is dict
-                              and type(value.get("value")) is dict
-                              and parameters["node_id"] in value["binding"].get("writers", [])]
-                _check(bool(candidates))
-                _check(any(_same(source["objects"][key].get("value", {}).get("view_ref"),
-                                {"scope": "artifact", "output_id": parameters["view_output_id"]})
-                           for key in candidates))
-                for key in candidates:
-                    if _same(source["objects"][key].get("value", {}).get("view_ref"),
-                             {"scope": "artifact", "output_id": parameters["view_output_id"]}):
-                        _adopted_object(source, parameters, key)
-                        break
+                _check(saved["object_key"] == key and saved["deleted"] is False
+                       and saved["revision"] == current["revision"]
+                       and saved["revision_id"] == current["revision_id"]
+                       and saved["revision"] == basis_revision + 1)
 
 
 def _receipt_graph_record(connection, kind, **identity):
@@ -378,6 +375,75 @@ def _receipt_graph_record(connection, kind, **identity):
     ).fetchone()
     _check(row is not None)
     return validate_graph_record(kind, loads_strict(row["payload"]))
+
+
+def _context_output_detail(connection, history_ids, reference):
+    output_id = reference["output_id"]
+    output = _receipt_graph_record(connection, "workflow_output", output_id=output_id)
+    _check(output["chain_run_id"] in history_ids)
+    chain = _receipt_graph_record(connection, "chain_run", chain_run_id=output["chain_run_id"])
+    producer = _receipt_graph_record(connection, "node_run", run_id=output["run_id"])
+    _check(chain["workflow_session_id"] == output["workflow_session_id"]
+           and producer["workflow_session_id"] == output["workflow_session_id"]
+           and producer["chain_run_id"] == output["chain_run_id"]
+           and producer["node_binding_id"] == output["node_binding_id"]
+           and producer["status"] == "succeeded"
+           and producer["output_refs"].get(output["port_id"]) == output_id)
+    definition = _receipt_graph_record(
+        connection, "workflow_definition_revision",
+        workflow_definition_id=chain["workflow_definition_id"], revision=chain["definition_revision"],
+    )["document"]
+    node = next((item for item in definition["nodes"]
+                 if item["node_binding_id"] == output["node_binding_id"]), None)
+    _check(node is not None and producer["config"] == node["config"])
+    return {"value": output["payload"], "component_id": node["component_id"],
+            "component_version": node["component_version"], "config": deepcopy(node["config"]),
+            "producer": {"workflow_session_id": output["workflow_session_id"],
+                         "chain_run_id": output["chain_run_id"],
+                         "node_binding_id": output["node_binding_id"], "node_run_id": output["run_id"]},
+            "input_refs": deepcopy(producer["input_refs"])}
+
+
+def _context_adoption_projection(connection, parameters, source):
+    _check(connection is not None)
+    from .context_v4 import (
+        prove_native_context_view as prove_legacy_v4_view,
+        validate_native_context_view as validate_legacy_v4_view,
+    )
+    from .context_contract import EFFECTIVE_CONTEXT_TYPE, project_agent_context_value
+
+    history = source.get("history_refs")
+    _check(type(history) is list and all(uuid_value(identity) for identity in history))
+    history_ids = set(history)
+    output_ref = {"scope": "artifact", "output_id": parameters["view_output_id"]}
+    detail = _context_output_detail(connection, history_ids, output_ref)
+    _check(detail["producer"]["workflow_session_id"] == parameters["session_id"]
+           and detail["producer"]["node_binding_id"] == parameters["node_id"]
+           and detail["component_id"] == "context.merge" and detail["component_version"] == "4"
+           and detail["config"].get("object_key") and detail["config"].get("agent_node_id"))
+    view = validate_legacy_v4_view(detail["value"])
+    definition = _receipt_graph_record(
+        connection, "workflow_definition_revision",
+        workflow_definition_id=source["workflow_definition_id"], revision=source["definition_revision"],
+    )["document"]
+    writer = next((item for item in definition["nodes"]
+                   if item["node_binding_id"] == parameters["node_id"]), None)
+    _check(writer is not None and writer["component_id"] == "context.merge"
+           and writer["component_version"] == "4"
+           and writer["config"].get("object_key") == view["owner"]["object_key"]
+           and writer["config"].get("agent_node_id") == view["owner"]["agent_node_id"]
+           and detail["config"].get("object_key") == view["owner"]["object_key"]
+           and detail["config"].get("agent_node_id") == view["owner"]["agent_node_id"])
+    key = writer["config"]["object_key"]
+    objects = source.get("objects")
+    _check(type(objects) is dict and key in objects)
+    binding = ObjectBinding.from_dict(objects[key]["binding"])
+    _check(binding.type_id == EFFECTIVE_CONTEXT_TYPE and binding.schema_version == 4
+           and binding.object_key == key and parameters["node_id"] in binding.writers)
+    proven = prove_legacy_v4_view(
+        output_ref, lambda reference: _context_output_detail(connection, history_ids, reference))
+    _check(_same(proven, view))
+    return key, project_agent_context_value(proven), view["basis"]["head_revision"]
 
 
 def _consumer_fork_source(connection, parameters, source):
@@ -480,7 +546,7 @@ def read_graph_application_receipt(database_path, operation, parameters, scope="
             connection.execute("BEGIN")
             _read_origin(connection, identity)
             result = _read_native(connection, identity)
-            _validate_result(operation, request, result)
+            _validate_result(operation, request, result, connection)
             if spec.consumer and operation != "consumer.draft.save":
                 result = _consumer_result(operation, request, result, connection)
             receipt = application_command_receipt(operation, operation_scope, request, result,

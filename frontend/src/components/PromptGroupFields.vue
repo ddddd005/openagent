@@ -1,18 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { Save } from "lucide-vue-next";
-import { graphClone, graphObject, type GraphDocument, type GraphNode } from "../domain/workflowGraph";
+import { computed, ref, watch } from "vue";
+import { Check } from "lucide-vue-next";
+import { graphClone, type GraphDocument, type GraphNode } from "../domain/workflowGraph";
 import { isCurrentPromptResource, type PromptMember } from "../domain/workflowPromptResources";
-import { useBoundFormDraft } from "../composables/useBoundFormDraft";
-import { useFormDraftsStore } from "../stores/formDrafts";
 import { useWorkflowFrontendSdk } from "../plugins/workflowFrontendSdk";
 import { promptFrontendExtensions } from "../plugins/promptFrontendManifest";
 import PromptMembersEditor from "./PromptMembersEditor.vue";
-import FormDraftNotice from "./FormDraftNotice.vue";
 const props = defineProps<{ node: GraphNode; document: GraphDocument; disabled?: boolean }>();
-const sdk = useWorkflowFrontendSdk(), forms = typeof window === "undefined" ? null : useFormDraftsStore();
-const members = ref<PromptMember[]>([]), valid = ref(true), error = ref(""), applying = ref(false);
-const editor = ref<{ adoptBasis(value: unknown): boolean } | null>(null);
+const sdk = useWorkflowFrontendSdk();
+const members = ref<PromptMember[]>([]), valid = ref(true), error = ref(""), status = ref(""), applying = ref(false);
 const basis = () => ({ workflowId: props.document.workflow_definition_id, nodeId: props.node.node_binding_id,
   version: props.node.component_version, config: props.node.config, lifecycle: sdk.lifecycle.value });
 const supported = computed(() => isCurrentPromptResource({
@@ -20,44 +16,52 @@ const supported = computed(() => isCurrentPromptResource({
   resource_id: props.node.node_binding_id, data_schema_version: 2, update_sequence: 1,
   value: { enabled: true, members: props.node.config.members },
 }));
-const draft = useBoundFormDraft({
-  id: () => `node:${props.document.workflow_definition_id}:${props.node.node_binding_id}:prompt-members`,
-  basis, capture: () => members.value,
-  reset: () => { members.value = supported.value ? graphClone(props.node.config.members as PromptMember[]) : []; },
-  restore: value => {
-    if (!Array.isArray(value) || !value.every(row => graphObject(row))) throw new Error("提示词条目草稿格式不兼容");
-    members.value = graphClone(value) as PromptMember[];
-  },
-});
 const scope = computed(() => `node:${props.document.workflow_definition_id}:${props.node.node_binding_id}:prompt-members`);
-const disabled = computed(() => props.disabled || sdk.locked.value || applying.value || draft.loading.value || draft.conflict.value || !supported.value);
+const disabled = computed(() => props.disabled || sdk.locked.value || applying.value || !supported.value);
+function current(request: { workflowId: string; nodeId: string; componentId: string; componentVersion: string;
+  lifecycle: string }) {
+  return sdk.workflowId.value === request.workflowId && props.document.workflow_definition_id === request.workflowId
+    && props.node.node_binding_id === request.nodeId && props.node.component_id === request.componentId
+    && props.node.component_version === request.componentVersion && sdk.lifecycle.value === request.lifecycle;
+}
+watch(() => [sdk.lifecycle.value, props.node.node_binding_id, props.node.component_version, props.node.config], () => {
+  members.value = supported.value ? graphClone(props.node.config.members as PromptMember[]) : [];
+  error.value = ""; status.value = "";
+}, { immediate: true, deep: true });
 async function apply() {
   if (disabled.value || !valid.value) return;
-  const fixed = basis(), context = draft.context.value, patch = { members: graphClone(members.value) };
+  const fixed = basis(), patch = { members: graphClone(members.value) };
   if (!isCurrentPromptResource({ envelope_version: 1, scope: "workspace", type_id: "workflow.prompt-resource",
     resource_id: props.node.node_binding_id, data_schema_version: 2, update_sequence: 1,
     value: { enabled: true, members: patch.members } })) { error.value = "条目正文或呈现字段无效，原文保留"; return; }
   applying.value = true;
   try {
-    if (!await draft.flush() || forms && !await forms.flushAll()) { error.value = "条目草稿尚未写入本机"; return; }
-    if (context !== draft.context.value || props.disabled || sdk.locked.value
+    if (props.disabled || sdk.locked.value
       || JSON.stringify(members.value) !== JSON.stringify(patch.members)) { error.value = "配置或输入已变化，请重新确认"; return; }
-    const result = sdk.configureNode({ workflowId: sdk.workflowId.value, nodeId: fixed.nodeId,
+    const request = { workflowId: fixed.workflowId, nodeId: fixed.nodeId,
       componentId: props.node.component_id, componentVersion: fixed.version, expectedConfig: graphClone(fixed.config),
-      patch, extensionId: promptFrontendExtensions[2]!.extension_id, lifecycle: fixed.lifecycle });
-    const nextBasis = { ...fixed, config: { ...fixed.config, ...patch } };
-    const adopted = !result || draft.adoptBasis(nextBasis) && (editor.value?.adoptBasis(nextBasis) ?? true);
-    error.value = result ? adopted ? "" : "条目已应用，草稿依据尚未同步，原草稿保留" : "编辑依据已变化，未应用条目";
+      patch, extensionId: promptFrontendExtensions[2]!.extension_id, lifecycle: fixed.lifecycle };
+    let result;
+    try { result = await sdk.configureNode(request); }
+    catch (failure) {
+      if (current(request)) error.value = failure instanceof Error ? failure.message : "提示词配置提交失败";
+      return;
+    }
+    if (!current(request)) return;
+    error.value = result ? "" : "编辑依据已变化，未应用条目";
+    status.value = result?.outcome === "cancelled" ? "已取消；工作流配置未修改"
+      : result ? result.workflowId === fixed.workflowId
+        ? "条目已保存到当前工作流" : "条目已保存到新工作流" : "";
   } finally { applying.value = false; }
 }
 </script>
 <template>
   <form class="prompt-group-fields" aria-label="提示词内容组" @submit.prevent="apply">
-    <FormDraftNotice :message="draft.message.value" :conflict="draft.conflict.value" @restore="draft.restoreConflict" @discard="draft.discardConflict" />
-    <PromptMembersEditor v-if="supported" ref="editor" :members="members" :version="2" :disabled="disabled" :draft-scope="scope" :draft-basis="basis()" @validity="valid = $event" />
+    <PromptMembersEditor v-if="supported" :members="members" :version="2" :disabled="disabled" :identity="scope" @validity="valid = $event" />
     <p v-else role="status">提示词配置不兼容，原文保留，请在技术详情中核对。</p>
     <p v-if="error" role="status">{{ error }}</p>
-    <button type="submit" :disabled="disabled || !valid"><Save :size="14" />应用条目</button>
+    <p v-if="status" role="status">{{ status }}</p>
+    <button type="submit" :disabled="disabled || !valid"><Check :size="14" />保存条目</button>
   </form>
 </template>
 <style scoped>

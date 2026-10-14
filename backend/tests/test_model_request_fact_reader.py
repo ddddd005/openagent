@@ -1,4 +1,4 @@
-"""M2 facts persisted by RuntimeFactStore, read under synthetic live authority."""
+"""M2 facts read only through the accepted context.merge receipts input."""
 
 from contextlib import closing
 from copy import deepcopy
@@ -43,7 +43,8 @@ class FactHarness:
             "schema_version": 2, "kind": "workflow.agent-receipts", "owner": self.agent_owner,
             "executor_ref": {"executor_id": "agents.snapshot-kernel", "exact_version": "2.0.0"},
             "snapshot_id": str(uuid4()), "frozen_prompt_ref": {"scope": "artifact", "output_id": str(uuid4())},
-            "model_ref": self.binding_ref, "unit_id": str(uuid4()), "fact_ids": [str(uuid4())],
+            "model_ref": self.binding_ref, "compaction_policy_ref": None,
+            "unit_id": str(uuid4()), "fact_ids": [str(uuid4())],
             "model_requests": [{
                 "request_id": result["request_id"], "settings_id": result["settings_id"],
                 "fact_ids": [ref["fact_id"] for ref in result["fact_refs"]],
@@ -52,7 +53,7 @@ class FactHarness:
         output_id, consumer_id, consumer_run_id, edge_id = [str(uuid4()) for _ in range(4)]
         agent_run = deepcopy(resources.evidence["consumer_run"])
         agent_run["status"] = "succeeded"
-        agent_run["output_refs"] = {"context": output_id}
+        agent_run["output_refs"] = {"receipts": output_id}
         chain = deepcopy(resources.evidence["chain"])
         chain["ordered_nodes"].append(consumer_id)
         chain["node_run_ids"].append(consumer_run_id)
@@ -60,8 +61,8 @@ class FactHarness:
         chain["completed_nodes"].append(agent_run["node_binding_id"])
         chain["next_node_index"] = 2
         chain["targets"] = [consumer_id]
-        chain["outputs"][agent_run["node_binding_id"]] = {"context": output_id}
-        input_refs = {"context": [{"edge_id": edge_id, "output_id": output_id, "order": 0}]}
+        chain["outputs"][agent_run["node_binding_id"]] = {"receipts": output_id}
+        input_refs = {"receipts": [{"edge_id": edge_id, "output_id": output_id, "order": 0}]}
         consumer_run = graph_record(
             "node_run", profile="node", run_id=consumer_run_id,
             workflow_session_id=self.agent_owner["workflow_session_id"],
@@ -74,17 +75,16 @@ class FactHarness:
             "input_output": graph_record(
                 "workflow_output", output_id=output_id, workflow_session_id=agent_run["workflow_session_id"],
                 chain_run_id=agent_run["chain_run_id"], run_id=agent_run["run_id"],
-                node_binding_id=agent_run["node_binding_id"], port_id="context",
-                payload={"schema_version": 2, "kind": "workflow.agent-context-update",
-                         "owner": self.agent_owner, "receipts": self.receipts}),
+                node_binding_id=agent_run["node_binding_id"], port_id="receipts",
+                payload=self.receipts),
             "model_binding_output": deepcopy(resources.evidence["binding_output"]),
             "model_source_run": deepcopy(resources.evidence["producer_run"]),
             "source_node": {"node_binding_id": agent_run["node_binding_id"],
-                            "component_id": "agents.execute", "component_version": "9", "config": {}},
+                            "component_id": "agents.execute", "component_version": "10", "config": {}},
             "model_source_node": deepcopy(resources.evidence["source_node"]),
             "consumer_node": {
-                "node_binding_id": consumer_id, "component_id": "synthetic.merge",
-                "component_version": "1", "config": {}, "capabilities": [CAPABILITY],
+                "node_binding_id": consumer_id, "component_id": "context.merge",
+                "component_version": "6", "config": {}, "capabilities": [CAPABILITY],
                 "service_requirements": [{**MODEL_REQUEST_SERVICE_REF.to_dict(),
                                           "capability": CAPABILITY, "operations": [OPERATION]}],
             },
@@ -104,7 +104,7 @@ class FactHarness:
                     "INSERT INTO records VALUES(?,?,?,?,?) ON CONFLICT(record_type,record_id) "
                     "DO UPDATE SET payload=excluded.payload",
                     (kind, record[identity_key], canonical_bytes(record).decode("utf-8"), 0, "synthetic"))
-        self.payload = {"port": "context", "producer": deepcopy(self.agent_owner),
+        self.payload = {"port": "receipts", "producer": deepcopy(self.agent_owner),
                         "binding_ref": deepcopy(self.binding_ref),
                         "requests": deepcopy(self.receipts["model_requests"])}
         self.reader = self.make_reader()
@@ -123,7 +123,7 @@ class FactHarness:
     def make_reader(self, **overrides):
         return ModelRequestFactReader(
             self.path, load_fact_authority=overrides.get("load_fact_authority", self.load_authority),
-            source_component=("agents.execute", "9"), model_source_component=("models.source", "7"))
+            source_component=("agents.execute", "10"), model_source_component=("models.source", "7"))
 
     def load_authority(self, connection, context, port):
         assert connection.in_transaction
@@ -313,7 +313,7 @@ def test_frozen_source_identity_is_exact_and_uninstalled(host, key, field):
 
 
 def test_receipts_one_cannot_authorize_model_fact_reads(host):
-    receipts = host.evidence["input_output"]["payload"]["receipts"]
+    receipts = host.evidence["input_output"]["payload"]
     receipts["schema_version"] = 1
     receipts["executor_ref"]["exact_version"] = "1.0.0"
     receipts.pop("model_requests")
@@ -324,7 +324,7 @@ def test_receipts_one_cannot_authorize_model_fact_reads(host):
 
 @pytest.mark.parametrize("change", ["owner", "model_ref", "request_id", "settings_id", "facts"])
 def test_persisted_receipts_must_match_exact_source_and_accepted_request(host, change):
-    receipts = host.evidence["input_output"]["payload"]["receipts"]
+    receipts = host.evidence["input_output"]["payload"]
     if change == "owner":
         receipts["owner"] = {**receipts["owner"], "node_run_id": str(uuid4())}
     elif change == "model_ref":

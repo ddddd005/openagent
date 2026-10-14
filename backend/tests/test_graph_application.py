@@ -25,12 +25,23 @@ def public_document(service):
     return doc
 
 
+def configuration_document(value):
+    doc = deepcopy(value)
+    doc["schema_version"] = 3
+    for node in doc["nodes"]:
+        node["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
+    return doc
+
+
 def test_named_commands_and_queries_preserve_original_receipts(service):
     app = GraphApplication(service)
-    doc = public_document(service)
-    save = {"document": doc, "expected_revision": 0, "idempotency_key": "application-save"}
-    saved = app.command("definition.save", save)
-    assert saved["result"] == doc and saved["receipt"]["accepted"]["definition_revision"] == 1
+    doc = configuration_document(public_document(service))
+    save = {"workflow_definition_id": doc["workflow_definition_id"], "document": doc,
+            "expected_edit_sequence": 0, "idempotency_key": "application-save"}
+    saved = app.command("definition.update", save)
+    assert saved["result"]["outcome"] == "saved"
+    doc = saved["result"]["document"]
+    assert saved["receipt"]["accepted"]["definition_revision"] == 1
     created = app.command("session.create", {"workflow_definition_id": doc["workflow_definition_id"],
         "definition_revision": 1, "idempotency_key": "application-create"})
     session = created["result"]
@@ -91,8 +102,8 @@ def test_consumer_scope_cannot_dispatch_management_queries(service, name, parame
 
 
 @pytest.mark.parametrize("name", [
-    "definition.save", "run.start", "run.control", "candidate.select", "candidate.fork",
-    "object.write", "context.adopt", "resource.save", "packages.configure",
+    "run.start", "run.control", "object.write",
+    "resource.save", "packages.configure",
 ])
 def test_consumer_scope_cannot_dispatch_management_commands(service, name):
     with pytest.raises(ContractValidationError) as failure:
@@ -100,11 +111,20 @@ def test_consumer_scope_cannot_dispatch_management_commands(service, name):
     assert failure.value.reason_code == "application_scope_denied" and failure.value.status_code == 403
 
 
+@pytest.mark.parametrize("name", [
+    "candidate.select", "candidate.fork", "consumer.candidate.fork", "definition.save", "draft.save",
+])
+def test_retired_commands_are_not_dispatchable(service, name):
+    with pytest.raises(ContractValidationError) as failure:
+        GraphApplication(service).command(name, {})
+    assert failure.value.reason_code == "not_found" and failure.value.status_code == 404
+
+
 def test_discovery_reports_only_bound_operation_scope_and_idempotency(service):
     consumer = GraphApplication(service, scope="consumer").describe()
     assert {item["name"] for item in consumer["commands"]} == {
         "consumer.session.create", "consumer.run.start", "consumer.run.control",
-        "consumer.event.submit", "consumer.candidate.fork", "consumer.draft.save"}
+        "consumer.event.submit", "consumer.draft.save"}
     assert all(item["scope"] == "consumer" for item in consumer["queries"])
     assert consumer["boundary"]["caller"] == "trusted_local"
     assert consumer["boundary"]["remote_plugin_authentication"] is False
@@ -217,15 +237,18 @@ def test_rest_http_routes_use_application_command_and_query(service, monkeypatch
 
     monkeypatch.setattr(GraphApplication, "command", command_spy)
     monkeypatch.setattr(GraphApplication, "query", query_spy)
-    doc = public_document(service)
-    assert dispatch_graph(service, "POST", "/api/graph/definitions", {
-        "document": doc, "expected_revision": 0, "idempotency_key": "rest-http-save"}) == (201, doc)
+    doc = configuration_document(public_document(service))
+    status, saved = dispatch_graph(service, "POST", "/api/graph/definitions/update", {
+        "workflow_definition_id": doc["workflow_definition_id"], "document": doc,
+        "expected_edit_sequence": 0, "idempotency_key": "rest-http-save"})
+    assert status == 200 and saved["outcome"] == "saved"
+    doc = saved["document"]
     assert dispatch_graph(service, "GET", "/api/graph/definitions/" + doc["workflow_definition_id"]) == (200, doc)
     _, session = dispatch_graph(service, "POST", "/api/graph/sessions", {
         "workflow_definition_id": doc["workflow_definition_id"], "definition_revision": 1, "idempotency_key": "rest-http-create"})
     sid = session["workflow_session_id"]
     assert dispatch_graph(service, "GET", "/api/graph/sessions/" + sid + "/consumer")[1]["kind"] == "workflow.consumer"
-    assert calls == [("command", "definition.save"), ("query", "definition.read"),
+    assert calls == [("command", "definition.update"), ("query", "definition.read"),
                      ("command", "session.create"), ("query", "consumer.read")]
 
 
@@ -234,12 +257,13 @@ def test_http_envelopes_preserve_original_identity_and_consumer_scope(tmp_path):
         discovery = request(port, "GET", "/api/graph/application")[1]
         assert discovery["scope"] == "management"
         assert request(port, "GET", "/api/graph/consumer/application")[1]["scope"] == "consumer"
-        doc = public_document(host.graph_service)
-        save = {"operation": "definition.save", "parameters": {
-            "document": doc, "expected_revision": 0, "idempotency_key": "http-application-save"}}
+        doc = configuration_document(public_document(host.graph_service))
+        save = {"operation": "definition.update", "parameters": {
+            "workflow_definition_id": doc["workflow_definition_id"], "document": doc,
+            "expected_edit_sequence": 0, "idempotency_key": "http-application-save"}}
         status, saved = request(port, "POST", "/api/graph/commands", save)
-        assert status == 201 and saved["receipt"]["accepted"]["definition_revision"] == 1
-        assert request(port, "POST", "/api/graph/commands", save) == (201, saved)
+        assert status == 200 and saved["result"]["outcome"] == "saved"
+        assert request(port, "POST", "/api/graph/commands", save) == (200, saved)
         assert request(port, "POST", "/api/graph/queries", {"operation": "definition.read",
             "parameters": {"identity": doc["workflow_definition_id"], "revision": 1}}) == (200, doc)
         status, denied = request(port, "POST", "/api/graph/consumer/commands", save)
@@ -265,5 +289,5 @@ def test_bound_consumer_application_cannot_be_upgraded_through_http(service):
     consumer = GraphApplication(service, scope="consumer")
     assert dispatch_graph(consumer, "GET", "/api/graph/application")[1]["scope"] == "consumer"
     with pytest.raises(ContractValidationError) as failure:
-        dispatch_graph(consumer, "POST", "/api/graph/commands", {"operation": "definition.save", "parameters": {}})
+        dispatch_graph(consumer, "POST", "/api/graph/commands", {"operation": "definition.update", "parameters": {}})
     assert failure.value.reason_code == "application_scope_denied"

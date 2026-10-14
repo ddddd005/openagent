@@ -2,10 +2,10 @@
 
 from copy import deepcopy
 
-from .content_contracts import stable_item_id
+from .content_contracts import object_schema, stable_item_id
 from .contract_json import content_digest, validate_json_value
 from .graph_contracts import require, uuid4_string
-from .host_sdk import WriteIntent, bounded_name, validate_reference
+from .host_sdk import DataTypeDefinition, WriteIntent, bounded_name, validate_reference
 
 
 FRONTEND_STATE_TYPE = "workflow.frontend-state"
@@ -15,6 +15,16 @@ FRONTEND_DISPLAY_TYPE = "FRONTEND_DISPLAY"
 # Leave one reference slot for the accepted settlement view.
 MAX_FRONTEND_ENTRIES = 4095
 EMPTY_FRONTEND_STATE = {"entries": [], "view_ref": None}
+
+
+def frontend_state_data_type() -> DataTypeDefinition:
+    """Return the shared session-state contract without installing frontend business nodes."""
+    return DataTypeDefinition(
+        FRONTEND_STATE_TYPE, 1, object_schema({
+            "entries": {"type": "array", "maxItems": MAX_FRONTEND_ENTRIES},
+            "view_ref": {"type": ["object", "null"]}}),
+        EMPTY_FRONTEND_STATE, validator=validate_frontend_state, references=frontend_state_references,
+        reference_mapper=preserve_frontend_references, write_validator=validate_frontend_state_write)
 
 
 def validate_frontend_display(value):

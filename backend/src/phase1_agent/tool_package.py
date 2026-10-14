@@ -18,6 +18,7 @@ from .content_contracts import (
 )
 from .contract_errors import ContractValidationError
 from .contract_json import canonical_bytes, loads_strict, validate_json_value
+from .frontend_contracts import FRONTEND_STATE_TYPE, frontend_state_data_type
 from .graph_contracts import NodeDefinition, NodePort
 from .host_sdk import DataTypeDefinition, ensure
 from .prompt_regex import RegexLimits, regex_replace_many, regex_rule_from_dict
@@ -311,10 +312,12 @@ def create_tool_package() -> CapabilityPackage:
                      "value": {"type": ["string", "integer", "number", "boolean", "null"]}}),
             default_value=_EMPTY_VARIABLE, validator=_validate_variable, max_bytes=WIRE_BYTES,
         ))
+        host.register_shared_data_type(frontend_state_data_type())
 
         def install(name, display, category, config, fields, executor, *,
                     inputs=(), outputs=(), modes=None, capabilities=(), validator=None,
-                    is_output=False, external_validator=None, external_declaration=None):
+                    is_output=False, external_validator=None, external_declaration=None,
+                    version="1", provided_session_item_types=()):
             accesses = ()
             if name in ("variable-register", "variable-assign", "variable-to-content",
                         "variable-replace-all", "variable-replace-selected"):
@@ -326,10 +329,11 @@ def create_tool_package() -> CapabilityPackage:
                     "type_id": VARIABLE_TYPE, "schema_version": VARIABLE_SCHEMA_VERSION,
                 },)
             host.register_node(NodeDefinition(
-                "tools." + name, "1", display, category, config, _schema(fields),
+                "tools." + name, version, display, category, config, _schema(fields),
                 inputs=inputs, outputs=outputs, port_modes=modes or {},
                 capabilities=capabilities, is_output=is_output, input_storage="references",
                 object_accesses=accesses,
+                provided_session_item_types=provided_session_item_types,
             ), executor, config_validator=validator, external_inputs_validator=external_validator,
                 external_inputs_declaration=external_declaration)
 
@@ -342,6 +346,10 @@ def create_tool_package() -> CapabilityPackage:
         install("output", "输出", "通用工具", {"mode": "text"},
                 {"mode": {"enum": list(_CONTENT_TYPES)}}, _output,
                 modes=_mode_ports(), is_output=True)
+        install("output", "输出", "通用工具", {"mode": "text"},
+                {"mode": {"enum": list(_CONTENT_TYPES)}}, _output,
+                modes=_mode_ports(), is_output=True, version="2",
+                provided_session_item_types=({"type_id": FRONTEND_STATE_TYPE, "schema_version": 1},))
         install("regex", "正则", "通用工具", {
             "mode": "text", "scope": "body", "pattern": "", "replacement": "",
             "flags": [], "replaceMode": "all",
@@ -398,7 +406,11 @@ def create_tool_package() -> CapabilityPackage:
         PACKAGE_ID, PACKAGE_VERSION, dependencies=(PackageDependency("workflow.content", "1.0.0"),),
         exports={
             "data_types": [{"scope": "session", "type_id": VARIABLE_TYPE,
-                            "schema_version": VARIABLE_SCHEMA_VERSION}],
-            "nodes": [{"component_id": "tools." + name, "component_version": "1"} for name in node_names],
+                            "schema_version": VARIABLE_SCHEMA_VERSION},
+                           {"scope": "session", "type_id": FRONTEND_STATE_TYPE, "schema_version": 1}],
+            "nodes": [{"component_id": "tools." + name, "component_version": "1"}
+                      for name in node_names if name != "output"]
+                    + [{"component_id": "tools.output", "component_version": version}
+                       for version in ("1", "2")],
         },
     ), register)

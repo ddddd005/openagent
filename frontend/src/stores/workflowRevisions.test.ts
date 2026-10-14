@@ -26,12 +26,14 @@ afterEach(() => {
   useWorkflowGraphStore().$dispose(); useWorkspaceStore().$dispose(); vi.unstubAllGlobals();
 });
 describe("same-identity workflow revisions", () => {
-  it("edits and publishes the same identity without copying or adopting a session revision", async () => {
+  it("keeps the old session fixed after publishing and creates a fresh saved-revision session", async () => {
     const f = fixture(), calls: string[] = [];
+    const created: GraphSession = { ...f.view, workflow_session_id: crypto.randomUUID(),
+      definition_revision: 2, revision: 1, data_revision: 0, data: { revision: 0, values: {} } };
     stubGraphApplicationFetch(vi.fn(async (path, init) => {
       calls.push(path);
       if (path === "/api/graph/definitions") return json(JSON.parse(String(init.body)).document);
-      if (path.endsWith("/rebind")) return json({ ...f.view, definition_revision: 2, revision: 2 });
+      if (path === "/api/graph/sessions") return json(created);
       return json(f.view);
     }));
     expect(f.graph.renameWorkflow("Edited")).toBe(f.id);
@@ -41,17 +43,20 @@ describe("same-identity workflow revisions", () => {
     expect(calls).toEqual(["/api/graph/definitions"]);
     expect(f.graph.entries[f.id].saved_revision).toBe(2); expect(f.graph.session?.definition_revision).toBe(1);
     await f.graph.submitPrimary(); expect(calls.some(path => path.endsWith("/runs"))).toBe(false);
-    expect(await f.graph.adoptRevision()).toBe(true);
+    expect(f.graph.session?.workflow_session_id).toBe(f.view.workflow_session_id);
+    expect(await f.graph.createSession()).toBe(true);
+    expect(f.graph.session?.workflow_session_id).toBe(created.workflow_session_id);
     expect(f.graph.session?.definition_revision).toBe(2);
-    expect(f.graph.entries[f.id].session_document).toEqual(f.graph.entries[f.id].saved_document);
+    expect(calls).toEqual(["/api/graph/definitions", `/api/graph/sessions/${f.view.workflow_session_id}`,
+      "/api/graph/sessions"]);
+    expect(calls.some(path => path.endsWith("/rebind"))).toBe(false);
   });
-  it.each(["prepared", "running", "pausing", "paused"])("refuses editing and adopting in %s even with can_submit true", async status => {
+  it.each(["prepared", "running", "pausing", "paused"])("refuses editing in %s even with can_submit true", status => {
     const f = fixture();
     f.graph.views[f.view.workflow_session_id] = { ...f.view, status };
     expect(f.graph.renameWorkflow("blocked")).toBeNull(); expect(f.graph.document).toEqual(f.original);
-    const fetcher = vi.fn(async () => json({ ...f.view, status })); stubGraphApplicationFetch(fetcher);
-    expect(await f.graph.adoptRevision()).toBe(false);
-    expect(fetcher.mock.calls.length).toBe(1);
+    expect("adoptRevision" in f.graph).toBe(false);
+    expect("adoptRevision" in f.graph.management.commands).toBe(false);
   });
   it("retains the draft and original baseline after a publish CAS conflict", async () => {
     const f = fixture(); f.graph.renameWorkflow("Local draft");

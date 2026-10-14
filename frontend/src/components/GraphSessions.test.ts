@@ -54,7 +54,7 @@ async function mount() {
   const id = graph.createWorkflow(), sid = crypto.randomUUID();
   const view: GraphSession = { schema_version: 2, execution_model: "graph", workflow_session_id: sid,
     workflow_definition_id: id, definition_revision: 1, name: "Original", metadata_sequence: 0,
-    revision: 5, data_revision: 0, head_revision: 2, status: "running", can_submit: false,
+    revision: 5, data_revision: 0, head_revision: 2, status: "idle", can_submit: true,
     nodes: [], chains: [], outputs: [], data: { revision: 0, values: {} }, archived: false };
   graph.entries[id].session_id = sid; graph.views[sid] = view; graph.sessions[id] = [view];
   let saved: SessionMetadata = { schema_version: 1, kind: "workflow.session-metadata",
@@ -86,7 +86,18 @@ async function mount() {
 }
 afterEach(() => { apps.splice(0).forEach(app => app.unmount()); instances.splice(0).forEach(disposePinia); vi.unstubAllGlobals(); });
 describe("session formal name editing", () => {
-  it("saves on blur while execution is locked and leaves runtime revisions untouched", async () => {
+  it("offers no revision rebind action for a session pinned to an older definition", async () => {
+    const f = await mount();
+    f.graph.entries[f.id].saved_revision = 2;
+    await flush();
+
+    expect(elements(f.root).some(node => node.text.includes("采用已保存修订"))).toBe(false);
+    expect(elements(f.root).some(node => node.text.includes("确认采用"))).toBe(false);
+    expect(label(f.root, "新建会话")).toBeDefined();
+    expect(elements(f.root).some(node => node.text.includes("当前会话与已保存修订不一致"))).toBe(true);
+  });
+
+  it("saves an idle session name independently of workbench busy state without changing runtime revisions", async () => {
     const f = await mount(); f.graph.busy = "run"; await flush();
     const before = graphClone(f.graph.session), input = label(f.root, "会话名称");
     expect(f.graph.locked).toBe(true); expect(input.props.disabled).toBe(false);
@@ -96,6 +107,17 @@ describe("session formal name editing", () => {
     expect(f.save.mock.calls[0]![0]).toMatchObject({ session_id: f.sid, name: "Renamed", expected_metadata_sequence: 0 });
     expect(f.graph.session).toEqual(before);
     expect(elements(f.root).some(node => node.text === "Renamed")).toBe(true);
+  });
+  it("does not write a session name while execution is active", async () => {
+    const f = await mount();
+    f.graph.views[f.sid] = { ...f.graph.views[f.sid]!, status: "running", can_submit: false };
+    await flush();
+    const input = label(f.root, "会话名称");
+    expect(input.props.disabled).toBe(true);
+    (input.props["onUpdate:modelValue"] as (text: string) => void)("Not submitted");
+    await (input.props.onBlur as () => Promise<void>)();
+    expect(f.save).not.toHaveBeenCalled();
+    expect(f.graph.session?.name).toBe("Original");
   });
   it("keeps ordinary typing through unchanged runtime observations without label drafts", async () => {
     const f = await mount(), input = label(f.root, "会话名称");

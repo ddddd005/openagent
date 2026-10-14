@@ -116,7 +116,17 @@ def merge_lifecycle_prompt_materials(values) -> dict:
         ordered = [deepcopy(origins[key]) for key in sorted(origins)]
         kept["source"] = ordered[0] if len(ordered) == 1 else {"kind": "merged", "origins": ordered}
         result.append(kept)
-    return lifecycle_prompt_content(sorted(result, key=_item_order))
+    ordered = sorted(result, key=_item_order)
+    once_seen = set()
+    deduplicated = []
+    for item in ordered:
+        if item["lifecycle"] == "context_once" and item["enabled"]:
+            identity = (item["role"], item["text"])
+            if identity in once_seen:
+                continue
+            once_seen.add(identity)
+        deduplicated.append(item)
+    return lifecycle_prompt_content(deduplicated)
 
 
 def validate_lifecycle_prompt_materials(value) -> dict:

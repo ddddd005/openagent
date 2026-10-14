@@ -1,6 +1,7 @@
 """Draft-only input discovery preserves declarations without execution or writes."""
 
 from copy import deepcopy
+from uuid import uuid4
 
 import pytest
 
@@ -61,6 +62,10 @@ def test_consumer_incomplete_graph_keeps_text_declaration_and_real_blocking_reas
     source = node(service.registry, "current-input", 1, input_name="message")
     missing = node(service.registry, "output", 2)
     doc = document([source, missing], [])
+    doc["control_edges"] = [{
+        "edge_id": str(uuid4()), "source_node_id": source["node_binding_id"],
+        "target_node_id": missing["node_binding_id"],
+    }]
     session = create(service, doc)
     from phase1_agent.graph_contracts import GraphCompiler
     original_compile, calls = GraphCompiler.compile, []

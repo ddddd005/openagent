@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from .context_compaction import checkpoint_message, replace_compacted_messages
 from .contract_errors import DiagnosticError, require
-from .contract_graph import validate_message_history
+from .contract_graph import validate_context_message_history
 from .contract_json import content_digest, validate_json_value
 from .model_execution_contracts import (
     compaction_eligible_message_ids, expected_compaction_request, snapshot_wire_tools,
@@ -30,6 +30,7 @@ class _Invocation:
     request: dict | None = None
     result: dict | None = None
     dispatch_started: bool = False
+    discarded: bool = False
     events: dict = field(default_factory=dict)
 
 
@@ -59,15 +60,15 @@ class ModelExecutionRequests:
     No tool is executed here and no new node/executor is registered.
     """
 
-    def __init__(self, snapshot, *, host_call, publish_fact, release_run):
+    def __init__(self, snapshot, *, host_call, publish_fact):
         self._snapshot = validate_input_snapshot_v2(snapshot)
-        require(all(callable(callback) for callback in (host_call, publish_fact, release_run)),
+        require(all(callable(callback) for callback in (host_call, publish_fact)),
                 "model_execution_host_invalid", "Exact trusted request callbacks are required")
         payload = self._snapshot["config"]["payload"]
         self._binding = deepcopy(payload["public_model_binding"])
         self._policy = deepcopy(payload["context_compaction"]["policy"])
         self._tools = snapshot_wire_tools(self._snapshot)
-        self._host_call, self._publish_fact, self._release_run = host_call, publish_fact, release_run
+        self._host_call, self._publish_fact = host_call, publish_fact
         self._boundaries: dict[str, _Boundary] = {}
         self._pending_key: str | None = None
         self._request_index = 0
@@ -135,14 +136,12 @@ class ModelExecutionRequests:
                 ) from None
             saved["accepted"] = True
 
-    def _dispatch(self, invocation, *, max_model_requests=None, max_model_attempts=None):
+    def _dispatch(self, invocation):
         prepared = self._prepare(invocation)
         require(prepared["hard_capacity_ok"], "model_request_capacity_exceeded",
                 "Prepared wire exceeds actual model capacity",
                 capacity_diagnostic=deepcopy(prepared["capacity_diagnostic"]))
         if invocation.request is None:
-            require(max_model_requests is None or self._request_index < max_model_requests,
-                    "model_request_budget_exhausted", "Model request limit reached at the original dispatch boundary")
             self._request_index += 1
             invocation.request = {
                 "request_id": prepared["request_id"], "request_index": self._request_index,
@@ -153,8 +152,6 @@ class ModelExecutionRequests:
         self._event(invocation, "model_request", invocation.request)
         if invocation.result is None:
             if not invocation.dispatch_started:
-                require(max_model_attempts is None or self._attempt_count < max_model_attempts,
-                        "model_attempt_budget_exhausted", "Model attempt limit reached before dispatch")
                 invocation.dispatch_started = True
                 self._attempt_count += 1
             result = self._call("dispatch-request", {
@@ -184,7 +181,7 @@ class ModelExecutionRequests:
                 "model_execution_measurement_mismatch", "Measurement differs from the retained work context")
         return evidence
 
-    def _compact(self, boundary, *, max_model_requests=None, max_model_attempts=None):
+    def _compact(self, boundary):
         trigger = self._prepare(boundary.normal)
         if boundary.trigger is None:
             covered = compaction_eligible_message_ids(
@@ -211,12 +208,12 @@ class ModelExecutionRequests:
             require(discarded == {"request_id": trigger["request_id"], "discarded": True},
                     "model_execution_discard_mismatch", "Discard differs from the trigger preparation")
             boundary.discarded = discarded
+            boundary.normal.discarded = True
         summary = boundary.summary
         self._prepare(summary)
         if boundary.before is None:
             boundary.before = self._measure(summary, boundary.original)
-        result = self._dispatch(
-            summary, max_model_requests=max_model_requests, max_model_attempts=max_model_attempts)
+        result = self._dispatch(summary)
         if boundary.reduced is None:
             require(result["finish_reason"] == "stop" and not result["tool_calls"]
                     and type(result["content"]) is str and bool(result["content"].strip()),
@@ -243,14 +240,10 @@ class ModelExecutionRequests:
         self._event(summary, "context_compaction_applied", boundary.operation)
         return boundary.reduced
 
-    def advance(self, request_key, messages, *, accepted_messages=(),
-                max_model_requests=None, max_model_attempts=None, on_boundary=None):
+    def advance(self, request_key, messages, *, accepted_messages=(), on_boundary=None):
         """Return the original result on reentry; never create another retry key."""
         with self._lock:
             require(not self._closed, "model_recovery_unavailable", "Request bridge was released")
-            require(all(limit is None or type(limit) is int and limit > 0
-                        for limit in (max_model_requests, max_model_attempts)),
-                    "model_execution_request_invalid", "Request and attempt limits must be explicit positive integers")
             require(on_boundary is None or callable(on_boundary), "model_execution_request_invalid",
                     "Request boundary callback must be callable")
             require(type(request_key) is str and 0 < len(request_key) <= 384
@@ -259,7 +252,7 @@ class ModelExecutionRequests:
             validate_json_value(messages)
             require(type(messages) is list and bool(messages), "model_execution_request_invalid",
                     "A normal boundary requires nonempty closed canonical messages")
-            validate_message_history(messages)
+            validate_context_message_history(messages)
             accepted = deepcopy(list(accepted_messages))
             validate_json_value(accepted)
             digest = content_digest({"messages": messages, "accepted_messages": accepted})
@@ -281,8 +274,7 @@ class ModelExecutionRequests:
             normal = boundary.normal
             current = boundary.original
             if preparation["requires_compaction"] and self._policy is not None and self._policy["enabled"]:
-                current = self._compact(
-                    boundary, max_model_requests=max_model_requests, max_model_attempts=max_model_attempts)
+                current = self._compact(boundary)
                 operations = [deepcopy(boundary.operation)]
                 if on_boundary is not None:
                     on_boundary("after_compaction")
@@ -292,8 +284,7 @@ class ModelExecutionRequests:
                 normal = boundary.after_normal
                 # The exact compacted view gets one normal preparation, even at a low trigger.
                 self._prepare(normal)
-            result = self._dispatch(
-                normal, max_model_requests=max_model_requests, max_model_attempts=max_model_attempts)
+            result = self._dispatch(normal)
             boundary.completion = {
                 "request": deepcopy(normal.request), "result": deepcopy(result), "messages": deepcopy(current),
                 "operations": operations,
@@ -305,6 +296,17 @@ class ModelExecutionRequests:
 
     def close(self):
         with self._lock:
+            for boundary in self._boundaries.values():
+                for invocation in (boundary.normal, boundary.summary, boundary.after_normal):
+                    if (invocation is None or invocation.preparation is None or invocation.discarded
+                            or invocation.dispatch_started or invocation.result is not None):
+                        continue
+                    prepared = invocation.preparation
+                    discarded = self._call("discard-prepared-request", {
+                        **self._selection(invocation), "preparation_id": prepared["preparation_id"],
+                    })
+                    require(discarded == {"request_id": prepared["request_id"], "discarded": True},
+                            "model_execution_discard_mismatch",
+                            "Close must discard only its exact undispatched preparation")
+                    invocation.discarded = True
             self._closed = True
-            # A repeated close only retries private release; it cannot drive a request.
-            self._release_run()

@@ -27,8 +27,6 @@ onBeforeUnmount(resources.setCompletionHandler(async request => {
 }));
 const formError = ref("");
 const membersValid = ref(true);
-const numberBasis = computed(() => ({ resourceId: form.value?.resource_id ?? null,
-  scope: form.value?.scope ?? null, sequence: expectedSequence.value, format: form.value?.data_schema_version ?? null }));
 const numbersValid = computed(() => membersValid.value);
 const identityKey = (record: CurrentPromptResource) => JSON.stringify(promptIdentity(record));
 function edit(record: CurrentPromptResource | null) {
@@ -100,8 +98,7 @@ onMounted(() => { void resources.refresh(); });
       <fieldset :disabled="locked">
         <label class="enabled"><input v-model="form.value.enabled" type="checkbox" />启用资源</label>
         <PromptMembersEditor :key="identityKey(form)" :members="form.value.members" :version="form.data_schema_version" :disabled="locked"
-          :persist-numeric-drafts="false"
-          :draft-scope="`resource:prompt:${form.scope}:${form.resource_id}`" :draft-basis="numberBasis"
+          :identity="`resource:prompt:${form.scope}:${form.resource_id}`"
           @validity="membersValid = $event" />
         <details><summary>技术详情</summary><label>范围<output>{{ form.scope }}</output></label><label>资源 UUID<output>{{ form.resource_id }}</output></label></details>
       </fieldset>

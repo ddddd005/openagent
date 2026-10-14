@@ -124,7 +124,21 @@ class GraphPlatform:
             document = self._document(repo, session["workflow_definition_id"], session["definition_revision"])
             require(any(node["node_binding_id"] == node_id for node in document["nodes"]),
                     "session_object_access_denied", "Writer is not in this workflow", 403)
-            result = self._objects(repo).apply(sid, node_id=node_id, writes=writes)
+            from .context_contract import EFFECTIVE_CONTEXT_TYPE
+            from .host_sdk import WriteIntent
+
+            objects = self._objects(repo)
+            heads = objects.current(sid)
+            if type(writes) is list and len(writes) <= 256:
+                intents = [WriteIntent.from_dict(item) for item in writes]
+                if len({intent.object_key for intent in intents}) == len(intents):
+                    require(not any(
+                        (head := heads.get(intent.object_key)) is not None
+                        and (head["type_id"], head["schema_version"]) == (EFFECTIVE_CONTEXT_TYPE, 4)
+                        for intent in intents
+                    ), "context_managed_write_denied",
+                        "Native context changes require accepted context merge settlement", 403)
+            result = objects.apply(sid, node_id=node_id, writes=writes)
             session["revision"] += 1
             repo.put("workflow_session", session)
             # Editing working state does not manufacture a successful candidate.
@@ -134,67 +148,9 @@ class GraphPlatform:
         return self._change("graph.objects.update", idempotency_key, request, change)
 
     def adopt_context_view(self, sid, *, node_id, view_output_id, expected_revision, idempotency_key):
-        """Retry only a proven accepted view after explicitly settling a failed run."""
-        from .context_v4 import prepare_native_context_adoption, prove_native_context_view
-        from .host_sdk import ObjectBinding
-        request = {"session": sid, "node_id": node_id, "view_output_id": view_output_id,
-                   "expected_revision": expected_revision}
-
-        def change(repo):
-            session = self._stable(repo, sid, expected_revision)
-            document = self._document(repo, session["workflow_definition_id"], session["definition_revision"])
-            writer = next((node for node in document["nodes"] if node["node_binding_id"] == node_id), None)
-            require(writer is not None and (writer["component_id"], writer["component_version"])
-                    == ("context.merge", "4"), "context_adoption_writer_denied",
-                    "Adoption requires this workflow's declared context writer", 403)
-            key = writer["config"]["object_key"]
-            objects = self._objects(repo)
-            current = objects.read(sid, key, node_id=node_id)
-            objects.authorize(ObjectBinding.from_dict(current["binding"]), node_id, write=True)
-            output = repo.get("workflow_output", output_id=view_output_id)
-            producer = repo.get("node_run", run_id=output["run_id"])
-            require(output["workflow_session_id"] == sid and output["chain_run_id"] in self._history(repo, sid)
-                    and producer["status"] == "succeeded"
-                    and producer["output_refs"].get(output["port_id"]) == view_output_id,
-                    "context_adoption_output_denied", "View is not accepted in this session history", 403)
-            original = self._document_for_runtime_output(repo, output)
-            source = next(node for node in original["nodes"]
-                          if node["node_binding_id"] == output["node_binding_id"])
-            require(source["component_version"] == "4", "context_adoption_source_invalid",
-                    "View producer implementation version is unsupported")
-            view_ref = {"scope": "artifact", "output_id": view_output_id}
-            allowed = self._artifact_closure(repo, [view_ref])
-
-            def resolve(reference):
-                require(reference["scope"] == "artifact" and reference["output_id"] in allowed,
-                        "context_reference_denied", "Adoption reference escapes its accepted closure", 403)
-                return repo.get("workflow_output", output_id=reference["output_id"])["payload"]
-
-            require(source["component_id"] == "context.merge"
-                    and output["node_binding_id"] == node_id
-                    and output["port_id"] == "output", "context_adoption_source_invalid",
-                    "Adoption requires the same merge node's accepted context candidate")
-
-            def resolve_detail(reference):
-                resolve(reference)
-                return objects._resolve_write_artifact(sid, reference)
-
-            view = prove_native_context_view(view_ref, resolve_detail)
-            require(view["owner"]["agent_node_id"] == writer["config"]["agent_node_id"]
-                    and view["owner"]["object_key"] == key, "context_agent_binding_mismatch",
-                    "Accepted candidate differs from the current writer binding")
-            prepared = prepare_native_context_adoption(
-                workflow_session_id=sid, object_key=key, object_record=current,
-                view_ref=view_ref, view=output["payload"])
-            writes = [] if prepared["write_intent"] is None else [prepared["write_intent"]]
-            results = objects.apply(sid, node_id=node_id, writes=writes)
-            session["revision"] += 1
-            repo.put("workflow_session", session)
-            self._save_manifest(repo, "context_adoption", idempotency_key + ":" + sid,
-                                session, status="state_edit")
-            return {"results": results, "session": self._view(repo, sid)}
-
-        return self._change("graph.context.adopt", idempotency_key, request, change)
+        """Reject the retired out-of-workflow context write path."""
+        require(False, "context_adoption_retired",
+                "Context updates must be accepted by an in-workflow write node", 410)
 
     def get_state_manifest(self, sid, *, snapshot_id=None, chain_id=None, boundary="end"):
         with self._lock, closing(self._store()) as store:

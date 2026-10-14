@@ -4,12 +4,11 @@ from copy import deepcopy
 
 from .content_contracts import object_schema
 from .frontend_contracts import (
-    EMPTY_FRONTEND_STATE, FRONTEND_COMMIT_TYPE, FRONTEND_STATE_TYPE, FRONTEND_VIEW_TYPE, MAX_FRONTEND_ENTRIES,
+    FRONTEND_COMMIT_TYPE, FRONTEND_STATE_TYPE, FRONTEND_VIEW_TYPE,
     FRONTEND_DISPLAY_TYPE, frontend_display_references, validate_frontend_display,
-    append_frontend_view, frontend_state_references, frontend_view_artifact_bindings,
+    append_frontend_view, frontend_state_data_type, frontend_view_artifact_bindings,
     frontend_view_references, prepare_frontend_adoption, preserve_frontend_references,
-    read_frontend_view, validate_frontend_commit, validate_frontend_state,
-    validate_frontend_state_write, validate_frontend_view,
+    read_frontend_view, validate_frontend_commit, validate_frontend_view,
 )
 from .graph_contracts import NodeDefinition, NodePort, require
 from .host_sdk import DataTypeDefinition
@@ -80,12 +79,7 @@ def settle_frontend_append(context, outputs, output_refs):
 
 def register_frontend_business(host):
     """Register business capabilities; the complete UI package host is separate."""
-    host.register_data_type(DataTypeDefinition(
-        FRONTEND_STATE_TYPE, 1, object_schema({
-            "entries": {"type": "array", "maxItems": MAX_FRONTEND_ENTRIES},
-            "view_ref": {"type": ["object", "null"]}}),
-        EMPTY_FRONTEND_STATE, validator=validate_frontend_state, references=frontend_state_references,
-        reference_mapper=preserve_frontend_references, write_validator=validate_frontend_state_write))
+    host.register_shared_data_type(frontend_state_data_type())
     host.register_data_type(DataTypeDefinition(
         FRONTEND_VIEW_TYPE, 1, {"type": "object"}, scope="content", validator=validate_frontend_view,
         references=frontend_view_references, reference_mapper=preserve_frontend_references,

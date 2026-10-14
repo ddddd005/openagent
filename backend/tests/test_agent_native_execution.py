@@ -22,7 +22,9 @@ from phase1_agent.runtime_fact_store import RuntimeFactStore
 from phase1_agent.storage import SqliteStore
 
 from workflow_test_support import run
-from test_context_native_integration import NativeTransport, native_graph, node_output
+from test_context_native_integration import (
+    NativeTransport, agent_operations, native_graph, node_output,
+)
 from test_graph_service import create
 from test_models_service_integration import ModelDatabaseFixture
 
@@ -104,8 +106,9 @@ def test_summary_output_limit_is_controlled_and_usage_is_preserved_without_claim
         assert final["status"] == "succeeded", final["chains"]
         assert [call["parameters"]["max_tokens"] for call in fixture.calls] == [16, 256]
         assert fixture.calls[0]["tools"] == fixture.calls[1]["tools"]
-        packet = node_output(final, entries["a"]["agent"], "context")
-        compact = packet["operations"][0]
+        receipts = node_output(final, entries["a"]["agent"], "receipts")
+        operations = agent_operations(service, final, receipts)
+        compact = next(operation for operation in operations if operation["kind"] == "compact")
         assert compact["request"]["model_parameters"]["max_tokens"] == 16
         assert compact["result"]["usage"] == {
             "prompt_tokens": 999, "completion_tokens": 5,
@@ -163,8 +166,9 @@ def test_native_pause_after_inflight_summary_resumes_same_view_without_another_s
         final = service.get_session(initial["workflow_session_id"])
         assert final["status"] == "succeeded", final["chains"]
         assert len(fixture.calls) == 2
-        packet = node_output(final, entries["a"]["agent"], "context")
-        assert sum(operation["kind"] == "compact" for operation in packet["operations"]) == 1
+        receipts = node_output(final, entries["a"]["agent"], "receipts")
+        operations = agent_operations(service, final, receipts)
+        assert sum(operation["kind"] == "compact" for operation in operations) == 1
         assert final["objects"]["context-a"]["revision"] == 2
 
 
@@ -225,7 +229,7 @@ def test_summary_model_outcome_commit_failure_never_replays_dispatch_or_adopts_c
 
 
 def test_native_update_proves_actual_policy_even_when_no_compaction_was_triggered(tmp_path, monkeypatch):
-    from phase1_agent.agent_executor import validate_execution_update
+    from phase1_agent.context_update import prove_agent_execution
 
     fixture = RecordingTransport()
     with closing(GraphWorkflowService(tmp_path / "policy-proof.sqlite",
@@ -234,36 +238,39 @@ def test_native_update_proves_actual_policy_even_when_no_compaction_was_triggere
         doc, entries = native_graph(service, once=False)
         final = run(service, create(service, doc), "No need to summarize this short request")
         assert final["status"] == "succeeded", final["chains"]
-        packet = node_output(final, entries["a"]["agent"], "context")
-        assert not any(operation["kind"] == "compact" for operation in packet["operations"])
+        receipts = node_output(final, entries["a"]["agent"], "receipts")
         model = next(node for node in doc["nodes"] if node["component_id"] == "models.source")
         prompt = node_output(final, entries["a"]["assembly"])
         binding = node_output(final, model)
         policy = node_output(final, entries["policy"])
-        policy_ref = packet["compaction_policy_ref"]
         with closing(SqliteStore(service.database)) as store:
-            receipts = packet["receipts"]
             facts = RuntimeFactStore(store).executor_facts(
                 receipts["owner"], receipts["executor_ref"], receipts["fact_ids"])
-        assert validate_execution_update(
-            packet, facts, prompt, binding, policy=policy, policy_ref=policy_ref) == {
+        result_fact = facts[-1]["payload"]["payload"]
+        policy_ref = result_fact["snapshot"]["config"]["payload"]["frozen_compaction_policy_ref"]
+        proof = prove_agent_execution(
+            receipts, facts, prompt, binding, policy=policy, policy_ref=policy_ref)
+        assert not any(operation["kind"] == "compact" for operation in proof["operations"])
+        assert proof["final"] == {
                 "message_id": facts[-1]["payload"]["payload"]["final"]["message_id"],
                 "value": {"text": "Native answer"},
             }
-        with pytest.raises(ContractValidationError, match="Absent accepted compaction policy"):
-            validate_execution_update(packet, facts, prompt, binding)
+        with pytest.raises(ContractValidationError, match="Absent accepted policy"):
+            prove_agent_execution(receipts, facts, prompt, binding)
         for forgery in ("payload", "snapshot-ref", "packet-ref"):
-            altered_facts, altered_packet = deepcopy(facts), deepcopy(packet)
+            altered_facts, altered_receipts, altered_policy_ref = (
+                deepcopy(facts), deepcopy(receipts), deepcopy(policy_ref))
             snapshot = altered_facts[-1]["payload"]["payload"]["snapshot"]["config"]["payload"]
             if forgery == "payload":
                 snapshot["context_compaction"]["policy"]["enabled"] = False
             elif forgery == "snapshot-ref":
                 snapshot["frozen_compaction_policy_ref"]["output_id"] = str(uuid4())
             else:
-                altered_packet["compaction_policy_ref"]["output_id"] = str(uuid4())
-            with pytest.raises(ContractValidationError, match="exact accepted input artifact"):
-                validate_execution_update(
-                    altered_packet, altered_facts, prompt, binding, policy=policy, policy_ref=policy_ref)
+                altered_policy_ref["output_id"] = str(uuid4())
+            with pytest.raises(ContractValidationError, match="exact accepted input"):
+                prove_agent_execution(
+                    altered_receipts, altered_facts, prompt, binding,
+                    policy=policy, policy_ref=altered_policy_ref)
 
 
 def test_native_type_contracts_reopen_in_independent_processes_with_different_hash_seeds(tmp_path):

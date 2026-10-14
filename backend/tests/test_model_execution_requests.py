@@ -71,9 +71,10 @@ class DriverHarness:
         self.events, self.calls, self.preparations, self.results = {}, [], [], []
         self.publish_hook = None
         self.driver = ModelExecutionRequests(
-            self.snapshot, host_call=self.call, publish_fact=self.publish, release_run=self.host.mock.close)
+            self.snapshot, host_call=self.call, publish_fact=self.publish)
         self.owner = {key: getattr(self.host.mock.context, key) for key in (
             "workflow_session_id", "chain_run_id", "node_binding_id", "node_run_id")}
+        self.closed = False
 
     def call(self, capability, operation, payload):
         self.calls.append((capability, operation, deepcopy(payload)))
@@ -110,7 +111,11 @@ class DriverHarness:
                 "resolve_transport": self.host.mock.resolve_transport}
 
     def close(self):
+        if self.closed:
+            return
         self.driver.close()
+        self.host.mock.close()
+        self.closed = True
 
 
 @pytest.fixture
@@ -158,7 +163,7 @@ def test_current_boundaries_compact_once_and_prove_immutable_historical_wire(dri
     second = driver.driver.advance("normal:2", messages, accepted_messages=accepted)
     mock.on_communication = None
     assert len(mock.communications) == 3 and driver.host.read_count == 4
-    assert [item["parameters"]["max_tokens"] for item in mock.communications] == [32000, 1024, 8000]
+    assert [item["parameters"]["max_tokens"] for item in mock.communications] == [32000, 12000, 8000]
     operation = second["operations"][0]
     facts = driver.facts()
     summary = facts[operation["request"]["request_id"]][0]["details"]["settings"]
@@ -262,6 +267,28 @@ def test_executor_event_ack_loss_retains_id_and_prevents_communication_until_ori
     assert driver.host.read_count == 1 and result["operations"] == []
 
 
+def test_close_discards_only_its_exact_undispatched_preparation(driver):
+    def reject_request_fact(identity, event):
+        if event["kind"] == "model_request":
+            raise OSError("Synthetic request fact acceptance failure")
+
+    driver.publish_hook = reject_request_fact
+    with pytest.raises(ContractValidationError) as error:
+        driver.driver.advance("normal:1", driver.snapshot["s0"])
+    assert error.value.reason_code == "model_execution_fact_acceptance_failed"
+    assert len(driver.host.mock.communications) == 0
+    preparation = driver.preparations[0]
+    driver.close()
+    discarded = [payload for _, operation, payload in driver.calls
+                 if operation == "discard-prepared-request"]
+    assert discarded == [{
+        "binding_id": driver.snapshot["config"]["payload"]["public_model_binding"]["binding_id"],
+        "request_key": "normal:1:normal",
+        "preparation_id": preparation["preparation_id"],
+    }]
+    assert not any(operation == "dispatch-request" for _, operation, _ in driver.calls)
+
+
 def test_compaction_applied_event_ack_loss_retains_summary_and_never_resends_it(driver):
     driver.save_runtime(output=12000, context=10000)
     lost_ids = []
@@ -282,7 +309,7 @@ def test_compaction_applied_event_ack_loss_retains_summary_and_never_resends_it(
     assert len(driver.host.mock.communications) == 2
     assert driver.host.facts()[:3] == summary_facts
     assert result["operations"][0] == driver.events[lost_ids[0]]["payload"]
-    assert [item["parameters"]["max_tokens"] for item in driver.host.mock.communications] == [1024, 8000]
+    assert [item["parameters"]["max_tokens"] for item in driver.host.mock.communications] == [12000, 8000]
 
 
 def test_same_key_concurrent_reentry_has_one_boundary_event_and_one_communication(driver):

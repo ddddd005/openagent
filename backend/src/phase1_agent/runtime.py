@@ -25,7 +25,9 @@ from referencing.exceptions import Unresolvable
 
 from .adapter import DeepSeekAdapter, ProviderResponseError
 from .contract_errors import ContractValidationError, ModelRequestError
-from .contract_graph import validate_message_history, validate_pending_message_history
+from .contract_graph import (
+    validate_context_message_history, validate_pending_context_message_history,
+)
 from .contract_json import canonical_bytes, content_digest, loads_strict, validate_json_value
 from .contracts import ModelResponse, ModelToolCall
 from .contracts_v2 import validate_record
@@ -277,9 +279,10 @@ class CanonicalModelAdapter:
 
     @staticmethod
     def _project(messages):
+        messages = list(messages)
+        validate_context_message_history(messages)
         legacy: list[dict[str, Any]] = []
-        for raw in messages:
-            message = validate_record("agent_message", raw)
+        for message in messages:
             blocks = message["blocks"]
             if message["role"] == "tool":
                 for block in blocks:
@@ -335,8 +338,6 @@ class SnapshotKernel:
         tools: Sequence[RegisteredTool],
         adapter: Any = None,
         *,
-        max_model_requests: int | None = 8,
-        max_model_attempts: int | None = None,
         on_progress: Callable[[dict], None] | None = None,
         checkpoint: KernelCheckpoint | None = None,
         on_boundary: Callable[[str], bool] | None = None,
@@ -347,8 +348,7 @@ class SnapshotKernel:
     ) -> KernelResult:
         """Run until final_answer or an explicit control/error boundary.
 
-        Passing None for both request limits disables the legacy quotas. The
-        counters still record actual work and remain part of pause checkpoints.
+        Request and attempt counters record actual work and remain part of pause checkpoints.
         """
         messages: list[dict[str, Any]] = []
         effective_messages: list[dict[str, Any]] = []
@@ -412,7 +412,6 @@ class SnapshotKernel:
                         else "model")
             recoverable = code in {
                 "protocol_error", "invalid_final",
-                "model_request_budget_exhausted", "model_attempt_budget_exhausted",
                 "model_retry_exhausted",
             }
             state = None
@@ -442,7 +441,7 @@ class SnapshotKernel:
 
         def closed_history() -> None:
             try:
-                validate_message_history(frozen["s0"] + messages)
+                validate_context_message_history(frozen["s0"] + messages)
             except ContractValidationError as exc:
                 contract_fail("message_contract_error", exc)
 
@@ -570,14 +569,6 @@ class SnapshotKernel:
                     contract_fail("progress_error", exc)
 
         try:
-            if max_model_requests is not None and (
-                    type(max_model_requests) is not int or not 1 <= max_model_requests <= 64):
-                raise ValueError("Invalid request budget")
-            if max_model_attempts is None and max_model_requests is not None:
-                max_model_attempts = max_model_requests * 4
-            if max_model_attempts is not None and (
-                    type(max_model_attempts) is not int or not 1 <= max_model_attempts <= 256):
-                raise ValueError("Invalid attempt budget")
             if on_progress is not None and not callable(on_progress):
                 raise ValueError("Invalid progress callback")
             if on_boundary is not None and not callable(on_boundary):
@@ -605,7 +596,7 @@ class SnapshotKernel:
                 raise ValueError("Schema 1 cannot consume a schema 2 request bridge")
             snapshot_id = frozen["snapshot_id"]
             snapshot_digest = content_digest(frozen)
-            validate_message_history(frozen["s0"])
+            validate_context_message_history(frozen["s0"])
             if not schema2:
                 compaction_settings = validate_compaction_settings(
                     frozen["config"]["payload"].get("context_compaction"), frozen["s0"],
@@ -651,7 +642,7 @@ class SnapshotKernel:
                                   if messages[index]["role"] == "assistant"), None)
                     if first is None:
                         raise ValueError("Pending tools have no accepted batch")
-                    validate_message_history(frozen["s0"] + messages[:first])
+                    validate_context_message_history(frozen["s0"] + messages[:first])
                     batch = messages[first]
                     calls = [block for block in batch["blocks"] if block["kind"] == "tool_call"]
                     completed = messages[first + 1:]
@@ -665,12 +656,12 @@ class SnapshotKernel:
                                    or item.arguments != block["parsed_arguments"]
                                    for item, block in zip(pending_tools, calls[len(completed):]))):
                         raise ValueError("Pending batch differs from accepted history")
-                    validate_pending_message_history(
+                    validate_pending_context_message_history(
                         frozen["s0"] + messages,
                         [item.call_id for item in pending_tools],
                     )
                 else:
-                    validate_message_history(frozen["s0"] + messages)
+                    validate_context_message_history(frozen["s0"] + messages)
                 model_requests = checkpoint.model_requests
                 attempts = checkpoint.attempts
                 request_boundary_index = checkpoint.request_boundary_index
@@ -702,20 +693,20 @@ class SnapshotKernel:
                             or set(pending_model_provider_ids) & seen_provider_ids):
                         raise ValueError("Retained response queue differs from original model message")
                     if calls:
-                        validate_pending_message_history(
+                        validate_pending_context_message_history(
                             effective_messages + [retained],
                             [item.call_id for item in pending_model_tools],
                         )
                     else:
-                        validate_message_history(effective_messages + [retained])
+                        validate_context_message_history(effective_messages + [retained])
                 elif pending_model_tools or pending_model_provider_ids:
                     raise ValueError("Retained queue requires its original response")
                 if pending_tools:
-                    validate_pending_message_history(
+                    validate_pending_context_message_history(
                         effective_messages, [item.call_id for item in pending_tools],
                     )
                 else:
-                    validate_message_history(effective_messages)
+                    validate_context_message_history(effective_messages)
             seen_execution_ids = {
                 block["tool_execution_id"] for message in frozen["s0"] + messages
                 for block in message["blocks"]
@@ -914,7 +905,7 @@ class SnapshotKernel:
                     result_message = checked_record(_result, call_id, execution_id, status, content)
                     if status == "success":
                         try:
-                            validate_message_history(frozen["s0"] + messages + [result_message])
+                            validate_context_message_history(frozen["s0"] + messages + [result_message])
                         except ContractValidationError as exc:
                             contract_fail("message_contract_error", exc)
                         boundary("before_final")
@@ -987,16 +978,11 @@ class SnapshotKernel:
 
             boundary("before_request")
             closed_history()
-            if not schema2 and max_model_requests is not None and model_requests >= max_model_requests:
-                fail("model_request_budget_exhausted")
-            if not schema2 and max_model_attempts is not None and attempts >= max_model_attempts:
-                fail("model_attempt_budget_exhausted")
             if schema2:
                 try:
                     completed = request_bridge.advance(
                         f"kernel:{snapshot_id}:{request_boundary_index + 1}",
                         copy.deepcopy(effective_messages), accepted_messages=copy.deepcopy(messages),
-                        max_model_requests=max_model_requests, max_model_attempts=max_model_attempts,
                         on_boundary=request_boundary,
                     )
                 except KernelPaused:
@@ -1041,8 +1027,6 @@ class SnapshotKernel:
                 for retry in range(4):
                     if retry:
                         boundary("before_request")
-                    if max_model_attempts is not None and attempts >= max_model_attempts:
-                        fail("model_attempt_budget_exhausted")
                     attempts += 1
                     attempt_id = str(uuid4())
                     fact("model_attempt_started", {
@@ -1086,8 +1070,6 @@ class SnapshotKernel:
                         boundary("before_accept")
                         if retry == 3:
                             fail("model_retry_exhausted", exc)
-                        if max_model_attempts is not None and attempts >= max_model_attempts:
-                            fail("model_attempt_budget_exhausted")
                         try:
                             backoff(retry + 1)
                         except KernelPaused:
@@ -1185,7 +1167,7 @@ class SnapshotKernel:
             assistant = checked_record(_message, "assistant", {"kind": "model", "request_id": request_id},
                                        blocks, response_metadata)
             try:
-                validate_pending_message_history(
+                validate_pending_context_message_history(
                     frozen["s0"] + messages + [assistant],
                     [internal_id for _, _, _, internal_id in accepted],
                 )

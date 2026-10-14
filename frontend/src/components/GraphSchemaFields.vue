@@ -1,33 +1,22 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { graphEnumLabel, graphObject } from "../domain/workflowGraph";
 import RolePlacementFields from "./RolePlacementFields.vue";
 import type { RolePlacement } from "../domain/promptPresentation";
-import { useBoundFormDraft } from "../composables/useBoundFormDraft";
-import FormDraftNotice from "./FormDraftNotice.vue";
 const props = defineProps<{ schema: Record<string, unknown>; value: Record<string, unknown>; disabled?: boolean;
-  draftScope?: string; draftBasis?: Record<string, unknown> }>();
+  identity?: string }>();
 const emit = defineEmits<{ change: [value: Record<string, unknown>] }>();
 const raw = ref<Record<string, string>>({});
-const localDraft = useBoundFormDraft({
-  id: () => props.draftScope ?? "",
-  basis: () => ({ ...props.draftBasis, schema: props.schema, value: props.value }),
-  capture: () => raw.value,
-  reset: () => { raw.value = {}; },
-  restore: value => {
-    if (!graphObject(value) || !Object.values(value).every(item => typeof item === "string"))
-      throw new Error("字段草稿格式不兼容，原文仍保留");
-    raw.value = value;
-  },
-});
+watch(() => [props.identity, JSON.stringify(props.schema), JSON.stringify(props.value)],
+  () => { raw.value = {}; }, { immediate: true });
 const fields = computed(() => Object.entries(graphObject(props.schema.properties) ? props.schema.properties : {})
   .map(([key, definition]) => ({ key, definition: graphObject(definition) ? definition : {} }))
   .sort((a, b) => Number(["text", "content", "body"].includes(b.key)) - Number(["text", "content", "body"].includes(a.key))));
-const locked = computed(() => props.disabled || localDraft.loading.value || localDraft.conflict.value);
+const locked = computed(() => props.disabled);
 function patch(key: string, value: unknown) {
   if (locked.value) return;
   const next = { ...props.value, [key]: value };
-  if (!localDraft.adoptBasis({ ...props.draftBasis, schema: props.schema, value: next })) return;
+  delete raw.value[key];
   emit("change", next);
 }
 function remember(key: string, event: Event) { raw.value[key] = (event.target as HTMLInputElement).value; }
@@ -38,7 +27,8 @@ function numeric(key: string, event: Event) {
   const input = event.target as HTMLInputElement;
   if (!input.value && !(Array.isArray(props.schema.required) && props.schema.required.includes(key))) {
     const value = { ...props.value }; delete value[key];
-    if (localDraft.adoptBasis({ ...props.draftBasis, schema: props.schema, value })) emit("change", value);
+    delete raw.value[key];
+    emit("change", value);
   } else if (input.value.trim() && Number.isFinite(Number(input.value))) {
     input.setCustomValidity(""); patch(key, Number(input.value));
   } else { input.setCustomValidity("请输入完整的数字"); input.reportValidity(); }
@@ -62,18 +52,15 @@ function presentation(value: unknown): value is RolePlacement {
 
 <template>
   <div class="graph-schema-fields">
-    <FormDraftNotice :message="localDraft.message.value" :conflict="localDraft.conflict.value"
-      @restore="localDraft.restoreConflict" @discard="localDraft.discardConflict" />
     <template v-for="field in fields" :key="field.key">
       <fieldset v-if="field.definition.type === 'object' && presentation(value[field.key])" :disabled="locked">
         <RolePlacementFields :model-value="value[field.key] as RolePlacement" :label="String(field.definition.title ?? field.key)"
-          :draft-scope="draftScope ? draftScope + ':' + field.key : undefined"
-          :draft-basis="{ ...draftBasis, schema: field.definition }" @update:model-value="patch(field.key, $event)" />
+          :identity="identity ? `${identity}:${field.key}` : field.key" @update:model-value="patch(field.key, $event)" />
       </fieldset>
       <fieldset v-else-if="field.definition.type === 'object' && field.definition.properties" :disabled="locked">
         <legend>{{ field.definition.title ?? field.key }}</legend>
         <GraphSchemaFields :schema="field.definition" :value="objectValue(value[field.key])" :disabled="disabled"
-          :draft-scope="draftScope ? draftScope + ':' + field.key : undefined" :draft-basis="draftBasis" @change="patch(field.key, $event)" />
+          :identity="identity ? `${identity}:${field.key}` : field.key" @change="patch(field.key, $event)" />
       </fieldset>
       <details v-else-if="['array', 'object'].includes(String(field.definition.type)) && !enums(field.definition).length">
         <summary>{{ field.definition.title ?? field.key }} · 高级 JSON</summary>
@@ -87,9 +74,9 @@ function presentation(value: unknown): value is RolePlacement {
           <option v-for="option in enums(field.definition)" :key="JSON.stringify(option)" :value="JSON.stringify(option)">{{ graphEnumLabel(field.key, field.definition, option) }}</option>
         </select>
         <input v-else-if="field.definition.type === 'boolean'" type="checkbox" :checked="!!value[field.key]" :disabled="locked" @change="patch(field.key, ($event.target as HTMLInputElement).checked)" />
-        <input v-else-if="['number', 'integer'].includes(String(field.definition.type))" type="text" inputmode="decimal" :value="text(field.key)" :disabled="disabled || localDraft.loading.value || localDraft.conflict.value" @input="remember(field.key, $event)" @change="numeric(field.key, $event)" />
-        <textarea v-else-if="field.definition.type === 'string'" :value="text(field.key)" rows="3" :disabled="disabled || localDraft.loading.value || localDraft.conflict.value" @input="remember(field.key, $event)" @change="patch(field.key, ($event.target as HTMLTextAreaElement).value)" />
-        <textarea v-else :value="text(field.key, true)" rows="4" :disabled="disabled || localDraft.loading.value || localDraft.conflict.value" @input="remember(field.key, $event)" @change="json(field.key, $event)" />
+        <input v-else-if="['number', 'integer'].includes(String(field.definition.type))" type="text" inputmode="decimal" :value="text(field.key)" :disabled="disabled" @input="remember(field.key, $event)" @change="numeric(field.key, $event)" />
+        <textarea v-else-if="field.definition.type === 'string'" :value="text(field.key)" rows="3" :disabled="disabled" @input="remember(field.key, $event)" @change="patch(field.key, ($event.target as HTMLTextAreaElement).value)" />
+        <textarea v-else :value="text(field.key, true)" rows="4" :disabled="disabled" @input="remember(field.key, $event)" @change="json(field.key, $event)" />
       </label>
     </template>
   </div>

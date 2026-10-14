@@ -34,9 +34,6 @@ _OPERATION_RULES: dict[str, tuple[str, str, frozenset[str]]] = {
     "retry_publish": ("workflow_session", "run_record", frozenset({"workflow_session"})),
     "interrupt": ("workflow_session", "run_record", frozenset({"workflow_session", "run_record"})),
     "resume": ("workflow_session", "run_record", frozenset({"workflow_session", "run_record"})),
-    "extend_budget": (
-        "workflow_session", "run_record", frozenset({"workflow_session", "run_record"}),
-    ),
     "reroll": ("workflow_session", "chain_run", frozenset({"workflow_session", "workflow_ref"})),
     "close_execution": (
         "workflow_session", "chain_run", frozenset({"workflow_session", "workflow_ref"}),
@@ -199,60 +196,6 @@ class RunControlRequest:
         return _digest(self.to_mapping())
 
 
-@dataclass(frozen=True)
-class BudgetControlRequest:
-    """Explicit request and transport-attempt allowance for one stopped run."""
-
-    kind: str
-    workflow_session_id: str
-    chain_run_id: str
-    run_id: str
-    idempotency_key: str
-    expected_session_revision: int
-    expected_run_revision: int
-    additional_model_requests: int = 0
-    additional_model_attempts: int = 0
-
-    def __post_init__(self) -> None:
-        _require(self.kind == "extend_budget", "Unknown budget control action")
-        for name in ("workflow_session_id", "chain_run_id", "run_id"):
-            _uuid4(getattr(self, name), name)
-        _key(self.idempotency_key)
-        _revision(self.expected_session_revision)
-        _revision(self.expected_run_revision)
-        for name, maximum in (
-            ("additional_model_requests", 64), ("additional_model_attempts", 256),
-        ):
-            value = getattr(self, name)
-            _require(type(value) is int and 0 <= value <= maximum,
-                     f"{name} must be an integer between 0 and {maximum}")
-        _require(self.additional_model_requests + self.additional_model_attempts > 0,
-                 "Budget extension must add requests or attempts")
-
-    def to_mapping(self) -> dict[str, Any]:
-        return {
-            "kind": self.kind,
-            "scope": {"kind": "workflow_session", "id": self.workflow_session_id},
-            "target": {"kind": "run_record", "id": self.run_id},
-            "idempotency_key": self.idempotency_key,
-            "expected_revisions": [
-                {"kind": "workflow_session", "id": self.workflow_session_id,
-                 "revision": self.expected_session_revision},
-                {"kind": "run_record", "id": self.run_id,
-                 "revision": self.expected_run_revision},
-            ],
-            "payload": {
-                "chain_run_id": self.chain_run_id,
-                "additional_model_requests": self.additional_model_requests,
-                "additional_model_attempts": self.additional_model_attempts,
-            },
-        }
-
-    @property
-    def request_digest(self) -> str:
-        return _digest(self.to_mapping())
-
-
 def validate_workflow_operation(value: Any) -> dict[str, Any]:
     """Validate an operation envelope without consulting live state.
 
@@ -385,15 +328,6 @@ def validate_dispatch_payload(operation: WorkflowOperation) -> None:
             and len(payload["text"]) <= 12000,
             "Input must contain 1 to 12000 characters",
         )
-    elif kind == "extend_budget":
-        fields = {"additional_model_requests", "additional_model_attempts"}
-        _require(set(payload) == fields, "Budget payload must identify both additions")
-        for field, maximum in (
-            ("additional_model_requests", 64), ("additional_model_attempts", 256),
-        ):
-            _require(type(payload[field]) is int and 0 <= payload[field] <= maximum,
-                     "Budget addition is outside its bounded limit")
-        _require(sum(payload.values()) > 0, "Budget extension must add requests or attempts")
     elif kind in ("create_branch", "create_and_switch_branch"):
         _require(set(payload) <= {"candidate_id"}, "Unknown branch payload field")
         if "candidate_id" in payload:

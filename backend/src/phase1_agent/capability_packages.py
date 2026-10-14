@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
-from .contract_json import canonical_bytes, validate_json_value
+from .contract_json import canonical_bytes, loads_strict, validate_json_value
 from .graph_contracts import NodeDefinition, NodeRegistry
 from .host_sdk import (
     DataTypeDefinition, HOST_PROTOCOL_VERSION, HostContractError, InformationSourceDefinition,
@@ -122,6 +122,15 @@ def _validate_manifest(value: dict) -> dict:
     return copy.deepcopy(value)
 
 
+def _same_node_contract_except_declarations(previous: bytes, current: bytes) -> bool:
+    previous_value = loads_strict(previous.decode("utf-8"))
+    current_value = loads_strict(current.decode("utf-8"))
+    for field_name in ("checkpoint_save", "execution_class"):
+        previous_value.pop(field_name, None)
+        current_value.pop(field_name, None)
+    return canonical_bytes(previous_value) == canonical_bytes(current_value)
+
+
 @dataclass(frozen=True)
 class CapabilityPackage:
     manifest: PackageManifest
@@ -136,6 +145,7 @@ class HostRegistration:
         self._registry, self._manifest = registry, manifest
         self._frontend_extensions = frontend_extensions
         self._exports: dict[str, list[dict]] = {"data_types": [], "nodes": [], "frontend_extensions": []}
+        self._updated_node_declarations: set[tuple[str, str]] = set()
         if manifest.schema_version >= 2:
             self._exports.update({"executors": [], "pause_support": []})
         if manifest.schema_version >= 3:
@@ -188,10 +198,21 @@ class HostRegistration:
         })
 
     def register_node(self, definition: NodeDefinition, executor: Callable | None, **implementation_hooks) -> None:
-        self._registry.register(definition, executor, **implementation_hooks)
+        self._registry.register(definition, executor, trusted_scope=self._manifest.package_id,
+                                **implementation_hooks)
         self._exports["nodes"].append({
             "component_id": definition.component_id, "component_version": definition.component_version,
         })
+
+    def update_node_declarations(self, definition: NodeDefinition) -> None:
+        identity = {"component_id": definition.component_id, "component_version": definition.component_version}
+        expected = self._manifest.exports.get("nodes", [])
+        ensure(any(canonical_bytes(item) == canonical_bytes(identity) for item in expected),
+               "package_export_mismatch", "Updated node identity must be declared by this package")
+        self._registry.update_declarations(definition, trusted_scope=self._manifest.package_id)
+        if identity not in self._exports["nodes"]:
+            self._exports["nodes"].append(identity)
+        self._updated_node_declarations.add((definition.component_id, definition.component_version))
 
     def register_frontend_extension(self, extension_id: str, kind: str, entrypoint: str,
                                     *, component_id: str | None = None,
@@ -220,7 +241,8 @@ class HostRegistration:
         }
         if binding is not None:
             self._frontend_extensions[extension_id].update(
-                schema_version=2, host_protocol_version=host_protocol_version, binding=binding)
+                schema_version={1: 2, 2: 3}[host_protocol_version],
+                host_protocol_version=host_protocol_version, binding=binding)
         self._exports["frontend_extensions"].append({"extension_id": extension_id})
 
     def finish(self) -> dict:
@@ -306,6 +328,7 @@ class CapabilityPackageLoader:
             (item["component_id"], item["component_version"]): canonical_bytes(item)
             for item in self._base_registry.catalog()
         }
+        self._node_contract_scopes = copy.deepcopy(self._base_registry._trusted_scopes)
         self._executor_contracts = self._hosting_contracts(self._base_registry)
         self._service_contracts = self._services_contracts(self._base_registry)
         self._information_contracts = self._information_sources_contracts(self._base_registry)
@@ -381,12 +404,14 @@ class CapabilityPackageLoader:
         staged = self._base_registry.detached()
         frontend_extensions: dict[str, dict] = {}
         manifests: list[dict] = []
+        updated_node_declarations: set[tuple[str, str]] = set()
         for identity in resolved.registration_order:
             package = self._packages[(identity.package_id, identity.version)]
             registration = HostRegistration(staged, package.manifest, frontend_extensions)
             try:
                 package.register(registration)
                 exports = registration.finish()
+                updated_node_declarations.update(registration._updated_node_declarations)
             except Exception as exc:
                 if isinstance(exc, HostContractError):
                     raise
@@ -411,15 +436,23 @@ class CapabilityPackageLoader:
         validate_frontend_targets(staged, frontend_extensions.values())
         frontend_contracts = {
             (item["package_id"], item["package_version"], item["extension_id"]): canonical_bytes(item)
-            for item in frontend_extensions.values() if item.get("schema_version") == 2
+            for item in frontend_extensions.values() if item.get("schema_version") in (2, 3)
         }
         ensure(all(staged.get(item["component_id"], item["component_version"]) is not None
                    for item in staged.information_sources.catalog()),
                "information_missing_node_type", "Information source targets an unavailable exact node type")
         ensure(all(key not in self._type_contracts or self._type_contracts[key] == value
                    for key, value in type_contracts.items())
-               and all(key not in self._node_contracts or self._node_contracts[key] == value
-                       for key, value in node_contracts.items())
+               and all(
+                   key not in self._node_contracts
+                   or self._node_contract_scopes.get(key) == staged._trusted_scopes.get(key)
+                   and (
+                       self._node_contracts[key] == value
+                       or key in updated_node_declarations
+                       and _same_node_contract_except_declarations(self._node_contracts[key], value)
+                   )
+                   for key, value in node_contracts.items()
+               )
                and all(key not in self._executor_contracts or self._executor_contracts[key] == value
                        for key, value in executor_contracts.items())
                and all(key not in self._service_contracts or self._service_contracts[key] == value
@@ -431,6 +464,7 @@ class CapabilityPackageLoader:
                "package_contract_redefined", "Upgrades must use new type or component versions when contracts change")
         self._type_contracts.update(type_contracts)
         self._node_contracts.update(node_contracts)
+        self._node_contract_scopes.update(staged._trusted_scopes)
         self._executor_contracts.update(executor_contracts)
         self._service_contracts.update(service_contracts)
         self._information_contracts.update(information_contracts)

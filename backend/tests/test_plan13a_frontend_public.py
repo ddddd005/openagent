@@ -38,12 +38,14 @@ def frontend_graph(service, *, public=True):
     read = node(service.registry, "frontend.state.output", 1302)
     append = node(service.registry, "frontend.state.append", 1303)
     presentation = node(service.registry, "frontend.presentation", 1304)
+    output = node(service.registry, "tools.output", 1305)
     if public:
         presentation["public_outputs"] = ["display"]
-    value = document(service.registry, [source, read, append, presentation], [
+    value = document(service.registry, [source, read, append, presentation, output], [
         edge(source, append, 1301, target_port="content"),
         edge(read, append, 1302, source_port="view", target_port="view"),
         edge(append, presentation, 1303, source_port="view", target_port="view"),
+        edge(source, output, 1304),
     ], roots=[presentation], bindings=[ObjectBinding(
         "frontend", FRONTEND_STATE_TYPE, 1, "shared",
         readers=(read["node_binding_id"], append["node_binding_id"]),
@@ -71,7 +73,8 @@ def test_default_business_package_requires_explicit_root_and_has_no_new_endpoint
     assert DEFAULT_PACKAGES["workflow.frontend-business"] == "1.0.0"
     assert service.registry.get("frontend.presentation", "1").definition.is_output is False
     doc, _, _, _, presentation = frontend_graph(service)
-    doc["execution_roots"] = []
+    test_output = next(node for node in doc["nodes"] if node["component_id"] == "tools.output")
+    doc["edges"] = [edge for edge in doc["edges"] if edge["target_node_id"] != test_output["node_binding_id"]]
     dormant = create(service, doc)
     with pytest.raises(ContractValidationError) as denied:
         run(service, dormant, inputs={"text": "dormant"})
@@ -169,7 +172,9 @@ def test_original_and_current_root_declarations_both_authorize(service, original
                     if row["node_binding_id"] == presentation["node_binding_id"])
     revised = deepcopy(doc)
     revised["revision"] = 2
-    revised["nodes"][-1]["public_outputs"] = [] if original_public else ["display"]
+    revised_presentation = next(node for node in revised["nodes"]
+                                if node["node_binding_id"] == presentation["node_binding_id"])
+    revised_presentation["public_outputs"] = [] if original_public else ["display"]
     changed = rebind(service, final, revised)
     parameters = {
         "session_id": changed["workflow_session_id"], "workflow_definition_id": doc["workflow_definition_id"],
@@ -219,7 +224,7 @@ def test_public_view_is_retention_evidence_and_cannot_authorize_artifact_reads(s
     assert denied.value.reason_code == "output_reference_denied"
 
 
-def test_disabled_exporter_keeps_historical_payload_but_grants_no_artifact_reads(service):
+def test_disabled_exporter_keeps_admin_run_payload_but_revokes_consumer_reads(service):
     doc, _, _, _, presentation = frontend_graph(service)
     final = run(service, create(service, doc), inputs={"text": "retained"})
     ref = final["objects"]["frontend"]["value"]["entries"][0]["source_ref"]
@@ -227,11 +232,17 @@ def test_disabled_exporter_keeps_historical_payload_but_grants_no_artifact_reads
     service.configure_capability_packages({
         key: value for key, value in DEFAULT_PACKAGES.items()
         if key not in {"workflow.frontend-business", "workflow.frontend"}})
+    history = service.get_run(final["workflow_session_id"], final["selected_chain_run_id"])
+    display = next(row for row in history["outputs"]
+                   if row["node_binding_id"] == presentation["node_binding_id"] and row["port_id"] == "display")
+    assert display["payload"]["entries"] == final["objects"]["frontend"]["value"]["entries"]
     app = GraphApplication(service).for_consumer()
-    assert app.query("output.read", parameters)["output"]["payload"]["entries"][0]["source_ref"] == ref
+    with pytest.raises(ContractValidationError) as denied:
+        app.query("output.read", parameters)
+    assert denied.value.reason_code == "graph_missing_node_type"
     with pytest.raises(ContractValidationError) as denied:
         artifact(app, parameters, ref)
-    assert denied.value.reason_code == "output_reference_denied"
+    assert denied.value.reason_code == "graph_missing_node_type"
 
 
 def test_public_reference_hooks_are_direct_retained_exports_and_survive_detach():
@@ -342,7 +353,10 @@ def test_saved_package_selection_does_not_implicitly_enable_new_business_package
                 if key not in {"workflow.frontend-business", "workflow.frontend"}}
     with closing(GraphWorkflowService(path, enabled_packages=selected)) as configured:
         assert configured.registry.get("frontend.presentation", "1") is None
+        assert configured.registry.get("tools.output", "2") is not None
+        assert configured.registry.data_types.get("workflow.frontend-state", 1, scope="session") is not None
         lock = deepcopy(configured.platform_capabilities()["package_lock"])
+        assert "workflow.frontend-business" not in {row["package_id"] for row in lock}
     with closing(GraphWorkflowService(path)) as reopened:
         assert reopened.platform_capabilities()["package_lock"] == lock
         assert reopened.registry.get("frontend.presentation", "1") is None

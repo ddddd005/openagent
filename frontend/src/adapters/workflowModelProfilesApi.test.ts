@@ -1,21 +1,36 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isModelProfileSaveRequest, listModelProfiles, readModelProfileReceipt, saveModelProfile,
-  type ModelProfileSaveRequest } from "./workflowModelProfilesApi";
+import { isLegacyModelProfileSaveRequest, isModelProfileSaveRequest, listModelProfiles,
+  readLegacyModelProfileReceipt, readModelProfileReceipt, saveModelProfile,
+  type LegacyModelProfileSaveRequest, type ModelProfileSaveRequest } from "./workflowModelProfilesApi";
 import { modelProfileIdentity, modelProfileType, newModelProfile, newProvider,
-  type CurrentModelProfile } from "../domain/workflowModelResources";
+  type CurrentModelProfile, type LegacyModelProfileRecord } from "../domain/workflowModelResources";
 
 afterEach(() => vi.unstubAllGlobals());
 
 function profile(): CurrentModelProfile {
   const value = newModelProfile(newProvider());
   value.value.name = "Shared model configuration";
-  value.value.parameters.model = "offline-test-chat";
-  value.value.capacity.context_window_tokens = 4096;
-  value.value.capacity.max_cold_input_tokens = 2048;
+  value.value.model.id = "offline-test-chat";
+  value.value.model.capacity = { context_window_tokens: 4096, input_limit_tokens: 2048, max_output_tokens: 1024 };
+  value.value.runtime.context_length_tokens = 3000;
+  value.value.runtime.output_limit_tokens = 512;
   return value;
 }
 function request(): ModelProfileSaveRequest {
   return { record: profile(), expected_sequence: 0, idempotency_key: crypto.randomUUID() };
+}
+function legacyRequest(): LegacyModelProfileSaveRequest {
+  const reference = newProvider();
+  const record: LegacyModelProfileRecord = {
+    envelope_version: 1, scope: "workspace", type_id: modelProfileType, resource_id: crypto.randomUUID(),
+    data_schema_version: 1, update_sequence: 2,
+    value: { name: "Original schema one model", protocol: "chat", provider: {
+      envelope_version: 1, scope: reference.scope, type_id: "workflow.chat-provider", resource_id: reference.resource_id,
+    }, parameters: { model: "legacy-model", thinking: "disabled", stream: false, max_tokens: 1024 },
+    capacity: { context_window_tokens: 4096, output_reserve_tokens: 1024,
+      summary_max_tokens: 128, max_cold_input_tokens: 2048 }, enabled: true },
+  };
+  return { record, expected_sequence: 1, idempotency_key: crypto.randomUUID() };
 }
 function acceptance(body: ModelProfileSaveRequest) {
   return { reference: modelProfileIdentity(body.record), update_sequence: body.record.update_sequence, deleted: false };
@@ -56,7 +71,7 @@ describe("global named model configuration API", () => {
       const current = profile();
       const values: Record<string, unknown> = {
         provider: [newProvider()], mixed: [current, newProvider()],
-        "old-schema": [{ ...current, data_schema_version: 2 }],
+        "old-schema": [{ ...current, data_schema_version: 1 }],
         "unconfigured-capacity": [newModelProfile(newProvider())], "non-array": current,
       };
       const fetcher = respond(values[kind]);
@@ -69,11 +84,11 @@ describe("global named model configuration API", () => {
     body.record.scope = "project";
     body.record.update_sequence = 8;
     body.expected_sequence = 7;
-    body.record.value.parameters.temperature = 0.25;
-    body.record.value.capacity = {
-      context_window_tokens: 32000, output_reserve_tokens: 2048,
-      summary_max_tokens: 512, max_cold_input_tokens: 12345,
+    body.record.value.model.capacity = {
+      context_window_tokens: 32000, input_limit_tokens: 12345, max_output_tokens: 2048,
     };
+    body.record.value.runtime = { thinking: "disabled", context_length_tokens: 30_000,
+      compaction_threshold_bps: 8500, output_limit_tokens: 2048 };
     const original = JSON.stringify(body), fetcher = respond(command(body));
     expect(await saveModelProfile(body)).toEqual(acceptance(body));
     expect(JSON.stringify(body)).toBe(original);
@@ -95,7 +110,7 @@ describe("global named model configuration API", () => {
       if (field === "uppercase-idempotency") changed.idempotency_key = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA";
       if (field === "extra") changed.extra = true;
       if (field === "provider-type") changed.record.type_id = "workflow.chat-provider";
-      if (field === "capacity") changed.record.value.capacity.context_window_tokens = 0;
+      if (field === "capacity") changed.record.value.model.capacity.context_window_tokens = 0;
       if (field === "inline-secret") changed.record.value.secret = "not-a-configuration-field";
       const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
       expect(isModelProfileSaveRequest(changed)).toBe(false);
@@ -159,6 +174,33 @@ describe("global named model configuration API", () => {
     expect(fetcher.mock.calls[0]).toEqual(["/api/graph/receipts/read", expect.objectContaining({
       method: "POST", body: JSON.stringify({ operation: "resource.save", parameters: body }),
     })]);
+  });
+
+  it("reads a schema-one original receipt without permitting a schema-one save or normal receipt read", async () => {
+    const body = legacyRequest(), original = JSON.stringify(body);
+    const accepted = { reference: modelProfileIdentity(body.record), update_sequence: body.record.update_sequence, deleted: false };
+    const fetcher = respond(matched(body as unknown as ModelProfileSaveRequest, accepted));
+    expect(isLegacyModelProfileSaveRequest(body)).toBe(true);
+    await expect(saveModelProfile(body as unknown as ModelProfileSaveRequest))
+      .rejects.toMatchObject({ kind: "rejected" });
+    await expect(readModelProfileReceipt(body as unknown as ModelProfileSaveRequest))
+      .rejects.toMatchObject({ kind: "rejected" });
+    expect(await readLegacyModelProfileReceipt(body)).toEqual(accepted);
+    expect(JSON.stringify(body)).toBe(original);
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[0]).toEqual(["/api/graph/receipts/read", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ operation: "resource.save", parameters: body }),
+    })]);
+  });
+
+  it("keeps the schema-one receipt reader strict about the original legacy body", async () => {
+    const body = legacyRequest(), malformed = JSON.parse(JSON.stringify(body)) as Record<string, any>;
+    malformed.record.value.runtime = { output_limit_tokens: 1 };
+    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+    expect(isLegacyModelProfileSaveRequest(malformed)).toBe(false);
+    await expect(readLegacyModelProfileReceipt(malformed as LegacyModelProfileSaveRequest))
+      .rejects.toMatchObject({ kind: "rejected" });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("preserves an unresolved original request without issuing a mutation", async () => {

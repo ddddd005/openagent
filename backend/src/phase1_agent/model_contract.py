@@ -17,7 +17,7 @@ from .provider_metadata import validate_provider_metadata, validate_thinking_sum
 MODEL_PACKAGE_ID = "workflow.models"
 CHAT_PROVIDER_TYPE = "workflow.chat-provider"
 MODEL_PROFILE_TYPE = "workflow.model-profile"
-CHAT_MAX_TOKENS = 8192
+_LEGACY_CHAT_MAX_TOKENS = 8192
 DEFAULT_PROVIDER_ID = "7be319b8-30bd-4674-b7bf-d1cf54a1a110"
 DEFAULT_PROFILE_ID = "7be319b8-30bd-4674-b7bf-d1cf54a1a111"
 MODEL_BINDING_TYPE = "MODEL_BINDING"
@@ -76,7 +76,7 @@ def validate_model_parameters(value: object) -> dict:
     require(len(parameters.model) <= 256
             and not any(ord(char) < 32 or ord(char) == 127 for char in parameters.model),
             "model_parameters_unsupported", "Model name must be bounded and contain no control characters")
-    require(parameters.max_tokens is None or parameters.max_tokens <= CHAT_MAX_TOKENS,
+    require(parameters.max_tokens is None or parameters.max_tokens <= _LEGACY_CHAT_MAX_TOKENS,
             "model_parameters_unsupported", "Model output limit exceeds this transport contract")
     return dict(parameters.as_mapping())
 
@@ -90,8 +90,8 @@ def validate_provider_reference(value: object) -> dict:
 
 def validate_model_reference(value: object) -> dict:
     reference = ResourceIdentity.from_dict(value).to_dict()
-    require(reference["type_id"] == MODEL_PROFILE_TYPE, "model_profile_type_mismatch",
-            "Model sources reference a global named model configuration")
+    require(reference["scope"] == "workspace" and reference["type_id"] == MODEL_PROFILE_TYPE,
+            "model_profile_type_mismatch", "Model sources reference a workspace model configuration")
     return reference
 
 
@@ -156,7 +156,7 @@ def validate_model_capacity(value: object, parameters: dict) -> dict:
             "model_output_reserve_unknown", "Native Agent requires an explicit model output limit")
     require(maximum <= value["output_reserve_tokens"] < value["context_window_tokens"]
             and value["summary_max_tokens"] <= value["output_reserve_tokens"]
-            and value["summary_max_tokens"] <= CHAT_MAX_TOKENS,
+            and value["summary_max_tokens"] <= _LEGACY_CHAT_MAX_TOKENS,
             "model_capacity_invalid", "Output and summary reserves exceed the explicit capacity")
     return deepcopy(value)
 
@@ -243,6 +243,11 @@ def validate_public_model_result(value: object) -> dict:
 
 
 def model_type_definitions() -> tuple[DataTypeDefinition, ...]:
+    from .model_request_contracts import (
+        model_binding_schema, model_profile_schema, model_result_schema,
+        validate_model_binding, validate_model_profile, validate_model_result,
+    )
+
     local_provider_schema = object_schema({
         "name": {"type": "string", "minLength": 1, "maxLength": 128},
         "protocol": {"enum": ["chat", "gemini"]}, "base_url": {"type": "string"},
@@ -252,73 +257,17 @@ def model_type_definitions() -> tuple[DataTypeDefinition, ...]:
         ]},
         "enabled": {"type": "boolean"},
     })
-    profile_schema = object_schema({
-        "name": {"type": "string", "minLength": 1, "maxLength": 128},
-        "protocol": {"enum": ["chat", "gemini"]},
-        "provider": {"type": "object"}, "parameters": {"type": "object"},
-        "capacity": {"type": "object"}, "enabled": {"type": "boolean"},
-    })
-    binding_schema = object_schema({
-        "schema_version": {"const": 1}, "kind": {"const": "workflow.model-binding"},
-        "binding_id": _uuid_schema(), "reference": {"type": "object"},
-        "parameters": {"type": "object"},
-        "capabilities": object_schema({
-            "protocol": {"const": "chat"}, "tools": {"type": "boolean", "const": True},
-            "stream": {"type": "boolean", "const": False}, "thinking": {"const": "disabled"},
-        }),
-    })
-    native_binding_schema = deepcopy(binding_schema)
-    native_binding_schema["properties"]["schema_version"] = {"const": 2}
-    native_binding_schema["properties"]["capacity"] = object_schema({
-        field: {"type": "integer", "minimum": 1} for field in _CAPACITY_FIELDS
-    })
-    native_binding_schema["required"].append("capacity")
-    gemini_binding_schema = deepcopy(binding_schema)
-    gemini_binding_schema["properties"]["schema_version"] = {"const": 3}
-    gemini_binding_schema["properties"]["capabilities"]["properties"].update({
-        "protocol": {"const": "gemini"}, "thinking": {"enum": ["disabled", "budget", "level"]},
-    })
-    gemini_native_binding_schema = deepcopy(gemini_binding_schema)
-    gemini_native_binding_schema["properties"]["schema_version"] = {"const": 4}
-    gemini_native_binding_schema["properties"]["capacity"] = deepcopy(
-        native_binding_schema["properties"]["capacity"])
-    gemini_native_binding_schema["required"].append("capacity")
-    result_schema = object_schema({
-        "schema_version": {"const": 1}, "kind": {"const": "workflow.model-result"},
-        "binding_id": _uuid_schema(), "request_id": _uuid_schema(),
-        "finish_reason": {"type": "string", "minLength": 1},
-        **{key: {"type": ["string", "null"]} for key in ("content", "response_id", "model")},
-        "tool_calls": {"type": "array", "items": object_schema({
-            "id": {"type": "string", "minLength": 1}, "name": {"type": "string", "minLength": 1},
-            "raw_arguments": {"type": "string"}, "type": {"const": "function"},
-        })},
-        "usage": {"type": ["object", "null"]},
-        "fact_refs": {"type": "array", "minItems": 3, "maxItems": 3,
-                      "items": object_schema({"fact_id": _uuid_schema()})},
-    })
-    gemini_result_schema = deepcopy(result_schema)
-    gemini_result_schema["properties"].update({
-        "schema_version": {"const": 2}, "thinking_summary": {"type": ["string", "null"]},
-        "provider_metadata": {"type": "object"},
-    })
-    gemini_result_schema["required"].extend(["thinking_summary", "provider_metadata"])
     return (
         DataTypeDefinition(CHAT_PROVIDER_TYPE, 3, local_provider_schema, scope="global",
                            validator=validate_local_provider, max_bytes=8192),
-        DataTypeDefinition(MODEL_PROFILE_TYPE, 1, profile_schema, scope="global",
+        DataTypeDefinition(MODEL_PROFILE_TYPE, 2, model_profile_schema(), scope="global",
                            validator=validate_model_profile, max_bytes=8192,
                            references=lambda value: [deepcopy(value["provider"])],
                            reference_mapper=lambda value, mapping: deepcopy(value)),
-        DataTypeDefinition(MODEL_BINDING_TYPE, 2, native_binding_schema, scope="content",
-                           validator=validate_public_model_binding, max_bytes=8192,
+        DataTypeDefinition(MODEL_BINDING_TYPE, 5, model_binding_schema(), scope="content",
+                           validator=validate_model_binding, max_bytes=8192,
                            references=lambda value: [deepcopy(value["reference"])],
                            reference_mapper=lambda value, mapping: deepcopy(value)),
-        DataTypeDefinition(MODEL_BINDING_TYPE, 4, gemini_native_binding_schema, scope="content",
-                           validator=validate_public_model_binding, max_bytes=8192,
-                           references=lambda value: [deepcopy(value["reference"])],
-                           reference_mapper=lambda value, mapping: deepcopy(value)),
-        DataTypeDefinition(MODEL_RESULT_TYPE, 1, result_schema, scope="content",
-                           validator=validate_public_model_result),
-        DataTypeDefinition(MODEL_RESULT_TYPE, 2, gemini_result_schema, scope="content",
-                           validator=validate_public_model_result),
+        DataTypeDefinition(MODEL_RESULT_TYPE, 3, model_result_schema(), scope="content",
+                           validator=validate_model_result),
     )

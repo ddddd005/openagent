@@ -44,10 +44,10 @@ def _requests(value):
 
 
 class ModelRequestFactReader:
-    """Read persisted facts authorized by a live accepted Agent context input.
+    """Read facts listed by a live Agent receipt input accepted by context.merge.
 
     The trusted host bridge ``load_fact_authority(connection, context, port)``
-    derives producer and model binding from the consumer's persisted input.
+    derives producer and model binding from the consumer's persisted receipts input.
     It returns graph records and frozen declarations, never client declarations.
     Historical artifact closure and final node/service installation are separate.
     """
@@ -122,8 +122,8 @@ class ModelRequestFactReader:
                 "model_fact_reference_denied", "Caller belongs to another workflow", 403)
         require(output["run_id"] == producer["run_id"]
                 and output["node_binding_id"] == producer["node_binding_id"]
-                and output["port_id"] == "context"
-                and producer["output_refs"].get("context") == output["output_id"]
+                and output["port_id"] == "receipts"
+                and producer["output_refs"].get("receipts") == output["output_id"]
                 and binding_output["run_id"] == model_source["run_id"]
                 and binding_output["node_binding_id"] == model_source["node_binding_id"]
                 and binding_output["port_id"] == "output"
@@ -136,15 +136,15 @@ class ModelRequestFactReader:
         require(indices[0] < indices[1] < indices[2] == chain["next_node_index"]
                 and all(chain["node_run_ids"][index] == run["run_id"]
                         for index, run in zip(indices, (model_source, producer, consumer)))
-                and chain["outputs"].get(producer["node_binding_id"], {}).get("context") == output["output_id"]
+                and chain["outputs"].get(producer["node_binding_id"], {}).get("receipts") == output["output_id"]
                 and chain["outputs"].get(model_source["node_binding_id"], {}).get("output")
                     == binding_output["output_id"],
-                "model_fact_reference_denied", "Accepted artifacts differ from exact chain progress", 403)
+                "model_fact_reference_denied", "Accepted receipts differ from exact chain progress", 403)
         refs = context.input_artifact_refs(payload["port"])
         require(type(refs) is list and len(refs) == 1
                 and refs == consumer["input_refs"].get(payload["port"])
                 and refs[0]["output_id"] == output["output_id"],
-                "model_fact_reference_denied", "Caller input differs from its persisted accepted context", 403)
+                "model_fact_reference_denied", "Caller input differs from its persisted accepted receipts", 403)
         model_refs = producer["input_refs"].get("model")
         require(type(model_refs) is list and len(model_refs) == 1
                 and model_refs[0]["output_id"] == payload["binding_ref"]["output_id"]
@@ -164,6 +164,8 @@ class ModelRequestFactReader:
         declaration = evidence["consumer_node"]
         service = MODEL_REQUEST_SERVICE_REF.to_dict()
         require(type(declaration) is dict and declaration.get("node_binding_id") == owner["node_binding_id"]
+                and (declaration.get("component_id"), declaration.get("component_version"))
+                    == ("context.merge", "6")
                 and type(declaration.get("capabilities")) in (list, tuple)
                 and CAPABILITY in declaration["capabilities"]
                 and type(declaration.get("service_requirements")) in (list, tuple),
@@ -183,12 +185,18 @@ class ModelRequestFactReader:
                 "model_fact_reference_denied", "Binding differs from its original model source root", 403)
         packet = output["payload"]
         require(type(packet) is dict and type(packet.get("schema_version")) is int
-                and packet["schema_version"] == 2 and packet.get("kind") == "workflow.agent-context-update"
-                and packet.get("owner") == producer_owner,
-                "model_fact_reference_denied", "Accepted input must be the owned context update 2", 403)
-        receipts = validate_agent_receipts_v2(packet.get("receipts"))
+                and packet["schema_version"] == 2 and packet.get("kind") == "workflow.agent-receipts",
+                "model_fact_reference_denied", "Accepted input must be Agent receipts schema 2", 403)
+        receipts = validate_agent_receipts_v2(packet)
         require(receipts["owner"] == producer_owner and receipts["model_ref"] == payload["binding_ref"],
                 "model_fact_reference_denied", "Accepted receipts refer to another Agent or model binding", 403)
+        policy_refs = producer["input_refs"].get("compaction_policy", [])
+        require(type(policy_refs) is list and len(policy_refs) in (0, 1)
+                and len(policy_refs) == (0 if receipts["compaction_policy_ref"] is None else 1)
+                and (not policy_refs
+                     or policy_refs[0]["output_id"] == receipts["compaction_policy_ref"]["output_id"]),
+                "model_fact_reference_denied",
+                "Receipt policy reference differs from the accepted Agent input", 403)
         return producer_owner, binding, _requests(receipts["model_requests"]), deepcopy(producer["input_refs"])
 
     @staticmethod

@@ -9,10 +9,12 @@ from .context_contract import (
 )
 from .context_compaction_policy import frame_checkpoint
 from .context_compaction import is_compactable_text, validate_compaction_operation
-from .contract_graph import validate_message_history, validate_pending_message_history
+from .contract_graph import (
+    validate_context_message_history, validate_pending_context_message_history,
+)
 from .contract_errors import ContractValidationError
 from .contract_json import content_digest, validate_json_value
-from .contracts_v2 import validate_record
+from .contracts_v2 import validate_context_history_message, validate_record
 from .graph_contracts import require, uuid4_string
 from .host_sdk import WriteIntent
 
@@ -54,9 +56,9 @@ def _closed_or_pending(messages):
                         "context_update_tool_unclosed", "Tool results must retain their accepted pairing")
                 pending.pop(0)
     if pending:
-        validate_pending_message_history(messages, pending)
+        validate_pending_context_message_history(messages, pending)
     else:
-        validate_message_history(messages)
+        validate_context_message_history(messages)
     return pending
 
 
@@ -101,7 +103,7 @@ def validate_context_operations(operations):
                 and type(request["tools"]) is list and type(request["model_parameters"]) is dict,
                 "context_update_invalid_proof", "Maintenance requires its exact request projection")
         for message in request["messages"]:
-            validate_record("agent_message", message)
+            validate_context_history_message(message)
         instruction = request["messages"][-1]
         require(instruction["schema_version"] == 4 and instruction["role"] == "user"
                 and instruction["source"] == {"kind": "context_compaction_instruction", "compaction_id": identity}
@@ -148,8 +150,8 @@ def replay_context_operations(initial_messages, operations, *, eligible_message_
     operations = validate_context_operations(operations)
     require(type(initial_messages) is list and len(initial_messages) <= _MAX_OPERATIONS,
             "context_update_invalid", "An initial context must be a bounded canonical message list")
-    messages = [validate_record("agent_message", message) for message in initial_messages]
-    validate_message_history(messages)
+    messages = [validate_context_history_message(message) for message in initial_messages]
+    validate_context_message_history(messages)
     _identity_list(eligible_message_ids)
     eligible = set(eligible_message_ids)
     require(eligible <= set(_message_ids(messages)), "context_update_invalid_range",
@@ -159,7 +161,7 @@ def replay_context_operations(initial_messages, operations, *, eligible_message_
         "context_update_ineligible", "Only explicitly eligible persistent text can be compacted")
     seen_messages = set(_message_ids(messages))
     seen_compactions = {message["source"]["compaction_id"] for message in messages
-                        if message["source"]["kind"] == "context_checkpoint"}
+                        if message.get("source", {}).get("kind") == "context_checkpoint"}
     appended, compactions, pending = [], [], []
     for operation in operations:
         if operation["kind"] == "append":
@@ -172,13 +174,15 @@ def replay_context_operations(initial_messages, operations, *, eligible_message_
             require(len(messages) <= _MAX_OPERATIONS, "context_update_invalid",
                     "An effective view cannot exceed its declared message budget")
             appended.append(deepcopy(message))
-            if message["role"] == "assistant" and message["source"]["kind"] == "model" and is_compactable_text(message):
+            if (message["role"] == "assistant"
+                    and message.get("source", {}).get("kind") == "model"
+                    and is_compactable_text(message)):
                 eligible.add(identity)
             pending = _closed_or_pending(messages)
             continue
         require(not pending, "context_update_tool_unclosed",
                 "Compaction must wait until every accepted tool batch has closed")
-        validate_message_history(messages)
+        validate_context_message_history(messages)
         identity = operation["compaction_id"]
         require(identity not in seen_compactions, "context_update_duplicate_identity",
                 "An accepted compaction cannot be applied twice")
@@ -191,7 +195,7 @@ def replay_context_operations(initial_messages, operations, *, eligible_message_
                 "context_update_ineligible", "Compaction must retain the selected eligible source order")
         require(operation["request"]["messages"][:-1] == messages,
                 "context_update_invalid_proof", "Maintenance must reuse the exact current request prefix")
-        validate_message_history(operation["request"]["messages"])
+        validate_context_message_history(operation["request"]["messages"])
         if expected_tools is not None:
             require(operation["request"]["tools"] == expected_tools, "context_update_invalid_proof",
                     "Maintenance must preserve the frozen tool projection")
@@ -212,12 +216,12 @@ def replay_context_operations(initial_messages, operations, *, eligible_message_
         require(operation["after_message_ids"] == _message_ids(messages),
                 "context_update_order_mismatch", "Compaction must replace selected text without moving retained messages")
         validate_compaction_operation(operation)
-        validate_message_history(messages)
+        validate_context_message_history(messages)
         eligible.difference_update(removed)
         eligible.add(checkpoint["message_id"])
         compactions.append(deepcopy(operation))
     require(not pending, "context_update_tool_unclosed", "Only a closed effective view may be adopted")
-    validate_message_history(messages)
+    validate_context_message_history(messages)
     if expected_append_messages is not None:
         require(appended == expected_append_messages, "context_update_append_unproven",
                 "Append operations must equal the accepted canonical messages, not a full round appended twice")
@@ -248,7 +252,7 @@ def validate_working_context_view(value):
             "context_update_invalid", "A working view must retain an exact revision fence")
     require(type(value["messages"]) is list and len(value["messages"]) <= _MAX_OPERATIONS,
             "context_update_invalid", "Effective messages require a bounded sequence")
-    validate_message_history(value["messages"])
+    validate_context_message_history(value["messages"])
     for field in ("accepted_delta_ids", "applied_delta_ids"):
         _ids(value[field])
     require(not set(value["accepted_delta_ids"]) & set(value["applied_delta_ids"]),
@@ -289,6 +293,110 @@ def validate_context_update(value):
     validate_context_operations(value["operations"])
     require(bool(value["operations"]), "context_update_invalid", "An Agent update must contain accepted operations")
     return deepcopy(value)
+
+
+def prove_agent_execution(receipts, facts, prompt, binding, *, policy=None, policy_ref=None):
+    """Reconstruct accepted work from immutable Agent receipts and executor facts."""
+    from .agent_executor import (
+        AGENT_COMPONENT_ID, AGENT_EXECUTOR_REF, AGENT_OUTPUT_SCHEMA, project_generated_messages,
+    )
+    from .context_prompt_v6 import validate_native_context_prompt
+    from .execution_facts import ExecutionFactHistory
+    from .model_contract import validate_public_model_binding
+
+    receipts = validate_agent_receipts(receipts)
+    require(receipts["schema_version"] == 1 and receipts["executor_ref"] == AGENT_EXECUTOR_REF.to_dict(),
+            "agent_invalid_receipts", "Active context merge requires AGENT_RECEIPTS@1")
+    prompt = validate_native_context_prompt(prompt)
+    binding = validate_public_model_binding(binding)
+    require(type(facts) is list and bool(facts)
+            and [fact["fact_id"] for fact in facts] == receipts["fact_ids"]
+            and all(fact["owner"] == receipts["owner"]
+                    and fact["executor_ref"] == receipts["executor_ref"] for fact in facts)
+            and [fact["sequence"] for fact in facts] == list(range(1, len(facts) + 1)),
+            "agent_receipt_fact_mismatch", "Context merge requires its exact accepted executor facts")
+    events = [fact["payload"] for fact in facts]
+    require(events[-1].get("kind") == "agent_result", "agent_result_unaccepted",
+            "Context merge requires a complete accepted result")
+    result = events[-1]["payload"]
+    require(type(result) is dict and set(result) == {
+        "snapshot_id", "unit_id", "final", "model_requests", "attempts", "snapshot",
+    } and type(result["model_requests"]) is int and result["model_requests"] >= 1
+            and type(result["attempts"]) is int and result["attempts"] >= 1,
+            "agent_result_unaccepted", "Terminal execution evidence requires exact typed counters")
+    snapshot = validate_record("input_snapshot", result["snapshot"])
+    payload = snapshot["config"]["payload"]
+    descriptor = payload["context_compaction"]
+    require(binding["schema_version"] in (2, 4) and snapshot["component_id"] == AGENT_COMPONENT_ID
+            and snapshot["component_version"] == "public-2"
+            and snapshot["snapshot_id"] == result["snapshot_id"] == receipts["snapshot_id"]
+            and result["unit_id"] == receipts["unit_id"]
+            and snapshot["workflow_session_id"] == receipts["owner"]["workflow_session_id"]
+            and snapshot["node_binding_id"] == receipts["owner"]["node_binding_id"]
+            and snapshot["input_id"] == prompt["current_input_ref"]["output_id"]
+            and snapshot["s0"] == prompt["messages"] and snapshot["output_schema"] == AGENT_OUTPUT_SCHEMA
+            and payload["frozen_prompt_ref"] == receipts["frozen_prompt_ref"]
+            and payload["model_ref"] == receipts["model_ref"]
+            and payload["public_model_binding"] == binding
+            and snapshot["model_parameters"] == binding["parameters"]
+            and payload["public_agent"] == {}
+            and payload["executor_ref"] == AGENT_EXECUTOR_REF.to_dict()
+            and descriptor["layout"] == prompt["layout"]
+            and all(descriptor[field] == binding["capacity"][field] for field in binding["capacity"]),
+            "agent_snapshot_mismatch", "Native snapshot differs from its exact accepted inputs")
+    if policy is None:
+        require(policy_ref is None and descriptor["policy"] is None
+                and payload["frozen_compaction_policy_ref"] is None,
+                "agent_snapshot_mismatch", "Absent accepted policy cannot claim frozen policy evidence")
+    else:
+        from .context_compaction_policy import validate_compaction_policy
+        policy = validate_compaction_policy(policy)
+        policy_ref = artifact_ref(policy_ref)
+        require(descriptor["policy"] == policy
+                and payload["frozen_compaction_policy_ref"] == policy_ref,
+                "agent_snapshot_mismatch", "Snapshot policy differs from its exact accepted input")
+
+    history = ExecutionFactHistory(snapshot)
+    operations, messages, requests, attempts = [], [], [], 0
+    for sequence, (envelope, event) in enumerate(zip(facts[:-1], events[:-1]), start=1):
+        history.append({
+            "schema_version": 1, "fact_id": envelope["fact_id"], "sequence": sequence,
+            "workflow_session_id": receipts["owner"]["workflow_session_id"],
+            "chain_run_id": receipts["owner"]["chain_run_id"],
+            "node_binding_id": receipts["owner"]["node_binding_id"],
+            "run_id": receipts["owner"]["node_run_id"], "snapshot_id": receipts["snapshot_id"],
+            "generation": projection_id(receipts["snapshot_id"], f"generation:{envelope['generation']}"),
+            "created_at": event["created_at"], "kind": event["kind"], "payload": event["payload"],
+        })
+        if event["kind"] == "message_accepted":
+            message = event["payload"]["message"]
+            messages.append(message)
+            operations.append({"kind": "append", "message": message})
+        elif event["kind"] == "context_compaction_applied":
+            operations.append(event["payload"])
+        elif event["kind"] == "model_request":
+            requests.append(event["payload"])
+        elif event["kind"] == "model_attempt_started":
+            attempts += 1
+    require(bool(requests) and result["model_requests"] == len(requests)
+            and result["attempts"] == attempts,
+            "agent_result_unaccepted", "Accepted request and attempt counts differ from executor facts")
+    final = result["final"]
+    project_generated_messages(messages, final, receipts["snapshot_id"])
+    control = next((message for message in messages if message["message_id"] == final["message_id"]), None)
+    calls = [block for block in control["blocks"] if block["kind"] == "tool_call"] if control else []
+    settled = messages[-1]["blocks"] if messages else []
+    require(control is not None and control["role"] == "assistant" and messages[-1]["role"] == "tool"
+            and len(calls) == len(settled) == 1 and calls[0]["tool_name"] == "final_answer"
+            and calls[0]["parsed_arguments"].get("answer") == final["value"]
+            and settled[0]["tool_call_id"] == calls[0]["tool_call_id"]
+            and settled[0]["status"] == "success" and settled[0]["content"] == final["value"],
+            "agent_result_unaccepted", "Answer differs from the accepted final tool settlement")
+    return {
+        "snapshot_id": receipts["snapshot_id"],
+        "operations": deepcopy(operations),
+        "final": deepcopy(final),
+    }
 
 
 def context_update_references(value):

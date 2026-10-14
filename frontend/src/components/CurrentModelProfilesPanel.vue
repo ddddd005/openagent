@@ -4,22 +4,28 @@ import { Archive, Plus, RefreshCw, Save, X } from "lucide-vue-next";
 import { useModelProfiles } from "../application/modelProfiles";
 import { listProviderModels, type DiscoveredModel } from "../adapters/providerConfigurationApi";
 import { graphClone, graphJsonSignature } from "../domain/workflowGraph";
-import { geminiThinkingCapability, isCurrentModelProfile, modelProfileDiagnostic, newModelProfile, newProvider,
-  providerIdentity, sameProviderIdentity, type CurrentModelProfile, type CurrentProvider, type ProviderIdentity, type ThinkingLevel } from "../domain/workflowModelResources";
+import { geminiThinkingCapability, isCurrentModelProfile, modelParameterDiagnostic, modelProfileDiagnostic,
+  newModelProfile, newProvider, providerIdentity, sameProviderIdentity, type CurrentModelProfile,
+  type CurrentProvider, type ProviderIdentity, type ThinkingLevel } from "../domain/workflowModelResources";
 import { useResourceFormEditor } from "../composables/useResourceFormEditor";
 import RawNumberInput from "./RawNumberInput.vue";
 import { listModelProfiles } from "../adapters/workflowModelProfilesApi";
 
 const props = defineProps<{ providers: CurrentProvider[]; mutatingProvider?: ProviderIdentity | null; disabled?: boolean }>();
-type RawFields = "max_tokens" | "temperature" | "budget" | "context_window_tokens" |
-  "output_reserve_tokens" | "summary_max_tokens" | "max_cold_input_tokens";
-type ProfileForm = CurrentModelProfile & { raw: Record<RawFields, string> };
+type RawFields = "context_length_tokens" | "compaction_threshold_percent" | "output_limit_tokens" |
+  "context_window_tokens" | "input_limit_tokens" | "max_output_tokens" | "budget";
+type ProfileForm = CurrentModelProfile & { raw: Record<RawFields, string>; context_mode: "custom" | "model" };
 const profileForm = (record: CurrentModelProfile): ProfileForm => ({ ...graphClone(record),
-  raw: { max_tokens: String(record.value.parameters.max_tokens ?? ""), temperature: String(record.value.parameters.temperature ?? ""),
-    budget: record.value.parameters.thinking === "disabled" ? "-1"
-      : record.value.parameters.thinking.mode === "budget" ? String(record.value.parameters.thinking.budget) : "-1",
-    ...Object.fromEntries(Object.entries(record.value.capacity).map(([key, value]) => [key, String(value)])),
-  } as Record<RawFields, string> });
+  context_mode: record.value.runtime.context_length_tokens === null ? "model" : "custom",
+  raw: { context_length_tokens: String(record.value.runtime.context_length_tokens
+      ?? (record.value.model.capacity.context_window_tokens || 300_000)),
+    compaction_threshold_percent: String(record.value.runtime.compaction_threshold_bps / 100),
+    output_limit_tokens: String(record.value.runtime.output_limit_tokens),
+    context_window_tokens: String(record.value.model.capacity.context_window_tokens),
+    input_limit_tokens: String(record.value.model.capacity.input_limit_tokens),
+    max_output_tokens: String(record.value.model.capacity.max_output_tokens),
+    budget: record.value.runtime.thinking === "disabled" ? "-1"
+      : record.value.runtime.thinking.mode === "budget" ? String(record.value.runtime.thinking.budget) : "-1" } });
 const profiles = useModelProfiles();
 const editor = useResourceFormEditor<ProfileForm>(
   () => profileForm(newModelProfile(props.providers[0] ?? newProvider())));
@@ -29,6 +35,7 @@ const validity = ref<Partial<Record<RawFields, boolean>>>({});
 const locked = computed(() => !!props.disabled || profiles.locked.value || submitting.value);
 const provider = computed(() => form.value && props.providers.find(row =>
   sameProviderIdentity(providerIdentity(row), form.value!.value.provider)));
+const protocol = computed(() => provider.value?.value.protocol ?? "chat");
 const providerMutating = computed(() => !!provider.value && !!props.mutatingProvider
   && sameProviderIdentity(providerIdentity(provider.value), props.mutatingProvider));
 const providerKey = (row: CurrentProvider) => JSON.stringify([row.scope, row.resource_id]);
@@ -37,23 +44,30 @@ const selectedProvider = computed({ get: () => provider.value ? providerKey(prov
     const selected = props.providers.find(row => providerKey(row) === key);
     if (!selected || !form.value) return;
     form.value.value.provider = providerIdentity(selected);
-    form.value.value.protocol = selected.value.protocol;
-    form.value.value.parameters.thinking = "disabled";
+    form.value.value.runtime.thinking = "disabled";
   } });
-const capability = computed(() => form.value ? geminiThinkingCapability(form.value.value.parameters.model) : null);
-const thinkingMode = computed({ get: () => form.value?.value.parameters.thinking === "disabled" ? "disabled"
-  : form.value?.value.parameters.thinking.mode ?? "disabled",
+const capability = computed(() => form.value ? geminiThinkingCapability(form.value.value.model.id) : null);
+const thinkingMode = computed({ get: () => form.value?.value.runtime.thinking === "disabled" ? "disabled"
+  : form.value?.value.runtime.thinking.mode ?? "disabled",
   set: (mode: string) => {
     if (!form.value) return;
-    form.value.value.parameters.thinking = mode === "budget" ? { mode, budget: -1, include_summary: true }
+    form.value.value.runtime.thinking = mode === "budget" ? { mode, budget: -1, include_summary: true }
       : mode === "level" ? { mode, level: capability.value?.levels?.[0] ?? "low", include_summary: true } : "disabled";
+  } });
+const contextMode = computed({ get: () => form.value?.context_mode ?? "custom",
+  set: (mode: string) => {
+    if (!form.value) return;
+    form.value.context_mode = mode === "model" ? "model" : "custom";
+    form.value.value.runtime.context_length_tokens = mode === "model"
+      ? null : Number(form.value.raw.context_length_tokens);
   } });
 let generation = 0;
 watch(() => [selectedProvider.value, graphJsonSignature(provider.value), form.value?.resource_id, providerMutating.value], () => {
   generation++; discovered.value = []; discovering.value = false; status.value = "";
 });
 onBeforeUnmount(profiles.setCompletionHandler(async request => {
-  editor.acceptSubmitted(profileForm(request.record), request.expected_sequence, ({ raw: _raw, ...record }) => record);
+  editor.acceptSubmitted(profileForm(request.record), request.expected_sequence,
+    ({ raw: _raw, context_mode: _contextMode, ...record }) => record);
   return true;
 }));
 function edit(record: CurrentModelProfile | null) {
@@ -76,29 +90,37 @@ async function discover() {
 function chooseModel(event: Event) {
   const row = discovered.value.find(item => item.model === (event.target as HTMLSelectElement).value);
   if (!row?.adapted || !form.value) return;
-  form.value.value.parameters.model = row.model;
-  if (form.value.value.protocol === "gemini") thinkingMode.value = geminiThinkingCapability(row.model)?.mode ?? "disabled";
+  form.value.value.model.id = row.model;
+  if (protocol.value === "gemini") thinkingMode.value = geminiThinkingCapability(row.model)?.mode ?? "disabled";
 }
 async function save() {
   if (!form.value || locked.value) return;
   status.value = "";
   if (!provider.value) { status.value = "请先保存供应商，再选择模型配置的供应商"; return; }
   const raw = form.value.raw;
-  const required: RawFields[] = ["max_tokens", "context_window_tokens", "output_reserve_tokens", "summary_max_tokens", "max_cold_input_tokens"];
+  const required: RawFields[] = ["context_window_tokens", "input_limit_tokens", "max_output_tokens",
+    "compaction_threshold_percent", "output_limit_tokens"];
+  if (contextMode.value === "custom") required.push("context_length_tokens");
   if (thinkingMode.value === "budget") required.push("budget");
-  if (required.some(key => !raw[key].trim() || validity.value[key] === false) || validity.value.temperature === false) {
+  if (required.some(key => !raw[key].trim() || validity.value[key] === false)) {
     status.value = "数字参数未填写完整或超出范围"; return;
   }
-  const { raw: _raw, ...record } = graphClone(form.value);
-  record.value.parameters.max_tokens = Number(raw.max_tokens);
-  if (raw.temperature.trim()) record.value.parameters.temperature = Number(raw.temperature);
-  else delete record.value.parameters.temperature;
-  if (record.value.parameters.thinking !== "disabled" && record.value.parameters.thinking.mode === "budget")
-    record.value.parameters.thinking.budget = Number(raw.budget);
-  for (const key of ["context_window_tokens", "output_reserve_tokens", "summary_max_tokens", "max_cold_input_tokens"] as const)
-    record.value.capacity[key] = Number(raw[key]);
+  const percentage = Number(raw.compaction_threshold_percent), basisPoints = Math.round(percentage * 100);
+  if (percentage !== basisPoints / 100) { status.value = "压缩阈值最多精确到 0.01%"; return; }
+  const { raw: _raw, context_mode: _contextMode, ...record } = graphClone(form.value);
+  record.value.model.id = form.value.value.model.id;
+  for (const key of ["context_window_tokens", "input_limit_tokens", "max_output_tokens"] as const)
+    record.value.model.capacity[key] = Number(raw[key]);
+  record.value.runtime.context_length_tokens = contextMode.value === "model" ? null : Number(raw.context_length_tokens);
+  record.value.runtime.compaction_threshold_bps = basisPoints;
+  record.value.runtime.output_limit_tokens = Number(raw.output_limit_tokens);
+  if (record.value.runtime.thinking !== "disabled" && record.value.runtime.thinking.mode === "budget")
+    record.value.runtime.thinking.budget = Number(raw.budget);
   const diagnostic = modelProfileDiagnostic(record.value);
-  if (diagnostic || !isCurrentModelProfile(record)) { status.value = diagnostic ?? "模型配置字段无效"; return; }
+  const parameterError = modelParameterDiagnostic(record.value.model.id, record.value.runtime.thinking, protocol.value);
+  if (diagnostic || parameterError || !isCurrentModelProfile(record)) {
+    status.value = diagnostic ?? parameterError ?? "模型配置字段无效"; return;
+  }
   form.value.value = graphClone(record.value);
   submitting.value = true;
   try {
@@ -136,7 +158,7 @@ onMounted(() => { void profiles.refresh(); });
       @click="profiles.reconcileLegacyPending()"><RefreshCw :size="14" />核实旧模型配置原请求</button>
     <ul><li v-for="record in profiles.records.value" :key="record.scope + record.resource_id">
       <button type="button" :disabled="locked" @click="edit(record)"><strong>{{ record.value.name }}</strong>
-        <small>{{ record.value.parameters.model }}{{ record.value.enabled ? '' : ' · 已停用' }}</small></button>
+        <small>{{ record.value.model.id }}{{ record.value.enabled ? '' : ' · 已停用' }}</small></button>
     </li></ul>
     <form v-if="form" @submit.prevent="save">
       <header><strong>{{ expectedSequence ? '编辑模型配置' : '新增模型配置' }}</strong>
@@ -148,29 +170,33 @@ onMounted(() => { void profiles.refresh(); });
         <label>供应商<select v-model="selectedProvider" required aria-label="模型配置供应商">
           <option value="">选择供应商</option><option v-for="row in providers" :key="providerKey(row)" :value="providerKey(row)">{{ row.value.name }}</option>
         </select></label>
-        <label>模型名称<input v-model="form.value.parameters.model" required maxlength="256" /></label>
+        <label>模型名称<input v-model="form.value.model.id" required maxlength="256" /></label>
         <div class="actions">
           <select v-if="discovered.length" value="" aria-label="上游模型列表" @change="chooseModel">
             <option value="">选择上游型号</option><option v-for="row in discovered" :key="row.model" :value="row.model" :disabled="!row.adapted">{{ row.model }}{{ row.adapted ? '' : '（尚未适配）' }}</option>
           </select>
           <button type="button" title="获取上游模型列表" aria-label="获取上游模型列表" :disabled="!provider || providerMutating || discovering" @click="discover"><RefreshCw :size="14" /></button>
         </div>
-        <label>最大输出 tokens<RawNumberInput v-model:raw-value="form.raw.max_tokens" :disabled="locked" :min="1" :max="8192" integer @validity="validity.max_tokens = $event" /></label>
-        <label>温度<RawNumberInput v-model:raw-value="form.raw.temperature" :disabled="locked" :required="false" :min="0" :max="2" @validity="validity.temperature = $event" /></label>
-        <template v-if="form.value.protocol === 'gemini'">
+        <template v-if="protocol === 'gemini'">
           <label>思考模式<select v-model="thinkingMode" aria-label="思考模式">
             <option value="disabled">关闭</option><option value="budget">Token 预算</option><option value="level">强度</option>
           </select></label>
           <label v-if="thinkingMode === 'budget'">思考预算 tokens<RawNumberInput v-model:raw-value="form.raw.budget" :disabled="locked" :min="-1" :max="32768" integer @validity="validity.budget = $event" /></label>
-          <label v-if="form.value.parameters.thinking !== 'disabled' && form.value.parameters.thinking.mode === 'level'">思考强度
-            <select v-model="form.value.parameters.thinking.level" aria-label="思考强度"><option v-for="level in (capability?.levels ?? ['minimal', 'low', 'medium', 'high']) as ThinkingLevel[]" :key="level" :value="level">{{ level }}</option></select>
+          <label v-if="form.value.runtime.thinking !== 'disabled' && form.value.runtime.thinking.mode === 'level'">思考强度
+            <select v-model="form.value.runtime.thinking.level" aria-label="思考强度"><option v-for="level in (capability?.levels ?? ['minimal', 'low', 'medium', 'high']) as ThinkingLevel[]" :key="level" :value="level">{{ level }}</option></select>
           </label>
-          <label v-if="form.value.parameters.thinking !== 'disabled'" class="checkbox"><input v-model="form.value.parameters.thinking.include_summary" type="checkbox" />请求思考摘要</label>
         </template>
-        <label>上下文窗口 tokens<RawNumberInput v-model:raw-value="form.raw.context_window_tokens" :disabled="locked" :min="1" integer @validity="validity.context_window_tokens = $event" /></label>
-        <label>输出预留 tokens<RawNumberInput v-model:raw-value="form.raw.output_reserve_tokens" :disabled="locked" :min="1" integer @validity="validity.output_reserve_tokens = $event" /></label>
-        <label>摘要最大输出 tokens<RawNumberInput v-model:raw-value="form.raw.summary_max_tokens" :disabled="locked" :min="1" :max="8192" integer @validity="validity.summary_max_tokens = $event" /></label>
-        <label>摘要冷输入上限 tokens<RawNumberInput v-model:raw-value="form.raw.max_cold_input_tokens" :disabled="locked" :min="1" integer @validity="validity.max_cold_input_tokens = $event" /></label>
+        <label>上下文长度方式<select v-model="contextMode" aria-label="上下文长度方式">
+          <option value="custom">自定义长度</option><option value="model">真实模型窗口</option>
+        </select></label>
+        <label v-if="contextMode === 'custom'">上下文长度 tokens<RawNumberInput v-model:raw-value="form.raw.context_length_tokens" :disabled="locked" :min="1" integer @validity="validity.context_length_tokens = $event" /></label>
+        <label>压缩阈值 %<RawNumberInput v-model:raw-value="form.raw.compaction_threshold_percent" :disabled="locked" :min="0.01" :max="100" step="0.01" @validity="validity.compaction_threshold_percent = $event" /></label>
+        <label>输出上限 tokens<RawNumberInput v-model:raw-value="form.raw.output_limit_tokens" :disabled="locked" :min="1" integer @validity="validity.output_limit_tokens = $event" /></label>
+        <details><summary>真实模型容量</summary>
+          <label>实际上下文窗口 tokens<RawNumberInput v-model:raw-value="form.raw.context_window_tokens" :disabled="locked" :min="1" integer @validity="validity.context_window_tokens = $event" /></label>
+          <label>实际输入上限 tokens<RawNumberInput v-model:raw-value="form.raw.input_limit_tokens" :disabled="locked" :min="1" integer @validity="validity.input_limit_tokens = $event" /></label>
+          <label>实际输出上限 tokens<RawNumberInput v-model:raw-value="form.raw.max_output_tokens" :disabled="locked" :min="1" integer @validity="validity.max_output_tokens = $event" /></label>
+        </details>
         <label class="checkbox"><input v-model="form.value.enabled" type="checkbox" />启用</label>
       </fieldset>
       <button type="submit" :disabled="locked"><Save :size="14" />保存模型配置</button>

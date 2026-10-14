@@ -169,11 +169,12 @@ def test_thinking_follows_current_protocol_and_installed_exact_model_capability(
     assert error.value.reason_code == "model_thinking_unsupported"
 
 
-def test_settings_preserve_resource_revisions_and_distinct_normal_summary_limits():
+def test_settings_preserve_resource_revisions_and_share_global_output_limit():
     normal, compact = synthetic_settings(), synthetic_settings(purpose="compaction")
     assert normal["parameters"]["max_tokens"] == normal["budget"]["output_reserve_tokens"] == 32_000
-    assert compact["parameters"]["max_tokens"] == compact["budget"]["output_reserve_tokens"] == 1024
+    assert compact["parameters"]["max_tokens"] == compact["budget"]["output_reserve_tokens"] == 32_000
     assert compact["budget"]["normal_output_limit_tokens"] == 32_000
+    assert compact["budget"]["summary_output_limit_tokens"] == 32_000
     assert normal["configuration"]["update_sequence"] == 3
     assert normal["provider"]["update_sequence"] == 5
     assert validate_model_settings(normal) == normal
@@ -287,9 +288,12 @@ def test_schemas_are_valid_and_do_not_install_or_replace_existing_versions():
     for schema in (model_profile_schema(), model_binding_schema(), model_settings_schema(),
                    model_result_schema(), compaction_policy_schema()):
         Draft202012Validator.check_schema(schema)
-    from phase1_agent.model_contract import CHAT_MAX_TOKENS, model_type_definitions
+    from phase1_agent.model_contract import model_type_definitions
     definitions = model_type_definitions()
-    assert CHAT_MAX_TOKENS == 8192
-    assert not any(item.schema_version == 5 and item.type_id == "MODEL_BINDING" for item in definitions)
-    assert not any(item.schema_version == 2 and item.type_id == "workflow.model-profile" for item in definitions)
+    assert (("global", "workflow.model-profile", 2) in {
+        (item.scope, item.type_id, item.schema_version) for item in definitions})
+    assert (("content", "MODEL_BINDING", 5) in {
+        (item.scope, item.type_id, item.schema_version) for item in definitions})
+    assert (("content", "MODEL_RESULT", 3) in {
+        (item.scope, item.type_id, item.schema_version) for item in definitions})
     assert b"credential_ref" not in canonical_bytes(synthetic_settings())

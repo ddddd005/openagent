@@ -116,11 +116,18 @@ class GraphInformation:
                     store._connection.execute("ROLLBACK")
                 raise
 
-    def _release_information_chain(self, chain_id):
+    def _release_information_chain(self, chain_id, *, session_id=None, known_chain=None):
         router = self._information_routers.pop(chain_id, None)
         if router is not None:
-            with closing(self._store()) as store:
-                chain = GraphRecordStore(store).get("chain_run", chain_run_id=chain_id)
+            if known_chain is None:
+                with closing(self._store()) as store:
+                    chain = GraphRecordStore(store).get("chain_run", chain_run_id=chain_id)
+            else:
+                chain = known_chain
+                require(chain["chain_run_id"] == chain_id
+                        and (session_id is None or chain["workflow_session_id"] == session_id),
+                        "execution_cleanup_owner_mismatch",
+                        "Information cleanup evidence belongs to another owner", 409)
             attempts = chain.get("node_run_attempts", [[identity] for identity in chain["node_run_ids"]])
             for node_id, run_ids in zip(chain["ordered_nodes"], attempts):
                 for run_id in run_ids:

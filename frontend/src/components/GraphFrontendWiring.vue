@@ -8,14 +8,14 @@ const graph = computed(() => ({ document: sdk.document.value, catalog: sdk.catal
 const emit = defineEmits<{ connected: [] }>();
 const selected = ref("");
 const role = ref<FrontendRole>("assistant");
-const objectKey = ref("frontend");
+const objectKey = ref("");
 const sources = computed(() => graph.value.document ? frontendSources(graph.value.document, graph.value.catalog) : []);
 const unavailable = computed(() => frontendWiringUnavailable(graph.value.catalog, graph.value.packageLock));
 const bindings = computed(() => graph.value.document?.object_bindings?.filter(binding => binding.type_id === frontendStateType
   && binding.schema_version === 1 && binding.scope === "shared") ?? []);
 const sourceKey = (id: string, port: string) => JSON.stringify([id, port]);
 const source = computed(() => sources.value.find(row => sourceKey(row.node.node_binding_id, row.port.port_id) === selected.value));
-watch(() => sdk.lifecycle.value, () => { selected.value = ""; objectKey.value = "frontend"; });
+watch(() => sdk.lifecycle.value, () => { selected.value = ""; objectKey.value = ""; });
 function connect() {
   if (!source.value?.compatible) return;
   if (sdk.attachDisplay({ sourceNodeId: source.value.node.node_binding_id,
@@ -35,10 +35,13 @@ function connect() {
     </select></label>
     <p v-if="!sources.some(row => row.compatible)">当前图没有 TEXT@2 输出。可先从节点菜单添加支持 TEXT@2 的输入或文本节点。</p>
     <label>展示角色<select v-model="role" :disabled="graph.locked"><option value="user">用户</option><option value="assistant">助手</option><option value="system">系统</option></select></label>
-    <label>会话对象键<input v-model="objectKey" list="frontend-object-keys" :disabled="graph.locked" maxlength="128" /></label>
-    <datalist id="frontend-object-keys"><option v-for="binding in bindings" :key="binding.object_key" :value="binding.object_key" /></datalist>
+    <label>会话对象键<select v-model="objectKey" :disabled="graph.locked">
+      <option value="">选择准确的数据项</option>
+      <option v-for="binding in bindings" :key="binding.object_key" :value="binding.object_key">{{ binding.object_key }}</option>
+    </select></label>
     <p>同一对象的多种角色请分别接入。后续追加读取前次已接纳状态；展示内容由图执行保存。</p>
-    <button type="button" :disabled="graph.locked || !!unavailable || !source?.compatible || !objectKey.trim()" @click="connect">接入前端展示</button>
+    <button type="button" :disabled="graph.locked || !!unavailable || !source?.compatible
+      || !bindings.some(binding => binding.object_key === objectKey)" @click="connect">接入前端展示</button>
   </section>
 </template>
 <style scoped>

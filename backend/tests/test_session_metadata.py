@@ -58,13 +58,17 @@ def test_name_changes_only_metadata_and_is_object_scoped(service):
     assert service.get_run(sid, original["chains"][0]["chain_run_id"]) == before_run
 
 
-def test_name_can_change_while_a_run_is_active_without_stopping_it(service):
+def test_name_change_is_rejected_while_a_run_is_active_without_writing(service):
     sid, chain_id, release = gate_graph(service)
     before = service.get_session(sid)
+    before_metadata = service.get_session_metadata(sid)
     try:
-        accepted = save_name(service, sid, "Running")
+        with pytest.raises(ContractValidationError) as denied:
+            save_name(service, sid, "Running")
+        assert denied.value.reason_code == "active_execution_not_editable"
+        assert denied.value.status_code == 409
         after = service.get_session(sid)
-        assert accepted["name"] == "Running"
+        assert service.get_session_metadata(sid) == before_metadata
         assert after["active_chain_run_id"] == chain_id
         assert after["revision"] == before["revision"]
         assert after["head_revision"] == before["head_revision"]

@@ -1,4 +1,4 @@
-"""Agent -> delta -> explicit context save using a local Chat mock only."""
+"""Agent evidence joins explicit context writes using a local Chat mock only."""
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -27,7 +27,7 @@ from test_models_service_integration import ModelDatabaseFixture
 from workflow_test_support import AgentTransportFixture, graph, output, run
 
 
-def test_service_close_accepts_inflight_response_once_and_restart_cannot_redispatch(tmp_path, monkeypatch):
+def test_service_close_preserves_inflight_response_without_restart_reconciliation(tmp_path, monkeypatch):
     fixture = AgentTransportFixture(gate=True)
     database = tmp_path / "close-inflight.sqlite"
     service = GraphWorkflowService(database, public_model_factory=fixture.factory)
@@ -64,7 +64,7 @@ def test_service_close_accepts_inflight_response_once_and_restart_cannot_redispa
             service.close()
     with closing(GraphWorkflowService(database, public_model_factory=fixture.factory)) as reopened:
         current = reopened.get_session(sid)
-        assert current["status"] == "recovery_unavailable"
+        assert current["status"] == "paused"
         assert current["head_commit_id"] == initial["head_commit_id"]
         history = reopened.get_run(sid, chain_id)
         model_facts = [fact for fact in history["runtime_facts"]
@@ -76,6 +76,7 @@ def test_service_close_accepts_inflight_response_once_and_restart_cannot_redispa
             reopened.control(sid, action="resume", expected_revision=current["revision"],
                              idempotency_key=str(uuid4()))
         assert caught.value.reason_code == "recovery_unavailable"
+        assert reopened.get_session(sid) == current
         assert len(fixture.calls) == 1
         reopened.control(sid, action="close", expected_revision=current["revision"],
                          idempotency_key=str(uuid4()))
@@ -105,7 +106,9 @@ def test_agent_pause_while_mock_model_inflight_retains_response_and_resumes_with
         paused = service.get_session(sid)
         assert paused["status"] == "paused", paused["chains"]
         assert paused["objects"]["context"]["revision"] == 1
-        assert paused["objects"]["context"]["value"]["view_ref"] is None
+        assert paused["objects"]["context"]["value"] == {
+            "messages": [], "layout": [], "accepted_delta_ids": [], "generation": 0,
+        }
         host = service._runtime_hosts[chain_id]
         assert host.active_handle_count == 1 and len(fixture.calls) == 1
         request = {"action": "resume", "expected_revision": paused["revision"], "idempotency_key": str(uuid4())}
@@ -117,12 +120,18 @@ def test_agent_pause_while_mock_model_inflight_retains_response_and_resumes_with
         assert final["objects"]["context"]["revision"] == 2
         assert len(fixture.calls) == 1 and fixture.closes == 1
         assert host.active_handle_count == 0 and chain_id not in service._runtime_hosts
-        messages = output(final, "agents.execute", "context")["next_view"]["messages"]
+        messages = output(final, "context.merge")["messages"]
         assert messages[0]["blocks"][0]["text"] == "frozen question"
         assert [message["role"] for message in messages] == ["user", "assistant"]
-        operations = output(final, "agents.execute", "context")["operations"]
-        assert [operation["message"]["role"] for operation in operations if operation["kind"] == "append"] == [
-            "assistant", "tool"]
+        receipts = output(final, "agents.execute", "receipts")
+        history = service.get_run(sid, chain_id)
+        events = [
+            fact["payload"] for fact in history["runtime_facts"]
+            if fact.get("fact_id") in receipts["fact_ids"]
+        ]
+        assert [event["payload"]["message"]["role"] for event in events
+                if event["kind"] == "message_accepted"] == ["assistant", "tool"]
+        assert "next_view" not in receipts
 
 
 @pytest.mark.parametrize("outcome", ["error", "outcome_unknown", "interrupted"])
@@ -148,14 +157,37 @@ def test_two_round_history_preserves_typed_error_and_unknown_outcomes_without_su
         ModelDatabaseFixture.write(service, 1)
         first = run(service, create(service, graph(service)), "first question")
         assert first["status"] == "succeeded", first["chains"]
-        messages = output(first, "agents.execute", "context")["next_view"]["messages"]
+        messages = output(first, "context.merge")["messages"]
         observed = [message for message in messages if message["role"] == "tool"]
         projected = [message["blocks"][0] for message in observed]
         assert projected[0]["status"] == "error" and projected[0]["is_error"] is True
-        assert observed[0]["source"].get("reason_code") == (None if outcome == "error" else outcome)
+        assert all("source" not in message and "schema_version" not in message for message in observed)
+
+        first_history = service.get_run(first["workflow_session_id"], first["selected_chain_run_id"])
+        settlements = [
+            fact["payload"]["payload"]
+            for fact in first_history["runtime_facts"]
+            if fact.get("executor_ref") and fact["payload"]["kind"] == "tool_settled"
+        ]
+        assert settlements[0]["outcome"] == ("error" if outcome == "error" else outcome)
+        original_message = settlements[0]["message"]
+        assert original_message["blocks"][0] == projected[0]
+        if outcome == "error":
+            assert original_message["source"] == {
+                "kind": "tool",
+                "tool_execution_id": settlements[0]["tool_execution_id"],
+            }
+        else:
+            assert original_message["source"]["kind"] == "runtime_tool_observation"
+            assert original_message["source"]["reason_code"] == outcome
+            assert original_message["source"]["tool_execution_id"] == settlements[0]["tool_execution_id"]
         if outcome != "error":
-            assert observed[1]["source"]["reason_code"] == "never_started"
             assert projected[1]["status"] == "error" and projected[1]["is_error"] is True
+            assert settlements[1]["outcome"] == "never_started"
+            assert settlements[1]["tool_execution_id"] is None
+            assert settlements[1]["message"]["source"]["reason_code"] == "never_started"
+            assert settlements[1]["message"]["source"]["tool_execution_id"] is None
+            assert settlements[1]["message"]["blocks"][0] == projected[1]
         second = run(service, first, "second question")
         assert second["status"] == "succeeded", second["chains"]
         history = service.get_run(second["workflow_session_id"], second["selected_chain_run_id"])
@@ -166,13 +198,11 @@ def test_two_round_history_preserves_typed_error_and_unknown_outcomes_without_su
         assert canonical_tools[0]["blocks"][0]["is_error"] is True
         assert canonical_tools[0]["blocks"][0]["content"] == projected[0]["content"]
         assert canonical_tools[0]["blocks"][0]["model_visible_text"] == projected[0]["model_visible_text"]
+        assert all("source" not in message and "schema_version" not in message for message in canonical_tools)
         if outcome != "error":
-            assert canonical_tools[0]["source"]["kind"] == "runtime_tool_observation"
-            assert canonical_tools[0]["source"]["reason_code"] == outcome
-            assert canonical_tools[1]["source"]["reason_code"] == "never_started"
+            assert canonical_tools[0]["blocks"][0]["content"]["reason_code"] == outcome
+            assert canonical_tools[1]["blocks"][0]["content"]["reason_code"] == "never_started"
             assert canonical_tools[1]["blocks"][0]["tool_execution_id"] is None
-        else:
-            assert canonical_tools[0]["source"]["kind"] == "tool"
         assert invocations == (["one", "two", "one", "two"] if outcome == "error" else ["one", "one"])
         assert len(fixture.calls) == 4
         assert service._runtime_hosts == {} and not service._service_runs

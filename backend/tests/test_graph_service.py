@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from phase1_agent.capability_registry import create_package_registry
+from phase1_agent.content_contracts import text_content
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_service import GraphWorkflowService
 from graph_test_plugin import register_content_probe
@@ -18,8 +19,8 @@ def uid(number):
 
 def node(registry, type_name, number, **config):
     component = type_name if "." in type_name else "tools." + type_name
-    version = {"models.source": "5", "models.chat": "3", "agents.execute": "4"}.get(
-        component, "4" if component.startswith("context.") else "2" if component.startswith("prompts.") else "1")
+    version = {"models.source": "5", "models.chat": "3", "agents.execute": "5"}.get(
+        component, "5" if component.startswith("context.") else "2" if component.startswith("prompts.") else "1")
     entry = registry.get(component, version)
     return {
         "node_binding_id": uid(number), "component_id": component, "component_version": version,
@@ -37,9 +38,24 @@ def edge(source, target, number, source_port="output", target_port="input", orde
 
 
 def document(nodes, edges):
+    bindings = []
+    for entry in nodes:
+        identity = entry["component_id"], entry["component_version"]
+        provided_type = (
+            ("workflow.effective-context", 4)
+            if identity in {("agents.execute", "5"), ("agents.execute", "9")}
+            else ("workflow.frontend-state", 1) if identity == ("tools.output", "2") else None
+        )
+        if provided_type is not None:
+            bindings.append({
+                "object_key": "item-" + entry["node_binding_id"],
+                "type_id": provided_type[0], "schema_version": provided_type[1],
+                "scope": "shared", "readers": [], "writers": [], "owner_node_id": None,
+                "registrar_node_id": entry["node_binding_id"],
+            })
     return {
         "schema_version": 2, "workflow_definition_id": str(uuid4()), "revision": 1,
-        "name": "Graph integration", "nodes": nodes, "edges": edges, "object_bindings": [],
+        "name": "Graph integration", "nodes": nodes, "edges": edges, "object_bindings": bindings,
     }
 
 
@@ -55,8 +71,16 @@ def service(tmp_path):
 
 
 def create(service, doc):
-    service.save_definition(doc, expected_revision=0, idempotency_key=str(uuid4()))
+    save_definition_fixture(service, doc)
     return service.create_session(doc["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
+
+
+def save_definition_fixture(service, doc):
+    key = str(uuid4())
+    request = {"document": deepcopy(doc), "expected_revision": 0}
+    return service._change(
+        "test.fixture.definition.save", key, request,
+        lambda repo: service._save_definition(repo, request["document"], 0))
 
 
 def run(service, session, key=None):
@@ -104,9 +128,122 @@ def gate_graph(service):
     first = node(service.registry, "tools.text", 1)
     gate, output = node(service.registry, "test.gate", 2), node(service.registry, "tools.output", 4)
     value = document([first, gate, output], [edge(first, gate, 1), edge(gate, output, 2)])
-    initial = create(service, value)
+    value["schema_version"] = 3
+    for item in value["nodes"]:
+        item["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
+    saved = service.update_definition(
+        value, workflow_definition_id=value["workflow_definition_id"],
+        expected_edit_sequence=0, idempotency_key=str(uuid4()))
+    initial = service.create_session(
+        saved["workflow_definition_id"], saved["definition_revision"], idempotency_key=str(uuid4()))
     started = service.start(
         initial["workflow_session_id"], expected_revision=initial["revision"], idempotency_key="gate-start",
     )
     assert entered.wait(5)
     return initial["workflow_session_id"], started["active_chain_run_id"], release
+
+
+def test_service_persists_and_executes_creation_stable_plan_across_pause_resume(service):
+    calls = []
+    entered, release = Event(), Event()
+
+    def independent(config, inputs, context):
+        calls.append("independent")
+        entered.set()
+        assert release.wait(10), "scheduler test gate timed out"
+        return {"output": text_content("independent")}
+
+    def source(config, inputs, context):
+        calls.append("source")
+        return {"output": text_content("source")}
+
+    def consumer(config, inputs, context):
+        calls.append("consumer")
+        return {"output": inputs["input"]}
+
+    service.registry.register(NodeDefinition(
+        "test.scheduler-independent", "1", "Independent", "Test", {}, {"type": "object"},
+        outputs=(NodePort("output", "TEXT", data_schema_version=2),),
+    ), independent)
+    service.registry.register(NodeDefinition(
+        "test.scheduler-source", "1", "Source", "Test", {}, {"type": "object"},
+        outputs=(NodePort("output", "TEXT", data_schema_version=2),),
+    ), source)
+    service.registry.register(NodeDefinition(
+        "test.scheduler-consumer", "1", "Consumer", "Test", {}, {"type": "object"},
+        inputs=(NodePort("input", "TEXT", data_schema_version=2),),
+        outputs=(NodePort("output", "TEXT", data_schema_version=2),),
+    ), consumer)
+
+    consumer_node = node(service.registry, "test.scheduler-consumer", 900)
+    independent_node = node(service.registry, "test.scheduler-independent", 100)
+    source_node = node(service.registry, "test.scheduler-source", 800)
+    output_node = node(service.registry, "tools.output", 50)
+    value = document(
+        [consumer_node, independent_node, source_node, output_node],
+        [edge(source_node, consumer_node, 70), edge(consumer_node, output_node, 71)],
+    )
+    value["execution_roots"] = [independent_node["node_binding_id"]]
+    value["control_edges"] = [{
+        "edge_id": uid(1072), "source_node_id": independent_node["node_binding_id"],
+        "target_node_id": output_node["node_binding_id"],
+    }]
+    value["schema_version"] = 3
+    for item in value["nodes"]:
+        item["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
+    creation_order = [item["node_binding_id"] for item in value["nodes"]]
+    saved = service.update_definition(
+        value, workflow_definition_id=value["workflow_definition_id"],
+        expected_edit_sequence=0, idempotency_key="scheduler-save",
+    )
+    reread = service.get_definition(saved["workflow_definition_id"])
+    assert [item["node_binding_id"] for item in reread["nodes"]] == creation_order
+
+    initial = service.create_session(
+        saved["workflow_definition_id"], saved["definition_revision"], idempotency_key="scheduler-session",
+    )
+    started = service.start(
+        initial["workflow_session_id"], expected_revision=initial["revision"],
+        idempotency_key="scheduler-start",
+    )
+    chain_id = started["active_chain_run_id"]
+    expected = [
+        independent_node["node_binding_id"], source_node["node_binding_id"],
+        consumer_node["node_binding_id"], output_node["node_binding_id"],
+    ]
+    try:
+        assert entered.wait(5)
+        running = service.get_session(initial["workflow_session_id"])
+        service.control(
+            running["workflow_session_id"], action="pause", expected_revision=running["revision"],
+            idempotency_key="scheduler-pause",
+        )
+    finally:
+        release.set()
+    service.wait(chain_id)
+
+    paused_run = service.get_run(initial["workflow_session_id"], chain_id)
+    assert paused_run["chain"]["status"] == "paused"
+    assert paused_run["chain"]["ordered_nodes"] == expected
+    assert paused_run["chain"]["completed_nodes"] == [expected[0]]
+    assert paused_run["chain"]["next_node_index"] == 1
+    assert calls == ["independent"]
+    assert [(row["node_binding_id"], row["run_id"]) for row in paused_run["node_runs"]] == list(
+        zip(expected, paused_run["chain"]["node_run_ids"])
+    )
+
+    paused = service.get_session(initial["workflow_session_id"])
+    service.control(
+        paused["workflow_session_id"], action="resume", expected_revision=paused["revision"],
+        idempotency_key="scheduler-resume",
+    )
+    service.wait(chain_id)
+
+    completed = service.get_run(initial["workflow_session_id"], chain_id)
+    assert completed["chain"]["status"] == "succeeded"
+    assert completed["chain"]["ordered_nodes"] == expected
+    assert completed["chain"]["completed_nodes"] == expected
+    assert [row["node_binding_id"] for row in completed["node_runs"]] == expected
+    assert [row["run_id"] for row in completed["node_runs"]] == completed["chain"]["node_run_ids"]
+    assert all(row["status"] == "succeeded" for row in completed["node_runs"])
+    assert calls == ["independent", "source", "consumer"]

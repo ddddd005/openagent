@@ -68,7 +68,8 @@ describe("v2 workflow controls and object presentation", () => {
     graph.setPersistenceGuard(() => true); graph.catalog = [definition]; graph.createWorkflow();
     const nodeId = graph.addNode("plugin.register@1", { x: 0, y: 0 })!;
     graph.setExecutionRoot(nodeId, true);
-    const html = await renderToString(createSSRApp(GraphWorkbench).use(pinia));
+    const html = await renderToString(createSSRApp(GraphWorkbench).use(pinia).provide(workbenchFrontendHostKey,
+      createWorkbenchFrontendHost(() => graph.frontendExtensions, () => graph.packageLock)));
     expect(html).toContain("作为运行目标"); expect(html).toContain("前序节点");
     expect(html).toContain("会话绑定"); expect(html).toContain(nodeId);
     expect(html).toContain("会话对象访问契约"); expect(html).toContain("plugin.state");

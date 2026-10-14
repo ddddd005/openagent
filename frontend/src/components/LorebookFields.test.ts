@@ -5,7 +5,7 @@ import * as Vue from "vue";
 import { computed, createRenderer, createSSRApp, nextTick, reactive, ref, type App } from "vue";
 import { renderToString } from "@vue/server-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createPinia, setActivePinia, type Pinia } from "pinia";
+import { createPinia, type Pinia } from "pinia";
 import LorebookFields from "./LorebookFields.vue";
 import LorebookKeywordFields from "./LorebookKeywordFields.vue";
 import LorebookEvaluationFacts from "./LorebookEvaluationFacts.vue";
@@ -31,8 +31,8 @@ function fixture(group = false, entries = [newLorebookEntry()]) {
     revision: 1, name: "Lorebook", nodes: [node], edges: [], object_bindings: [],
     package_lock: [lorebookPackage], execution_roots: [], control_edges: [] });
   const locked = ref(false), lifecycle = ref("original");
-  const configureNode = vi.fn((_request: WorkflowNodeConfigurationRequest) =>
-    ({ workflowId: document.workflow_definition_id, nodeId: node.node_binding_id }));
+  const configureNode = vi.fn(async (_request: WorkflowNodeConfigurationRequest) =>
+    ({ workflowId: document.workflow_definition_id, nodeId: node.node_binding_id, outcome: "saved" as const }));
   const definition: GraphNodeType = {
     component_id: node.component_id, component_version: "1", category: "类酒馆", display_name: "Lorebook",
     default_config: node.config, executable: true, is_output: false, input_storage: "references",
@@ -92,6 +92,11 @@ async function trigger(node: HostNode, event: "Click" | "Submit" | "Change" | "I
   target: Record<string, unknown> = {}) {
   await (node.props[`on${event}`] as (event: unknown) => unknown)({ target, preventDefault() {} });
   await flush();
+}
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
 }
 function installRender(component: object, filename: string) {
   const { descriptor } = parseSfc(readFileSync(new URL(filename, import.meta.url), "utf8"));
@@ -173,6 +178,21 @@ describe("lorebook trusted workbench fields", () => {
         keyword_rule: "primary_and_secondary", recursive: true, probability_enabled: true, probability: 42.5 } },
     });
     expect(f.node.config).toEqual(original);
+  });
+  it("does not let a late field receipt write status onto a newly selected node", async () => {
+    const f = fixture(), root = await mount(f);
+    const pending = deferred<{ workflowId: string; nodeId: string; outcome: "saved" }>();
+    f.configureNode.mockReturnValueOnce(pending.promise);
+    await trigger(label(root, "条目 1 正文"), "Input", { value: "submitted" });
+    const submitting = trigger(label(root, "Lorebook 配置"), "Submit");
+    await flush();
+    f.node.node_binding_id = crypto.randomUUID();
+    await flush();
+    pending.resolve({ workflowId: f.document.workflow_definition_id,
+      nodeId: f.configureNode.mock.calls[0]![0].nodeId, outcome: "saved" });
+    await submitting;
+    await flush();
+    expect(elements(root).some(node => node.text.includes("Lorebook 配置已保存"))).toBe(false);
   });
   it("supports constant mode and distinct scanning/insertion depth without changing lifecycle", async () => {
     const f = fixture(), root = await mount(f);
@@ -280,24 +300,27 @@ describe("lorebook trusted workbench fields", () => {
     await trigger(label(root, "Lorebook 配置"), "Submit");
     expect(elements(root).some(node => node.text.includes("配置依据已变化"))).toBe(true);
   });
-  it("flushes all child drafts and refuses a changed node basis while local persistence is pending", async () => {
-    vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
-    const pinia = createPinia(); setActivePinia(pinia);
-    const forms = useFormDraftsStore();
-    vi.spyOn(forms, "load").mockResolvedValue({ value: null, conflict: false, record: null });
-    vi.spyOn(forms, "stage").mockReturnValue(true);
-    let finish!: (value: boolean) => void;
-    const persistence = useWorkbenchPersistenceStore();
-    const flushAll = vi.spyOn(persistence, "flushAll").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  it("applies against the current node config without draft gates and leaves it unchanged when the SDK rejects", async () => {
+    const pinia = createPinia();
+    const formFlush = vi.spyOn(useFormDraftsStore(pinia), "flushAll");
+    const graphFlush = vi.spyOn(useWorkbenchPersistenceStore(pinia), "flushAll");
     const f = fixture(), root = await mount(f, pinia);
-    const applying = trigger(label(root, "Lorebook 配置"), "Submit");
+    f.node.config = { ...f.node.config,
+      entry: { ...f.node.config.entry as LorebookEntry, text: "external" } };
+    const currentConfig = graphClone(f.node.config);
     await flush();
-    expect(flushAll).toHaveBeenCalledOnce();
-    f.node.config = { ...f.node.config, entry: { ...f.node.config.entry as LorebookEntry, text: "external" } };
-    await flush();
-    finish(true); await applying;
-    expect(f.configureNode).not.toHaveBeenCalled();
-    expect(elements(root).some(node => node.text.includes("依据或输入已变化"))).toBe(true);
+    await trigger(label(root, "条目 1 正文"), "Input", { value: "local edit" });
+    f.configureNode.mockReturnValueOnce(null as unknown as ReturnType<typeof f.configureNode>);
+    await trigger(label(root, "Lorebook 配置"), "Submit");
+
+    expect(f.configureNode).toHaveBeenCalledOnce();
+    expect(f.configureNode.mock.calls[0]![0]).toMatchObject({
+      expectedConfig: currentConfig, patch: { entry: { text: "local edit" } },
+    });
+    expect(f.node.config).toEqual(currentConfig);
+    expect(elements(root).some(node => node.text.includes("配置依据已变化或当前不可编辑"))).toBe(true);
+    expect(formFlush).not.toHaveBeenCalled();
+    expect(graphFlush).not.toHaveBeenCalled();
   });
 });
 

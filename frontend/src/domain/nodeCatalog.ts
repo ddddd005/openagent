@@ -44,9 +44,6 @@ export const nodeCategories = [
   { id: "other", label: "其他" },
 ] as const;
 
-const protocol: NodeProfileAxis = { id: "protocol", label: "模型协议", options: [
-  { value: "chat", label: "DeepSeek" }, { value: "gemini", label: "Gemini" },
-] };
 const promptPolicy = (label: string): FamilyPolicy => ({
   label, category: "prompts", preferred: "2",
 });
@@ -57,7 +54,7 @@ const policies: Record<string, FamilyPolicy> = {
   "tools.current-input": simple("当前输入", "basic"),
   "tools.text": simple("文本", "basic"),
   "tools.regex": simple("正则处理", "basic"),
-  "tools.output": simple("输出", "basic"),
+  "tools.output": { label: "输出", category: "basic", preferred: "2" },
   "tools.text-to-json": simple("文本转 JSON", "conversion"),
   "tools.json-to-text": simple("JSON 转文本", "conversion"),
   "tools.text-to-prompt": simple("文本转提示词", "conversion"),
@@ -69,7 +66,7 @@ const policies: Record<string, FamilyPolicy> = {
   "tools.variable-to-content": simple("变量转内容", "variables"),
   "tools.variable-replace-selected": simple("替换指定变量", "variables"),
   "tools.variable-replace-all": simple("替换全部变量", "variables"),
-  "prompts.item": promptPolicy("提示词条目"),
+  "prompts.item": { ...promptPolicy("提示词条目"), preferred: "3" },
   "prompts.group": promptPolicy("提示词分组"),
   "prompts.source": promptPolicy("提示词材料"),
   "prompts.summary": promptPolicy("提示词汇总"),
@@ -78,22 +75,13 @@ const policies: Record<string, FamilyPolicy> = {
   "prompts.global-resolve": promptPolicy("全局提示词解析"),
   "prompts.tool": promptPolicy("工具提示词"),
   "prompts.tool-summary": promptPolicy("工具提示词汇总"),
-  "models.source": { label: "模型来源", category: "models", preferred: "5", axes: [protocol],
-    profiles: {
-      "5": { values: { protocol: "chat" } },
-      "6": { values: { protocol: "gemini" } },
-    } },
-  "models.chat": { label: "模型调用", category: "models", preferred: "3", axes: [protocol],
-    profiles: { "3": { values: { protocol: "chat" } }, "4": { values: { protocol: "gemini" } } } },
-  "agents.execute": { label: "Agent 执行", category: "agents", preferred: "4", axes: [protocol],
-    profiles: {
-      "4": { values: { protocol: "chat" } },
-      "8": { values: { protocol: "gemini" } },
-    } },
-  "agents.compaction-policy": simple("上下文精简策略", "agents"),
-  "context.output": { label: "读取 Agent 上下文", category: "context", preferred: "4" },
-  "context.assembly": { label: "上下文装配", category: "context", preferred: "4" },
-  "context.merge": { label: "写回 Agent 上下文", category: "context", preferred: "4" },
+  "models.source": { label: "模型来源", category: "models", preferred: "7" },
+  "models.chat": { label: "模型调用", category: "models", preferred: "5" },
+  "agents.execute": { label: "Agent 执行", category: "agents", preferred: "10" },
+  "agents.compaction-policy": { label: "上下文精简策略", category: "agents", preferred: "2" },
+  "context.output": { label: "读取 Agent 上下文", category: "context", preferred: "5" },
+  "context.assembly": { label: "上下文装配", category: "context", preferred: "5" },
+  "context.merge": { label: "写回 Agent 上下文", category: "context", preferred: "6" },
   "lorebook.item": simple("世界书条目", "tavern"),
   "lorebook.group": simple("世界书分组", "tavern"),
   "lorebook.global-reference": simple("全局世界书引用", "tavern"),

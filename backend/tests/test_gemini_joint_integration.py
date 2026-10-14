@@ -76,7 +76,7 @@ def gemini_graph(service, route):
     source = next(node for node in doc["nodes"] if node["component_id"] == "models.source")
     source["component_version"] = "6"
     agent = next(node for node in doc["nodes"] if node["component_id"] == "agents.execute")
-    agent["component_version"] = "8"
+    agent["component_version"] = "9"
     current = next(node for node in doc["nodes"] if node["component_id"] == "tools.current-input")
     chat = add_chat(service, doc, current, agent)
     return doc, chat

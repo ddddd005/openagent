@@ -78,7 +78,7 @@ def _graph(service, numbers):
             "context.output", "tools.current-input", "models.source", "context.assembly",
             "agents.execute", "context.merge", "tools.output"), numbers)]
     for entry in (read, merge):
-        entry["config"]["agent_node_id"] = execute["node_binding_id"]
+        entry["config"]["object_key"] = "context"
     model["config"] = source_config()
     doc = document([read, current, model, assembly, execute, merge, display], [
         edge(read, assembly, 1301, target_port="view"),
@@ -86,14 +86,15 @@ def _graph(service, numbers):
         edge(model, execute, 1303, target_port="model"),
         edge(assembly, execute, 1304, target_port="prompt"),
         edge(read, merge, 1305, target_port="view"),
-        edge(execute, merge, 1306, source_port="context", target_port="context"),
+        edge(execute, merge, 1306, source_port="receipts", target_port="receipts"),
         edge(execute, display, 1307, source_port="result"),
     ])
     doc.update(execution_roots=[merge["node_binding_id"], display["node_binding_id"]],
                package_lock=list(service.registry.package_lock), object_bindings=[
                    ObjectBinding("context", EFFECTIVE_CONTEXT_TYPE, 4, "shared",
                                  readers=(read["node_binding_id"], merge["node_binding_id"]),
-                                 writers=(merge["node_binding_id"],)).to_dict()])
+                                 writers=(merge["node_binding_id"],),
+                                 registrar_node_id=execute["node_binding_id"]).to_dict()])
     return doc
 
 

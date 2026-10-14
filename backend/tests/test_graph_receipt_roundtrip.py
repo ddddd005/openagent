@@ -10,6 +10,7 @@ import pytest
 
 from phase1_agent.contract_json import canonical_bytes, loads_strict
 from phase1_agent.graph_application import GraphApplication
+from phase1_agent.graph_application_identity import bind_application_command
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_receipts import read_graph_application_receipt
 from phase1_agent.graph_service import GraphWorkflowService
@@ -43,13 +44,29 @@ def roundtrip(app, operation, parameters):
 
 
 def initial(app, doc, *, consumer=False):
-    roundtrip(app, "definition.save", {"document": doc, "expected_revision": 0,
-                                     "idempotency_key": str(uuid4())})
+    parameters = {"document": deepcopy(doc), "expected_revision": 0,
+                  "idempotency_key": str(uuid4())}
+    with bind_application_command("definition.save", "management", parameters):
+        native_request = {"document": parameters["document"],
+                          "expected_revision": parameters["expected_revision"]}
+        result = app._service._change(
+            "graph.definition.save", parameters["idempotency_key"], native_request,
+            lambda repo: app._service._save_definition(repo, parameters["document"], 0))
+    frozen = read_graph_application_receipt(app._service.database, "definition.save", parameters)
+    assert frozen["outcome"] == "matched" and frozen["result"] == result == doc
     owner = app.for_consumer() if consumer else app
     return roundtrip(owner, "consumer.session.create" if consumer else "session.create", {
         "workflow_definition_id": doc["workflow_definition_id"], "definition_revision": 1,
         "idempotency_key": str(uuid4()),
     })
+
+
+def fixed_configuration(doc):
+    value = deepcopy(doc)
+    value["schema_version"] = 3
+    for item in value["nodes"]:
+        item["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
+    return value
 
 
 def gate_document(service, entered, release):
@@ -88,35 +105,48 @@ def event_document(service):
     return doc
 
 
-def test_definition_create_rebind_data_and_copy_roundtrip(service):
+def test_definition_update_then_create_fixed_revision_and_update_data_roundtrip(service):
+    app = GraphApplication(service)
+    doc = fixed_configuration(text_graph(service.registry))
+    created = roundtrip(app, "definition.update", {
+        "workflow_definition_id": doc["workflow_definition_id"], "document": doc,
+        "expected_edit_sequence": 0, "idempotency_key": str(uuid4()),
+    })
+    revision = deepcopy(created["document"])
+    revision["nodes"][0]["config"]["text"] = "Second application revision"
+    saved = roundtrip(app, "definition.update", {
+        "workflow_definition_id": doc["workflow_definition_id"], "document": revision,
+        "expected_edit_sequence": 1, "idempotency_key": str(uuid4()),
+    })
+    assert saved["outcome"] == "saved" and saved["definition_revision"] == 2
+    view = roundtrip(app, "session.create", {
+        "workflow_definition_id": revision["workflow_definition_id"],
+        "definition_revision": saved["definition_revision"],
+        "idempotency_key": str(uuid4()),
+    })
+    assert view["definition_revision"] == 2
+    view = roundtrip(app, "session.data.update", {
+        "session_id": view["workflow_session_id"], "expected_revision": view["revision"],
+        "expected_data_revision": view["data_revision"], "idempotency_key": str(uuid4()),
+    })
+
+
+def test_session_copy_roundtrip_remains_available(service):
     app = GraphApplication(service)
     doc = text_graph(service.registry)
     view = initial(app, doc)
-    revision = deepcopy(doc)
-    revision.update(revision=2, name="Rebound application")
-    roundtrip(app, "definition.save", {"document": revision, "expected_revision": 1,
-                                     "idempotency_key": str(uuid4())})
-    sid = view["workflow_session_id"]
-    view = roundtrip(app, "session.rebind", {
-        "session_id": sid, "definition_revision": 2, "expected_revision": view["revision"],
-        "expected_data_revision": view["data_revision"], "expected_head_revision": view["head_revision"],
-        "idempotency_key": str(uuid4()),
-    })
-    view = roundtrip(app, "session.data.update", {
-        "session_id": sid, "expected_revision": view["revision"],
-        "expected_data_revision": view["data_revision"], "idempotency_key": str(uuid4()),
-    })
-    copied_document = deepcopy(revision)
+    copied_document = deepcopy(doc)
     copied_document.update(workflow_definition_id=str(uuid4()), revision=1)
     copied = roundtrip(app, "session.copy", {
-        "session_id": sid, "document": copied_document, "expected_session_revision": view["revision"],
-        "expected_data_revision": view["data_revision"], "expected_definition_revision": 2,
+        "session_id": view["workflow_session_id"], "document": copied_document,
+        "expected_session_revision": view["revision"],
+        "expected_data_revision": view["data_revision"], "expected_definition_revision": 1,
         "expected_head_revision": view["head_revision"], "idempotency_key": str(uuid4()),
     })
-    assert copied["workflow_session_id"] != sid
+    assert copied["workflow_session_id"] != view["workflow_session_id"]
 
 
-def test_completed_start_and_both_candidate_commands_read_the_original_frozen_results(service):
+def test_completed_start_reads_the_original_frozen_result(service):
     app = GraphApplication(service)
     view = initial(app, text_graph(service.registry))
     sid = view["workflow_session_id"]
@@ -124,16 +154,6 @@ def test_completed_start_and_both_candidate_commands_read_the_original_frozen_re
     started = roundtrip(app, "run.start", request)
     service.wait(started["active_chain_run_id"])
     assert read_graph_application_receipt(service.database, "run.start", request)["result"] == started
-    view = service.get_session(sid)
-    candidate = service.list_graph_candidates(sid)["candidates"][0]["candidate_id"]
-    parameters = {
-        "session_id": sid, "candidate_id": candidate, "expected_revision": view["revision"],
-        "expected_data_revision": view["data_revision"], "expected_head_revision": view["head_revision"],
-        "idempotency_key": str(uuid4()),
-    }
-    forked = roundtrip(app, "candidate.fork", parameters)
-    assert forked["workflow_session_id"] != sid
-    roundtrip(app, "candidate.select", {**parameters, "idempotency_key": str(uuid4())})
 
 
 @pytest.mark.parametrize("consumer", [False, True])
@@ -233,8 +253,9 @@ def test_context_adoption_roundtrip_and_malformed_object_receipts_stay_unresolve
         ModelDatabaseFixture.write(service, 1)
         final = run_agent(service, create(service, context_graph(service)), "Receipt test")
         assert final["status"] == "succeeded"
-        output = final["objects"]["context"]["value"]["view_ref"]["output_id"]
         writer = next(entry["node_binding_id"] for entry in final["nodes"] if entry["label"] == "context.merge")
+        output = next(entry["output_id"] for entry in final["outputs"]
+                      if entry["node_binding_id"] == writer and entry["port_id"] == "output")
         app = GraphApplication(service)
         closed = final
         parameters = {"session_id": closed["workflow_session_id"], "node_id": writer,

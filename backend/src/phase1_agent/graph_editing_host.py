@@ -59,7 +59,8 @@ class GraphEditingHost:
                 self._draft_owner(store, record["address"], record["value"])
             return {"schema_version": 1, "kind": "workflow.local-drafts", "records": records}
 
-    def _save_draft(self, address, format_version, value, expected_sequence, idempotency_key, scope):
+    def _save_draft(self, address, format_version, value, expected_sequence, idempotency_key):
+        scope = "consumer"
         address = validate_draft_address(address, scope)
         validate_draft_value(address, format_version, value)
         require(type(expected_sequence) is int and 0 <= expected_sequence <= 2**53 - 1,
@@ -70,8 +71,7 @@ class GraphEditingHost:
                    "expected_sequence": expected_sequence}
         with self._lock, closing(self._store()) as store:
             self._check_open()
-            operation = "graph.consumer.draft.save" if scope == "consumer" else "graph.draft.save"
-            return LocalDraftStore(store).save(operation, request, idempotency_key,
+            return LocalDraftStore(store).save("graph.consumer.draft.save", request, idempotency_key,
                 lambda owner, content: self._draft_owner(store, owner, content))
 
     def read_draft(self, address):
@@ -86,8 +86,5 @@ class GraphEditingHost:
     def list_consumer_drafts(self, **filters):
         return self._list_drafts("consumer", **filters)
 
-    def save_draft(self, **parameters):
-        return self._save_draft(**parameters, scope="management")
-
     def save_consumer_draft(self, **parameters):
-        return self._save_draft(**parameters, scope="consumer")
+        return self._save_draft(**parameters)

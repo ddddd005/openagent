@@ -15,7 +15,7 @@ const type: GraphNodeType = { component_id: "plugin.config", component_version: 
   display_name: "Config", category: "Test", default_config: { text: "original", enabled: true },
   config_schema: { type: "object", properties: { text: { type: "string" }, enabled: { type: "boolean" } } },
   inputs: [], outputs: [], executable: true, is_output: false };
-const extension: FrontendExtension = { schema_version: 2, host_protocol_version: 1,
+const extension: FrontendExtension = { schema_version: 3, host_protocol_version: 2,
   extension_id: "plugin.fields", kind: "field-editor", entrypoint: "plugin.fields",
   component_id: "plugin.config", component_version: "1", package_id: "plugin", package_version: "1.0.0",
   binding: { surface: "workbench", slot: "node-fields", target: { component_id: "plugin.config", component_version: "1" } } };
@@ -34,37 +34,30 @@ beforeEach(() => { setActivePinia(createPinia()); constructor.mockReset(); });
 afterEach(() => { useWorkflowGraphStore().$dispose(); useWorkspaceStore().$dispose(); vi.unstubAllGlobals(); });
 
 describe("package configuration edits and serial example drafts", () => {
-  it("keeps package edits undoable, detached and limited to declared configuration fields", () => {
-    const { graph, workflowId, nodeId, request } = fixture();
-    expect(graph.patchNodeConfiguration(request)).toEqual({ workflowId, nodeId });
-    request.patch.text = "mutated outside";
-    expect(graph.document!.nodes[0].config).toEqual({ text: "edited", enabled: true });
-    graph.undo(); expect(graph.document!.nodes[0].config).toEqual(type.default_config);
-    expect(graph.patchNodeConfiguration({ ...request, patch: { public_outputs: ["secret"] } })).toBeNull();
-    expect(graph.document!.nodes[0].public_outputs).toBeUndefined();
+  it("refuses the retired memory-only node configuration path", async () => {
+    const { graph, request } = fixture(), before = graphClone(graph.document);
+    await expect(graph.patchNodeConfiguration(request)).rejects.toMatchObject({ kind: "unavailable" });
+    await expect(graph.patchNodeConfiguration({ ...request, patch: { public_outputs: ["secret"] } }))
+      .rejects.toMatchObject({ kind: "unavailable" });
+    expect(graph.document).toEqual(before);
   });
-  it("rejects a stale configuration, another active workflow, disabled packages and mismatched declarations", () => {
+  it("does not treat a legacy node configuration call as saved after selection or package changes", async () => {
     const { graph, workspace, workflowId, request } = fixture();
-    graph.patchNode(request.nodeId, { config: { text: "newer", enabled: true } });
-    expect(graph.patchNodeConfiguration(request)).toBeNull();
-    graph.undo(); graph.createWorkflow();
-    expect(graph.patchNodeConfiguration(request)).toBeNull();
+    graph.createWorkflow();
+    await expect(graph.patchNodeConfiguration(request)).rejects.toMatchObject({ kind: "unavailable" });
     workspace.openWorkflow(workflowId);
-    expect(graph.patchNodeConfiguration({ ...request, componentVersion: "2" })).toBeNull();
     graph.packageLock = [];
-    expect(graph.patchNodeConfiguration(request)).toBeNull();
+    await expect(graph.patchNodeConfiguration(request)).rejects.toMatchObject({ kind: "unavailable" });
     expect(graph.entries[workflowId].document.nodes[0].config).toEqual(type.default_config);
   });
-  it("keeps the real workflow identity when editing and preserves its published basis", () => {
-    const { graph, workspace, workflowId, nodeId, request } = fixture();
+  it("does not change a published basis through a retired node configuration call", async () => {
+    const { graph, workspace, workflowId, request } = fixture();
     workspace.activeWorkflow.state = "saved";
     const original = graphClone(graph.document);
     graph.entries[workflowId].saved_document = graphClone(original!); graph.entries[workflowId].saved_revision = 1;
-    const result = graph.patchNodeConfiguration(request)!;
-    expect(result.workflowId).toBe(workflowId); expect(result.nodeId).toBe(nodeId);
-    expect(workspace.activeWorkflowId).toBe(result.workflowId);
+    await expect(graph.patchNodeConfiguration(request)).rejects.toMatchObject({ kind: "unavailable" });
     expect(graph.entries[workflowId].saved_document).toEqual(original);
-    expect(graph.document!.nodes[0].config.text).toBe("edited");
+    expect(graph.document!.nodes[0].config.text).toBe("original");
   });
   it("creates a stable independent draft without publishing, starting or changing blank-new behavior", () => {
     const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();

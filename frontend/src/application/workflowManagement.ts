@@ -4,7 +4,7 @@ import {
   readGraphRun, readGraphSession, readGraphSessions,
 } from "../adapters/workflowGraphApi";
 import {
-  graphClone, graphSignature, type GraphCandidates, type GraphCommand, type GraphEntry, type GraphSession,
+  graphClone, graphSignature, type GraphCommand, type GraphEntry, type GraphSession,
 } from "../domain/workflowGraph";
 import { createGraphCommand } from "./workflowCommands";
 import { readGraphInformation, readGraphRegistrations } from "./workflowInformation";
@@ -12,14 +12,13 @@ import { assertEventPayload, readWorkflowEvent, readWorkflowEventBindings } from
 
 export interface WorkflowTarget { workflowId: string }
 export interface SavedWorkflowBasis { definitionId: string; definitionRevision: number }
-export type WorkflowControlAction = "pause" | "resume" | "close" | "extend_budget" | "retry_archive" | "retry_acceptance" | "retry_failed_node";
-export interface WorkflowControlParameters { add_model_requests?: number; add_model_attempts?: number }
+export type WorkflowControlAction = "pause" | "resume" | "close" | "retry_archive" | "retry_acceptance" | "retry_failed_node";
 export interface WorkflowManagementPorts {
   entry(workflowId: string): GraphEntry | undefined;
   observedSession(sessionId: string): GraphSession | undefined;
   observe(session: GraphSession): GraphSession;
   dispatch(workflowId: string, request: GraphCommand): Promise<unknown>;
-  commitSaved(workflowId: string): boolean | Promise<boolean>;
+  commitSaved?(workflowId: string): boolean | Promise<boolean>;
   canSubmit(workflowId: string): boolean;
   commandState?(active: boolean): void;
 }
@@ -38,6 +37,9 @@ export const workflowManagementQueries = {
 };
 
 export function createWorkflowManagement(ports: WorkflowManagementPorts) {
+  const controlActions = new Set<WorkflowControlAction>([
+    "pause", "resume", "close", "retry_archive", "retry_acceptance", "retry_failed_node",
+  ]);
   let commandActive = false;
   async function execute<T>(target: WorkflowTarget, change: (fixed: WorkflowTarget) => Promise<T>) {
     if (commandActive) throw new WorkbenchApiError("unavailable", "工作流操作正在提交");
@@ -56,46 +58,11 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
     if (entry.pending) throw new WorkbenchApiError("unknown", "原请求尚待核实，不能提交新操作");
     return entry;
   }
-  async function publish(target: WorkflowTarget) {
-    const entry = entryFor(target);
-    if (entry.saved_document && graphSignature(entry.saved_document) === graphSignature(entry.document)) return;
-    const document = graphClone(entry.document);
-    document.revision = entry.saved_revision + 1;
-    await ports.dispatch(target.workflowId, createGraphCommand("/api/graph/definitions", {
-      document, expected_revision: entry.saved_revision,
-    }, "save"));
-  }
-  async function bind(target: WorkflowTarget) {
-    const entry = entryFor(target);
-    if (!entry.session_id) return;
-    if (!entry.saved_document || graphSignature(entry.saved_document) !== graphSignature(entry.document))
-      throw new WorkbenchApiError("unavailable", "当前编辑尚未发布，请先保存工作流");
-    const sessionId = entry.session_id, definitionId = entry.document.workflow_definition_id;
-    const savedRevision = entry.saved_revision;
-    const incoming = await workflowManagementQueries.session(sessionId, definitionId);
-    if (ports.entry(target.workflowId) !== entry || entry.session_id !== sessionId
-      || entry.document.workflow_definition_id !== definitionId || entry.saved_revision !== savedRevision)
-      throw new WorkbenchApiError("unavailable", "定义或会话依据已变化，未提交重绑");
-    const view = ports.observe(incoming);
-    if (!view.can_submit || ["prepared", "running", "pausing", "paused"].includes(view.status))
-      throw new WorkbenchApiError("unavailable", "当前会话未稳定，不能采用新修订");
-    if (view.definition_revision === savedRevision) return;
-    await ports.dispatch(target.workflowId, createGraphCommand(`/api/graph/sessions/${sessionId}/rebind`, {
-      definition_revision: savedRevision, expected_revision: view.revision,
-      expected_data_revision: view.data_revision, expected_head_revision: view.head_revision,
-      mappings: entry.state_mappings ?? [],
-    }, "rebind"));
-  }
-  async function save(target: WorkflowTarget) {
-    await publish(target);
-    if (!await ports.commitSaved(target.workflowId))
-      throw new WorkbenchApiError("unavailable", "工作流已保存，当前本机目录状态尚未保存");
-  }
   async function createSession(target: WorkflowTarget) {
     const entry = entryFor(target);
     if (!entry.saved_document || entry.saved_revision < 1
       || graphSignature(entry.saved_document) !== graphSignature(entry.document))
-      throw new WorkbenchApiError("unavailable", "请先保存工作流，再新建会话");
+      throw new WorkbenchApiError("unavailable", "正式工作流保存暂不可用；未创建会话");
     await ports.dispatch(target.workflowId, createGraphCommand("/api/graph/sessions", {
       workflow_definition_id: entry.document.workflow_definition_id, definition_revision: entry.saved_revision,
     }, "create"));
@@ -114,7 +81,7 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
     const original = entryFor(target);
     if (!original.saved_document || original.saved_revision < 1
       || graphSignature(original.saved_document) !== graphSignature(original.document))
-      throw new WorkbenchApiError("unavailable", "当前编辑尚未发布，请先保存工作流");
+      throw new WorkbenchApiError("unavailable", "当前定义未正式保存；运行暂不可用，未提交请求");
     const inputs = graphClone(original.external_inputs ?? {});
     if (original.session_id) {
       const sessionId = original.session_id, definitionId = original.document.workflow_definition_id;
@@ -131,16 +98,18 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
     if (!view || !view.can_submit) throw new WorkbenchApiError("unavailable", "当前会话尚不能启动");
     if (view.workflow_definition_id !== entry.document.workflow_definition_id
       || view.definition_revision !== entry.saved_revision)
-      throw new WorkbenchApiError("unavailable", "当前会话仍使用旧修订，请明确采用已保存修订或新建会话");
+      throw new WorkbenchApiError("unavailable", "当前会话仍使用旧修订，请新建当前修订的会话");
     await ports.dispatch(target.workflowId, createGraphCommand(`/api/graph/sessions/${view.workflow_session_id}/runs`, {
       expected_revision: view.revision, inputs,
     }, "start"));
   }
-  async function control(target: WorkflowTarget, action: WorkflowControlAction, parameters: WorkflowControlParameters = {}) {
+  async function control(target: WorkflowTarget, action: WorkflowControlAction) {
+    if (!controlActions.has(action))
+      throw new WorkbenchApiError("rejected", "此工作流操作已退役；未提交新请求");
     const entry = entryFor(target), view = entry.session_id ? ports.observedSession(entry.session_id) : null;
     if (!view) throw new WorkbenchApiError("unavailable", "尚无可操作的工作流会话");
     await ports.dispatch(target.workflowId, createGraphCommand(`/api/graph/sessions/${view.workflow_session_id}/control`, {
-      ...parameters, action, expected_revision: view.revision,
+      action, expected_revision: view.revision,
     }, action));
   }
   async function manageDefinition(target: WorkflowTarget, action: "archive" | "delete") {
@@ -168,7 +137,7 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
       || view.workflow_definition_id !== entry.document.workflow_definition_id
       || entry.saved_revision !== entry.document.revision || view.definition_revision !== entry.saved_revision
       || !entry.saved_document || graphSignature(entry.saved_document) !== graphSignature(entry.document))
-      throw new WorkbenchApiError("unavailable", "局部事件需要已保存定义和已选择的稳定会话；请先保存并确认会话");
+      throw new WorkbenchApiError("unavailable", "局部事件需要正式保存的定义和稳定会话；定义提交暂不可用");
     const sessionId = view.workflow_session_id, revision = view.revision, definitionId = entry.document.workflow_definition_id;
     const bindings = await workflowManagementQueries.events({ sessionId, definitionId, definitionRevision: view.definition_revision });
     if (ports.entry(target.workflowId) !== entry || entry.session_id !== sessionId
@@ -182,50 +151,29 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
       event_id: eventId, event_schema_version: eventVersion, payload: fixedPayload, expected_revision: revision,
     }, "event"));
   }
-  async function restoreCandidate(target: WorkflowTarget, snapshot: GraphCandidates, candidateId: string, fork = false) {
-    const entry = entryFor(target), view = entry.session_id ? ports.observedSession(entry.session_id) : null;
-    const candidate = snapshot.candidates.find(row => row.candidate_id === candidateId);
-    if (!view?.can_submit || !candidate?.can_select)
-      throw new WorkbenchApiError("unavailable", "当前候选不可恢复");
-    if (snapshot.workflow_session_id !== view.workflow_session_id
-      || snapshot.workflow_definition_id !== view.workflow_definition_id
-      || snapshot.session_revision !== view.revision || snapshot.head_revision !== view.head_revision
-      || snapshot.definition_revision !== view.definition_revision)
-      throw new WorkbenchApiError("rejected", "候选依据已变化，请刷新后再操作 [stale_revision]");
-    const action = fork ? "candidate-fork" : "candidate-select";
-    const request = createGraphCommand(`/api/graph/sessions/${view.workflow_session_id}/candidates/${fork ? "fork" : "select"}`, {
-      candidate_id: candidateId, expected_revision: view.revision, expected_data_revision: view.data_revision,
-      expected_head_revision: view.head_revision,
-    }, action);
-    request.source_session_id = view.workflow_session_id;
-    request.expected_chain_run_id = candidate.chain_run_id;
-    request.expected_definition_id = candidate.source_workflow_definition_id;
-    request.expected_definition_revision = candidate.source_definition_revision;
-    await ports.dispatch(target.workflowId, request);
-  }
   function inspect(target: WorkflowTarget) {
     const entry = ports.entry(target.workflowId);
     return entry ? graphClone({ document: entry.document, savedRevision: entry.saved_revision,
       selectedSessionId: entry.session_id, pending: entry.pending }) : null;
   }
+  async function retiredSave(_target: WorkflowTarget): Promise<void> {
+    throw new WorkbenchApiError("unavailable", "旧整图发布入口已退役；正式保存暂不可用，未提交新请求");
+  }
   return {
     commands: {
-      save: (target: WorkflowTarget) => execute(target, fixed => save(fixed)),
-      adoptRevision: (target: WorkflowTarget) => execute(target, fixed => bind(fixed)),
+      save: (target: WorkflowTarget) => execute(target, fixed => retiredSave(fixed)),
       createSession: (target: WorkflowTarget) => execute(target, fixed => createSession(fixed)),
       createSavedSession: (target: WorkflowTarget, basis: SavedWorkflowBasis) =>
         execute(target, fixed => createSavedSession(fixed, { ...basis })),
       start: (target: WorkflowTarget) => execute(target, fixed => start(fixed)),
       submitEvent: (target: WorkflowTarget, eventId: string, eventVersion: number, payload: Record<string, unknown>) =>
         execute(target, fixed => submitEvent(fixed, eventId, eventVersion, payload)),
-      control: (target: WorkflowTarget, action: WorkflowControlAction, parameters?: WorkflowControlParameters) =>
-        execute(target, fixed => control(fixed, action, parameters)),
+      control: (target: WorkflowTarget, action: WorkflowControlAction) =>
+        execute(target, fixed => control(fixed, action)),
       manageDefinition: (target: WorkflowTarget, action: "archive" | "delete") =>
         execute(target, fixed => manageDefinition(fixed, action)),
       manageSession: (target: WorkflowTarget, sessionId: string, action: "archive" | "delete") =>
         execute(target, fixed => manageSession(fixed, sessionId, action)),
-      restoreCandidate: (target: WorkflowTarget, snapshot: GraphCandidates, candidateId: string, fork = false) =>
-        execute(target, fixed => restoreCandidate(fixed, snapshot, candidateId, fork)),
     },
     queries: { ...workflowManagementQueries, inspect },
   };

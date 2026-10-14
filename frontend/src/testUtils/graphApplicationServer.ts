@@ -41,6 +41,9 @@ export function stubGraphApplicationFetch(handler: (...arguments_: any[]) => any
   vi.stubGlobal("fetch", async (path: string, init?: RequestInit) => {
     if (path !== "/api/graph/queries" && path !== "/api/graph/commands") return handler(path, init);
     const { operation, parameters } = JSON.parse(String(init?.body));
+    if (path === "/api/graph/commands"
+      && ["session.rebind", "candidate.select", "candidate.fork"].includes(operation))
+      throw new Error(`Retired ${operation} writes are not available in fixtures`);
     const sid = parameters.session_id;
     const routes: Record<string, string> = {
       "catalog.node-types": `/api/graph/node-types${parameters.protocol_version === 2 ? "/v2" : ""}`,
@@ -50,7 +53,6 @@ export function stubGraphApplicationFetch(handler: (...arguments_: any[]) => any
       "session.read": `/api/graph/sessions/${sid}`,
       "run.read": `/api/graph/sessions/${sid}/runs/${parameters.chain_id}`,
       "candidate.list": `/api/graph/sessions/${sid}/candidates`,
-      "definition.save": "/api/graph/definitions",
       "definition.archive": `/api/graph/definitions/${parameters.identity}/archive`,
       "definition.delete": `/api/graph/definitions/${parameters.identity}/delete`,
       "session.archive": `/api/graph/sessions/${sid}/archive`,
@@ -59,9 +61,7 @@ export function stubGraphApplicationFetch(handler: (...arguments_: any[]) => any
       "session.metadata.update": `/api/graph/sessions/${sid}/metadata`,
       "session.create": "/api/graph/sessions", "run.start": `/api/graph/sessions/${sid}/runs`,
       "run.control": `/api/graph/sessions/${sid}/control`, "session.copy": `/api/graph/sessions/${sid}/copy`,
-      "session.rebind": `/api/graph/sessions/${sid}/rebind`, "session.data.update": `/api/graph/sessions/${sid}/data`,
-      "candidate.select": `/api/graph/sessions/${sid}/candidates/select`,
-      "candidate.fork": `/api/graph/sessions/${sid}/candidates/fork`,
+      "session.data.update": `/api/graph/sessions/${sid}/data`,
     };
     if (!routes[operation]) throw new Error(`Fixture has no application operation: ${operation}`);
     const query = path === "/api/graph/queries", { session_id: _sid, ...body } = parameters;

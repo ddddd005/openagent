@@ -6,9 +6,10 @@ from .agent_receipt_contract import projection_id, validate_agent_receipts
 from .context_compaction import is_compactable_text
 from .context_contract import (
     EFFECTIVE_CONTEXT_TYPE, MAX_ACCEPTED_DELTAS, _fields, _ids, _unique_refs,
-    artifact_ref, validate_effective_context,
+    artifact_ref, project_agent_context_message, project_agent_context_value,
+    validate_agent_checkpoint_value, validate_effective_context,
 )
-from .contract_graph import validate_message_history
+from .contract_graph import validate_context_message_history
 from .contract_json import content_digest, validate_json_value
 from .contracts_v2 import validate_record
 from .graph_contracts import require, uuid4_string
@@ -33,29 +34,11 @@ def validate_native_context_view(value):
     require(type(value["basis"]["head_revision"]) is int
             and 1 <= value["basis"]["head_revision"] <= 2**53 - 1,
             "context_update_invalid", "Persistent context requires its exact CAS revision")
-    require(type(value["messages"]) is list and len(value["messages"]) <= 4096
-            and type(value["layout"]) is list and len(value["layout"]) == len(value["messages"]),
-            "context_update_invalid", "Persistent messages require a bounded explicit layout")
-    validate_message_history(value["messages"])
-    for message, item in zip(value["messages"], value["layout"]):
-        _fields(item, ("kind", "round_id", "compaction"))
-        require(item["kind"] in ("history", "summary", "once")
-                and item["compaction"] in ("allowed", "never"),
-                "context_update_invalid_layout", "Per-request fixed material cannot enter persistent history")
-        if item["kind"] == "summary":
-            require(item["round_id"] is None and item["compaction"] == "allowed"
-                    and message["source"]["kind"] == "context_checkpoint",
-                    "context_update_invalid_layout", "A checkpoint is derived history, not another human round")
-        else:
-            uuid4_string(item["round_id"])
-            require(message["source"]["kind"] not in (
-                "context_checkpoint", "context_compaction_instruction", "protocol_feedback"),
-                "context_update_invalid_layout", "Maintenance and feedback are not ordinary persistent rounds")
-        require(item["compaction"] == "never" or is_compactable_text(message),
-                "context_update_ineligible", "Only persistent plain text can declare compaction eligibility")
-        require(message["role"] != "system" or (
-            item["kind"] == "once" and item["compaction"] == "never"),
-            "context_update_invalid_layout", "System material remains protected even with once lifecycle")
+    validate_agent_checkpoint_value({
+        "messages": value["messages"], "layout": value["layout"],
+        "accepted_delta_ids": value["accepted_delta_ids"] + value["applied_delta_ids"],
+        "generation": value["generation"],
+    })
     for field in ("accepted_delta_ids", "applied_delta_ids"):
         _ids(value[field])
     require(not set(value["accepted_delta_ids"]) & set(value["applied_delta_ids"])
@@ -87,24 +70,82 @@ def read_native_context(record, session_id, object_key, agent_node_id, retained=
             and not record["deleted"], "context_object_type_mismatch",
             "Native context requires its explicit versioned session object")
     current = validate_effective_context(record["value"])
-    if current["view_ref"] is None:
-        require(retained is None, "context_invalid_read", "An empty context cannot hide retained history")
-        messages, layout, generation = [], [], 0
-    else:
-        retained = validate_native_context_view(retained)
-        require(retained["accepted_delta_ids"] + retained["applied_delta_ids"]
-                == current["accepted_delta_ids"], "context_consumption_mismatch",
-                "Retained context must match the exact persistent consumed boundary")
-        messages, layout = retained["messages"], retained["layout"]
-        generation = retained["generation"]
+    if retained is not None:
+        require(validate_agent_checkpoint_value(retained) == current,
+                "context_invalid_read", "Read service must return the exact inline context value")
     return validate_native_context_view({
         "schema_version": 4, "kind": "workflow.context-view",
         "owner": {"workflow_session_id": session_id, "object_key": object_key, "agent_node_id": agent_node_id},
         "basis": {"revision_id": record["revision_id"], "head_revision": record["revision"]},
-        "messages": deepcopy(messages), "layout": deepcopy(layout),
-        "accepted_delta_ids": current["accepted_delta_ids"], "applied_delta_ids": [],
-        "generation": generation,
-        "derivation": {"operation": "read", "input_view_ref": current["view_ref"], "update_ref": None},
+        "messages": deepcopy(current["messages"]), "layout": deepcopy(current["layout"]),
+        "accepted_delta_ids": deepcopy(current["accepted_delta_ids"]), "applied_delta_ids": [],
+        "generation": current["generation"],
+        "derivation": {"operation": "read", "input_view_ref": None, "update_ref": None},
+    })
+
+
+def validate_native_context_view_v5(value):
+    """Validate the active owner-free CONTEXT_VIEW@5 contract."""
+    validate_json_value(value)
+    _fields(value, ("schema_version", "kind", "owner", "basis", "messages", "layout",
+                    "accepted_delta_ids", "applied_delta_ids", "generation", "derivation"))
+    require(type(value["schema_version"]) is int and value["schema_version"] == 5
+            and value["kind"] == "workflow.context-view", "context_update_invalid",
+            "Persistent native context requires CONTEXT_VIEW@5")
+    _fields(value["owner"], ("workflow_session_id", "object_key"))
+    uuid4_string(value["owner"]["workflow_session_id"])
+    require(type(value["owner"]["object_key"]) is str and 0 < len(value["owner"]["object_key"]) <= 128,
+            "context_update_invalid", "Persistent context requires its exact bound object")
+    _fields(value["basis"], ("revision_id", "head_revision"))
+    uuid4_string(value["basis"]["revision_id"])
+    require(type(value["basis"]["head_revision"]) is int
+            and 1 <= value["basis"]["head_revision"] <= 2**53 - 1,
+            "context_update_invalid", "Persistent context requires its exact CAS revision")
+    validate_agent_checkpoint_value({
+        "messages": value["messages"], "layout": value["layout"],
+        "accepted_delta_ids": value["accepted_delta_ids"] + value["applied_delta_ids"],
+        "generation": value["generation"],
+    })
+    for field in ("accepted_delta_ids", "applied_delta_ids"):
+        _ids(value[field])
+    require(not set(value["accepted_delta_ids"]) & set(value["applied_delta_ids"])
+            and len(value["accepted_delta_ids"]) + len(value["applied_delta_ids"]) <= MAX_ACCEPTED_DELTAS,
+            "context_consumption_mismatch", "Compaction cannot erase or duplicate consumed updates")
+    require(type(value["generation"]) is int and 0 <= value["generation"] <= 2**53 - 1,
+            "context_update_invalid", "Context generation must be monotonic")
+    derivation = value["derivation"]
+    _fields(derivation, ("operation", "input_view_ref", "receipts_ref"))
+    require(derivation["operation"] in ("read", "merge")
+            and ((derivation["operation"] == "merge") == (derivation["receipts_ref"] is not None))
+            and ((derivation["operation"] == "merge") == (derivation["input_view_ref"] is not None)),
+            "context_invalid_derivation", "Native context lineage differs from its operation")
+    for reference in (derivation["input_view_ref"], derivation["receipts_ref"]):
+        if reference is not None:
+            artifact_ref(reference)
+    return deepcopy(value)
+
+
+def native_context_references_v5(value):
+    return _unique_refs([reference for reference in value["derivation"].values()
+                         if type(reference) is dict])
+
+
+def read_native_context_v5(record, session_id, object_key, retained=None):
+    require((record["type_id"], record["schema_version"]) == (EFFECTIVE_CONTEXT_TYPE, 4)
+            and not record["deleted"], "context_object_type_mismatch",
+            "Native context requires its explicit versioned session object")
+    current = validate_effective_context(record["value"])
+    if retained is not None:
+        require(validate_agent_checkpoint_value(retained) == current,
+                "context_invalid_read", "Read service must return the exact inline context value")
+    return validate_native_context_view_v5({
+        "schema_version": 5, "kind": "workflow.context-view",
+        "owner": {"workflow_session_id": session_id, "object_key": object_key},
+        "basis": {"revision_id": record["revision_id"], "head_revision": record["revision"]},
+        "messages": deepcopy(current["messages"]), "layout": deepcopy(current["layout"]),
+        "accepted_delta_ids": deepcopy(current["accepted_delta_ids"]), "applied_delta_ids": [],
+        "generation": current["generation"],
+        "derivation": {"operation": "read", "input_view_ref": None, "receipts_ref": None},
     })
 
 
@@ -128,9 +169,9 @@ def final_from_context_operations(operations):
 def build_context_update_view(prompt, operations, receipts, final):
     """Project a proven native timeline explicitly; never reappend its raw round."""
     from .context_update import replay_context_operations, validate_context_operations
-    from .context_prompt_v6 import validate_native_context_prompt
+    from .context_prompt_v6 import validate_native_context_prompt_legacy_v4
 
-    prompt, receipts = validate_native_context_prompt(prompt), validate_agent_receipts(receipts)
+    prompt, receipts = validate_native_context_prompt_legacy_v4(prompt), validate_agent_receipts(receipts)
     initial = validate_native_context_view(prompt["context"])
     operations = validate_context_operations(operations)
     require(initial["owner"]["workflow_session_id"] == receipts["owner"]["workflow_session_id"]
@@ -145,6 +186,88 @@ def build_context_update_view(prompt, operations, receipts, final):
                 and item["compaction"] == "allowed" and is_compactable_text(message)]
     replayed = replay_context_operations(prompt["messages"], operations, eligible_message_ids=eligible)
     return _project_context_update_view(prompt, operations, receipts, final, replayed)
+
+
+def build_context_execution_view_v5(prompt, operations, receipts, final, *,
+                                    view_ref, receipts_ref, projection_replay):
+    """Rebuild a durable candidate from a loaded view and proven execution facts."""
+    from .context_update_v2 import validate_context_operations_v2
+    from .context_prompt_v6 import validate_native_context_prompt
+
+    prompt = validate_native_context_prompt(prompt)
+    receipts = validate_agent_receipts(receipts)
+    require(receipts["schema_version"] == 2
+            and prompt["context"]["owner"]["workflow_session_id"]
+            == receipts["owner"]["workflow_session_id"],
+            "context_execution_owner_mismatch", "Schema 2 execution receipts must target the loaded session")
+    operations = validate_context_operations_v2(operations)
+    require(type(projection_replay) is dict and set(projection_replay) == {"messages", "generation_delta"}
+            and type(projection_replay["messages"]) is list
+            and type(projection_replay["generation_delta"]) is int
+            and projection_replay["generation_delta"] >= 0,
+            "context_update_invalid", "Merge requires the exact schema 2 proof replay")
+    initial = validate_native_context_view_v5(prompt["context"])
+    update_id = projection_id(receipts["owner"]["node_run_id"], "context-update")
+    identities = initial["accepted_delta_ids"] + initial["applied_delta_ids"]
+    require(update_id not in identities and len(identities) < MAX_ACCEPTED_DELTAS,
+            "context_update_already_consumed", "An execution update cannot be consumed twice")
+    replayed = {
+        "messages": deepcopy(projection_replay["messages"]),
+        "generation_delta": projection_replay["generation_delta"],
+    }
+    validate_context_message_history(replayed["messages"])
+    require(replayed["generation_delta"] == sum(operation["kind"] == "compact" for operation in operations),
+            "context_update_invalid", "Generation delta must count only proven compaction operations")
+    require(final == final_from_context_operations(operations),
+            "context_update_final_unproven", "Final answer must equal its accepted tool settlement")
+
+    accepted = [operation["message"] for operation in operations if operation["kind"] == "append"]
+    preserve_final_protocol = accepted[-2].get("provider_metadata") is not None
+    removed_final_ids = set() if preserve_final_protocol else {
+        accepted[-2]["message_id"], accepted[-1]["message_id"],
+    }
+    layouts = {}
+    for message, item in zip(prompt["messages"], prompt["layout"]):
+        if item["kind"] == "fixed":
+            continue
+        persistent = deepcopy(item)
+        if persistent["kind"] == "current":
+            persistent.update(kind="history", round_id=update_id, compaction="allowed")
+        elif persistent["kind"] == "once":
+            persistent["round_id"] = persistent["round_id"] or update_id
+        layouts[message["message_id"]] = persistent
+    for operation in operations:
+        if operation["kind"] == "compact":
+            layouts[operation["checkpoint"]["message_id"]] = {
+                "kind": "summary", "round_id": None, "compaction": "allowed"}
+        else:
+            message = operation["message"]
+            if message["source"]["kind"] != "protocol_feedback":
+                layouts[message["message_id"]] = {
+                    "kind": "history", "round_id": update_id,
+                    "compaction": "allowed" if is_compactable_text(message) else "never"}
+    retained = [project_agent_context_message(message) for message in replayed["messages"]
+                if message["message_id"] in layouts and message["message_id"] not in removed_final_ids]
+    answer_id = projection_id(receipts["snapshot_id"], "final-answer-projection")
+    from .contracts_v2 import validate_context_history_message
+    answer = validate_context_history_message({
+        "message_id": answer_id, "role": "assistant",
+        "blocks": [{"kind": "text", "text": final["value"]["text"]}],
+    })
+    if not preserve_final_protocol:
+        retained.append(answer)
+        layouts[answer_id] = {"kind": "history", "round_id": update_id, "compaction": "allowed"}
+    return validate_native_context_view_v5({
+        "schema_version": 5, "kind": "workflow.context-view",
+        "owner": deepcopy(initial["owner"]), "basis": deepcopy(initial["basis"]),
+        "messages": retained,
+        "layout": [deepcopy(layouts[message["message_id"]]) for message in retained],
+        "accepted_delta_ids": deepcopy(initial["accepted_delta_ids"]),
+        "applied_delta_ids": initial["applied_delta_ids"] + [update_id],
+        "generation": initial["generation"] + replayed["generation_delta"],
+        "derivation": {"operation": "merge", "input_view_ref": artifact_ref(view_ref),
+                       "receipts_ref": artifact_ref(receipts_ref)},
+    })
 
 
 def _project_context_update_view(prompt, operations, receipts, final, replayed):
@@ -184,13 +307,12 @@ def _project_context_update_view(prompt, operations, receipts, final, replayed):
                 layouts[message["message_id"]] = {
                     "kind": "history", "round_id": update_id,
                     "compaction": "allowed" if is_compactable_text(message) else "never"}
-    retained = [message for message in replayed["messages"]
+    retained = [project_agent_context_message(message) for message in replayed["messages"]
                 if message["message_id"] in layouts and message["message_id"] not in removed_final_ids]
     answer_id = projection_id(receipts["snapshot_id"], "final-answer-projection")
-    answer = validate_record("agent_message", {
-        "schema_version": 3, "message_id": answer_id, "role": "assistant",
-        "source": {"kind": "prompt", "prompt_id": receipts["snapshot_id"], "revision": 1,
-                   "item_instance_id": answer_id, "group_instance_id": None},
+    from .contracts_v2 import validate_context_history_message
+    answer = validate_context_history_message({
+        "message_id": answer_id, "role": "assistant",
         "blocks": [{"kind": "text", "text": final["value"]["text"]}],
     })
     if not preserve_final_protocol:
@@ -233,9 +355,27 @@ def merge_native_context(view, view_ref, update, update_ref, prompt):
     return validate_native_context_view(result)
 
 
+def merge_native_context_v5(view, view_ref, receipts, receipts_ref, prompt, execution):
+    from .context_prompt_v6 import validate_native_context_prompt
+    view, receipts = validate_native_context_view_v5(view), validate_agent_receipts(receipts)
+    view_ref, receipts_ref = artifact_ref(view_ref), artifact_ref(receipts_ref)
+    prompt = validate_native_context_prompt(prompt)
+    require(prompt["context_ref"] == view_ref and prompt["context"] == view
+            and prompt["context"]["owner"]["workflow_session_id"]
+            == receipts["owner"]["workflow_session_id"],
+            "context_update_basis_mismatch", "Merge requires the exact loaded view used by this execution")
+    candidate = build_context_execution_view_v5(
+        prompt, execution["operations"], receipts, execution["final"],
+        view_ref=view_ref, receipts_ref=receipts_ref,
+        projection_replay=execution["projection_replay"])
+    require(execution["snapshot_id"] == receipts["snapshot_id"],
+            "agent_snapshot_mismatch", "Execution proof must retain the exact accepted snapshot")
+    return candidate
+
+
 def validate_native_context_artifacts(payload, resolve):
     from .context_update import validate_context_update
-    from .context_prompt_v6 import validate_native_context_prompt
+    from .context_prompt_v6 import validate_native_context_prompt_legacy_v4
 
     view = validate_native_context_view(payload["view"])
     require(resolve(artifact_ref(payload["view_ref"])) == view, "context_artifact_mismatch",
@@ -243,10 +383,8 @@ def validate_native_context_artifacts(payload, resolve):
     derivation = view["derivation"]
     previous = derivation["input_view_ref"]
     if previous is None:
-        require(derivation["operation"] == "read" and not view["messages"] and not view["layout"]
-                and not view["accepted_delta_ids"] and not view["applied_delta_ids"]
-                and view["generation"] == 0,
-                "context_invalid_derivation", "An empty read cannot manufacture persistent context")
+        require(derivation["operation"] == "read" and derivation["update_ref"] is None,
+                "context_invalid_derivation", "Only an object read may begin native context lineage")
     else:
         original = validate_native_context_view(resolve(previous))
         if derivation["operation"] == "read":
@@ -259,7 +397,8 @@ def validate_native_context_artifacts(payload, resolve):
             require(derivation["operation"] == "merge", "context_adoption_source_invalid",
                     "An unaccepted Agent candidate is not a writable context artifact")
             packet = validate_context_update(resolve(derivation["update_ref"]))
-            prompt = validate_native_context_prompt(resolve(packet["receipts"]["frozen_prompt_ref"]))
+            prompt = validate_native_context_prompt_legacy_v4(
+                resolve(packet["receipts"]["frozen_prompt_ref"]))
             expected = merge_native_context(original, previous, packet, derivation["update_ref"], prompt)
             require(expected == view, "context_invalid_derivation",
                     "Merge must reproduce its exact accepted Agent update")
@@ -267,8 +406,30 @@ def validate_native_context_artifacts(payload, resolve):
         packet = validate_context_update(payload["context"])
         require(resolve(artifact_ref(payload["context_ref"])) == packet,
                 "context_artifact_mismatch", "The update must equal its accepted Agent artifact")
-        prompt = validate_native_context_prompt(resolve(packet["receipts"]["frozen_prompt_ref"]))
+        prompt = validate_native_context_prompt_legacy_v4(
+            resolve(packet["receipts"]["frozen_prompt_ref"]))
         return merge_native_context(view, payload["view_ref"], packet, payload["context_ref"], prompt)
+    return view
+
+
+def validate_native_context_artifacts_v5(payload, resolve):
+    view = validate_native_context_view_v5(payload["view"])
+    require(resolve(artifact_ref(payload["view_ref"])) == view,
+            "context_artifact_mismatch", "Native context must equal its accepted immutable artifact")
+    if view["derivation"]["operation"] == "read":
+        require(view["derivation"]["input_view_ref"] is None
+                and view["derivation"]["receipts_ref"] is None,
+                "context_invalid_derivation", "A read cannot inherit another context artifact")
+    else:
+        original = validate_native_context_view_v5(resolve(view["derivation"]["input_view_ref"]))
+        receipts = validate_agent_receipts(resolve(view["derivation"]["receipts_ref"]))
+        require(receipts["schema_version"] == 2
+                and original["owner"] == view["owner"]
+                and original["basis"] == view["basis"]
+                and receipts["owner"]["workflow_session_id"] == view["owner"]["workflow_session_id"]
+                and projection_id(receipts["owner"]["node_run_id"], "context-update")
+                == view["applied_delta_ids"][-1],
+                "context_invalid_derivation", "Merged context must retain its exact loaded basis and producer")
     return view
 
 
@@ -281,8 +442,8 @@ def prepare_native_context_adoption(*, workflow_session_id, object_key, object_r
             and object_record["binding"]["object_key"] == object_key and not object_record["deleted"],
             "context_object_type_mismatch", "Native context requires its exact registered object version")
     current = validate_effective_context(object_record["value"])
-    desired = {"view_ref": artifact_ref(view_ref),
-               "accepted_delta_ids": view["accepted_delta_ids"] + view["applied_delta_ids"]}
+    view_ref = artifact_ref(view_ref)
+    desired = project_agent_context_value(view)
     operation_key = "context-merge:" + content_digest({
         "owner": view["owner"], "basis": view["basis"], "desired": desired, "view_schema": 4})
     if current == desired:
@@ -293,6 +454,30 @@ def prepare_native_context_adoption(*, workflow_session_id, object_key, object_r
             "context_stale_basis", "Native context must retain its exact revision and CAS fence")
     require(current["accepted_delta_ids"] == view["accepted_delta_ids"],
             "context_consumption_mismatch", "Adoption cannot erase the persistent consumption boundary")
+    return {"desired_value": desired, "already_committed": False, "operation_key": operation_key,
+            "write_intent": WriteIntent(object_key, object_record["revision"], operation_key, desired).to_dict()}
+
+
+def prepare_native_context_adoption_v5(*, workflow_session_id, object_key, object_record, view_ref, view):
+    view = validate_native_context_view_v5(view)
+    require(view["owner"] == {"workflow_session_id": workflow_session_id, "object_key": object_key},
+            "context_save_owner_mismatch", "Native context belongs to another object")
+    require((object_record["type_id"], object_record["schema_version"]) == (EFFECTIVE_CONTEXT_TYPE, 4)
+            and object_record["binding"]["object_key"] == object_key and not object_record["deleted"],
+            "context_object_type_mismatch", "Native context requires its exact registered object version")
+    current = validate_effective_context(object_record["value"])
+    view_ref = artifact_ref(view_ref)
+    desired = project_agent_context_value(view)
+    operation_key = "context-merge:" + content_digest({
+        "owner": view["owner"], "basis": view["basis"], "desired": desired, "view_schema": 5})
+    if current == desired:
+        return {"desired_value": desired, "write_intent": None, "already_committed": True,
+                "operation_key": operation_key}
+    require(view["basis"] == {"revision_id": object_record["revision_id"],
+                             "head_revision": object_record["revision"]},
+            "context_stale_basis", "Native context must retain its exact revision and CAS fence")
+    require(current["accepted_delta_ids"] == view["accepted_delta_ids"],
+            "context_consumption_mismatch", "Adoption cannot erase consumed updates")
     return {"desired_value": desired, "already_committed": False, "operation_key": operation_key,
             "write_intent": WriteIntent(object_key, object_record["revision"], operation_key, desired).to_dict()}
 
@@ -370,20 +555,16 @@ def validate_native_context_write(value, context):
     value = validate_effective_context(value)
     current = context["current_record"]
     if context["operation"] == "initialize":
-        require(current is None and value == {"view_ref": None, "accepted_delta_ids": []},
-                "context_initialization_invalid", "Native context begins with an empty pointer")
+        require(current is None and value == {
+            "messages": [], "layout": [], "accepted_delta_ids": [], "generation": 0,
+        }, "context_initialization_invalid", "Native context begins with its formal empty value")
         return
     if current is not None and not current["deleted"] and current["value"] == value:
         return
-    require(current is not None and value["view_ref"] is not None,
-            "context_invalid_write", "Native context cannot discard its adopted history")
-    resolver = context["resolve_artifact"]
-    source = resolver(value["view_ref"])
-    require((source["component_id"], source["component_version"]) == ("context.merge", "4"),
-            "context_adoption_source_invalid", "Only the official native merge writes its context object")
-    view = prove_native_context_view(value["view_ref"], resolver)
-    prepared = prepare_native_context_adoption(
-        workflow_session_id=context["workflow_session_id"], object_key=context["object_key"],
-        object_record=current, view_ref=value["view_ref"], view=view)
-    require(value == prepared["desired_value"], "context_consumption_mismatch",
-            "The object pointer and consumption must equal the proven native view")
+    require(current is not None and not current["deleted"],
+            "context_invalid_write", "Native context requires an initialized live object")
+    previous = validate_effective_context(current["value"])
+    require(value["accepted_delta_ids"][:len(previous["accepted_delta_ids"])]
+            == previous["accepted_delta_ids"]
+            and value["generation"] >= previous["generation"],
+            "context_consumption_mismatch", "Native context cannot discard consumed updates or compaction")

@@ -16,6 +16,8 @@ const renderers = computed(() => objects.value.flatMap(object => frontendHost.ex
   .map(row => ({ ...row, objectKey: object.key }))));
 const variables = computed(() => Object.entries(graph.session?.data.values ?? {}).map(([name, data]) => ({ name,
   value: graphObject(data) ? data.value : data, type: graphObject(data) ? String(data.type) : "unknown" })));
+const dataLocked = computed(() => graph.locked || !graph.session?.can_submit
+  || !!graph.session?.archived || !!graph.session?.readonly);
 function write(name: string, event: Event) {
   const input = event.target as HTMLTextAreaElement;
   try { const value = JSON.parse(input.value); input.setCustomValidity(""); void graph.writeData({ [name]: value }); }
@@ -31,7 +33,7 @@ function write(name: string, event: Event) {
     <component v-for="renderer in renderers" :key="`${renderer.declaration.extension_id}:${renderer.objectKey}`"
       :is="renderer.component" :object-key="renderer.objectKey" />
   </section>
-  <section v-if="variables.length" class="graph-session-data"><h3>旧变量（历史机制）</h3><label v-for="variable in variables" :key="variable.name"><span>{{ variable.name }} · {{ variable.type }}</span><textarea :value="JSON.stringify(variable.value) ?? 'null'" rows="2" :disabled="graph.locked" @change="write(variable.name, $event)" /></label></section>
+  <section v-if="variables.length" class="graph-session-data"><h3>旧变量（历史机制）</h3><label v-for="variable in variables" :key="variable.name"><span>{{ variable.name }} · {{ variable.type }}</span><textarea :value="JSON.stringify(variable.value) ?? 'null'" rows="2" :disabled="dataLocked" @change="write(variable.name, $event)" /></label></section>
 </template>
 <style scoped>
 .graph-session-data { display:grid; gap:9px; border-top:1px solid #45454d; padding-top:10px; }

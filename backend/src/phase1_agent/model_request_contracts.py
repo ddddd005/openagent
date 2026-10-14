@@ -123,6 +123,7 @@ def model_settings_schema() -> dict:
         "capabilities": object_schema({
             "protocol": {"enum": ["chat", "gemini"]}, "tools": {"type": "boolean"},
             "stream": _const(False), "thinking": {"enum": ["disabled", "budget", "level"]},
+            "output_limit_tokens": {"anyOf": [{"type": "null"}, _integer()]},
         }),
         "capacity": model_capacity_schema(),
         "budget": object_schema({
@@ -234,7 +235,7 @@ def validate_model_settings(value: object) -> dict:
         "context_length_tokens": budget["context_length_tokens"],
         "compaction_threshold_bps": budget["compaction_threshold_bps"],
         "output_limit_tokens": budget["normal_output_limit_tokens"],
-    }, transport_output_limit=result["capacity"]["max_output_tokens"], purpose=result["purpose"])
+    }, transport_output_limit=capabilities["output_limit_tokens"], purpose=result["purpose"])
     require(budget == expected and parameters["max_tokens"] == expected["output_reserve_tokens"],
             "model_request_settings_invalid", "Settings budget or output limit is inconsistent")
     return result
@@ -274,7 +275,7 @@ def transport_capability_schema() -> dict:
     return object_schema({
         "schema_version": _const(1), "transport_id": _text(), "transport_version": _text(),
         "protocol": {"enum": ["chat", "gemini"]}, "model_id": _text(256),
-        "output_limit_tokens": _integer(), "tools": {"type": "boolean"},
+        "output_limit_tokens": {"anyOf": [{"type": "null"}, _integer()]}, "tools": {"type": "boolean"},
         "thinking": {"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": True,
                      "items": {"enum": ["disabled", "budget", "level"]}},
         "provenance": object_schema({"source": _text(512), "version": _text()}),
@@ -327,7 +328,8 @@ def build_model_settings(profile: object, *, configuration: dict, provider: dict
             "max_tokens": budget["output_reserve_tokens"],
         },
         "capabilities": {"protocol": protocol, "tools": capability["tools"], "stream": False,
-                         "thinking": "disabled" if thinking == "disabled" else thinking["mode"]},
+                         "thinking": "disabled" if thinking == "disabled" else thinking["mode"],
+                         "output_limit_tokens": capability["output_limit_tokens"]},
         "capacity": profile["model"]["capacity"], "budget": budget,
     })
 

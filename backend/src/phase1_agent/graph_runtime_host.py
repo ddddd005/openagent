@@ -115,6 +115,74 @@ class GraphRuntimeHost:
                  "node_binding_id": context.node_binding_id, "node_run_id": context.node_run_id}
         return self._accept_runtime_fact(owner, fact, stream_id)
 
+    @staticmethod
+    def _model_authority_record(connection, kind, **identity):
+        from .contract_json import loads_strict
+        from .graph_records import validate_graph_record
+        from .storage import _record_id
+        row = connection.execute(
+            "SELECT payload FROM records WHERE record_type=? AND record_id=?",
+            (kind, _record_id(kind, identity)),
+        ).fetchone()
+        require(row is not None, "model_binding_unauthorized",
+                "Exact model authority record is unavailable", 403)
+        return validate_graph_record(kind, loads_strict(row["payload"]))
+
+    @staticmethod
+    def _model_authority_declaration(frame, run, *, grants=False):
+        node = frame.nodes.get(run["node_binding_id"])
+        require(node is not None and node["config"] == run["config"],
+                "model_binding_unauthorized",
+                "Model authority differs from the frozen runtime declaration", 403)
+        declaration = {key: deepcopy(node[key]) for key in (
+            "node_binding_id", "component_id", "component_version", "config")}
+        if grants:
+            definition = frame.definitions[run["node_binding_id"]]
+            declaration.update(
+                capabilities=list(definition.capabilities),
+                service_requirements=deepcopy(list(definition.service_requirements)))
+        return declaration
+
+    def _model_binding_authority(self, frame, connection, context, output_id):
+        get = self._model_authority_record
+        output = get(connection, "workflow_output", output_id=output_id)
+        producer = get(connection, "node_run", run_id=output["run_id"])
+        consumer = get(connection, "node_run", run_id=context.node_run_id)
+        return {
+            "session": get(connection, "workflow_session",
+                           workflow_session_id=context.workflow_session_id),
+            "chain": get(connection, "chain_run", chain_run_id=context.chain_run_id),
+            "consumer_run": consumer, "producer_run": producer, "binding_output": output,
+            "source_node": self._model_authority_declaration(frame, producer),
+            "consumer_node": self._model_authority_declaration(frame, consumer, grants=True),
+        }
+
+    def _model_fact_authority(self, frame, connection, context, port):
+        get = self._model_authority_record
+        consumer = get(connection, "node_run", run_id=context.node_run_id)
+        refs = consumer["input_refs"].get(port)
+        require(port == "receipts" and type(refs) is list and len(refs) == 1,
+                "model_fact_reference_denied",
+                "Model facts require one exact accepted receipts input", 403)
+        output = get(connection, "workflow_output", output_id=refs[0]["output_id"])
+        producer = get(connection, "node_run", run_id=output["run_id"])
+        model_refs = producer["input_refs"].get("model")
+        require(type(model_refs) is list and len(model_refs) == 1,
+                "model_fact_reference_denied",
+                "Receipt producer requires its exact accepted model input", 403)
+        binding = get(connection, "workflow_output", output_id=model_refs[0]["output_id"])
+        source = get(connection, "node_run", run_id=binding["run_id"])
+        return {
+            "session": get(connection, "workflow_session",
+                           workflow_session_id=context.workflow_session_id),
+            "chain": get(connection, "chain_run", chain_run_id=context.chain_run_id),
+            "consumer_run": consumer, "producer_run": producer, "input_output": output,
+            "model_binding_output": binding, "model_source_run": source,
+            "source_node": self._model_authority_declaration(frame, producer),
+            "model_source_node": self._model_authority_declaration(frame, source),
+            "consumer_node": self._model_authority_declaration(frame, consumer, grants=True),
+        }
+
     def _prepare_public_capabilities(self, sid, chain_id, plan, resources):
         from .host_services import HostServiceEnvironment, HostServiceRun
         nodes = {node["node_binding_id"]: node for node in plan.document["nodes"]
@@ -161,25 +229,47 @@ class GraphRuntimeHost:
 
             options = {key: value if callable(value) else deepcopy(value)
                        for key, value in self._service_options.get(reference, {}).items()}
+            from .model_request_contracts import MODEL_REQUEST_SERVICE_REF
+            if reference == MODEL_REQUEST_SERVICE_REF:
+                from .model_request_resources import ModelRequestResourceReader
+                from .model_request_fact_reader import ModelRequestFactReader
+                options["model_resource_reader"] = ModelRequestResourceReader(
+                    self.database, types=self.registry.data_types,
+                    load_binding_authority=lambda connection, context, output_id:
+                        self._model_binding_authority(frame, connection, context, output_id),
+                    source_component=("models.source", "7"))
+                options["model_fact_reader"] = ModelRequestFactReader(
+                    self.database,
+                    load_fact_authority=lambda connection, context, port:
+                        self._model_fact_authority(frame, connection, context, port),
+                    source_component=("agents.execute", "10"),
+                    model_source_component=("models.source", "7"))
             return HostServiceEnvironment(resolve_input, resolve_artifact, accept_fact, read_resource, options)
         frame.prepare(environment, resources)
 
-    def _release_public_capabilities(self, sid, chain_id):
+    def _release_public_capabilities(self, sid, chain_id, *, known_chain=None):
         frame = self._service_runs.get(chain_id)
         if frame is not None and frame.release():
             self._service_runs.pop(chain_id, None)
         host = self._runtime_hosts.get(chain_id)
         if host is not None:
-            with closing(self._store()) as store:
-                from .runtime_hosting import InvocationOwner
-                chain = GraphRecordStore(store).get("chain_run", chain_run_id=chain_id)
+            if known_chain is None:
+                with closing(self._store()) as store:
+                    chain = GraphRecordStore(store).get("chain_run", chain_run_id=chain_id)
+            else:
+                chain = known_chain
+                require(chain["chain_run_id"] == chain_id
+                        and (sid is None or chain["workflow_session_id"] == sid),
+                        "execution_cleanup_owner_mismatch",
+                        "Execution cleanup evidence belongs to another owner", 409)
+            from .runtime_hosting import InvocationOwner
             for node_id, run_id in zip(chain["ordered_nodes"], chain["node_run_ids"]):
                 owner = InvocationOwner(chain["workflow_session_id"], chain_id, node_id, run_id)
                 if host.contains(owner):
                     host.release(owner)
             if host.active_handle_count == 0:
                 self._runtime_hosts.pop(chain_id, None)
-        self._release_information_chain(chain_id)
+        self._release_information_chain(chain_id, session_id=sid, known_chain=known_chain)
 
     def host_service_instances(self, chain_id):
         """Read-only instance observation for trusted application integrations."""

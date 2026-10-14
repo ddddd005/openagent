@@ -90,14 +90,15 @@ async function renderResources(resources: ResourceController, reference: Current
   }
   const profile = newModelProfile(reference);
   profile.value.name = `${reference.value.name} model configuration`;
-  profile.value.parameters.model = "offline-model";
-  profile.value.capacity.context_window_tokens = 128000;
-  profile.value.capacity.max_cold_input_tokens = 128000;
+  profile.value.model.id = "offline-model";
+  profile.value.model.capacity = { context_window_tokens: 128000, input_limit_tokens: 120000, max_output_tokens: 8192 };
+  profile.value.runtime.context_length_tokens = 128000;
+  profile.value.runtime.output_limit_tokens = 4096;
   const profiles = createModelProfiles({ list: async () => [profile], save: vi.fn(), readReceipt: vi.fn(),
     readPending: () => null, writePending: () => {} });
   profiles.records.value = [profile];
   const node: GraphNode = {
-    node_binding_id: crypto.randomUUID(), component_id: "models.source", component_version: "5",
+    node_binding_id: crypto.randomUUID(), component_id: "models.source", component_version: "7",
     title: "Model source", position: { x: 0, y: 0 },
     config: { reference: modelProfileIdentity(profile) },
   };

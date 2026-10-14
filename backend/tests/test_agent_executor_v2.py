@@ -13,7 +13,7 @@ from phase1_agent.agent_receipt_contract import (
 )
 from phase1_agent.content_contracts import text_content
 from phase1_agent.context_prompt_v6 import assemble_native_context_prompt
-from phase1_agent.context_v4 import validate_native_context_view
+from phase1_agent.context_v4 import validate_native_context_view_v5
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.contracts import ModelResponse, ModelToolCall
 from phase1_agent.contracts_v2 import validate_record
@@ -52,15 +52,15 @@ class ExecutorHarness:
         owner = {field: getattr(self.mock.context, field) for field in (
             "workflow_session_id", "chain_run_id", "node_binding_id", "node_run_id")}
         self.context = SimpleNamespace(**owner)
-        view = validate_native_context_view({
-            "schema_version": 4, "kind": "workflow.context-view",
+        view = validate_native_context_view_v5({
+            "schema_version": 5, "kind": "workflow.context-view",
             "owner": {"workflow_session_id": owner["workflow_session_id"],
-                      "object_key": "context", "agent_node_id": owner["node_binding_id"]},
+                      "object_key": "context"},
             "basis": {"revision_id": str(uuid4()), "head_revision": 1},
             "messages": [], "layout": [],
             "accepted_delta_ids": [], "applied_delta_ids": [],
             "generation": 0,
-            "derivation": {"operation": "read", "input_view_ref": None, "update_ref": None},
+            "derivation": {"operation": "read", "input_view_ref": None, "receipts_ref": None},
         })
         self.prompt = assemble_native_context_prompt(
             [], view, text_content("Current task"),
@@ -73,8 +73,7 @@ class ExecutorHarness:
         }
         self.context.input_artifact_refs = lambda port: deepcopy(self.references[port])
         self.context.host_call = self.host_call
-        self.handles, self.release_calls = [], []
-        self.release_error = False
+        self.handles = []
         self.mock.response = ModelResponse("tool_calls", tool_calls=(
             ModelToolCall("provider-final", "final_answer",
                           json.dumps({"answer": {"text": "Accepted answer"}})),))
@@ -86,17 +85,9 @@ class ExecutorHarness:
                     "output_id": self.references[port][0]["output_id"]}
         return self.mock.service(self.mock.context, capability, operation, payload)
 
-    def release(self):
-        self.release_calls.append("release")
-        if self.release_error:
-            self.release_error = False
-            raise OSError("Synthetic run release failure")
-        self.mock.service.release_run(
-            self.context.workflow_session_id, self.context.chain_run_id)
-
     def executor(self, **options):
         handle = PublicAgentExecutor(
-            {}, self.inputs, self.context, schema_version=2, release_run=self.release, **options)
+            {}, self.inputs, self.context, schema_version=2, **options)
         self.handles.append(handle)
         return handle
 
@@ -114,8 +105,10 @@ def executor_host(tmp_path):
 
 
 def schema2_snapshot(host):
+    prompt = {field: deepcopy(host.prompt[field]) for field in (
+        "messages", "layout", "current_input_ref")}
     return make_public_agent_snapshot(
-        host.context, {}, host.prompt, host.mock.binding, (final_answer_tool(),), schema_version=2)
+        host.context, {}, prompt, host.mock.binding, (final_answer_tool(),), schema_version=2)
 
 
 def schema2_receipts(host):
@@ -127,6 +120,7 @@ def schema2_receipts(host):
         "snapshot_id": str(uuid4()), "unit_id": str(uuid4()),
         "frozen_prompt_ref": {"scope": "artifact", "output_id": host.references["prompt"][0]["output_id"]},
         "model_ref": {"scope": "artifact", "output_id": host.references["model"][0]["output_id"]},
+        "compaction_policy_ref": None,
         "fact_ids": [str(uuid4())],
         "model_requests": [{"request_id": str(uuid4()), "settings_id": str(uuid4()),
                             "fact_ids": [str(uuid4()) for _ in range(3)]}],
@@ -172,6 +166,7 @@ def test_generic_receipts_dispatch_retains_v2_requests_and_v1_regression(executo
     assert receipts_references(receipts) == [receipts["frozen_prompt_ref"], receipts["model_ref"]]
     legacy = deepcopy(receipts)
     legacy.pop("model_requests")
+    legacy.pop("compaction_policy_ref")
     legacy.update(schema_version=1, executor_ref=AGENT_EXECUTOR_REF.to_dict())
     assert validate_agent_receipts(legacy) == legacy
 
@@ -193,15 +188,12 @@ def test_generic_receipts_rejects_incomplete_or_wrong_identity_evidence(executor
         validate_agent_receipts(receipts)
 
 
-def test_executor2_selection_and_trusted_release_are_explicit(executor_host):
+def test_executor_is_schema2_only_and_requires_the_real_host_bridge(executor_host):
     host = executor_host
     with pytest.raises(ContractValidationError):
-        PublicAgentExecutor({}, host.inputs, host.context)
-    with pytest.raises(ContractValidationError) as error:
-        PublicAgentExecutor({}, host.inputs, host.context, schema_version=2)
-    assert error.value.reason_code == "model_execution_host_invalid"
+        PublicAgentExecutor({}, host.inputs, host.context, schema_version=1)
     with pytest.raises(ContractValidationError):
-        PublicAgentExecutor({}, host.inputs, host.context, schema_version=True, release_run=host.release)
+        PublicAgentExecutor({}, host.inputs, host.context, schema_version=True)
     assert host.mock.communications == [] and host.host.read_count == 0
 
 
@@ -211,8 +203,7 @@ def test_executor2_rejects_changed_accepted_prompt_before_any_request(executor_h
     changed["prompt"]["messages"][-1]["blocks"][0]["text"] = "Changed immutable task"
     changed["prompt"]["current_input"]["blocks"][0]["text"] = "Changed immutable task"
     with pytest.raises(ContractValidationError) as error:
-        PublicAgentExecutor(
-            {}, changed, host.context, schema_version=2, release_run=host.release)
+        PublicAgentExecutor({}, changed, host.context, schema_version=2)
     assert error.value.reason_code == "agent_input_mismatch"
     assert host.mock.communications == [] and host.host.read_count == 0
 
@@ -233,22 +224,15 @@ def test_original_fact_retry_reuses_timestamp_and_rejects_changed_body(executor_
     assert error.value.reason_code == "agent_fact_conflict" and len(callbacks.calls) == 3
 
 
-def test_executor2_dispose_failure_retains_original_state_for_release_retry(executor_host):
+def test_executor2_dispose_does_not_release_the_shared_chain_model_service(executor_host):
     host = executor_host
     handle = host.executor()
     handle.advance(Callbacks(), None)
-    bridge, snapshot = handle.request_bridge, deepcopy(handle.snapshot)
-    host.release_error = True
-    with pytest.raises(OSError, match="release failure"):
-        handle.dispose()
-    assert not handle.disposed and handle.snapshot == snapshot
-    assert handle.request_bridge is bridge
-    with pytest.raises(ContractValidationError) as error:
-        bridge.validate_snapshot(snapshot)
-    assert error.value.reason_code == "model_execution_bridge_mismatch"
     handle.dispose()
-    assert host.release_calls == ["release", "release"]
-    assert handle.disposed and handle.snapshot is None and not handle._original_events
-    handle.dispose()
-    assert host.release_calls == ["release", "release"]
+    assert handle.disposed and handle.snapshot is None
     assert len(host.mock.communications) == 1
+
+    later = host.executor()
+    later.advance(Callbacks(), None)
+    later.dispose()
+    assert len(host.mock.communications) == 2

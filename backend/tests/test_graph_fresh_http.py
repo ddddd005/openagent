@@ -77,10 +77,14 @@ def test_fresh_http_current_graph_runs_and_reopens_without_compat(tmp_path):
         assert {"tools.text", "tools.output", "agents.execute"} <= components
         assert "workflow.agent" not in components and "workflow.text" not in components
         document["package_lock"] = platform["execution_package_lock"]
-        status, saved = command(port, "definition.save", document=document,
-                                expected_revision=0, idempotency_key="save-current")
-        assert status == 201
-        assert saved["receipt"]["operation"] == "definition.save"
+        document["schema_version"] = 3
+        for node in document["nodes"]:
+            node["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
+        status, saved = command(
+            port, "definition.update", workflow_definition_id=document["workflow_definition_id"],
+            document=document, expected_edit_sequence=0, idempotency_key="save-current")
+        assert status == 200 and saved["result"]["outcome"] == "saved"
+        assert saved["receipt"]["operation"] == "definition.update"
         status, created = command(port, "session.create",
                                   workflow_definition_id=document["workflow_definition_id"],
                                   definition_revision=1, idempotency_key="session-current")

@@ -1,4 +1,5 @@
-import { graphObject, graphUuid, isGraphDocument, type GraphEntry } from "../domain/workflowGraph";
+import { graphClone, graphObject, graphUuid, isGraphDocument,
+  type GraphCommand, type GraphEntry } from "../domain/workflowGraph";
 import type { WorkspaceWorkflow } from "../domain/workspace";
 
 export const WORKBENCH_STORAGE_KEY = "workflow-workbench:fixed-base:v1";
@@ -48,6 +49,26 @@ export interface SavedWorkbench extends WorkbenchConfiguration {
   revision: number;
   savedAt: string;
 }
+export interface LegacyPendingCommand {
+  key: string;
+  workflowId: string;
+  command: GraphCommand;
+  legacy_action: "extend_budget" | null;
+  basis: { definitionId: string; savedRevision: number; sessionId: string | null };
+  status: "pending" | "checking" | "verified" | "unknown";
+  result?: string;
+  error?: string;
+}
+interface LegacyBudgetExtensionCommand extends GraphCommand {
+  action: "extend_budget";
+}
+export interface LegacyWorkbenchEvidence {
+  activeWorkflowId: string | null;
+  selectedWorkflowId: string | null;
+  pending: LegacyPendingCommand[];
+  unreadablePending: number;
+  unreadableRecord: boolean;
+}
 function metadata(value: Record<string, unknown>) {
   return Number.isSafeInteger(value.revision) && Number(value.revision) > 0
     && typeof value.savedAt === "string" && Number.isFinite(Date.parse(value.savedAt));
@@ -90,4 +111,67 @@ export function isSavedWorkbench(value: unknown): value is SavedWorkbench {
     && (value.catalog.length === 0 ? value.activeWorkflowId === "" && value.selectedWorkflowId === ""
       : value.catalog.some(row => row.id === value.activeWorkflowId)
         && value.catalog.some(row => row.id === value.selectedWorkflowId));
+}
+
+const readablePendingActions = new Set([
+  "save", "create", "copy", "start", "pause", "resume", "close",
+  "retry_archive", "retry_acceptance", "retry_failed_node", "definition-archive",
+  "definition-delete", "session-archive", "session-delete", "data", "event",
+  "rebind", "candidate-select", "candidate-fork",
+]);
+function hasLegacyCommandEnvelope(value: unknown): value is GraphCommand {
+  return graphObject(value) && typeof value.path === "string"
+    && /^\/api\/graph\/(definitions|sessions(?:\/|$))/.test(value.path)
+    && graphObject(value.body) && graphUuid(value.body.idempotency_key)
+    && typeof value.action === "string";
+}
+function isLegacyBudgetExtensionCommand(value: unknown): value is LegacyBudgetExtensionCommand {
+  if (!hasLegacyCommandEnvelope(value) || value.action !== "extend_budget"
+    || !/^\/api\/graph\/sessions\/[0-9a-f-]{36}\/control$/.test(value.path)
+    || !graphUuid(value.path.split("/")[4]) || value.body.action !== "extend_budget"
+    || !Number.isSafeInteger(value.body.expected_revision) || Number(value.body.expected_revision) < 1
+    || !Number.isSafeInteger(value.body.add_model_requests) || Number(value.body.add_model_requests) < 0
+    || !Number.isSafeInteger(value.body.add_model_attempts) || Number(value.body.add_model_attempts) < 0) return false;
+  return Number(value.body.add_model_requests) + Number(value.body.add_model_attempts) > 0;
+}
+function legacyCommand(value: unknown): value is GraphCommand | LegacyBudgetExtensionCommand {
+  return hasLegacyCommandEnvelope(value)
+    && (readablePendingActions.has(value.action) || isLegacyBudgetExtensionCommand(value));
+}
+export function readLegacyWorkbenchEvidence(value: unknown): LegacyWorkbenchEvidence {
+  const result: LegacyWorkbenchEvidence = {
+    activeWorkflowId: null, selectedWorkflowId: null, pending: [], unreadablePending: 0,
+    unreadableRecord: false,
+  };
+  if (!graphObject(value) || value.schemaVersion !== 7 || value.kind !== "graph-workbench"
+    || !graphObject(value.graph) || value.graph.schema_version !== 1 || !graphObject(value.graph.entries)) {
+    result.unreadableRecord = true;
+    return result;
+  }
+
+  result.activeWorkflowId = graphUuid(value.activeWorkflowId) ? value.activeWorkflowId : null;
+  result.selectedWorkflowId = graphUuid(value.selectedWorkflowId) ? value.selectedWorkflowId : null;
+  for (const [workflowId, rawEntry] of Object.entries(value.graph.entries)) {
+    if (!graphObject(rawEntry) || rawEntry.pending === null || rawEntry.pending === undefined) continue;
+    const document = rawEntry.document;
+    const sessionId = rawEntry.session_id;
+    if (!graphUuid(workflowId) || !isGraphDocument(document)
+      || document.workflow_definition_id !== workflowId
+      || !Number.isSafeInteger(rawEntry.saved_revision) || Number(rawEntry.saved_revision) < 0
+      || sessionId !== null && !graphUuid(sessionId) || !legacyCommand(rawEntry.pending)) {
+      result.unreadablePending++;
+      continue;
+    }
+    const command = graphClone(rawEntry.pending);
+    result.pending.push({
+      key: `${workflowId}:${command.body.idempotency_key}`,
+      workflowId,
+      command,
+      legacy_action: command.action === "extend_budget" ? "extend_budget" : null,
+      basis: { definitionId: document.workflow_definition_id,
+        savedRevision: Number(rawEntry.saved_revision), sessionId: sessionId as string | null },
+      status: "pending",
+    });
+  }
+  return result;
 }

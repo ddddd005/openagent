@@ -22,9 +22,7 @@ from phase1_agent.model_contract import (
     validate_public_model_result,
 )
 from phase1_agent.model_package import create_model_package, MODEL_FRONTEND_EXTENSIONS
-from phase1_agent.model_service import (
-    ModelCapabilityAdapter, PublicModelService, create_chat_transport,
-)
+from phase1_agent.model_service import create_chat_transport
 from phase1_agent.prompt_contract import assemble_prompt
 from phase1_agent.prompt_package import create_prompt_package
 from credential_test_support import TestProtector, mutate_test_credential

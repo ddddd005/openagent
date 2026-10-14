@@ -545,12 +545,13 @@ class ObjectBinding:
     writers: tuple[str, ...] = ()
     owner_node_id: str | None = None
     default_value: Any = field(default_factory=lambda: _MISSING)
+    registrar_node_id: str | None = None
 
     @classmethod
     def from_dict(cls, value: Any) -> ObjectBinding:
         validate_json_value(value)
         required = {"object_key", "type_id", "schema_version", "scope", "readers", "writers", "owner_node_id"}
-        ensure(type(value) is dict and required <= set(value) <= required | {"default_value"},
+        ensure(type(value) is dict and required <= set(value) <= required | {"default_value", "registrar_node_id"},
                "host_invalid_binding", "Object binding fields are invalid")
         ensure(bounded_name(value["object_key"]) and bounded_name(value["type_id"])
                and type(value["schema_version"]) is int and 1 <= value["schema_version"] <= 2**53 - 1
@@ -564,12 +565,16 @@ class ObjectBinding:
         owner = value["owner_node_id"]
         ensure(owner is None if value["scope"] == "shared" else canonical_uuid(owner),
                "host_invalid_binding", "Shared and private object ownership is invalid")
+        registrar = value.get("registrar_node_id")
+        ensure(registrar is None or canonical_uuid(registrar),
+               "host_invalid_binding", "Object registrar must name a node instance")
         if value["scope"] == "private":
             ensure(set(value["readers"]) <= {owner} and set(value["writers"]) <= {owner},
                    "host_invalid_binding", "Only the owner may access a private object")
         return cls(value["object_key"], value["type_id"], value["schema_version"], value["scope"],
                    tuple(value["readers"]), tuple(value["writers"]), owner,
-                   copy.deepcopy(value["default_value"]) if "default_value" in value else _MISSING)
+                   copy.deepcopy(value["default_value"]) if "default_value" in value else _MISSING,
+                   registrar)
 
     def to_dict(self) -> dict:
         value = {
@@ -579,6 +584,8 @@ class ObjectBinding:
         }
         if self.default_value is not _MISSING:
             value["default_value"] = copy.deepcopy(self.default_value)
+        if self.registrar_node_id is not None:
+            value["registrar_node_id"] = self.registrar_node_id
         return value
 
     @property

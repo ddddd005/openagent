@@ -13,9 +13,11 @@ from phase1_agent.content_contracts import (
 from phase1_agent.context_prompt_v6 import (
     assemble_native_context_prompt, native_context_prompt_references, validate_native_context_prompt,
 )
+from phase1_agent.context_contract import project_agent_context_message
 from phase1_agent.context_v4 import validate_native_context_view
 from phase1_agent.contract_errors import ContractValidationError
-from phase1_agent.contract_graph import validate_message_history
+from phase1_agent.contract_graph import validate_context_message_history, validate_message_history
+from phase1_agent.contracts_v2 import validate_context_history_message, validate_record
 from phase1_agent.graph_contracts import GraphCompiler
 from phase1_agent.global_resources import global_resource_reference
 from phase1_agent.prompt_lifecycle import (
@@ -48,12 +50,13 @@ def content(*items):
     return merge_lifecycle_prompt_materials([lifecycle_prompt_content(list(items))])
 
 
-def view(messages=None, layout=None):
+def view(messages=None, layout=None, *, basis_revision=None, head_revision=1):
+    projected_messages = [project_agent_context_message(message) for message in (messages or [])]
     return validate_native_context_view({
         "schema_version": 4, "kind": "workflow.context-view",
         "owner": {"workflow_session_id": uid(800), "object_key": "context", "agent_node_id": uid(801)},
-        "basis": {"revision_id": uid(802), "head_revision": 1},
-        "messages": messages or [], "layout": layout or [], "accepted_delta_ids": [],
+        "basis": {"revision_id": basis_revision or uid(802), "head_revision": head_revision},
+        "messages": projected_messages, "layout": layout or [], "accepted_delta_ids": [],
         "applied_delta_ids": [], "generation": 0,
         "derivation": {"operation": "read", "input_view_ref": None, "update_ref": None},
     })
@@ -75,7 +78,8 @@ def persist(materials, initial=None):
             continue
         layout.append({**item, "round_id": item["round_id"] or uid(950)})
         messages.append(message)
-    return view(messages, layout)
+    revision = initial["basis"]["head_revision"] + 1 if initial is not None else 2
+    return view(messages, layout, basis_revision=uid(801 + revision), head_revision=revision)
 
 
 def loaded():
@@ -94,6 +98,24 @@ def test_new_materials_do_not_accept_old_prompt_envelope_or_implicit_lifetime():
         validate_lifecycle_prompt_materials(forged)
 
 
+def test_source_free_history_does_not_relax_live_or_generated_message_contracts():
+    history = {
+        "message_id": uid(10), "role": "user",
+        "blocks": [{"kind": "text", "text": "persisted context"}],
+    }
+    assert validate_context_history_message(history) == history
+    with pytest.raises(ContractValidationError):
+        validate_record("agent_message", history)
+    turn = {
+        "turn_id": uid(11), "parent_turn_id": None, "run_id": uid(12),
+        "snapshot_id": uid(13), "input_id": uid(14), "messages": [history],
+        "final": {"message_id": uid(15), "value": {"text": "final"}},
+        "projection_version": 1,
+    }
+    with pytest.raises(ContractValidationError):
+        validate_record("turn", turn)
+
+
 def test_aggregation_preserves_all_pre_dedup_origin_identities_and_is_idempotent():
     first, second = item(1), item(2)
     combined = merge_lifecycle_prompt_materials([content(second), content(first)])
@@ -102,6 +124,45 @@ def test_aggregation_preserves_all_pre_dedup_origin_identities_and_is_idempotent
     assert combined["items"][0]["origin_item_ids"] == expected
     assert merge_lifecycle_prompt_materials([combined, content(first), combined]) == combined
     assert first["origin_item_ids"] == [first["item_instance_id"]]
+
+
+def test_aggregation_keeps_first_enabled_once_item_by_order_and_exact_role_text():
+    first = item(2, "same", placement="before", order=1)
+    later = item(1, "same", placement="before", order=2)
+    first["metadata"] = {"label": "first"}
+    later["metadata"] = {"label": "later"}
+
+    merged = merge_lifecycle_prompt_materials([
+        lifecycle_prompt_content([later, first]),
+    ])
+
+    assert merged["items"] == [first]
+
+
+def test_aggregation_keeps_role_text_differences_and_all_per_request_items():
+    items = [
+        item(1, "same", role="user"),
+        item(2, "same", role="assistant"),
+        item(3, "Same", role="user"),
+        item(4, "same", lifecycle="per_request", compaction="never", order=1),
+        item(5, "same", lifecycle="per_request", compaction="never", order=2),
+    ]
+
+    merged = merge_lifecycle_prompt_materials([lifecycle_prompt_content(items)])
+
+    assert len(merged["items"]) == len(items)
+    assert sum(value["lifecycle"] == "per_request" for value in merged["items"]) == 2
+
+
+def test_disabled_once_item_does_not_hide_enabled_duplicate():
+    disabled = item(1, "same", enabled=False, order=0)
+    enabled = item(2, "same", enabled=True, order=1)
+
+    merged = merge_lifecycle_prompt_materials([
+        lifecycle_prompt_content([disabled, enabled]),
+    ])
+
+    assert merged["items"] == [disabled, enabled]
 
 
 def test_lifetime_and_permission_are_business_semantics_not_metadata():
@@ -177,7 +238,7 @@ def test_global_version_two_source_requires_resource_two_without_implicit_upgrad
     assert registry.get("prompts.global-reference", "1") is None
 
 
-def test_global_resource_edits_keep_once_identity_and_do_not_use_resource_sequence_as_identity():
+def test_global_resource_edits_keep_once_identity_and_compare_exact_text():
     registry = loaded().registry
     reference = {"envelope_version": 1, "scope": "workspace",
                  "type_id": "workflow.prompt-resource", "resource_id": uid(1)}
@@ -198,7 +259,7 @@ def test_global_resource_edits_keep_once_identity_and_do_not_use_resource_sequen
     assert second["items"][0]["text"] == "edited"
     following = assemble([second], persist([first]))
     assert [message["blocks"][0]["text"] for message in following["messages"]] == [
-        "original", "Current task"]
+        "edited", "original", "Current task"]
 
 
 def test_tool_materials_are_per_request_and_never_opt_into_compaction():
@@ -229,18 +290,22 @@ def test_assembly_injects_once_and_fixed_materials_from_the_current_context_alon
     validate_message_history(result["messages"])
 
 
-def test_present_once_source_is_not_reinjected_and_branch_reuses_the_same_rule():
+def test_present_once_exact_text_is_not_reinjected_but_edited_text_is():
     once = item(1)
     first = assemble([content(once)])
     present = persist([content(once)])
+    repeated = assemble([content(once)], present)
+    assert [message["blocks"][0]["text"] for message in repeated["messages"]] == [
+        "background", "Current task"]
+
     edited = item(1, "edited original background")
     next_prompt = assemble([content(edited)], present)
     assert [message["blocks"][0]["text"] for message in next_prompt["messages"]] == [
-        "background", "Current task"]
+        "edited original background", "background", "Current task"]
     forked = deepcopy(present)
     forked["owner"]["workflow_session_id"] = uid(850)
     assert [message["blocks"][0]["text"] for message in assemble([content(edited)], forked)["messages"]] == [
-        "background", "Current task"]
+        "edited original background", "background", "Current task"]
     assert first["messages"][0]["blocks"][0]["text"] == "background"
 
 
@@ -304,8 +369,10 @@ def test_middle_material_never_splits_a_closed_tool_batch():
     material = item(1, "before complete batch", lifecycle="per_request", compaction="never",
                     placement="middle", depth=2)
     prompt = assemble([content(material)], initial)
-    assert prompt["messages"][1:3] == [call, result]
-    validate_message_history(prompt["messages"])
+    assert prompt["messages"][1:3] == [
+        project_agent_context_message(call), project_agent_context_message(result),
+    ]
+    validate_context_message_history(prompt["messages"])
     forged = deepcopy(initial)
     forged["layout"][1]["round_id"] = uid(51)
     with pytest.raises(ContractValidationError):

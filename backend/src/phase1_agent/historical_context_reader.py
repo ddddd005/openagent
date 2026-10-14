@@ -4,7 +4,7 @@ from copy import deepcopy
 
 from .context_contract import EFFECTIVE_CONTEXT_TYPE, artifact_ref, validate_effective_context
 from .context_host_service import NATIVE_CONTEXT_SERVICE_REF
-from .context_prompt_v6 import validate_native_context_prompt
+from .context_prompt_v6 import validate_native_context_prompt_legacy_v4
 from .context_update_v2 import validate_context_update_v2
 from .context_v4 import (
     merge_native_context, prepare_native_context_adoption, read_native_context,
@@ -107,7 +107,7 @@ def _merge(authority, reference, detail, view, original):
     prompt_source = authority.resolve_detail(update["receipts"]["frozen_prompt_ref"])
     require((prompt_source["data_type"], prompt_source["data_schema_version"]) == ("PROMPT", 6),
             "history_context_update_unproven", "Historical native updates require the original PROMPT@6", 403)
-    prompt = validate_native_context_prompt(prompt_source["value"])
+    prompt = validate_native_context_prompt_legacy_v4(prompt_source["value"])
     require(prompt["context_ref"] == lineage["input_view_ref"] and prompt["context"] == original,
             "history_context_input_mismatch", "Native merge must retain the exact view frozen in its prompt", 403)
     record = _basis(authority, reference, view, write=True)

@@ -20,7 +20,7 @@ from phase1_agent.workflow_configuration import PROMPT_CONFIGURATION_FIELDS
 
 
 def prompt_registry(calls=None):
-    registry = create_package_registry().registry.detached()
+    registry = create_package_registry(enabled={"workflow.content": "1.0.0"}).registry.detached()
 
     def execute(config, inputs, context):
         if calls is not None:
@@ -212,18 +212,13 @@ def test_confirmation_flag_shape_is_validated_before_effects(service):
     assert len(service.list_definitions()) == 1
 
 
-def test_old_save_cannot_bypass_configuration_authority(service):
+def test_old_save_entry_is_retired_after_configuration_authority(service):
     app = GraphApplication(service)
     created, _ = submit(app, configuration_document(service.registry), 0)
-    old = deepcopy(created["document"])
-    old["schema_version"] = 2
-    old["revision"] = 2
-    old.pop("edit_sequence")
-    for item in old["nodes"]:
-        item.pop("configuration_policy")
+    assert not hasattr(service, "save_definition")
     with pytest.raises(ContractValidationError) as error:
-        service.save_definition(old, expected_revision=1, idempotency_key=str(uuid4()))
-    assert error.value.reason_code == "graph_configuration_update_required"
+        app.command("definition.save", {})
+    assert error.value.reason_code == "not_found"
     assert service.get_definition(created["workflow_definition_id"]) == created["document"]
 
 

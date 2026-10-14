@@ -323,6 +323,7 @@
   }
   function commandEnvelope(command, workflow) {
     validateCommand(command, workflow);
+    // Keep the retired operation coordinate only for matching already-persisted fork receipts.
     return { operation: command.action === "create" ? "consumer.session.create"
       : command.action === "start" ? "consumer.run.start" : command.action === "event" ? "consumer.event.submit"
         : command.action === "fork" ? "consumer.candidate.fork" : "consumer.run.control",
@@ -629,7 +630,15 @@
       require(bounded(draftNamespace), "本机草稿命名空间无效");
       this.workflowId = workflowId; this.sessionId = sessionId; this.requestedSession = sessionId;
       this.draftNamespace = draftNamespace; this.draftPort = draftPort; this.legacyStorage = legacyStorage;
-      this.request = request; this.keyFactory = keyFactory; this.consumer = null; this.pending = null;
+      this.request = (path, options = {}) => {
+        if (path === "/api/graph/consumer/commands") {
+          let envelope;
+          try { envelope = JSON.parse(options.body); } catch {}
+          require(envelope?.operation !== "consumer.candidate.fork", "候选历史分叉入口已退役；未提交新请求");
+        }
+        return request(path, options);
+      };
+      this.keyFactory = keyFactory; this.consumer = null; this.pending = null;
       this.generation = 0; this.busy = false; this.revisions = new Map();
       this.application = null; this.registrationGeneration = 0; this.informationGeneration = 0; this.sessionGeneration = 0;
       this.registrationContext = null; this.registrations = [];
@@ -864,10 +873,6 @@
       return this.command("event", { workflow_definition_id: this.workflowId, definition_revision: available.definition_revision,
         event_id: fixed.event_id, event_schema_version: fixed.schema_version, payload: fixedPayload });
     }
-    candidatesCurrent() {
-      return this.forkCandidates !== null && same(this.candidateContext, this.informationContext())
-        && this.forkCandidates.status === this.consumer?.status;
-    }
     async readCandidates() {
       require(this.consumer && this.sessionId, "先选择并读取已有会话");
       const view = this.consumer, context = clone(this.informationContext()), generation = ++this.candidateGeneration;
@@ -886,11 +891,6 @@
       validateCandidates(value, view);
       this.forkCandidates = freeze(clone(value)); this.candidateContext = context;
       return this.forkCandidates;
-    }
-    async forkCandidate(candidate) {
-      require(!this.busy && !this.pending, "待核实原请求完成后才能创建新分叉");
-      require(validateCandidate(candidate, this.workflowId), "检查点工作流身份不受支持");
-      return this.command("fork", { candidate: clone(candidate) });
     }
     async readDefinition() {
       const value = await this.query("consumer.definition", { identity: this.workflowId });
@@ -1058,13 +1058,9 @@
         reconciling = this.pending !== null;
       if (!this.pending) {
         const create = action === "create";
-        const fork = action === "fork";
-        require(create || this.consumer && (fork ? this.candidatesCurrent() && this.forkCandidates.can_fork
-          : action === "event" ? !!this.eventBindings?.can_submit
+        require(action !== "fork", "候选历史分叉入口已退役；未提交新请求");
+        require(create || this.consumer && (action === "event" ? !!this.eventBindings?.can_submit
           : action === "start" ? this.consumer.can_submit : this.consumer.available_actions.includes(action)), "动作当前不可用");
-        if (fork) require(validateCandidate(fields.candidate, this.workflowId)
-          && this.forkCandidates.candidates.some(row => same(row, fields.candidate))
-          && !["prepared", "running", "pausing", "paused"].includes(this.consumer.status), "分叉需要当前可用的完成检查点");
         if (action === "event") require(!["prepared", "running", "pausing", "paused"].includes(this.consumer.status)
           && fields.workflow_definition_id === this.workflowId && fields.definition_revision === this.consumer.definition_revision
           && this.eventBindings?.session_revision === this.consumer.session_revision && this.eventBindings.can_submit
@@ -1081,18 +1077,14 @@
           }
         }
         const body = create ? { workflow_definition_id: this.workflowId, definition_revision: fields.definition_revision,
-          idempotency_key: this.keyFactory() } : fork ? { candidate_id: fields.candidate.candidate_id,
-          expected_revision: this.forkCandidates.session_revision, expected_data_revision: this.forkCandidates.data_revision,
-          expected_head_revision: this.forkCandidates.head_revision, idempotency_key: this.keyFactory() }
-          : action === "start" ? { expected_revision: this.consumer.session_revision,
+          idempotency_key: this.keyFactory() } : action === "start" ? { expected_revision: this.consumer.session_revision,
           idempotency_key: this.keyFactory(), inputs: clone(fields.inputs ?? {}) } : action === "event"
           ? { workflow_definition_id: fields.workflow_definition_id, definition_revision: fields.definition_revision,
             event_id: fields.event_id, event_schema_version: fields.event_schema_version, payload: clone(fields.payload),
             expected_revision: this.consumer.session_revision, idempotency_key: this.keyFactory() } : { action,
           expected_revision: this.consumer.session_revision, idempotency_key: this.keyFactory(), ...fields };
         this.pending = validateCommand({ action, workflow_session_id: create ? null : this.sessionId,
-          path: create ? "/api/graph/consumer/sessions" : `/api/graph/sessions/${this.sessionId}/consumer/${fork ? "candidates/fork" : action === "start" ? "runs" : action === "event" ? "events/submit" : "control"}`, body,
-          ...(fork ? { candidate: clone(fields.candidate) } : {}) }, this.workflowId);
+          path: create ? "/api/graph/consumer/sessions" : `/api/graph/sessions/${this.sessionId}/consumer/${action === "start" ? "runs" : action === "event" ? "events/submit" : "control"}`, body }, this.workflowId);
         try { await this.persist(); } catch (error) { this.pending = null; throw error; }
       }
       } catch (error) { this.busy = false; throw error; }
@@ -1119,15 +1111,11 @@
         const value = validateApplicationReceipt(await this.request("/api/graph/consumer/commands", {
           method: "POST", body: JSON.stringify(envelope) }), command, this.workflowId);
         require(current(), "提交依据已变化，迟到回执未覆盖当前会话；原请求待核实");
-        const parentView = this.consumer;
         this.generation++; this.sessionId = value.receipt.workflow_session_id;
         this.invalidateInformation();
         this.accept(value.consumer); this.pending = null;
         try { await this.persist(); } catch (error) {
           this.pending = command;
-          if (command.action === "fork") {
-            this.sessionId = session; this.consumer = parentView; this.invalidateInformation();
-          }
           throw error;
         }
         return value;

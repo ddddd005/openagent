@@ -5,7 +5,7 @@ import copy
 import pytest
 
 from phase1_agent.capability_registry import create_package_registry
-from phase1_agent.content_contracts import prompt_content
+from phase1_agent.content_contracts import prompt_content, text_content
 from phase1_agent.graph_contracts import (
     GraphCompiler, GraphDiagnosticError, NodeDefinition, NodePort, validate_graph_document,
 )
@@ -105,13 +105,16 @@ def test_unreachable_unknown_writer_does_not_change_state_or_private_defaults():
     assert identity(3) not in result.outputs
 
 
-def test_every_output_must_validate_before_any_executor_runs():
+def test_every_connected_output_must_validate_before_any_executor_runs():
     registry = _registry()
     register_content_probe(registry)
     value = document([
         node(1, config={"text": "value"}), node(2, PROBE_COMPONENT, registry=registry),
         node(3, "tools.output"), node(4, "tools.output"),
     ], [edge(10, 1, 2), edge(11, 2, 3, source_port="left")])
+    value["control_edges"] = [{
+        "edge_id": identity(12), "source_node_id": identity(1), "target_node_id": identity(4),
+    }]
     with pytest.raises(GraphDiagnosticError) as caught:
         GraphCompiler(registry).compile(value)
     assert caught.value.reason_code == "graph_required_input_missing"
@@ -160,6 +163,81 @@ def test_named_multi_input_order_overrides_node_and_edge_array_order():
     result = run_graph(value, registry)
     assert input_order == ["second", "first"]
     assert [item["text"] for item in result.outputs[identity(4)]["output"]["items"]] == ["second", "first"]
+
+
+def test_ready_nodes_follow_creation_order_but_dependencies_run_first():
+    registry = _registry()
+    observed = []
+
+    def source(config, inputs, context):
+        observed.append("source")
+        return {"output": text_content("source")}
+
+    def consumer(config, inputs, context):
+        observed.append("consumer")
+        return {"output": inputs["input"]}
+
+    def independent(config, inputs, context):
+        observed.append("independent")
+        return {"output": text_content("independent")}
+
+    def controlled(config, inputs, context):
+        observed.append("controlled")
+        return {}
+
+    registry.register(NodeDefinition(
+        "test.scheduler-source", "1", "Source", "Test", {}, {"type": "object"},
+        outputs=(NodePort("output", "TEXT", data_schema_version=2),),
+    ), source)
+    registry.register(NodeDefinition(
+        "test.scheduler-consumer", "1", "Consumer", "Test", {}, {"type": "object"},
+        inputs=(NodePort("input", "TEXT", data_schema_version=2),),
+        outputs=(NodePort("output", "TEXT", data_schema_version=2),),
+    ), consumer)
+    registry.register(NodeDefinition(
+        "test.scheduler-independent", "1", "Independent", "Test", {}, {"type": "object"},
+        outputs=(NodePort("output", "TEXT", data_schema_version=2),),
+    ), independent)
+    registry.register(NodeDefinition(
+        "test.scheduler-controlled", "1", "Control-only dependent", "Test", {}, {"type": "object"},
+    ), controlled)
+
+    controlled_node = node(70, "test.scheduler-controlled", registry=registry)
+    consumer_node = node(90, "test.scheduler-consumer", registry=registry)
+    independent_node = node(10, "test.scheduler-independent", registry=registry)
+    source_node = node(80, "test.scheduler-source", registry=registry)
+    output_node = node(2, "tools.output")
+    controlled_node["position"] = {"x": 80000, "y": 0}
+    consumer_node["position"] = {"x": 9000, "y": -20}
+    independent_node["position"] = {"x": -500, "y": 300}
+    source_node["position"] = {"x": 50, "y": 10000}
+    output_node["position"] = {"x": 0, "y": 0}
+    value = document(
+        [controlled_node, consumer_node, independent_node, source_node, output_node],
+        [edge(100, 80, 90), edge(101, 90, 2)],
+    )
+    value["execution_roots"] = [
+        independent_node["node_binding_id"], controlled_node["node_binding_id"],
+    ]
+    value["control_edges"] = [{
+        "edge_id": identity(102), "source_node_id": source_node["node_binding_id"],
+        "target_node_id": controlled_node["node_binding_id"],
+    }, {
+        "edge_id": identity(103), "source_node_id": independent_node["node_binding_id"],
+        "target_node_id": output_node["node_binding_id"],
+    }]
+
+    plan = GraphCompiler(registry).compile(value)
+    expected = [
+        independent_node["node_binding_id"], source_node["node_binding_id"],
+        controlled_node["node_binding_id"], consumer_node["node_binding_id"],
+        output_node["node_binding_id"],
+    ]
+    assert list(plan.ordered_node_ids) == expected
+    result = run_graph(value, registry)
+    assert result.status == "succeeded"
+    assert observed == ["independent", "source", "controlled", "consumer"]
+    assert result.outputs[output_node["node_binding_id"]]["output"]["text"] == "source"
 
 
 @pytest.mark.parametrize("modification,code", [
@@ -281,7 +359,11 @@ def test_node_with_no_output_ports_can_be_declared_as_an_execution_target():
         "test.side-effect", "1", "Write", "Test", {}, {"type": "object"},
         is_output=True, capabilities=("private:write",), private_state_schema={"type": "object"},
     ), lambda config, inputs, context: (context.private_write({"done": True}) or {}))
-    result = run_graph(document([node(1, "test.side-effect", registry=registry)]), registry)
+    value = document([node(1, "test.side-effect", registry=registry), node(2, registry=registry)])
+    value["control_edges"] = [{
+        "edge_id": identity(10), "source_node_id": identity(2), "target_node_id": identity(1),
+    }]
+    result = run_graph(value, registry)
     assert result.status == "succeeded" and result.outputs[identity(1)] == {}
     assert result.private_states[identity(1)] == {"done": True}
 
@@ -307,5 +389,9 @@ def test_private_state_access_is_scoped_and_requires_declared_capability():
     registry.register(NodeDefinition(
         "test.no-capability", "1", "Denied", "Test", {}, {"type": "object"}, is_output=True,
     ), lambda config, inputs, context: (context.private_read() or {}))
-    result = run_graph(document([node(1, "test.no-capability", registry=registry)]), registry)
+    value = document([node(1, "test.no-capability", registry=registry), node(2, registry=registry)])
+    value["control_edges"] = [{
+        "edge_id": identity(10), "source_node_id": identity(2), "target_node_id": identity(1),
+    }]
+    result = run_graph(value, registry)
     assert result.status == "failed" and result.diagnostic["code"] == "graph_capability_denied"

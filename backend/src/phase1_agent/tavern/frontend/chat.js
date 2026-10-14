@@ -26,10 +26,10 @@
       attrs: { "aria-hidden": "true", focusable: "false", width: "18", height: "18" } });
   }
   class ChatRenderer {
-    constructor({ chatElement, messageTemplate, onCopy, onFork = null, requestFrame = callback => requestAnimationFrame(callback),
+    constructor({ chatElement, messageTemplate, onCopy, requestFrame = callback => requestAnimationFrame(callback),
       cancelFrame = handle => cancelAnimationFrame(handle) }) {
       this.chatElement = chatElement; this.messageTemplate = messageTemplate;
-      this.onCopy = onCopy; this.onFork = onFork; this.requestFrame = requestFrame; this.cancelFrame = cancelFrame;
+      this.onCopy = onCopy; this.requestFrame = requestFrame; this.cancelFrame = cancelFrame;
       this.rows = new Map(); this.requestId = null;
     }
     updateMessageElement(mes, { messageId, messageElement = this.messageTemplate.content.firstElementChild.cloneNode(true) }) {
@@ -94,18 +94,6 @@
       this.chatElement.querySelectorAll(".mes").forEach(element => element.classList.remove("last_mes"));
       messages.length && this.rows.get(messages[messages.length - 1].entry_id).element.classList.add("last_mes");
       if (added && follow) this.scrollChatToBottom({ waitForFrame: true });
-    }
-    renderForks(targets, locked) {
-      for (const [id, row] of this.rows) {
-        const target = targets.get(id), button = row.element.querySelector(".mes_create_branch");
-        button.hidden = !target || !this.onFork;
-        button.disabled = locked || !target;
-        button.onclick = target && this.onFork ? () => void this.onFork(id) : null;
-        if (target) {
-          button.title = `从第 ${target.round} 个完成回合检查点分叉`;
-          button.setAttribute("aria-label", button.title);
-        }
-      }
     }
     clear() {
       this.rows.clear(); this.chatElement.replaceChildren();

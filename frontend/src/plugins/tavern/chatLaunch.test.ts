@@ -29,7 +29,7 @@ const catalog: GraphNodeType[] = [
     reference: { envelope_version: 1, scope: "workspace", type_id: "workflow.model-profile",
       resource_id: "00000000-0000-4000-8000-000000000010" },
   } },
-  { ...base, component_id: "prompts.item", component_version: "2" },
+  { ...base, component_id: "prompts.item", component_version: "3" },
   { ...base, component_id: "tools.current-input", component_version: "1", capabilities: ["external:read"] },
 ];
 function fixture() {

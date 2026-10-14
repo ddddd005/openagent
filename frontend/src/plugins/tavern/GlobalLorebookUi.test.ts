@@ -7,8 +7,10 @@ import { renderToString } from "@vue/server-renderer";
 import { createPinia, disposePinia, setActivePinia, type Pinia } from "pinia";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkbenchApiError } from "../../adapters/workbenchApi";
+import { requestEvidencePorts } from "../../adapters/requestEvidenceApi";
 import { localDraftPorts } from "../../adapters/localDraftsApi";
 import { memoryLocalDraftStorage } from "../../testUtils/localDraftStorage";
+import { memoryRequestEvidence } from "../../testUtils/requestEvidence";
 import { useFormDraftsStore } from "../../stores/formDrafts";
 import { createProviderResources, modelResourceControllerKey } from "../../application/workflowResources";
 import { createModelProfiles, modelProfilesKey } from "../../application/modelProfiles";
@@ -21,6 +23,7 @@ import RawNumberInput from "../../components/RawNumberInput.vue";
 import LorebookFields from "../../components/LorebookFields.vue";
 import ContentSidebar from "../../components/ContentSidebar.vue";
 import { useWorkflowGraphStore } from "../../stores/workflowGraph";
+import { newModelProfile, newProvider, type CurrentModelProfile } from "../../domain/workflowModelResources";
 import { promptFrontendExtensions } from "../promptFrontendManifest";
 import { chatTavernFrontendExtensions, globalTavernFrontendExtensions, tavernFrontendExtensions } from "../tavernFrontendManifest";
 import { workflowFrontendSdkKey, type WorkflowFrontendSdk, type WorkflowNodeConfigurationRequest } from "../workflowFrontendSdk";
@@ -54,8 +57,8 @@ function fixture(initial = [newLorebookResource()], activate = false) {
   });
   const document = reactive({ ...newGraph("Global lorebook"), nodes: [node], package_lock: [globalTavernPackage] });
   const locked = ref(false), lifecycle = ref("original");
-  const configureNode = vi.fn((_request: WorkflowNodeConfigurationRequest) =>
-    ({ workflowId: document.workflow_definition_id, nodeId: node.node_binding_id }));
+  const configureNode = vi.fn(async (_request: WorkflowNodeConfigurationRequest) =>
+    ({ workflowId: document.workflow_definition_id, nodeId: node.node_binding_id, outcome: "saved" as const }));
   const sdk: WorkflowFrontendSdk = {
     workflowId: computed(() => document.workflow_definition_id), document: computed(() => document),
     catalog: computed(() => []), packages: computed(() => document.package_lock),
@@ -129,7 +132,7 @@ function installRender(component: object, filename: string) {
   Object.assign(component, { render: new Function("Vue", code)(Vue) });
 }
 async function mount(component: Component, f: ReturnType<typeof fixture>,
-  drafts?: ReturnType<typeof memoryLocalDraftStorage>) {
+  drafts?: ReturnType<typeof memoryLocalDraftStorage>, modelRecords: CurrentModelProfile[] = []) {
   if (drafts) {
     vi.useFakeTimers();
     vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
@@ -149,15 +152,18 @@ async function mount(component: Component, f: ReturnType<typeof fixture>,
   installRender(GlobalLorebookFields, "GlobalLorebookFields.vue");
   installRender(TavernChatPanel, "TavernChatPanel.vue");
   const root = new HostNode("root");
+  const profiles = createModelProfiles({
+    list: async () => graphClone(modelRecords), save: vi.fn(), readReceipt: vi.fn(),
+    readPending: () => null, writePending: () => {},
+  });
+  profiles.records.value = graphClone(modelRecords);
   const app = renderer.createApp(component, [CurrentLorebookPanel, TavernChatPanel].includes(component as typeof CurrentLorebookPanel)
     ? {} : { node: f.node, document: f.document })
     .provide(lorebookResourceControllerKey, f.resources).provide(workflowFrontendSdkKey, f.sdk)
     .provide(modelResourceControllerKey, createProviderResources({
       list: async () => [], save: async () => ({}), readReceipt: vi.fn(), readPending: () => null, writePending: () => {},
     }))
-    .provide(modelProfilesKey, createModelProfiles({
-      list: async () => [], save: vi.fn(), readReceipt: vi.fn(), readPending: () => null, writePending: () => {},
-    }))
+    .provide(modelProfilesKey, profiles)
     .provide(Vue.ssrContextKey, { modules: new Set() });
   if (drafts) {
     const pinia = createPinia(); piniaInstances.push(pinia); setActivePinia(pinia); app.use(pinia);
@@ -327,11 +333,14 @@ describe("global lorebook workbench UI", () => {
     await trigger(label(globalRoot, "全局 Lorebook 节点配置"), "Submit");
     expect(global.configureNode.mock.calls[1]![0].extensionId).toBe("workflow.tavern.global-reference-fields");
   });
-  it("creates an independent tavern draft from the mounted panel and never publishes or replaces the original", async () => {
-    const pinia = createPinia(); setActivePinia(pinia);
+  it("blocks the old Tavern preset when its exact model, Agent, and merge declarations are unavailable", async () => {
+    const pinia = createPinia(), evidence = memoryRequestEvidence(); setActivePinia(pinia);
+    vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+    vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+    vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
     const graph = useWorkflowGraphStore(), f = fixture(), fetcher = vi.fn();
     vi.stubGlobal("fetch", fetcher);
-    graph.setPersistenceGuard(() => true); graph.catalog = [{
+    graph.catalog = [{
       component_id: "tavern.chat.presentation", component_version: "1", display_name: "Display", category: "Tavern",
       config_schema: {}, default_config: {}, executable: true, is_output: true, inputs: [],
       outputs: [{ port_id: "display", data_type: "TAVERN_CHAT_DISPLAY", data_schema_version: 1, required: true, multiple: false }],
@@ -340,7 +349,9 @@ describe("global lorebook workbench UI", () => {
       capabilities: ["external:read"],
     }];
     graph.packageLock = [{ package_id: "workflow.tavern", version: "1.2.0" }];
-    const originalId = graph.createWorkflow(), before = graphClone(graph.entries[originalId]);
+    const originalId = graph.createWorkflow();
+    await vi.waitFor(() => expect(graph.locked).toBe(false));
+    const before = graphClone(graph.entries[originalId]);
     const doc: GraphDocument = { ...newGraph("酒馆样例"), schema_version: 2, package_lock: graphClone(graph.packageLock),
       object_bindings: [], control_edges: [], execution_roots: [], nodes: [{
         node_binding_id: crypto.randomUUID(), component_id: "tools.current-input", component_version: "1",
@@ -351,21 +362,37 @@ describe("global lorebook workbench UI", () => {
     try {
       const root = await mount(TavernChatPanel, f);
       expect(elements(root).some(node => node.props["aria-label"] === "打开酒馆前端")).toBe(false);
+      expect(button(root, "创建酒馆工作流").props.disabled).toBe(true);
+      expect(elements(root).map(node => node.text).join("")).toContain(
+        "models.source@5、agents.execute@4、context.merge@4");
       await trigger(label(root, "创建酒馆示例"), "Click");
-      expect(builder).toHaveBeenCalledOnce(); expect(graph.active!.document.workflow_definition_id).toBe(doc.workflow_definition_id);
-      expect(graph.entries[originalId]).toEqual(before); expect(graph.active!.saved_revision).toBe(0);
-      expect(graph.selectedNodeIds).toEqual([doc.nodes[1]!.node_binding_id]);
-      expect(elements(root).some(node => node.props["aria-label"] === "打开酒馆前端")).toBe(false);
-      expect(fetcher).not.toHaveBeenCalled();
-      graph.active!.saved_document = graphClone(doc); graph.active!.saved_revision = 1; await flush();
-      expect(elements(root).some(node => node.props["aria-label"] === "打开酒馆前端")).toBe(false);
-      graph.active!.pending = { path: "/api/graph/definitions", action: "save", body: { idempotency_key: crypto.randomUUID() } };
-      await flush();
-      expect(elements(root).some(node => node.props["aria-label"] === "打开酒馆前端")).toBe(false);
-      await trigger(label(root, "创建酒馆示例"), "Click");
-      expect(builder).toHaveBeenCalledOnce(); expect(fetcher).not.toHaveBeenCalled();
+      expect(builder).not.toHaveBeenCalled();
       expect(graph.entries[originalId]).toEqual(before);
+      expect(fetcher).not.toHaveBeenCalled();
     } finally { builder.mockRestore(); pinia._s.forEach(store => store.$dispose()); }
+  });
+  it("does not offer schema-two model profiles to the old Tavern preset", async () => {
+    const profile = newModelProfile(newProvider());
+    profile.value.name = "Current schema two model";
+    profile.value.model.id = "current-format-model";
+    const f = fixture();
+    const pinia = createPinia(); setActivePinia(pinia);
+    const graph = useWorkflowGraphStore();
+    graph.catalog = [
+      { component_id: "models.source", component_version: "5", display_name: "Model source", category: "Models",
+        config_schema: {}, default_config: {}, inputs: [], outputs: [], is_output: false, executable: true },
+      { component_id: "agents.execute", component_version: "4", display_name: "Agent", category: "Agent",
+        config_schema: {}, default_config: {}, inputs: [], outputs: [], is_output: false, executable: true },
+      { component_id: "context.merge", component_version: "4", display_name: "Merge", category: "Context",
+        config_schema: {}, default_config: {}, inputs: [], outputs: [], is_output: false, executable: true },
+    ];
+    try {
+      const root = await mount(TavernChatPanel, f, undefined, [profile]);
+      expect(elements(root).some(node => node.tag === "option" && node.text.includes("current-format-model"))).toBe(false);
+      expect(elements(root).map(node => node.text).join(""))
+        .toContain("新版全局模型配置尚未接入酒馆旧预置");
+      expect(button(root, "创建酒馆工作流").props.disabled).toBe(false);
+    } finally { pinia._s.forEach(store => store.$dispose()); }
   });
   it("edits content, keywords, presentation and ordering without adding session authorization", async () => {
     const record = newLorebookResource(), first = newLorebookEntry(), second = newLorebookEntry();

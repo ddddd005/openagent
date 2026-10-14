@@ -5,9 +5,11 @@ from copy import deepcopy
 from .agent_receipt_contract import projection_id
 from .context_compaction import is_compactable_text, replace_compacted_messages
 from .context_contract import _fields, artifact_ref
-from .context_prompt_v6 import validate_native_context_prompt
+from .context_prompt_v6 import validate_native_context_prompt_legacy_v4
 from .context_v4 import _project_context_update_view, final_from_context_operations, validate_native_context_view
-from .contract_graph import validate_message_history, validate_pending_message_history
+from .contract_graph import (
+    validate_context_message_history, validate_pending_context_message_history,
+)
 from .contract_json import validate_json_value
 from .contracts_v2 import validate_record
 from .graph_contracts import require, uuid4_string
@@ -15,6 +17,39 @@ from .model_execution_contracts import (
     replay_model_context_operations, validate_agent_receipts_v2, validate_model_execution_request,
 )
 from .model_request_contracts import validate_model_result, validate_operation_payload
+
+
+def prove_context_merge_execution_v2(prompt, binding, receipts, executor_facts, *, model_facts,
+                                     policy=None, policy_ref=None, project_messages, resolve_transport):
+    """Prove an accepted Agent receipt input for context.merge; emit no candidate view."""
+    from .context_prompt_v6 import validate_native_context_prompt
+    from .execution_facts_v2 import prove_execution_facts_v2
+    from .model_request_contracts import validate_model_binding
+
+    prompt = validate_native_context_prompt(prompt)
+    binding = validate_model_binding(binding)
+    receipts = validate_agent_receipts_v2(receipts)
+    require(receipts["owner"]["workflow_session_id"]
+            == prompt["context"]["owner"]["workflow_session_id"],
+            "context_execution_owner_mismatch", "Receipts must target this exact session view")
+    proof = prove_execution_facts_v2(
+        executor_facts, prompt, binding, receipts, model_facts=model_facts,
+        policy=policy, policy_ref=policy_ref,
+        project_messages=project_messages, resolve_transport=resolve_transport)
+    replayed = replay_model_context_operations(
+        proof["snapshot"], proof["operations"], owner=receipts["owner"],
+        model_facts=proof["model_facts"], project_messages=project_messages,
+        resolve_transport=resolve_transport, accepted_messages=proof["messages"])
+    require(replayed["messages"] == proof["effective_messages"],
+            "agent_projection_mismatch", "Accepted execution must replay to one exact effective context")
+    return {
+        **proof,
+        "snapshot_id": proof["snapshot"]["snapshot_id"],
+        "projection_replay": {
+            "messages": deepcopy(replayed["messages"]),
+            "generation_delta": len(replayed["compaction_ids"]),
+        },
+    }
 
 
 def validate_context_operations_v2(operations):
@@ -79,9 +114,9 @@ def _candidate_replay(prompt, operations):
                             "context_update_invalid", "Tool results must close the accepted call order")
                     pending.pop(0)
             if pending:
-                validate_pending_message_history(messages, pending)
+                validate_pending_context_message_history(messages, pending)
             else:
-                validate_message_history(messages)
+                validate_context_message_history(messages)
         else:
             require(not pending and operation["before_message_ids"] == [m["message_id"] for m in messages]
                     and operation["request"]["messages"][:-1] == messages
@@ -97,7 +132,7 @@ def _candidate_replay(prompt, operations):
                     "context_update_invalid", "Checkpoint replacement differs from the declared context")
             seen.add(operation["checkpoint"]["message_id"])
             compactions.add(operation["compaction_id"])
-            validate_message_history(messages)
+            validate_context_message_history(messages)
     require(not pending, "context_update_invalid", "Context cannot adopt unfinished tool calls")
     return {"messages": messages, "generation_delta": len(compactions)}
 
@@ -126,7 +161,7 @@ def validate_context_update_v2(value):
 
 def make_context_update_v2(prompt, operations, receipts, final, *, effective_messages, policy_ref=None):
     """Construct a candidate without reading an as-yet-unaccepted producer output."""
-    prompt = validate_native_context_prompt(prompt)
+    prompt = validate_native_context_prompt_legacy_v4(prompt)
     receipts = validate_agent_receipts_v2(receipts)
     operations = validate_context_operations_v2(operations)
     replayed = _candidate_replay(prompt, operations)

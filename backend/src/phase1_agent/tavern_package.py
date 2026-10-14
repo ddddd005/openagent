@@ -75,7 +75,8 @@ def register_inline_lorebook(host):
 def create_tavern_package():
     def register(host):
         for extension in TAVERN_FRONTEND_EXTENSIONS:
-            host.register_frontend_extension(**extension, host_protocol_version=1)
+            protocol = 2 if extension["binding"]["slot"] == "node-fields" else 1
+            host.register_frontend_extension(**extension, host_protocol_version=protocol)
         register_inline_lorebook(host)
 
     return CapabilityPackage(PackageManifest(

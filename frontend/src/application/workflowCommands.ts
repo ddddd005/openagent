@@ -10,13 +10,13 @@ export type GraphReceipt =
   | { kind: "session"; session: GraphSession; observation?: GraphSession; historicalDocument?: GraphDocument }
   | { kind: "management"; result: GraphManagementResult };
 export interface GraphCommandPorts {
-  persist(): boolean | Promise<boolean>;
-  request(path: string, body: Record<string, unknown>): Promise<unknown>;
+  persist?(): boolean | Promise<boolean>;
+  request?(path: string, body: Record<string, unknown>): Promise<unknown>;
   readReceipt(path: string, body: Record<string, unknown>): Promise<unknown>;
   readDefinition(id: string, revision: number): Promise<GraphDocument>;
   observedSession?(sessionId: string): GraphSession | undefined;
   current(): boolean;
-  accept(receipt: GraphReceipt, command: GraphCommand): void;
+  accept?(receipt: GraphReceipt, command: GraphCommand): void;
 }
 export function createGraphCommand(path: string, body: Record<string, unknown>, action: string): GraphCommand {
   return graphClone({ path, body: { ...body, idempotency_key: crypto.randomUUID() }, action });
@@ -28,7 +28,7 @@ function unknown(reason: string): never {
 // Receipt identity is compared with the frozen request basis, never with the live editor or a newer observation.
 async function readReceipt(value: unknown, request: GraphCommand,
   basis: { definitionId: string; savedRevision: number; sessionId: string | null },
-  ports: GraphCommandPorts): Promise<GraphReceipt> {
+  ports: Pick<GraphCommandPorts, "readDefinition" | "observedSession">): Promise<GraphReceipt> {
   if (request.action === "save") {
     if (!isGraphDocument(value) || value.workflow_definition_id !== basis.definitionId
       || value.revision !== Number(request.body.expected_revision) + 1
@@ -81,54 +81,40 @@ async function readReceipt(value: unknown, request: GraphCommand,
 export async function dispatchGraphCommand(entry: GraphEntry, command: GraphCommand, ports: GraphCommandPorts,
   reconcile = false) {
   const request = graphClone(command);
-  const basis = { definitionId: entry.document.workflow_definition_id,
-    savedRevision: entry.saved_revision, sessionId: entry.session_id };
+  if (!reconcile && ["rebind", "candidate-select", "candidate-fork"].includes(request.action))
+    throw new WorkbenchApiError("rejected", request.action === "rebind"
+      ? "会话修订重绑入口已退役；请新建会话"
+      : "候选历史恢复与分叉入口已退役；未提交新请求");
+  if (!reconcile) {
+    const message = request.action === "save"
+      ? "旧整图发布入口已退役；正式工作流保存暂不可用，未提交新请求"
+      : "当前工作流命令写入暂不可用；未提交新请求";
+    throw new WorkbenchApiError("unavailable", message, undefined, "graph_command_write_unavailable");
+  }
   const samePending = () => entry.pending !== null && JSON.stringify(entry.pending) === JSON.stringify(request);
   const current = () => ports.current() && samePending();
-  const persist = async () => { try { return await ports.persist(); } catch { return false; } };
-  if (reconcile) {
-    if (entry.pending === null) unknown("未保留原工作流请求");
-    if (entry.pending !== null && !samePending()) unknown("待核实请求已变化");
-    if (!current()) unknown("工作流已关闭或恢复");
-  } else {
-    if (entry.pending !== null) unknown("原请求尚待核实，不能提交新操作");
-    const rejectedCopy = entry.rejected_copy;
-    entry.pending = graphClone(request);
-    delete entry.rejected_copy;
-    if (!await persist()) {
-      if (samePending()) entry.pending = null;
-      if (rejectedCopy) entry.rejected_copy = rejectedCopy;
-      throw new WorkbenchApiError("unavailable", "原工作流请求无法保存，未提交");
-    }
-    if (!current()) unknown("工作流已关闭或原请求已变化，尚未提交");
-  }
-  let value: unknown;
-  try {
-    value = await (reconcile ? ports.readReceipt : ports.request)(request.path, graphClone(request.body));
-  }
-  catch (failure) {
-    if (!reconcile && current() && failure instanceof WorkbenchApiError && failure.kind === "rejected"
-      && failure.code !== "idempotency_conflict") {
-      entry.diagnostics = failure.diagnostics?.length ? graphClone(failure.diagnostics)
-        : [{ reason_code: failure.code ?? "graph_request_rejected", message: failure.reason }];
-      if (request.action === "copy") entry.rejected_copy = graphClone(request);
-      entry.pending = null;
-      if (!await persist() && ports.current() && entry.pending === null) entry.pending = graphClone(request);
-    }
-    throw failure;
-  }
-  const receipt = await readReceipt(value, request, basis, ports);
-  if (!current()) unknown("工作流已关闭或恢复，迟到回执未覆盖当前文档");
-  ports.accept(receipt, request);
-  if (!current()) unknown("待核实请求已变化");
-  entry.pending = null;
-  delete entry.rejected_copy;
-  entry.diagnostics = [];
-  if (["copy", "rebind"].includes(request.action)) entry.state_mappings = [];
-  if (!await persist()) {
-    if (ports.current() && entry.pending === null) entry.pending = graphClone(request);
-    unknown("后端已处理请求，本机回执保存失败");
-  }
-  if (!ports.current() || entry.pending !== null) unknown("本机保存期间工作流已关闭或请求状态已变化");
-  return value;
+  if (entry.pending === null) unknown("未保留原工作流请求");
+  if (!samePending()) unknown("待核实请求已变化");
+  if (!current()) unknown("工作流已关闭或原请求已变化");
+  const receipt = await readGraphCommandReceipt(request, {
+    definitionId: entry.document.workflow_definition_id,
+    savedRevision: entry.saved_revision,
+    sessionId: entry.session_id,
+  }, ports);
+  if (!current()) unknown("工作流已关闭或原请求已变化；回执仅供核实");
+  return receipt;
+}
+
+export async function readGraphCommandReceipt(command: GraphCommand,
+  basis: { definitionId: string; savedRevision: number; sessionId: string | null },
+  ports: Pick<GraphCommandPorts, "readReceipt" | "readDefinition" | "observedSession">) {
+  const request = graphClone(command);
+  const value = await ports.readReceipt(request.path, graphClone(request.body));
+  return readReceipt(value, request, basis, ports);
+}
+
+export async function validateGraphCommandResult(value: unknown, command: GraphCommand,
+  basis: { definitionId: string; savedRevision: number; sessionId: string | null },
+  ports: Pick<GraphCommandPorts, "readDefinition" | "observedSession">) {
+  return readReceipt(value, graphClone(command), basis, ports);
 }

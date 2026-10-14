@@ -51,8 +51,13 @@ def test_graph_routes_run_without_agent_bootstrap(tmp_path):
             "tools.text", "tools.regex", "tools.output",
         }
         doc = text_graph(host.graph_service.registry)
-        assert request(port, "POST", "/api/graph/definitions", {
-            "document": doc, "expected_revision": 0, "idempotency_key": "save"}) == (201, doc)
+        doc["schema_version"] = 3
+        for item in doc["nodes"]:
+            item["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
+        status, configured = request(port, "POST", "/api/graph/definitions/update", {
+            "workflow_definition_id": doc["workflow_definition_id"], "document": doc,
+            "expected_edit_sequence": 0, "idempotency_key": "save"})
+        assert status == 200 and configured["outcome"] == "saved"
         definition_path = "/api/graph/definitions/" + doc["workflow_definition_id"]
         assert request(port, "GET", definition_path + "/revisions/1") == (200, doc)
         status, session = request(port, "POST", "/api/graph/sessions", {
@@ -82,14 +87,18 @@ def test_current_platform_and_empty_definition_reject_retired_migration(tmp_path
         assert request(port, "GET", "/api/global-content")[0] == 404
         assert not hasattr(host, "_legacy") and not hasattr(host.graph_service, "_native_runtime")
         doc = text_graph(host.graph_service.registry)
+        doc["schema_version"] = 3
+        for item in doc["nodes"]:
+            item["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
         doc["nodes"] = []
         doc["edges"] = []
-        body = {"document": doc, "source_session_id": None, "expected_source_revision": None,
-                "mappings": [], "idempotency_key": "empty-migration"}
+        body = {"workflow_definition_id": doc["workflow_definition_id"], "document": doc,
+                "expected_edit_sequence": 0, "idempotency_key": "empty-migration"}
         assert request(port, "POST", "/api/graph/migrations", body)[0] == 404
-        assert request(port, "POST", "/api/graph/definitions", {
-            "document": doc, "expected_revision": 0, "idempotency_key": "empty-definition",
-        }) == (201, doc)
+        status, saved = request(port, "POST", "/api/graph/definitions/update", {
+            **body, "idempotency_key": "empty-definition",
+        })
+        assert status == 200 and saved["outcome"] == "saved"
         status, session = request(port, "POST", "/api/graph/sessions", {
             "workflow_definition_id": doc["workflow_definition_id"],
             "definition_revision": 1, "idempotency_key": "empty-session",
@@ -102,14 +111,29 @@ def test_current_platform_and_empty_definition_reject_retired_migration(tmp_path
         assert not hasattr(host, "_legacy")
 
 
+def test_retired_definition_save_route_rejects_without_graph_initialization(tmp_path):
+    with host_server(tmp_path) as (host, port):
+        assert host._graph is None
+        status, error = request(port, "POST", "/api/graph/definitions", {
+            "document": {}, "expected_revision": 0, "idempotency_key": "retired-save",
+        })
+        assert status == 404 and error["error"]["reason_code"] == "not_found"
+        assert host._graph is None
+
+
 def test_structured_diagnostics_strict_fields_and_origins(tmp_path):
     with host_server(tmp_path) as (host, port):
         status, error = request(port, "POST", "/api/graph/definitions", {}, origin=False)
         assert status == 403 and "diagnostics" in error["error"]
         doc = text_graph(host.graph_service.registry)
         doc["edges"] = []
-        assert request(port, "POST", "/api/graph/definitions", {
-            "document": doc, "expected_revision": 0, "idempotency_key": "save"})[0] == 201
+        doc["schema_version"] = 3
+        for item in doc["nodes"]:
+            item["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
+        status, result = request(port, "POST", "/api/graph/definitions/update", {
+            "workflow_definition_id": doc["workflow_definition_id"], "document": doc,
+            "expected_edit_sequence": 0, "idempotency_key": "save"})
+        assert status == 200 and result["outcome"] == "saved"
         _, session = request(port, "POST", "/api/graph/sessions", {
             "workflow_definition_id": doc["workflow_definition_id"], "definition_revision": 1, "idempotency_key": "session"})
         path = "/api/graph/sessions/" + session["workflow_session_id"] + "/runs"
@@ -127,8 +151,13 @@ def test_current_graph_body_limit_and_retired_routes(tmp_path):
     with host_server(tmp_path) as (host, port):
         doc = text_graph(host.graph_service.registry)
         doc["nodes"][0]["config"]["text"] = "x" * 70_000
-        assert request(port, "POST", "/api/graph/definitions", {
-            "document": doc, "expected_revision": 0, "idempotency_key": "large"})[0] == 201
+        doc["schema_version"] = 3
+        for item in doc["nodes"]:
+            item["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
+        status, result = request(port, "POST", "/api/graph/definitions/update", {
+            "workflow_definition_id": doc["workflow_definition_id"], "document": doc,
+            "expected_edit_sequence": 0, "idempotency_key": "large"})
+        assert status == 200 and result["outcome"] == "saved"
         assert request(port, "POST", "/api/sessions", {"text": "x" * 70_000})[0] == 404
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         try:

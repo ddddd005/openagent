@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSSRApp, defineComponent, h, provide, ref } from "vue";
 import { renderToString } from "@vue/server-renderer";
 import { createPinia } from "pinia";
@@ -10,6 +10,8 @@ import { graphClone } from "../domain/workflowGraph";
 import GraphNodeConfiguration from "../components/GraphNodeConfiguration.vue";
 import GraphSessionData from "../components/GraphSessionData.vue";
 import { frontendCatalog, frontendSession } from "../testUtils/frontendFixture";
+import { memoryRequestEvidence } from "../testUtils/requestEvidence";
+import { requestEvidencePorts } from "../adapters/requestEvidenceApi";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { useWorkspaceStore } from "../stores/workspace";
 
@@ -40,6 +42,8 @@ function fakePackage() {
 }
 
 describe("local package composition lifecycle", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it("loads prompt management and exact reference fields from the default trusted modules without compatibility", () => {
     const declarations = ref(graphClone(promptFrontendExtensions));
     const packages = ref([{ package_id: "workflow.prompts", version: "1.0.0" }]);
@@ -112,12 +116,16 @@ describe("local package composition lifecycle", () => {
     expect(host.issues.value.filter(issue => issue.includes("冲突"))).toHaveLength(2);
   });
   it("shares one registry across the actual panel, session renderer and node field slots", async () => {
-    const fake = fakePackage(), pinia = createPinia(), graph = useWorkflowGraphStore(pinia);
-    graph.setPersistenceGuard(() => true);
+    const fake = fakePackage(), pinia = createPinia(), evidence = memoryRequestEvidence();
+    vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+    vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+    vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
+    const graph = useWorkflowGraphStore(pinia);
     graph.packageLock = [fake.package]; graph.frontendExtensions = fake.declarations;
     const definition = { ...graphClone(frontendCatalog[0]), component_id: "plugin.custom-node",
       component_version: "4", config_schema: { properties: { generic: { type: "string" } } } };
     graph.catalog = [definition]; const id = graph.createWorkflow();
+    await vi.waitFor(() => expect(graph.locked).toBe(false));
     const nodeId = graph.addNode("plugin.custom-node@4", { x: 0, y: 0 })!;
     const node = graph.document!.nodes.find(row => row.node_binding_id === nodeId)!;
     const session = frontendSession(id), object = session.objects!.frontend;

@@ -10,7 +10,11 @@ import pytest
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.contract_json import canonical_bytes
 from phase1_agent.graph_application import GraphApplication
-from phase1_agent.graph_drafts import MAX_DRAFT_BYTES
+from phase1_agent.graph_application_identity import application_command_receipt, bind_application_command
+from phase1_agent.graph_drafts import (
+    LocalDraftStore, MAX_DRAFT_BYTES, MAX_DRAFT_SEQUENCE, validate_draft_address, validate_draft_value,
+)
+from phase1_agent.graph_records import require
 from phase1_agent.graph_http import dispatch_graph
 from phase1_agent.graph_receipts import read_graph_application_receipt
 from phase1_agent.storage import SqliteStore, STORAGE_VERSION
@@ -26,8 +30,27 @@ def address(scope="management", kind="form", workflow=None, session=None, key="e
 def save(app, target, value, expected=0, key=None, version=1):
     request = {"address": target, "format_version": version, "value": value,
                "expected_sequence": expected, "idempotency_key": key or str(uuid4())}
-    operation = "consumer.draft.save" if target["scope"] == "consumer" else "draft.save"
-    return app.command(operation, request), request
+    if target["scope"] == "consumer":
+        return app.command("consumer.draft.save", request), request
+    validate_draft_address(target, "management")
+    validate_draft_value(target, version, value)
+    require(type(expected) is int and 0 <= expected <= MAX_DRAFT_SEQUENCE,
+            "invalid_request", "Draft expected sequence is invalid")
+    require(type(request["idempotency_key"]) is str and 1 <= len(request["idempotency_key"]) <= 128
+            and bool(request["idempotency_key"].strip()),
+            "invalid_request", "An idempotency key is required")
+    native_request = {key: item for key, item in request.items() if key != "idempotency_key"}
+    with bind_application_command("draft.save", "management", request):
+        with closing(app._service._store()) as store:
+            result = LocalDraftStore(store).save(
+                "graph.draft.save", deepcopy(native_request), request["idempotency_key"],
+                lambda owner, content: app._service._draft_owner(store, owner, content))
+    receipt = application_command_receipt(
+        "draft.save", "management", request, result, authority="service_receipt")
+    return {
+        "schema_version": 1, "kind": "workflow.application-command",
+        "receipt": receipt, "result": result,
+    }, request
 
 
 def client(workflow, session=None, pending=None):
@@ -56,7 +79,9 @@ def test_draft_roundtrip_invalid_editor_text_and_frozen_receipt(service):
     assert accepted["receipt"]["target"] == {}
     assert app.query("draft.read", {"address": target}) == record
     save(app, target, {"text": "newer"}, expected=1)
-    assert app.command("draft.save", request) == accepted
+    with pytest.raises(ContractValidationError) as retired:
+        app.command("draft.save", request)
+    assert retired.value.reason_code == "not_found"
     receipt = read_graph_application_receipt(service.database, "draft.save", request)
     assert receipt["outcome"] == "matched" and receipt["result"] == record
     assert receipt["receipt"] == accepted["receipt"]
@@ -72,9 +97,9 @@ def test_cas_and_idempotency_conflict_leave_newer_record(service):
     with pytest.raises(ContractValidationError) as stale:
         save(app, target, {"raw": "stale"}, expected=1)
     assert stale.value.reason_code == "stale_draft_sequence"
-    with pytest.raises(ContractValidationError) as conflict:
+    with pytest.raises(ContractValidationError) as retired:
         app.command("draft.save", {**request, "value": "different"})
-    assert conflict.value.reason_code == "idempotency_conflict"
+    assert retired.value.reason_code == "not_found"
     assert app.query("draft.read", {"address": target}) == newer["result"]
     assert first["result"]["sequence"] == 1
 
@@ -156,7 +181,7 @@ def test_consumer_scope_is_separate_and_does_not_mutate_execution(service, monke
     assert service.get_session(session) == before
     with pytest.raises(ContractValidationError) as denied:
         consumer.command("draft.save", request)
-    assert denied.value.reason_code == "application_scope_denied"
+    assert denied.value.reason_code == "not_found"
     with pytest.raises(ContractValidationError) as address_denied:
         consumer.query("consumer.draft.read", {"address": address()})
     assert address_denied.value.reason_code == "invalid_draft_address"
@@ -283,8 +308,9 @@ def test_corrupt_draft_or_receipt_is_not_adopted_or_overwritten(service):
             "UPDATE idempotency SET result_payload=? WHERE operation='graph.draft.save' AND key=?",
             (canonical_bytes([{"graph_result": tampered}]).decode(), request["idempotency_key"]))
     assert read_graph_application_receipt(service.database, "draft.save", request)["reason_code"] == "receipt_invalid"
-    with pytest.raises(ContractValidationError):
+    with pytest.raises(ContractValidationError) as retired:
         app.command("draft.save", request)
+    assert retired.value.reason_code == "not_found"
     with closing(sqlite3.connect(service.database, isolation_level=None)) as connection:
         connection.execute("UPDATE local_editor_drafts SET payload=?", ('{"invalid":"retained"}',))
     with pytest.raises(ContractValidationError) as failure:
@@ -307,7 +333,7 @@ def test_schema_initialization_is_additive_without_retirement(tmp_path):
         connection.execute("PRAGMA user_version=15")
         before = connection.execute("SELECT * FROM records").fetchall()
     with closing(SqliteStore(path)) as store:
-        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == STORAGE_VERSION == 17
+        assert store._connection.execute("PRAGMA user_version").fetchone()[0] == STORAGE_VERSION
         assert [tuple(row) for row in store._connection.execute("SELECT * FROM records")] == before
         assert store._connection.execute("SELECT count(*) FROM local_editor_drafts").fetchone()[0] == 0
 
@@ -333,9 +359,11 @@ def test_named_http_dispatch_uses_application_receipt(service):
     app = GraphApplication(service)
     request = {"address": address(), "format_version": 1, "value": "unapplied",
                "expected_sequence": 0, "idempotency_key": "http-draft"}
-    status, accepted = dispatch_graph(app, "POST", "/api/graph/commands",
-                                     {"operation": "draft.save", "parameters": request})
-    assert status == 200 and accepted["result"]["sequence"] == 1
+    accepted, _ = save(app, request["address"], request["value"], key=request["idempotency_key"])
+    with pytest.raises(ContractValidationError) as retired:
+        dispatch_graph(app, "POST", "/api/graph/commands",
+                       {"operation": "draft.save", "parameters": request})
+    assert retired.value.reason_code == "not_found"
     status, read = dispatch_graph(app, "POST", "/api/graph/queries",
                                 {"operation": "draft.read", "parameters": {"address": address()}})
     assert status == 200 and read == accepted["result"]

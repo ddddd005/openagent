@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 
 from phase1_agent.contract_errors import ContractValidationError
+from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_contracts import NodeDefinition, NodeRegistry, validate_graph_document
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.graph_store import GraphRecordStore
@@ -15,6 +16,7 @@ from phase1_agent.content_contracts import object_schema
 from phase1_agent.workflow_configuration import (
     PROMPT_CONFIGURATION_FIELDS, fixed_configuration_projection,
 )
+from test_graph_service import save_definition_fixture
 
 
 def declaration(group=False):
@@ -278,7 +280,7 @@ def test_deleted_sessions_do_not_count(service):
 
 
 def test_missing_package_fixed_document_saves_then_execution_reports_missing_package(service):
-    value = document(mode="fixed", component="missing.component", config={"unfinished": None})
+    value = document(mode="fixed")
     value["package_lock"] = [{"package_id": "missing.package", "version": "9.0.0"}]
     value["execution_roots"] = [value["nodes"][0]["node_binding_id"]]
     saved = update(service, value)
@@ -293,11 +295,11 @@ def test_missing_package_fixed_document_saves_then_execution_reports_missing_pac
 def test_missing_registration_cannot_enable_adjustable_policy(service):
     with pytest.raises(ContractValidationError) as error:
         update(service, document(component="missing.component"))
-    assert error.value.reason_code == "graph_configuration_not_adjustable"
+    assert error.value.reason_code == "graph_missing_node_type"
     assert not bundle(service)
 
 
-def test_saved_trusted_descriptor_allows_adjustable_edits_after_package_disappears(tmp_path):
+def test_missing_current_declaration_does_not_restore_descriptor_editing_after_reopen(tmp_path):
     path = tmp_path / "missing-registration.sqlite"
     first = GraphWorkflowService(path, registry=registry())
     try:
@@ -307,11 +309,9 @@ def test_saved_trusted_descriptor_allows_adjustable_edits_after_package_disappea
         first.close()
     second = GraphWorkflowService(path, registry=NodeRegistry())
     try:
-        changed = second.get_definition(saved["workflow_definition_id"])
-        changed["nodes"][0]["config"]["text"] = "B"
-        after = update(second, changed, 1)
-        assert after["outcome"] == "saved"
-        assert after["source_has_effective_session"] is True
+        with pytest.raises(ContractValidationError) as error:
+            second.get_definition(saved["workflow_definition_id"])
+        assert error.value.reason_code == "graph_missing_node_type"
         assert second.get_definition(saved["workflow_definition_id"], 1)["nodes"][0]["config"]["text"] == "A"
     finally:
         second.close()
@@ -342,7 +342,7 @@ def test_incomplete_business_configuration_is_saved_without_compilation(service)
     with pytest.raises(ContractValidationError) as error:
         service.start(session["workflow_session_id"], expected_revision=session["revision"],
                       idempotency_key=str(uuid4()))
-    assert error.value.reason_code == "graph_invalid_config"
+    assert error.value.reason_code == "graph_no_outputs"
 
 
 def test_derived_idempotency_receipt_creates_one_target(service):
@@ -446,10 +446,12 @@ def test_registry_rejects_unreviewed_adjustable_contracts(group):
                                       {}, {"type": "object"}, adjustable_configuration=declaration()), None)
 
 
-def test_old_save_command_cannot_bypass_schema3_partitioning(service):
+def test_retired_definition_save_command_cannot_bypass_schema3_partitioning(service):
     with pytest.raises(ContractValidationError) as error:
-        service.save_definition(document(), expected_revision=0, idempotency_key=str(uuid4()))
-    assert error.value.reason_code == "graph_configuration_requires_update"
+        GraphApplication(service).command("definition.save", {
+            "document": document(), "expected_revision": 0, "idempotency_key": str(uuid4()),
+        })
+    assert error.value.reason_code == "not_found"
     assert not bundle(service)
 
 
@@ -499,7 +501,7 @@ def test_legacy_copy_cannot_create_schema3_target_without_current_partition(serv
     source = document()
     source["schema_version"] = 2
     source["nodes"][0].pop("configuration_policy")
-    service.save_definition(source, expected_revision=0, idempotency_key=str(uuid4()))
+    save_definition_fixture(service, source)
     session = service.create_session(source["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
     before = bundle(service)
     with pytest.raises(ContractValidationError) as error:
@@ -508,17 +510,10 @@ def test_legacy_copy_cannot_create_schema3_target_without_current_partition(serv
     assert bundle(service) == before
 
 
-def test_legacy_rebind_cannot_change_schema3_session_fixed_revision(service):
+def test_session_rebind_service_entrypoint_is_retired(service):
     saved = update(service, document())
-    session = create_session(service, saved)
-    before = bundle(service)
-    with pytest.raises(ContractValidationError) as error:
-        service.rebind_session(
-            session["workflow_session_id"], definition_revision=1, expected_revision=session["revision"],
-            expected_data_revision=session["data_revision"], expected_head_revision=session["head_revision"],
-            idempotency_key=str(uuid4()))
-    assert error.value.reason_code == "graph_configuration_update_required"
-    assert bundle(service) == before
+    create_session(service, saved)
+    assert not hasattr(service, "rebind_session")
 
 
 def test_fixed_projection_keeps_item_identity_and_unsupported_fields():

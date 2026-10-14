@@ -1,196 +1,172 @@
-"""Pure runtime-state diffs and checkpoint parent-chain materialization.
-
-These helpers validate logical state and lineage only. Registered payload
-schemas, artifact closure, permissions and current CAS writes belong to the
-future transactional restore boundary.
-"""
+"""Logical checkpoint state validation, diffs, and parent-chain materialization."""
 
 from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any, Callable
 
+from .context_contract import validate_agent_checkpoint_value
 from .contract_errors import require, uuid_value
 from .contract_json import canonical_bytes, validate_json_value
-from .preparation_program import validate_program_state
 
 
-_PARTITIONS = ("node_states", "program_values", "program_data", "objects")
 _CHECKPOINT_FIELDS = {
     "schema_version", "checkpoint_id", "workflow_definition_id", "workflow_session_id",
-    "fixed_definition_revision", "kind", "parent_checkpoint_id", "round_id",
-    "chain_run_id", "assistant_entry_id", "state_storage",
+    "fixed_definition_revision", "parent_checkpoint_id", "state_storage",
 }
-
-
-def _check(condition: bool, message: str) -> None:
-    require(condition, "runtime_checkpoint_invalid", message)
+_MAX_INTEGER = 2**53 - 1
 
 
 def _fields(value: Any, required: set[str], *, optional: set[str] | None = None) -> None:
-    _check(type(value) is dict and required <= set(value)
-           and set(value) <= required | (optional or set()), "Runtime fields are invalid")
+    require(type(value) is dict and required <= set(value)
+            and set(value) <= required | (optional or set()),
+            "runtime_checkpoint_invalid", "Checkpoint fields are invalid")
 
 
-def _version(value: Any) -> bool:
-    return type(value) is int and 1 <= value <= 2**53 - 1
+def _revision(value: Any) -> bool:
+    return type(value) is int and 1 <= value <= _MAX_INTEGER
 
 
 def _name(value: Any) -> bool:
     return type(value) is str and 0 < len(value) <= 128 and value == value.strip()
 
 
-def _validate_nodes(nodes: Any) -> None:
-    _check(type(nodes) is dict, "Node states must be a mapping")
-    for key, entry in nodes.items():
-        _check(uuid_value(key), "Node state identity must be a canonical UUID4")
-        _fields(entry, {"owner_component_id", "schema_version", "payload"})
-        _check(_name(entry["owner_component_id"]) and type(entry["schema_version"]) is int
-               and entry["schema_version"] == 1, "Node state owner or schema is invalid")
+def _validate_configuration(configuration: Any) -> dict:
+    _fields(configuration, {"workflow_definition_id", "fixed_definition_revision", "nodes"})
+    require(uuid_value(configuration["workflow_definition_id"])
+            and _revision(configuration["fixed_definition_revision"])
+            and type(configuration["nodes"]) is dict,
+            "runtime_checkpoint_invalid", "Configuration identity or nodes are invalid")
+    for binding_id, entry in configuration["nodes"].items():
+        require(uuid_value(binding_id), "runtime_checkpoint_invalid",
+                "Configuration node identity is invalid")
+        _fields(entry, {"component_id", "component_version", "config"})
+        require(_name(entry["component_id"]) and _name(entry["component_version"])
+                and type(entry["config"]) is dict,
+                "runtime_checkpoint_invalid", "Configuration node descriptor is invalid")
+    return configuration
 
 
-def _validate_objects(objects: Any) -> None:
-    _check(type(objects) is dict, "Object states must be a mapping")
-    for key, entry in objects.items():
-        _check(_name(key), "Object key is invalid")
-        _fields(entry, {"type_id", "schema_version", "deleted", "value"})
-        _check(_name(entry["type_id"]) and _version(entry["schema_version"])
-               and type(entry["deleted"]) is bool, "Object type, schema or tombstone is invalid")
-        _check(not entry["deleted"] or entry["value"] is None,
-               "Deleted object state must retain its type with a null value")
+def _validate_agent_contexts(agent_contexts: Any) -> dict:
+    require(type(agent_contexts) is dict, "runtime_checkpoint_invalid",
+            "Agent contexts must be a mapping")
+    for object_key, entry in agent_contexts.items():
+        require(_name(object_key), "runtime_checkpoint_invalid", "Agent object key is invalid")
+        _fields(entry, {"value"})
+        validate_agent_checkpoint_value(entry["value"])
+    return agent_contexts
 
 
-def _validate_history(history: Any) -> None:
-    _fields(history, {"selected_round_id", "visible_entry_ids"})
-    _check(history["selected_round_id"] is None or uuid_value(history["selected_round_id"]),
-           "Selected round identity is invalid")
-    entries = history["visible_entry_ids"]
-    _check(type(entries) is list and all(uuid_value(entry) for entry in entries)
-           and len(entries) == len(set(entries)), "Visible message identities are invalid")
-
-
-def _validate_program(values: Any, data: Any) -> None:
-    # The temporary revision is validation input, never part of logical state.
-    validate_program_state({"revision": 0, "values": values, "data": data})
-
-
-def validate_runtime_state(state: Any) -> dict:
-    """Return detached logical state; reject storage/CAS envelopes."""
+def validate_checkpoint_state(state: Any) -> dict:
+    """Return the exact detached schema-2 logical state."""
     validate_json_value(state)
-    _fields(state, {"schema_version", "kind", "node_states", "program_state", "objects", "history"})
-    _check(type(state["schema_version"]) is int and state["schema_version"] == 1
-           and state["kind"] == "workflow.runtime-state", "Runtime state version or kind is invalid")
-    _validate_nodes(state["node_states"])
-    _fields(state["program_state"], {"values", "data"})
-    _validate_program(state["program_state"]["values"], state["program_state"]["data"])
-    _validate_objects(state["objects"])
-    _validate_history(state["history"])
+    _fields(state, {"configuration", "agent_contexts"})
+    configuration = _validate_configuration(state["configuration"])
+    _validate_agent_contexts(state["agent_contexts"])
     return deepcopy(state)
 
 
-def _validate_changes(changes: Any) -> None:
+def _validate_changes(changes: Any) -> dict:
     _fields(changes, {"upsert", "delete"})
-    _fields(changes["upsert"], set(_PARTITIONS), optional={"history"})
-    _fields(changes["delete"], set(_PARTITIONS))
+    _fields(changes["upsert"], {"agent_contexts"}, optional={"configuration"})
+    _fields(changes["delete"], {"agent_contexts"})
     upsert, deleted = changes["upsert"], changes["delete"]
-    _validate_nodes(upsert["node_states"])
-    _validate_objects(upsert["objects"])
-    _validate_program(upsert["program_values"], upsert["program_data"])
-    if "history" in upsert:
-        _validate_history(upsert["history"])
-    for partition in _PARTITIONS:
-        keys = deleted[partition]
-        _check(type(keys) is list and all(type(key) is str for key in keys),
-               "Deleted partition keys must be a string list")
-        _check(len(keys) == len(set(keys)) and not set(keys) & upsert[partition].keys(),
-               "Deleted partition keys must be unique and disjoint from upsert")
-        if partition == "node_states":
-            _check(all(uuid_value(key) for key in keys), "Deleted node identity is invalid")
-        else:
-            _check(all(_name(key) for key in keys), "Deleted partition key is invalid")
-
-
-def validate_state_storage(storage: Any) -> dict:
-    """Validate exact full or diff storage; no legacy shape is accepted."""
-    validate_json_value(storage)
-    _check(type(storage) is dict, "Checkpoint storage must be an object")
-    if storage.get("mode") == "full":
-        _fields(storage, {"mode", "state"})
-        validate_runtime_state(storage["state"])
-    else:
-        _fields(storage, {"mode", "base_checkpoint_id", "upsert", "delete"})
-        _check(storage["mode"] == "diff" and uuid_value(storage["base_checkpoint_id"]),
-               "Diff mode or full baseline identity is invalid")
-        _validate_changes({key: storage[key] for key in ("upsert", "delete")})
-    return deepcopy(storage)
-
-
-def validate_checkpoint(checkpoint: Any) -> dict:
-    """Validate the checkpoint envelope independently of its parent records."""
-    validate_json_value(checkpoint)
-    _fields(checkpoint, _CHECKPOINT_FIELDS)
-    _check(type(checkpoint["schema_version"]) is int and checkpoint["schema_version"] == 1,
-           "Checkpoint schema version is invalid")
-    _check(all(uuid_value(checkpoint[field]) for field in (
-        "checkpoint_id", "workflow_definition_id", "workflow_session_id")),
-        "Checkpoint owner or identity is invalid")
-    _check(_version(checkpoint["fixed_definition_revision"]), "Fixed definition revision is invalid")
-    storage = validate_state_storage(checkpoint["state_storage"])
-    association_fields = ("parent_checkpoint_id", "round_id", "chain_run_id", "assistant_entry_id")
-    if checkpoint["kind"] == "initial":
-        _check(storage["mode"] == "full"
-               and all(checkpoint[field] is None for field in association_fields),
-               "Initial checkpoint requires full state and no round associations")
-    else:
-        _check(checkpoint["kind"] == "successful_round" and storage["mode"] == "diff"
-               and all(uuid_value(checkpoint[field]) for field in association_fields),
-               "Successful checkpoint requires a diff and exact round associations")
-    return deepcopy(checkpoint)
-
-
-def _partitions(state: dict) -> dict:
-    return {
-        "node_states": state["node_states"],
-        "program_values": state["program_state"]["values"],
-        "program_data": state["program_state"]["data"],
-        "objects": state["objects"],
-    }
-
-
-def make_diff(parent_state: Any, state: Any) -> dict:
-    """Return upsert/delete partitions; the caller supplies the full baseline ID."""
-    parent, current = validate_runtime_state(parent_state), validate_runtime_state(state)
-    before, after = _partitions(parent), _partitions(current)
-    changes = {"upsert": {}, "delete": {}}
-    for partition in _PARTITIONS:
-        changes["upsert"][partition] = {
-            key: deepcopy(after[partition][key]) for key in sorted(after[partition])
-            if key not in before[partition]
-            or canonical_bytes(before[partition][key]) != canonical_bytes(after[partition][key])
-        }
-        changes["delete"][partition] = sorted(before[partition].keys() - after[partition].keys())
-    if canonical_bytes(parent["history"]) != canonical_bytes(current["history"]):
-        changes["upsert"]["history"] = deepcopy(current["history"])
+    if "configuration" in upsert:
+        _validate_configuration(upsert["configuration"])
+    _validate_agent_contexts(upsert["agent_contexts"])
+    keys = deleted["agent_contexts"]
+    require(type(keys) is list and all(_name(key) for key in keys)
+            and keys == sorted(set(keys))
+            and not set(keys) & upsert["agent_contexts"].keys(),
+            "runtime_checkpoint_invalid", "Agent context deletes are invalid")
     return changes
 
 
-def materialize(checkpoint_id: str, load_checkpoint: Callable[[str], Any]) -> dict:
-    """Apply only the selected parent chain from its session-owned full root.
+def validate_state_storage(storage: Any) -> dict:
+    """Validate exact full or diff storage for the checkpoint's logical state."""
+    validate_json_value(storage)
+    require(type(storage) is dict, "runtime_checkpoint_invalid",
+            "Checkpoint storage must be an object")
+    if storage.get("mode") == "full":
+        _fields(storage, {"mode", "state"})
+        validate_checkpoint_state(storage["state"])
+    else:
+        _fields(storage, {"mode", "base_checkpoint_id", "upsert", "delete"})
+        require(storage["mode"] == "diff" and uuid_value(storage["base_checkpoint_id"]),
+                "runtime_checkpoint_invalid", "Diff mode or full baseline identity is invalid")
+        _validate_changes({"upsert": storage["upsert"], "delete": storage["delete"]})
+    return deepcopy(storage)
 
-    The loader supplies exact immutable checkpoint records or None for a missing
-    identity. No repository, registry, permission or artifact lookup is performed.
-    """
-    _check(uuid_value(checkpoint_id), "Checkpoint target must be a canonical UUID4")
+
+def _require_configuration_owner(configuration: dict, checkpoint: dict) -> None:
+    require((configuration["workflow_definition_id"], configuration["fixed_definition_revision"]) == (
+        checkpoint["workflow_definition_id"], checkpoint["fixed_definition_revision"]),
+        "runtime_checkpoint_invalid", "Configuration identity differs from checkpoint owner")
+
+
+def validate_checkpoint(checkpoint: Any) -> dict:
+    """Validate one immutable record without requiring execution or message identities."""
+    validate_json_value(checkpoint)
+    _fields(checkpoint, _CHECKPOINT_FIELDS)
+    require(type(checkpoint["schema_version"]) is int and checkpoint["schema_version"] == 2
+            and all(uuid_value(checkpoint[field]) for field in (
+                "checkpoint_id", "workflow_definition_id", "workflow_session_id"))
+            and _revision(checkpoint["fixed_definition_revision"]),
+            "runtime_checkpoint_invalid", "Checkpoint identity or schema version is invalid")
+    parent_id = checkpoint["parent_checkpoint_id"]
+    require(parent_id is None or uuid_value(parent_id), "runtime_checkpoint_invalid",
+            "Checkpoint parent identity is invalid")
+    storage = validate_state_storage(checkpoint["state_storage"])
+    if parent_id is None:
+        require(storage["mode"] == "full", "runtime_checkpoint_invalid",
+                "A root checkpoint must contain full state")
+        _require_configuration_owner(storage["state"]["configuration"], checkpoint)
+    else:
+        require(storage["mode"] == "diff", "runtime_checkpoint_invalid",
+                "A child checkpoint must contain a diff")
+        if "configuration" in storage["upsert"]:
+            _require_configuration_owner(storage["upsert"]["configuration"], checkpoint)
+    return deepcopy(checkpoint)
+
+
+def make_diff(parent_state: Any, state: Any) -> dict:
+    """Return canonical configuration replacement and Agent-context key changes."""
+    parent = validate_checkpoint_state(parent_state)
+    current = validate_checkpoint_state(state)
+    upsert = {
+        "agent_contexts": {
+            key: deepcopy(current["agent_contexts"][key])
+            for key in sorted(current["agent_contexts"])
+            if key not in parent["agent_contexts"]
+            or canonical_bytes(parent["agent_contexts"][key])
+            != canonical_bytes(current["agent_contexts"][key])
+        },
+    }
+    if canonical_bytes(parent["configuration"]) != canonical_bytes(current["configuration"]):
+        upsert["configuration"] = deepcopy(current["configuration"])
+    return {
+        "upsert": upsert,
+        "delete": {
+            "agent_contexts": sorted(parent["agent_contexts"].keys() - current["agent_contexts"].keys()),
+        },
+    }
+
+
+def materialize(checkpoint_id: str, load_checkpoint: Callable[[str], Any]) -> dict:
+    """Materialize only the requested same-owner parent path from its full root."""
+    require(uuid_value(checkpoint_id), "runtime_checkpoint_invalid",
+            "Checkpoint target must be a canonical UUID4")
     path, visited, identity, owner = [], set(), checkpoint_id, None
     while identity is not None:
         require(identity not in visited, "runtime_checkpoint_lineage_invalid",
                 "Checkpoint parent chain is cyclic")
         visited.add(identity)
         loaded = load_checkpoint(identity)
-        require(loaded is not None, "runtime_checkpoint_not_found", "Checkpoint parent is missing", 404)
+        require(loaded is not None, "runtime_checkpoint_not_found",
+                "Checkpoint parent is missing", 404)
         checkpoint = validate_checkpoint(loaded)
-        require(checkpoint["checkpoint_id"] == identity, "runtime_checkpoint_lineage_invalid",
-                "Checkpoint loader returned another identity")
+        require(checkpoint["checkpoint_id"] == identity,
+                "runtime_checkpoint_lineage_invalid", "Checkpoint loader returned another identity")
         current_owner = tuple(checkpoint[field] for field in (
             "workflow_definition_id", "workflow_session_id", "fixed_definition_revision"))
         owner = current_owner if owner is None else owner
@@ -198,22 +174,23 @@ def materialize(checkpoint_id: str, load_checkpoint: Callable[[str], Any]) -> di
                 "Checkpoint parent has another owner or fixed definition")
         path.append(checkpoint)
         identity = checkpoint["parent_checkpoint_id"]
+
     root = path[-1]
-    require(root["kind"] == "initial", "runtime_checkpoint_lineage_invalid",
-            "Checkpoint chain must end at an initial full baseline")
+    require(root["state_storage"]["mode"] == "full",
+            "runtime_checkpoint_lineage_invalid", "Checkpoint chain must end at full state")
     state = deepcopy(root["state_storage"]["state"])
     for checkpoint in reversed(path[:-1]):
         storage = checkpoint["state_storage"]
         require(storage["base_checkpoint_id"] == root["checkpoint_id"],
-                "runtime_checkpoint_lineage_invalid", "Diff baseline is outside its parent branch")
-        partitions = _partitions(state)
-        for partition in _PARTITIONS:
-            for key in storage["delete"][partition]:
-                require(key in partitions[partition], "runtime_checkpoint_lineage_invalid",
-                        "Diff deletes a key absent from its parent state")
-                del partitions[partition][key]
-            partitions[partition].update(deepcopy(storage["upsert"][partition]))
-        if "history" in storage["upsert"]:
-            state["history"] = deepcopy(storage["upsert"]["history"])
-        state = validate_runtime_state(state)
+                "runtime_checkpoint_lineage_invalid",
+                "Diff baseline is outside its parent chain")
+        if "configuration" in storage["upsert"]:
+            state["configuration"] = deepcopy(storage["upsert"]["configuration"])
+        contexts = state["agent_contexts"]
+        for object_key in storage["delete"]["agent_contexts"]:
+            require(object_key in contexts, "runtime_checkpoint_lineage_invalid",
+                    "Diff deletes an Agent context absent from its parent state")
+            del contexts[object_key]
+        contexts.update(deepcopy(storage["upsert"]["agent_contexts"]))
+        state = validate_checkpoint_state(state)
     return state

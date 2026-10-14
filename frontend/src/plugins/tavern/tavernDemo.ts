@@ -40,7 +40,7 @@ export function createTavernDemo(catalog: GraphNodeType[],
   const read = node("context.output", "4", "Agent 上下文", 0, 400, binding);
   const assembly = node("context.assembly", "4", "提示词装配", 550, 0);
   const merge = node("context.merge", "4", "正常上下文写回", 1150, 0, binding);
-  const prompt = node("prompts.item", "2", "提示词", 250, 200, {
+  const prompt = node("prompts.item", "3", "提示词", 250, 200, {
     text: "Respond to the user's message. Complete with final_answer containing an answer with text.",
   });
   edge(input, "output", assembly, "current_input"); edge(read, "output", assembly, "view");

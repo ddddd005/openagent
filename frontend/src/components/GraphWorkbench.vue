@@ -5,7 +5,6 @@ import { Background } from "@vue-flow/background";
 import { ArrowDown, ArrowUp, Copy, Crosshair, Database, Plus, Redo2, RefreshCw, Settings2, Trash2, Undo2, X } from "lucide-vue-next";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { useWorkspaceStore } from "../stores/workspace";
-import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 import { nodePorts, type GraphNode } from "../domain/workflowGraph";
 import { buildNodeFamilies, nodeDisplayTitle, nodeMenuGroups, nodeProfileLabel, nodeTypeLabel } from "../domain/nodeCatalog";
 import { captureNodeSelection, nodeSelectionAllowed, nodeSelectionIssue, type NodeSelectionRequest } from "../domain/nodeSelection";
@@ -21,22 +20,16 @@ import GraphResult from "./GraphResult.vue";
 import { graphConnectionIssue } from "../domain/graphConnections";
 import { resultStatusLabel } from "../domain/resultPresentation";
 import { modelPresentationJson } from "../domain/modelPresentation";
-import { useWorkbenchFrontendHost } from "../composables/useWorkbenchFrontendHost";
+import { useInstalledWorkbenchFrontendHost } from "../application/workbenchFrontendHost";
 import { useCanvasNodeMenu } from "../composables/useCanvasNodeMenu";
-import { useBoundFormDraft } from "../composables/useBoundFormDraft";
-import FormDraftNotice from "./FormDraftNotice.vue";
+import { useVolatileFormState } from "../composables/useVolatileFormState";
 import { diagnosticRecovery } from "../domain/diagnosticPresentation";
 const graph = useWorkflowGraphStore();
 const workspace = useWorkspaceStore();
-const persistence = useWorkbenchPersistenceStore();
 const navigationError = ref("");
 let navigationGeneration = 0;
-async function leaveEditor(change: () => void) {
+function leaveEditor(change: () => void) {
   const token = ++navigationGeneration, id = workspace.activeWorkflowId;
-  if (!await persistence.flushAll()) {
-    navigationError.value = "当前编辑尚未写入本机，保留此页面";
-    return;
-  }
   if (token !== navigationGeneration || id !== workspace.activeWorkflowId) return;
   navigationError.value = "";
   change();
@@ -57,7 +50,7 @@ function panel(name: "events" | "frontend" | "bindings" | "information") {
     showInformation.value = name === "information" && !previous.information;
   });
 }
-const frontendHost = useWorkbenchFrontendHost();
+const frontendHost = useInstalledWorkbenchFrontendHost();
 const frontendPanels = computed(() => frontendHost.extensions.value.filter(row => row.declaration.binding.slot === "panel"));
 const canvas = ref<HTMLElement | null>(null);
 const menu = useCanvasNodeMenu(canvas);
@@ -100,21 +93,18 @@ const selectedNode = computed(() => graph.document?.nodes.find(n => graph.select
 const titleDraft = ref("");
 const titleBasis = () => ({ workflowId: graph.document?.workflow_definition_id ?? null,
   nodeId: selectedNode.value?.node_binding_id ?? null, title: selectedNode.value?.title ?? "" });
-const titleStorage = useBoundFormDraft({
+const titleForm = useVolatileFormState({
   id: () => graph.document && selectedNode.value ? `node:${graph.document.workflow_definition_id}:${selectedNode.value.node_binding_id}:title` : "",
-  basis: titleBasis, capture: () => titleDraft.value,
+  basis: titleBasis,
   reset: () => { titleDraft.value = selectedNode.value ? displayTitle(selectedNode.value) : ""; },
-  restore: value => {
-    if (typeof value !== "string") throw new Error("标题草稿格式不兼容，原文仍保留");
-    titleDraft.value = value;
-  },
 });
-async function changeTitle() {
-  const node = selectedNode.value, workflowId = graph.document?.workflow_definition_id, title = titleDraft.value;
-  if (!node || !workflowId || graph.editorLocked || !await titleStorage.flush()) return;
-  if (graph.document?.workflow_definition_id !== workflowId || selectedNode.value?.node_binding_id !== node.node_binding_id) return;
-  const result = graph.patchNode(node.node_binding_id, { title });
-  if (result === workflowId) titleStorage.adoptBasis({ workflowId, nodeId: node.node_binding_id, title });
+function changeTitle() {
+  const node = selectedNode.value, workflowId = graph.document?.workflow_definition_id,
+    title = titleDraft.value, context = titleForm.context.value;
+  if (!node || !workflowId || graph.editorLocked) return;
+  if (context !== titleForm.context.value || graph.document?.workflow_definition_id !== workflowId
+    || selectedNode.value?.node_binding_id !== node.node_binding_id) return;
+  graph.patchNode(node.node_binding_id, { title });
 }
 const selectedType = computed(() => selectedNode.value ? graph.typeFor(selectedNode.value) : undefined);
 const selectedState = computed(() => graph.session?.nodes.find(n => n.node_binding_id === selectedNode.value?.node_binding_id));
@@ -205,14 +195,13 @@ function attach(instance: VueFlowStore) {
   instance.onConnectEnd(() => { if (current()) connecting.value = null; });
   instance.onNodesInitialized(() => { if (current() && initialFit) { fit(); initialFit = false; } });
 }
-async function add(familyId: string) {
+function add(familyId: string) {
   if (!menu.menu.value) return;
   const position = flow.value?.screenToFlowCoordinate(menu.menu.value) ?? { x: 80, y: 80 };
   const family = families.value.find(row => row.id === familyId);
   const request = captureNodeSelection(selectionContext.value, familyId, { position });
   menu.close(true);
   if (!family || !request) return;
-  if (!await persistence.flushAll()) { navigationError.value = "当前编辑尚未写入本机"; return; }
   const only = family.profiles.length === 1 ? family.profiles[0] : undefined;
   if (only && family.preferredKey === only.key
     && nodeSelectionAllowed(request, selectionContext.value, only.key)) graph.addNode(only.key, position);
@@ -223,9 +212,8 @@ function changeProfile() {
   selectionRequest.value = captureNodeSelection(selectionContext.value, selectedNode.value.component_id,
     { nodeId: selectedNode.value.node_binding_id });
 }
-async function confirmSelection(key: string, resetConfirmed: boolean) {
+function confirmSelection(key: string, resetConfirmed: boolean) {
   const request = selectionRequest.value;
-  if (!await persistence.flushAll()) { navigationError.value = "当前编辑尚未写入本机"; return; }
   if (!request || !nodeSelectionAllowed(request, selectionContext.value, key, resetConfirmed)) return;
   if (request.nodeId) graph.replaceNode(request.nodeId, key);
   else if (request.position) graph.addNode(key, request.position);
@@ -294,9 +282,7 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; connecting.va
         <template v-else-if="selectedNode">
           <div class="graph-tabs"><button type="button" :class="{ active: inspectorTab === 'config' }" @click="leaveEditor(() => inspectorTab = 'config')">配置</button><button type="button" :class="{ active: inspectorTab === 'result' }" @click="leaveEditor(() => inspectorTab = 'result')">状态与结果</button><button type="button" :class="{ active: inspectorTab === 'information' }" @click="leaveEditor(() => inspectorTab = 'information')">信息</button></div>
           <div v-if="inspectorTab === 'config'" class="graph-inspector-content">
-            <FormDraftNotice v-if="titleStorage.message.value" :message="titleStorage.message.value"
-              :conflict="titleStorage.conflict.value" @restore="titleStorage.restoreConflict" @discard="titleStorage.discardConflict" />
-            <label>标题<input v-model="titleDraft" :disabled="graph.editorLocked || titleStorage.loading.value || titleStorage.conflict.value" @change="changeTitle" /></label>
+            <label>标题<input v-model="titleDraft" :disabled="graph.editorLocked" @change="changeTitle" /></label>
             <section class="graph-node-profile" aria-label="节点类型">
               <div><strong>{{ selectedType ? nodeTypeLabel(selectedType) : selectedNode.component_id }}</strong>
                 <span>{{ !selectedType ? '声明缺失' : !selectedType.executable ? '不可执行' : nodeProfileLabel(selectedType) }}</span>
@@ -305,6 +291,7 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; connecting.va
                 :disabled="graph.editorLocked || graph.catalogLoading || !!graph.catalogError || !families.length" @click="changeProfile"><Settings2 :size="15" /></button>
             </section>
             <GraphNodeConfiguration v-if="selectedType && graph.document" :node="selectedNode" :definition="selectedType" :document="graph.document" :catalog="graph.catalog" :disabled="graph.editorLocked" @change="graph.patchNode(selectedNode.node_binding_id, { config: $event })"
+              @policy-change="graph.patchNodeConfigurationPolicy(selectedNode.node_binding_id, $event)"
               @source-change="(edgeId, source) => graph.patchFrontendSource(selectedNode!.node_binding_id, edgeId, source)" />
             <pre v-else>{{ json(selectedNode.config) }}</pre>
             <small class="graph-muted">{{ graph.document?.execution_roots?.includes(selectedNode.node_binding_id) ? '运行目标' : '按依赖执行' }} · {{ predecessors.length ? `等待 ${predecessors.length} 个前序节点` : '无前序等待' }}</small>
@@ -315,11 +302,11 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; connecting.va
             </details>
             <details><summary>技术详情</summary><label>节点 UUID<input :value="selectedNode.node_binding_id" readonly @focus="($event.target as HTMLInputElement).select()" /></label><code>{{ selectedNode.component_id }}@{{ selectedNode.component_version }}</code>
               <pre>{{ json(selectedNode.config) }}</pre><details v-if="selectedType?.object_accesses?.length"><summary>会话对象访问契约</summary><pre>{{ json(selectedType.object_accesses) }}</pre></details></details>
-            <button v-if="graph.active?.diagnostics?.some(d => d.node_id === selectedNode?.node_binding_id && d.reason_code.includes('state'))" class="graph-reset-state" type="button" :disabled="graph.editorLocked" @click="graph.resetPrivateState(workspace.activeWorkflowId, selectedNode.node_binding_id); graph.saveWorkflow()">重建该节点私有状态并保存</button>
+            <button v-if="graph.active?.diagnostics?.some(d => d.node_id === selectedNode?.node_binding_id && d.reason_code.includes('state'))" class="graph-reset-state" type="button" :disabled="graph.editorLocked" title="仅修改当前内存工作流；正式保存暂不可用" @click="graph.resetPrivateState(workspace.activeWorkflowId, selectedNode.node_binding_id)">重建该节点私有状态（仅内存）</button>
             <section v-if="incoming.length"><h3>输入顺序</h3><div v-for="edge in incoming" :key="edge.edge_id" class="graph-incoming"><span>{{ edge.target_port_id }} · {{ titleForId(edge.source_node_id) }} / {{ edge.source_port_id }}</span><button type="button" title="上移" aria-label="上移输入" :disabled="graph.editorLocked" @click="graph.reorderEdge(edge.edge_id, -1)"><ArrowUp :size="13" /></button><button type="button" title="下移" aria-label="下移输入" :disabled="graph.editorLocked" @click="graph.reorderEdge(edge.edge_id, 1)"><ArrowDown :size="13" /></button></div></section>
           </div>
           <div v-else-if="inspectorTab === 'information'" class="graph-inspector-content"><GraphInformation :session-id="graph.session?.workflow_session_id" :node-id="selectedNode.node_binding_id" initial-kind="information_binding" /></div>
-          <div v-else class="graph-inspector-content"><span>{{ resultStatusLabel(selectedState?.status ?? 'idle') }}</span><dl v-if="selectedState?.budget" class="graph-budget"><div><dt>模型请求</dt><dd>{{ selectedState.budget.model_requests ?? 0 }} / {{ selectedState.budget.max_model_requests }}</dd></div><div><dt>模型尝试</dt><dd>{{ selectedState.budget.attempts ?? 0 }} / {{ selectedState.budget.max_model_attempts }}</dd></div><div><dt>已接受消息</dt><dd>{{ selectedState.budget.accepted_messages ?? 0 }}</dd></div></dl><GraphResult v-for="(value, port) in selectedState?.outputs ?? {}" :key="port" :value="value" :label="String(port)" /><p v-if="!Object.keys(selectedState?.outputs ?? {}).length" class="graph-muted">暂无结果</p><pre v-if="selectedState?.diagnostic" class="graph-warning">{{ json(selectedState.diagnostic) }}</pre></div>
+          <div v-else class="graph-inspector-content"><span>{{ resultStatusLabel(selectedState?.status ?? 'idle') }}</span><GraphResult v-for="(value, port) in selectedState?.outputs ?? {}" :key="port" :value="value" :label="String(port)" /><p v-if="!Object.keys(selectedState?.outputs ?? {}).length" class="graph-muted">暂无结果</p><pre v-if="selectedState?.diagnostic" class="graph-warning">{{ json(selectedState.diagnostic) }}</pre></div>
         </template>
         <div v-else class="graph-inspector-content">
           <section v-for="output in graph.session?.outputs ?? []" :key="output.output_id"><h3>{{ graph.session?.nodes.find(node => node.node_binding_id === output.node_binding_id)?.label ?? '历史节点' }} / {{ output.port_id }}</h3><GraphResult :value="output.payload" /></section>
@@ -374,8 +361,4 @@ legend { font-size:11px; padding:0 3px; }
 .graph-diagnostic { display:flex; flex-direction:column; align-items:flex-start; gap:5px; color:#e4a0a0; text-align:left; font-size:11px; }
 .graph-diagnostic span { overflow-wrap:anywhere; }
 .graph-close-run { display:flex; gap:5px; align-self:flex-start; font-size:11px; }
-.graph-budget { display:grid; gap:7px; margin:0; font-size:11px; }
-.graph-budget > div { display:flex; justify-content:space-between; gap:8px; }
-.graph-budget dt { color:#a9b2b1; }
-.graph-budget dd { margin:0; font-variant-numeric:tabular-nums; }
 </style>

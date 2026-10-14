@@ -4,13 +4,17 @@ from copy import deepcopy
 import re
 
 from .contract_json import canonical_bytes, validate_json_value
-from .host_sdk import HOST_PROTOCOL_VERSION, bounded_name, ensure
+from .host_sdk import bounded_name, ensure
+
+
+FRONTEND_HOST_PROTOCOL_VERSION = 2
+_FRONTEND_EXTENSION_SCHEMAS = {1: 2, FRONTEND_HOST_PROTOCOL_VERSION: 3}
 
 
 def validate_frontend_binding(kind, entrypoint, binding, host_protocol_version,
                               component_id, component_version):
     validate_json_value(binding)
-    ensure(type(host_protocol_version) is int and host_protocol_version == HOST_PROTOCOL_VERSION,
+    ensure(type(host_protocol_version) is int and host_protocol_version in _FRONTEND_EXTENSION_SCHEMAS,
            "package_extension_protocol_mismatch", "Frontend host protocol is not supported")
     ensure(type(entrypoint) is str and len(entrypoint) <= 512
            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.:-]*", entrypoint),
@@ -46,8 +50,12 @@ def validate_frontend_targets(registry, extensions):
     """Validate after all dependencies and registrations have been staged."""
     bindings = set()
     for extension in extensions:
-        if extension.get("schema_version") != 2:
+        schema_version = extension.get("schema_version")
+        protocol_version = extension.get("host_protocol_version")
+        if schema_version not in (2, 3):
             continue
+        ensure(_FRONTEND_EXTENSION_SCHEMAS.get(protocol_version) == schema_version,
+               "package_extension_protocol_mismatch", "Frontend extension schema and protocol differ")
         binding = extension["binding"]
         if binding["slot"] == "panel":
             continue

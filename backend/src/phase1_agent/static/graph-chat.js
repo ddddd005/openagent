@@ -75,6 +75,12 @@
   function error(message) { $("graph-error").textContent = message || ""; $("graph-error").hidden = !message; }
   async function request(path, options = {}) {
     const mutation = options.method === "POST" && path === "/api/graph/consumer/commands";
+    if (mutation) {
+      let envelope;
+      try { envelope = JSON.parse(options.body); } catch {}
+      if (envelope?.operation === "consumer.candidate.fork")
+        throw new Error("候选历史分叉入口已退役；未提交新请求");
+    }
     let response;
     try { response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...options.headers }, cache: "no-store" }); }
     catch { throw new Error(mutation ? "请求结果未知，请核实原请求" : "公开读取失败，请刷新"); }
@@ -357,6 +363,7 @@
   function renderCapabilities(application) {
     const container = $("graph-capabilities"); container.replaceChildren();
     for (const operation of [...application.commands, ...application.queries]) {
+      if (operation.kind === "command" && operation.name === "consumer.candidate.fork") continue;
       const row = document.createElement("p");
       row.textContent = `${operation.kind === "command" ? "操作" : "查询"} · ${operation.name}`;
       container.append(row);

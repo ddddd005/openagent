@@ -72,6 +72,18 @@ def test_current_shared_transport_contract_is_independent_of_dependency_loading_
         item["package_id"] for item in loaded.package_manifests].index("workflow.prompts")
 
 
+def test_context_package_requires_model_package_when_model_support_is_unavailable():
+    from phase1_agent.context_package import create_context_package
+    from phase1_agent.prompt_package import create_prompt_package
+
+    loader = CapabilityPackageLoader((
+        create_content_package(), create_prompt_package(), create_context_package(),
+    ))
+    with pytest.raises(HostContractError) as caught:
+        loader.load({"workflow.context": "1.0.0"})
+    assert caught.value.reason_code == "package_missing_dependency"
+
+
 @pytest.mark.parametrize("packages,enabled,reason", [
     ((package("a", dependencies=(PackageDependency("missing", "1.0.0"),)),),
      {"a": "1.0.0"}, "package_missing_dependency"),
@@ -113,6 +125,7 @@ def test_upgrade_and_disable_return_new_registries_and_preserve_old_frozen_execu
     def register(text):
         return lambda host: host.register_node(NodeDefinition(
             "sample.source", "1", "Source", "Sample", {}, {"type": "object"},
+            inputs=(NodePort("input", "TEXT", required=False, data_schema_version=2),),
             outputs=(NodePort("output", "TEXT", data_schema_version=2),), is_output=True,
         ), lambda config, inputs, context: {"output": text_content(text)})
 
@@ -123,7 +136,10 @@ def test_upgrade_and_disable_return_new_registries_and_preserve_old_frozen_execu
     old = loader.load({"sample": "1.0.0"})
     new = loader.load({"sample": "2.0.0"})
     disabled = loader.load({})
-    graph = document([node(1, "sample.source", registry=old.registry)])
+    graph = document([
+        node(1, "sample.source", registry=old.registry),
+        node(2, "sample.source", registry=old.registry),
+    ], [edge(10, 1, 2)])
     assert run_graph(graph, old.registry).outputs[node(1)["node_binding_id"]]["output"]["text"] == "old"
     assert run_graph(graph, new.registry).outputs[node(1)["node_binding_id"]]["output"]["text"] == "new"
     assert disabled.registry.get("sample.source", "1") is None

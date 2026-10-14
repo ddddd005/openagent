@@ -8,7 +8,8 @@ import pytest
 from phase1_agent.capability_packages import CapabilityPackage, CapabilityPackageLoader, PackageManifest
 from phase1_agent.context_compaction_policy import (
     CHECKPOINT_PREAMBLE, COMPACTION_POLICY_COMPONENT, COMPACTION_POLICY_TYPE, DEFAULT_COMPACTION_PROMPT,
-    compaction_policy_config, compaction_policy_exports, compaction_policy_schema,
+    compaction_policy_config, compaction_policy_config_v2, compaction_policy_exports, compaction_policy_schema,
+    default_compaction_policy_v2,
     default_compaction_policy, effective_summary_prompt, frame_checkpoint, register_compaction_policy,
     validate_compaction_policy, validate_compaction_policy_config,
 )
@@ -128,18 +129,19 @@ def test_config_validator_requires_only_configuration_fields():
 def test_registered_node_outputs_only_configuration_without_host_or_runtime_state():
     capabilities = loaded()
     registry = capabilities.registry
-    entry = registry.get(COMPACTION_POLICY_COMPONENT, "1")
+    entry = registry.get(COMPACTION_POLICY_COMPONENT, "2")
     config = deepcopy(entry.definition.default_config)
-    entry.config_validator(config)
+    assert set(config) == {"enabled", "keep_depth", "summary_prompt"}
     output = entry.executor(config, {}, object())["output"]
-    assert output == default_compaction_policy()
-    assert registry.validate_content(output, COMPACTION_POLICY_TYPE, 1) == output
+    assert output == default_compaction_policy_v2()
+    assert registry.validate_content(output, COMPACTION_POLICY_TYPE, 2) == output
     assert entry.definition.inputs == ()
     assert entry.definition.capabilities == ()
     assert entry.definition.outputs[0].data_type == COMPACTION_POLICY_TYPE
     output["keep_depth"] = 0
     assert entry.executor(config, {}, object())["output"]["keep_depth"] == 2
     assert registry.executors.catalog() == []
+    assert registry.get(COMPACTION_POLICY_COMPONENT, "1") is None
 
 
 def test_reserved_target_is_null_and_read_only_in_node_configuration_schema():
@@ -149,3 +151,15 @@ def test_reserved_target_is_null_and_read_only_in_node_configuration_schema():
         "title": "精简目标 tokens（保留占位）",
     }
     Draft202012Validator(schema).validate(compaction_policy_config())
+
+
+def test_active_policy2_exposes_only_required_non_limit_configuration():
+    policy = default_compaction_policy_v2()
+    assert policy == {
+        "schema_version": 2, "kind": "workflow.context-compaction-policy",
+        **compaction_policy_config_v2(),
+    }
+    assert set(policy) == {
+        "schema_version", "kind", "enabled", "keep_depth", "summary_prompt",
+    }
+    assert all(field not in policy for field in ("trigger_tokens", "target_tokens"))

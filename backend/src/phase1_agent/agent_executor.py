@@ -7,19 +7,17 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from .agent_receipt_contract import (
-    AGENT_EXECUTOR_REF, projection_id, receipts_references, validate_agent_receipts,
+    AGENT_EXECUTOR_REF, projection_id, validate_agent_receipts,
 )
 
 from .content_contracts import text_content
 from .context_contract import artifact_ref
-from .context_prompt_v6 import validate_native_context_prompt
 from .contract_json import canonical_bytes
 from .contracts_v2 import validate_record
-from .execution_facts import ExecutionFactHistory
 from .graph_contracts import require, uuid4_string
 from .model_contract import validate_public_model_binding
 from .provider_metadata import canonical_message_metadata
-from .runtime import CanonicalModelAdapter, KernelCheckpoint, KernelPaused, SnapshotKernel
+from .runtime import KernelCheckpoint, KernelPaused, SnapshotKernel
 from .workflow_tool_catalog import builtin_workflow_tools
 
 
@@ -44,10 +42,14 @@ def resolve_input(context, port: str, expected: dict) -> dict:
 
 
 def make_public_agent_snapshot(context, config, prompt, binding, tools, *, policy=None, policy_ref=None,
-                               schema_version=1) -> dict:
+                               schema_version=2) -> dict:
     require(type(schema_version) is int and schema_version in (1, 2), "agent_snapshot_invalid",
             "Agent snapshot version must be explicitly selected")
-    prompt = validate_native_context_prompt(prompt)
+    require(type(prompt) is dict and set(prompt) == {"messages", "layout", "current_input_ref"}
+            and type(prompt["messages"]) is list and type(prompt["layout"]) is list
+            and len(prompt["layout"]) == len(prompt["messages"]),
+            "agent_snapshot_invalid", "Agent computation requires its narrow assembled prompt projection")
+    current_input_ref = artifact_ref(prompt["current_input_ref"])
     if schema_version == 2:
         from .model_request_contracts import validate_model_binding
         from .model_execution_contracts import AGENT_EXECUTOR_REF_V2
@@ -71,7 +73,7 @@ def make_public_agent_snapshot(context, config, prompt, binding, tools, *, polic
     snapshot = {
         "schema_version": schema_version, "snapshot_id": str(uuid4()),
         "workflow_session_id": context.workflow_session_id, "node_binding_id": context.node_binding_id,
-        "input_id": prompt["current_input_ref"]["output_id"], "parent_turn_id": None,
+        "input_id": current_input_ref["output_id"], "parent_turn_id": None,
         "component_id": AGENT_COMPONENT_ID, "component_version": "public-3" if schema_version == 2 else "public-2",
         "config": {"owner_component_id": AGENT_COMPONENT_ID, "schema_version": 1,
                    "payload": payload},
@@ -125,132 +127,21 @@ def project_generated_messages(messages: list[dict], final: dict, snapshot_id: s
     return projected
 
 
-def validate_execution_update(packet, facts, prompt, binding, *, policy=None, policy_ref=None) -> dict:
-    """Prove ordered native updates from exact frozen inputs and accepted facts."""
-    from .context_prompt_v6 import validate_native_context_prompt
-    from .context_update import validate_context_update
-    from .context_v4 import build_context_update_view
-    packet = validate_context_update(packet)
-    receipts = validate_agent_receipts(packet["receipts"])
-    prompt = validate_native_context_prompt(prompt)
-    binding = validate_public_model_binding(binding)
-    require(type(facts) is list and bool(facts)
-            and [fact["fact_id"] for fact in facts] == receipts["fact_ids"]
-            and all(fact["owner"] == receipts["owner"]
-                    and fact["executor_ref"] == receipts["executor_ref"] for fact in facts)
-            and [fact["sequence"] for fact in facts] == list(range(1, len(facts) + 1)),
-            "agent_receipt_fact_mismatch", "Native update requires its exact accepted executor facts")
-    events = [fact["payload"] for fact in facts]
-    require(events[-1].get("kind") == "agent_result", "agent_result_unaccepted",
-            "Native update requires a complete accepted result")
-    result = events[-1]["payload"]
-    snapshot = validate_record("input_snapshot", result["snapshot"])
-    payload = snapshot["config"]["payload"]
-    descriptor = payload["context_compaction"]
-    require(binding["schema_version"] in (2, 4) and snapshot["component_id"] == AGENT_COMPONENT_ID
-            and snapshot["component_version"] == "public-2"
-            and snapshot["snapshot_id"] == result["snapshot_id"] == receipts["snapshot_id"]
-            and result["unit_id"] == receipts["unit_id"]
-            and snapshot["workflow_session_id"] == receipts["owner"]["workflow_session_id"]
-            and snapshot["node_binding_id"] == receipts["owner"]["node_binding_id"]
-            and snapshot["input_id"] == prompt["current_input_ref"]["output_id"]
-            and snapshot["s0"] == prompt["messages"] and snapshot["output_schema"] == AGENT_OUTPUT_SCHEMA
-            and payload["frozen_prompt_ref"] == receipts["frozen_prompt_ref"]
-            and payload["model_ref"] == receipts["model_ref"]
-            and payload["public_model_binding"] == binding
-            and snapshot["model_parameters"] == binding["parameters"]
-            and payload["public_agent"] == {}
-            and payload["executor_ref"] == AGENT_EXECUTOR_REF.to_dict()
-            and descriptor["layout"] == prompt["layout"]
-            and all(descriptor[field] == binding["capacity"][field] for field in binding["capacity"]),
-            "agent_snapshot_mismatch", "Native snapshot differs from its exact accepted inputs")
-    if policy is None:
-        require(policy_ref is None and descriptor["policy"] is None
-                and payload["frozen_compaction_policy_ref"] is None
-                and packet["compaction_policy_ref"] is None,
-                "agent_snapshot_mismatch",
-                "Absent accepted compaction policy cannot claim frozen policy evidence")
-    else:
-        from .context_compaction_policy import validate_compaction_policy
-        policy = validate_compaction_policy(policy)
-        policy_ref = artifact_ref(policy_ref)
-        require(descriptor["policy"] == policy
-                and payload["frozen_compaction_policy_ref"] == policy_ref
-                and packet["compaction_policy_ref"] == policy_ref,
-                "agent_snapshot_mismatch",
-                "Native compaction policy differs from its exact accepted input artifact")
-    history = ExecutionFactHistory(snapshot)
-    operations, messages, requests, attempts = [], [], [], 0
-    for sequence, (envelope, event) in enumerate(zip(facts[:-1], events[:-1]), start=1):
-        history.append({
-            "schema_version": 1, "fact_id": envelope["fact_id"], "sequence": sequence,
-            "workflow_session_id": receipts["owner"]["workflow_session_id"],
-            "chain_run_id": receipts["owner"]["chain_run_id"],
-            "node_binding_id": receipts["owner"]["node_binding_id"],
-            "run_id": receipts["owner"]["node_run_id"], "snapshot_id": receipts["snapshot_id"],
-            "generation": projection_id(receipts["snapshot_id"], f"generation:{envelope['generation']}"),
-            "created_at": event["created_at"], "kind": event["kind"], "payload": event["payload"],
-        })
-        if event["kind"] == "message_accepted":
-            messages.append(event["payload"]["message"])
-            operations.append({"kind": "append", "message": event["payload"]["message"]})
-        elif event["kind"] == "context_compaction_applied":
-            operations.append(event["payload"])
-        elif event["kind"] == "model_request":
-            requests.append(event["payload"])
-        elif event["kind"] == "model_attempt_started":
-            attempts += 1
-    require(bool(requests) and result["model_requests"] == len(requests)
-            and result["attempts"] == attempts
-            and packet["operations"] == operations
-            and packet["basis_view_ref"] == prompt["context_ref"]
-            and packet["basis_revision"] == prompt["context"]["basis"],
-            "agent_result_unaccepted", "Native operation order or result counters were modified")
-    final = result["final"]
-    project_generated_messages(messages, final, receipts["snapshot_id"])
-    control = next((message for message in messages if message["message_id"] == final["message_id"]), None)
-    calls = [block for block in control["blocks"] if block["kind"] == "tool_call"] if control else []
-    settled = messages[-1]["blocks"] if messages else []
-    require(control is not None and control["role"] == "assistant" and messages[-1]["role"] == "tool"
-            and len(calls) == len(settled) == 1 and calls[0]["tool_name"] == "final_answer"
-            and calls[0]["parsed_arguments"].get("answer") == final["value"]
-            and settled[0]["tool_call_id"] == calls[0]["tool_call_id"]
-            and settled[0]["status"] == "success" and settled[0]["content"] == final["value"],
-            "agent_result_unaccepted", "Native answer differs from the accepted final settlement")
-    require(packet["next_view"] == build_context_update_view(prompt, operations, receipts, final),
-            "agent_projection_mismatch", "Persistent candidate differs from the accepted working view")
-    return deepcopy(final)
-
-
 class PublicAgentExecutor:
     """The kernel alone owns active messages and its opaque checkpoint."""
 
-    def __init__(self, config, inputs, context, *, tools=None, kernel=None, schema_version=1,
-                 release_run=None):
-        require(type(schema_version) is int and schema_version in (1, 2), "agent_snapshot_invalid",
-                "Agent executor version must be explicitly selected")
-        self.schema_version = schema_version
+    def __init__(self, config, inputs, context, *, tools=None, kernel=None, schema_version=2):
+        require(type(schema_version) is int and schema_version == 2, "agent_snapshot_invalid",
+                "Only the installed schema 2 Agent executor is executable")
+        self.schema_version = 2
         self.context, self.config = context, deepcopy(config)
-        self.prompt = validate_native_context_prompt(inputs["prompt"])
-        require((
-            self.prompt["context"]["owner"]["workflow_session_id"] == context.workflow_session_id
-            and self.prompt["context"]["owner"]["agent_node_id"] == context.node_binding_id),
-            "context_agent_binding_mismatch", "Prompt belongs to another bound Agent")
-        if schema_version == 2:
-            from .model_request_contracts import validate_model_binding
-            self.binding = validate_model_binding(inputs["model"])
-            require(callable(release_run), "model_execution_host_invalid",
-                    "Schema 2 executor requires the trusted private run-release callback")
-        else:
-            self.binding = validate_public_model_binding(inputs["model"])
-        resolve_input(context, "prompt", self.prompt)
+        from .context_prompt_v6 import agent_computation_input
+        self.prompt = agent_computation_input(context, inputs["prompt"])
+        from .model_request_contracts import validate_compaction_policy, validate_model_binding
+        self.binding = validate_model_binding(inputs["model"])
         resolve_input(context, "model", self.binding)
         policy, policy_ref = None, None
         if "compaction_policy" in inputs:
-            if schema_version == 2:
-                from .model_request_contracts import validate_compaction_policy
-            else:
-                from .context_compaction_policy import validate_compaction_policy
             policy = validate_compaction_policy(inputs["compaction_policy"])
             policy_ref = exact_input(context, "compaction_policy")
             resolve_input(context, "compaction_policy", policy)
@@ -261,18 +152,10 @@ class PublicAgentExecutor:
         self.kernel = SnapshotKernel() if kernel is None else kernel
         self._callbacks = None
         self._original_events = {}
-        self.request_bridge = None
-        if schema_version == 2:
-            from .model_execution_requests import ModelExecutionRequests
-            self.adapter = None
-            self.request_bridge = ModelExecutionRequests(
-                self.snapshot, host_call=context.host_call,
-                publish_fact=lambda identity, event: self._publish_original(identity, event, self._callbacks),
-                release_run=release_run)
-        else:
-            from .model_service import ModelCapabilityAdapter
-            self.adapter = CanonicalModelAdapter(ModelCapabilityAdapter(
-                context, self.binding, request_prefix="agent:" + context.node_run_id))
+        from .model_execution_requests import ModelExecutionRequests
+        self.request_bridge = ModelExecutionRequests(
+            self.snapshot, host_call=context.host_call,
+            publish_fact=lambda identity, event: self._publish_original(identity, event, self._callbacks))
         self.checkpoint = None
         self.fact_ids = []
         self.disposed = False
@@ -285,10 +168,7 @@ class PublicAgentExecutor:
     def retains(self, checkpoint) -> bool:
         if self.disposed or type(checkpoint) is not KernelCheckpoint or checkpoint is not self.checkpoint:
             return False
-        if self.schema_version == 2:
-            self.kernel.validate_checkpoint(checkpoint, self.snapshot, request_bridge=self.request_bridge)
-        else:
-            self.kernel.validate_checkpoint(checkpoint, self.snapshot)
+        self.kernel.validate_checkpoint(checkpoint, self.snapshot, request_bridge=self.request_bridge)
         return True
 
     def _publish_original(self, identity, event, callbacks):
@@ -317,11 +197,11 @@ class PublicAgentExecutor:
 
         try:
             result = self.kernel.run(
-                self.snapshot, self.tools, self.adapter,
-                max_model_requests=None, max_model_attempts=None, checkpoint=continuation,
+                self.snapshot, self.tools,
+                checkpoint=continuation,
                 on_boundary=lambda boundary: not callbacks.pause_requested,
                 on_progress=callbacks.report_progress, on_fact=fact,
-                **({"request_bridge": self.request_bridge} if self.schema_version == 2 else {}))
+                request_bridge=self.request_bridge)
         except KernelPaused as exc:
             self.checkpoint = exc.checkpoint
             callbacks.pause_point(self.checkpoint)
@@ -350,62 +230,35 @@ class PublicAgentExecutor:
             self._result_fact_accepted = True
         result = self._completed_result
         project_generated_messages(result.messages, result.final, self.snapshot["snapshot_id"])
-        if self.schema_version == 2:
-            from .model_execution_contracts import AGENT_EXECUTOR_REF_V2
-            model_requests = []
-            for identity in self.fact_ids:
-                event = self._original_events[identity][1]
-                if event["kind"] == "model_result":
-                    payload = event["payload"]
-                    model_requests.append({
-                        "request_id": payload["request_id"], "settings_id": payload["settings_id"],
-                        "fact_ids": [reference["fact_id"] for reference in payload["result"]["fact_refs"]],
-                    })
-            executor_ref = AGENT_EXECUTOR_REF_V2
-        else:
-            executor_ref = AGENT_EXECUTOR_REF.to_dict()
+        from .model_execution_contracts import AGENT_EXECUTOR_REF_V2
+        model_requests = []
+        for identity in self.fact_ids:
+            event = self._original_events[identity][1]
+            if event["kind"] == "model_result":
+                payload = event["payload"]
+                model_requests.append({
+                    "request_id": payload["request_id"], "settings_id": payload["settings_id"],
+                    "fact_ids": [reference["fact_id"] for reference in payload["result"]["fact_refs"]],
+                })
         receipts = validate_agent_receipts({
-            "schema_version": self.schema_version, "kind": "workflow.agent-receipts",
+            "schema_version": 2, "kind": "workflow.agent-receipts",
             "owner": {"workflow_session_id": self.context.workflow_session_id,
                       "chain_run_id": self.context.chain_run_id, "node_binding_id": self.context.node_binding_id,
                       "node_run_id": self.context.node_run_id},
-            "executor_ref": deepcopy(executor_ref), "snapshot_id": self.snapshot["snapshot_id"],
+            "executor_ref": deepcopy(AGENT_EXECUTOR_REF_V2), "snapshot_id": self.snapshot["snapshot_id"],
             "frozen_prompt_ref": exact_input(self.context, "prompt"), "model_ref": exact_input(self.context, "model"),
-            "unit_id": self.unit_id, "fact_ids": list(self.fact_ids),
-            **({"model_requests": model_requests} if self.schema_version == 2 else {})})
-        if self.schema_version == 2:
-            from .context_update_v2 import make_context_update_v2
-            packet = make_context_update_v2(
-                self.prompt, result.context_operations, receipts, result.final,
-                effective_messages=result.effective_messages,
-                policy_ref=self.snapshot["config"]["payload"]["frozen_compaction_policy_ref"])
-            outputs = {"result": text_content(result.final["value"]["text"]), "context": packet}
-            self._pending_acceptance = False
-            return outputs
-        from .context_update import validate_context_update
-        from .context_v4 import build_context_update_view
-        packet = validate_context_update({
-            "schema_version": 1, "kind": "workflow.agent-context-update",
-            "update_id": projection_id(self.context.node_run_id, "context-update"),
-            "owner": deepcopy(receipts["owner"]), "basis_view_ref": deepcopy(self.prompt["context_ref"]),
-            "basis_revision": deepcopy(self.prompt["context"]["basis"]),
             "compaction_policy_ref": deepcopy(
                 self.snapshot["config"]["payload"]["frozen_compaction_policy_ref"]),
-            "operations": deepcopy(result.context_operations), "receipts": receipts,
-            "next_view": build_context_update_view(
-                self.prompt, result.context_operations, receipts, result.final),
-        })
-        outputs = {"result": text_content(result.final["value"]["text"]), "context": packet}
+            "unit_id": self.unit_id, "fact_ids": list(self.fact_ids),
+            "model_requests": model_requests})
+        outputs = {"result": text_content(result.final["value"]["text"]), "receipts": receipts}
         self._pending_acceptance = False
         return outputs
 
     def dispose(self):
         if self.disposed:
             return
-        if self.schema_version == 2:
-            self.request_bridge.close()
-        else:
-            self.adapter.close()
+        self.request_bridge.close()
         self.checkpoint = None
         self.snapshot = None
         self._completed_result = None

@@ -120,9 +120,10 @@ function fixture(sharedProvider = false) {
   unrelated.value.credential_ref = `local:${crypto.randomUUID()}`;
   const profile = newModelProfile(sharedProvider ? provider : unrelated);
   profile.value.name = "Independent model";
-  profile.value.parameters.model = "offline-model";
-  profile.value.capacity.context_window_tokens = 32768;
-  profile.value.capacity.max_cold_input_tokens = 32768;
+  profile.value.model.id = "offline-model";
+  profile.value.model.capacity = { context_window_tokens: 32768, input_limit_tokens: 30000, max_output_tokens: 16384 };
+  profile.value.runtime.context_length_tokens = 16000;
+  profile.value.runtime.output_limit_tokens = 4096;
   const gate = deferred<unknown>(), providerSave = vi.fn(() => gate.promise);
   const modelSave = vi.fn(async (_request: workflowModelProfilesApi.ModelProfileSaveRequest) => ({}));
   let providerRaw: string | null = null, modelRaw: string | null = null;
@@ -156,25 +157,28 @@ describe("provider and named model management ownership", () => {
     const noDraftWrites = browserMemoryOnly();
     const f = fixture(), root = await mount(f, true);
     await event(namedButton(root, f.profile.value.name), "Click"); await flush();
+    expect(text(root)).not.toMatch(/温度|输出预留|摘要最大输出|摘要冷输入/);
+    expect(field(root, "输出上限 tokens").props.max).toBeUndefined();
     await input(field(root, "配置名称"), "Edited profile");
     await input(field(root, "模型名称"), "edited-model");
-    await input(field(root, "最大输出 tokens"), "2048");
-    await input(field(root, "输出预留 tokens"), "2048");
-    await input(field(root, "温度"), "-");
+    await input(field(root, "输出上限 tokens"), "12000");
+    await input(field(root, "压缩阈值 %"), "-");
     expect(f.modelSave).not.toHaveBeenCalled(); expect(f.modelRaw()).toBeNull();
     await event(find(root, node => node.tag === "form"), "Submit"); await flush();
     expect(f.modelSave).not.toHaveBeenCalled();
     expect(text(root)).toContain("数字参数未填写完整或超出范围");
-    await input(field(root, "温度"), "0.7");
+    await input(field(root, "压缩阈值 %"), "85.5");
     await event(find(root, node => node.tag === "form"), "Submit"); await flush();
     expect(f.modelSave).toHaveBeenCalledOnce();
     const request = f.modelSave.mock.calls[0]![0]!;
     expect(request).toMatchObject({ expected_sequence: 1, record: {
       resource_id: f.profile.resource_id, update_sequence: 2, value: {
         name: "Edited profile", provider: f.profile.value.provider,
-        parameters: { model: "edited-model", thinking: "disabled", stream: false, max_tokens: 2048, temperature: 0.7 },
-        capacity: { context_window_tokens: 32768, output_reserve_tokens: 2048,
-          summary_max_tokens: 128, max_cold_input_tokens: 32768 }, enabled: true,
+        model: { id: "edited-model", capacity: {
+          context_window_tokens: 32768, input_limit_tokens: 30000, max_output_tokens: 16384,
+        } },
+        runtime: { thinking: "disabled", context_length_tokens: 16000,
+          compaction_threshold_bps: 8550, output_limit_tokens: 12000 }, enabled: true,
       },
     } });
     expect(request.record).not.toHaveProperty("raw");
@@ -206,21 +210,23 @@ describe("provider and named model management ownership", () => {
     const f = fixture(), root = await mount(f, true);
     const second = newModelProfile(f.providers[1]!);
     second.value.name = "Second model";
-    second.value.parameters.model = "second-model";
-    second.value.capacity = { ...f.profile.value.capacity };
+    second.value.model.id = "second-model";
+    second.value.model.capacity = { ...f.profile.value.model.capacity };
+    second.value.runtime.context_length_tokens = f.profile.value.runtime.context_length_tokens;
+    second.value.runtime.output_limit_tokens = f.profile.value.runtime.output_limit_tokens;
     f.profiles.records.value.push(second);
     await event(namedButton(root, f.profile.value.name), "Click"); await flush();
-    await input(field(root, "最大输出 tokens"), "-");
-    expect(field(root, "最大输出 tokens").value).toBe("-");
+    await input(field(root, "输出上限 tokens"), "-");
+    expect(field(root, "输出上限 tokens").value).toBe("-");
     expect(f.modelSave).not.toHaveBeenCalled();
     await event(namedButton(root, second.value.name), "Click"); await flush();
-    expect(field(root, "最大输出 tokens").value).toBe("1024");
+    expect(field(root, "输出上限 tokens").value).toBe("4096");
     await event(find(root, node => node.tag === "form"), "Submit"); await flush();
     expect(f.modelSave).toHaveBeenCalledOnce();
     expect(f.modelSave.mock.calls[0]![0]).toMatchObject({ expected_sequence: 1,
-      record: { resource_id: second.resource_id, value: { parameters: { max_tokens: 1024 } } } });
+      record: { resource_id: second.resource_id, value: { runtime: { output_limit_tokens: 4096 } } } });
     await event(namedButton(root, f.profile.value.name), "Click"); await flush();
-    expect(field(root, "最大输出 tokens").value).toBe("1024");
+    expect(field(root, "输出上限 tokens").value).toBe("4096");
     noDraftWrites();
   });
 

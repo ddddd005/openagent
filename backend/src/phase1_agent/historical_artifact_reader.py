@@ -181,6 +181,36 @@ class HistoryArtifactAuthority:
                 "history_type_evidence_invalid", "Historical type declaration differs", 500)
         return definition
 
+    def _node_descriptor(self, component_id, component_version):
+        record = self._record(
+            "node_definition", component_id=component_id,
+            component_version=component_version, optional=True)
+        entry = self.registry.get(component_id, component_version) if self.registry is not None else None
+        require(entry is not None if self.registry is not None else record is not None,
+                "history_node_unavailable", "Exact historical node declaration is unavailable", 409)
+
+        if record is not None:
+            descriptor = deepcopy(record["descriptor"])
+        else:
+            descriptor = entry.definition.to_dict()
+            if entry.executor_ref is not None:
+                descriptor["executor_ref"] = entry.executor_ref.to_dict()
+        require((descriptor.get("component_id"), descriptor.get("component_version"))
+                == (component_id, component_version),
+                "history_storage_invalid", "Frozen descriptor has another component", 500)
+
+        if record is not None and entry is not None:
+            current = entry.definition.to_dict()
+            if entry.executor_ref is not None:
+                current["executor_ref"] = entry.executor_ref.to_dict()
+            left, right = deepcopy(descriptor), deepcopy(current)
+            for field in ("executable", "checkpoint_save", "execution_class"):
+                left.pop(field, None)
+                right.pop(field, None)
+            require(canonical_bytes(left) == canonical_bytes(right),
+                    "history_node_redefined", "Historical node contract was redefined", 409)
+        return descriptor
+
     def _node(self, chain, run):
         definition = self._record(
             "workflow_definition_revision", workflow_definition_id=chain["workflow_definition_id"],
@@ -196,24 +226,7 @@ class HistoryArtifactAuthority:
         require(all(binding[field] == node[field] for field in (
             "node_binding_id", "component_id", "component_version", "config")),
             "history_storage_invalid", "Frozen node binding differs from its document", 500)
-        descriptor = self._record(
-            "node_definition", component_id=node["component_id"],
-            component_version=node["component_version"])["descriptor"]
-        require((descriptor.get("component_id"), descriptor.get("component_version"))
-                == (node["component_id"], node["component_version"]),
-                "history_storage_invalid", "Frozen descriptor has another component", 500)
-        if self.registry is not None:
-            entry = self.registry.get(node["component_id"], node["component_version"])
-            require(entry is not None, "history_node_unavailable",
-                    "Exact historical node declaration is unavailable", 409)
-            current = entry.definition.to_dict()
-            if entry.executor_ref is not None:
-                current["executor_ref"] = entry.executor_ref.to_dict()
-            left, right = deepcopy(descriptor), deepcopy(current)
-            left.pop("executable", None)
-            right.pop("executable", None)
-            require(canonical_bytes(left) == canonical_bytes(right),
-                    "history_node_redefined", "Historical node version was redefined", 409)
+        descriptor = self._node_descriptor(node["component_id"], node["component_version"])
         _validate_consumed_configuration(node, binding["config"], run["config"], descriptor)
         try:
             Draft202012Validator(descriptor["config_schema"]).validate(run["config"])
@@ -452,9 +465,7 @@ class HistoryArtifactAuthority:
                              if item["node_binding_id"] == identity), None)
                 require(node is not None and entry["owner_component_id"] == node["component_id"],
                         "history_node_state_denied", "Checkpoint private state has another owner", 403)
-                descriptor = self._record(
-                    "node_definition", component_id=node["component_id"],
-                    component_version=node["component_version"])["descriptor"]
+                descriptor = self._node_descriptor(node["component_id"], node["component_version"])
                 try:
                     Draft202012Validator(descriptor["private_state_schema"]).validate(entry["payload"])
                 except ValidationError as error:
@@ -545,9 +556,7 @@ class HistoryArtifactAuthority:
         for node in result["nodes"]:
             node.pop("title", None)
             node.pop("position", None)
-            descriptor = self._record(
-                "node_definition", component_id=node["component_id"],
-                component_version=node["component_version"])["descriptor"]
+            descriptor = self._node_descriptor(node["component_id"], node["component_version"])
             policy = node.get("configuration_policy")
             declaration = None if policy is None else validate_node_configuration(node, descriptor)
             node["config"] = fixed_configuration_projection(node["config"], declaration, policy)

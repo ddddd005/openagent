@@ -9,6 +9,16 @@ from .graph_application_identity import (
 from .graph_records import require
 
 
+_MANAGEMENT_COMMANDS = {
+    "consumer.draft.save", "definition.update", "session.create", "consumer.session.create",
+    "object.write",
+    "session.metadata.update", "session.data.update", "checkpoint.fork",
+}
+_LIFECYCLE_COMMANDS = {
+    "definition.archive", "definition.delete", "session.archive", "session.delete",
+}
+
+
 class GraphApplication:
     """Bound trusted-local scope; owns neither runtime state nor durable records.
 
@@ -60,13 +70,15 @@ class GraphApplication:
             target = RequestEvidenceService(self._service.database)
         elif spec.name.startswith("content.metadata."):
             target = self._service.content_configuration
+        elif spec.name.startswith("resource."):
+            target = self._service
         else:
             target = self._service.provider_configuration if spec.name.startswith((
             "credential.", "provider.",
             )) else self if spec.method in (
                 "_management_actions", "_consumer_actions", "_registration_list", "_information_read",
                 "_receipt_read", "_editor_inputs",
-            ) else self._service
+            ) else self._invocation_service(spec)
         callback = getattr(target, spec.method)
         positional = []
         if spec.session:
@@ -76,6 +88,16 @@ class GraphApplication:
             if field in arguments and spec.name not in ("resource.read", "resource.delete"):
                 positional.append(arguments.pop(field))
         return callback(*positional, **arguments)
+
+    def _invocation_service(self, spec):
+        if spec.name in _LIFECYCLE_COMMANDS:
+            return self._service
+        if spec.name in _MANAGEMENT_COMMANDS or spec.name in self._queries:
+            return self._management_service()
+        return getattr(self._service, "graph_service", self._service)
+
+    def _management_service(self):
+        return getattr(self._service, "graph_management_service", self._service)
 
     @staticmethod
     def _receipt_result(result):
@@ -111,10 +133,11 @@ class GraphApplication:
 
     def _editor_inputs(self, document):
         from .graph_input_declarations import editor_input_declarations
-        return editor_input_declarations(self._service.registry, document)
+        return editor_input_declarations(self._management_service().registry, document)
 
     def _actions(self, session_id, *, consumer):
-        view = self._service.get_consumer(session_id) if consumer else self._service.get_session(session_id)
+        service = self._management_service()
+        view = service.get_consumer(session_id) if consumer else service.get_session(session_id)
         return {"schema_version": 1, "kind": "workflow.application-actions",
                 "scope": "consumer" if consumer else "management",
                 "workflow_definition_id": view["workflow_definition_id"],
@@ -132,7 +155,7 @@ class GraphApplication:
         return self._actions(session_id, consumer=True)
 
     def _registration_list(self, **parameters):
-        return self._service.list_registrations(audience=self.scope, **parameters)
+        return self._management_service().list_registrations(audience=self.scope, **parameters)
 
     def _information_read(self, session_id, **parameters):
-        return self._service.read_information(session_id, audience=self.scope, **parameters)
+        return self._management_service().read_information(session_id, audience=self.scope, **parameters)

@@ -11,6 +11,8 @@ from phase1_agent.builtin_packages import DEFAULT_PACKAGES, builtin_capability_p
 from phase1_agent.capability_packages import CapabilityPackage, PackageManifest
 from phase1_agent.capability_registry import create_package_registry
 from phase1_agent.contract_errors import ContractValidationError
+from phase1_agent.graph_application import GraphApplication
+from phase1_agent.graph_receipts import read_graph_application_receipt
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.storage import SqliteStore
 from test_graph_service import gate_graph
@@ -53,6 +55,14 @@ def simple_document(service):
         "edges": [{"edge_id": uid(4), "source_node_id": uid(1), "source_port_id": "output",
                    "target_node_id": uid(2), "target_port_id": "input", "order": 0}],
     }
+
+
+def configuration_document(service):
+    value = simple_document(service)
+    value.update(schema_version=3, edit_sequence=0, execution_roots=[], control_edges=[])
+    for item in value["nodes"]:
+        item["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
+    return value
 
 
 @pytest.mark.parametrize("selection", [None, {}, {"workflow.tools": "1.0.0"}, {"workflow.prompts": "1.0.0"}],
@@ -132,9 +142,21 @@ def test_missing_saved_package_keeps_history_and_original_receipts_read_only_unt
     path = tmp_path / "missing-saved.sqlite"
     selection = {**DEFAULT_PACKAGES, "example.optional-ui": "1"}
     with closing(GraphWorkflowService(path, capability_packages=(optional,), enabled_packages=selection)) as service:
-        document = simple_document(service)
-        service.save_definition(document, expected_revision=0, idempotency_key="original-definition")
-        initial = service.create_session(document["workflow_definition_id"], 1, idempotency_key="original-session")
+        document = configuration_document(service)
+        definition_request = {
+            "workflow_definition_id": document["workflow_definition_id"], "document": document,
+            "expected_edit_sequence": 0, "idempotency_key": "original-definition-update",
+        }
+        application = GraphApplication(service)
+        definition_origin = application.command("definition.update", definition_request)
+        saved = definition_origin["result"]
+        assert saved["outcome"] == "saved"
+        verified = read_graph_application_receipt(path, "definition.update", definition_request)
+        assert verified["outcome"] == "matched"
+        assert verified["receipt"] == definition_origin["receipt"]
+        assert verified["result"] == saved
+        initial = service.create_session(
+            document["workflow_definition_id"], saved["definition_revision"], idempotency_key="original-session")
         started = service.start(initial["workflow_session_id"], expected_revision=initial["revision"],
                                 idempotency_key="original-start")
         service.wait(started["active_chain_run_id"])
@@ -151,6 +173,12 @@ def test_missing_saved_package_keeps_history_and_original_receipts_read_only_unt
         catalog = missing.platform_capabilities()
         assert catalog["package_diagnostics"][0]["enabled_packages"] == selection
         assert catalog["package_lock"] == [] and missing.registry.catalog() == []
+        missing_receipt = GraphApplication(missing).query("receipt.read", {
+            "operation": "definition.update", "parameters": definition_request,
+        })
+        assert missing_receipt["outcome"] == "matched"
+        assert missing_receipt["receipt"] == definition_origin["receipt"]
+        assert missing_receipt["result"] == definition_origin["result"]
         assert not missing.get_session(sid)["can_submit"]
         assert not missing.get_consumer(sid)["can_submit"]
         assert missing.get_run(sid, chain_id) == historical
@@ -185,7 +213,7 @@ def test_missing_saved_package_keeps_history_and_original_receipts_read_only_unt
         assert not hasattr(missing, "_native_runtime")
 
 
-def test_missing_saved_package_does_not_block_closing_owned_execution(tmp_path):
+def test_missing_saved_package_does_not_reconcile_or_block_closing_owned_execution(tmp_path):
     optional = CapabilityPackage(PackageManifest("example.optional-ui", "1"), lambda host:
         host.register_frontend_extension(
             "example.optional-ui.panel", "workbench-panel", "example.optional-ui.panel",
@@ -205,7 +233,7 @@ def test_missing_saved_package_does_not_block_closing_owned_execution(tmp_path):
 
     with closing(GraphWorkflowService(path)) as missing:
         current = missing.get_session(sid)
-        assert current["status"] == "recovery_unavailable"
+        assert current["status"] == "paused"
         assert current["active_chain_run_id"] == chain_id
         assert not current["can_submit"] and current["available_actions"] == ["close"]
         assert missing.registry.catalog() == []
@@ -219,7 +247,8 @@ def test_missing_saved_package_does_not_block_closing_owned_execution(tmp_path):
         closed = missing.control(sid, action="close", expected_revision=current["revision"],
                                  idempotency_key="unavailable-close")
         assert closed["status"] == "closed" and closed["active_chain_run_id"] is None
-        assert missing.get_run(sid, chain_id)["chain"]["diagnostic"]["reason_code"] == "recovery_unavailable"
+        assert missing.get_run(sid, chain_id)["chain"]["status"] == "closed"
+        assert missing.get_run(sid, chain_id)["chain"]["diagnostic"] is None
         assert missing.control(sid, action="close", expected_revision=current["revision"],
                                idempotency_key="unavailable-close") == closed
 

@@ -48,12 +48,8 @@ COMMANDS = (
                "secret", "idempotency_key", "provider_seed")),
     operation("credential.delete", "delete_credential",
               ("credential_ref", "expected_generation", "idempotency_key")),
-    operation("draft.save", "save_draft",
-              ("address", "format_version", "value", "expected_sequence", "idempotency_key")),
     operation("consumer.draft.save", "save_consumer_draft",
               ("address", "format_version", "value", "expected_sequence", "idempotency_key"), consumer=True),
-    operation("definition.save", "save_definition",
-              ("document", "expected_revision", "idempotency_key"), status=201),
     operation("definition.update", "update_definition",
               ("workflow_definition_id", "document", "expected_edit_sequence", "idempotency_key"),
               ("confirm_derivation",)),
@@ -74,22 +70,14 @@ COMMANDS = (
               ("document", "expected_session_revision", "expected_data_revision",
                "expected_definition_revision", "expected_head_revision", "idempotency_key"),
               ("mappings",), session=True, status=201),
-    operation("session.rebind", "rebind_session",
-              ("definition_revision", "expected_revision", "expected_data_revision",
-               "expected_head_revision", "idempotency_key"), ("mappings",), session=True),
+    operation("checkpoint.fork", "fork_checkpoint",
+              ("checkpoint_id", "expected_session_revision", "expected_data_revision",
+               "expected_head_revision", "idempotency_key"), session=True, status=201),
     operation("session.data.update", "update_data",
               ("expected_revision", "expected_data_revision", "idempotency_key"),
               ("variables", "shared"), session=True),
-    operation("candidate.select", "select_graph_candidate",
-              ("candidate_id", "expected_revision", "expected_data_revision", "expected_head_revision",
-               "idempotency_key"), session=True),
-    operation("candidate.fork", "fork_graph_candidate",
-              ("candidate_id", "expected_revision", "expected_data_revision", "expected_head_revision",
-               "idempotency_key"), session=True, status=201),
     operation("object.write", "update_session_objects",
               ("node_id", "writes", "expected_revision", "idempotency_key"), session=True),
-    operation("context.adopt", "adopt_context_view",
-              ("node_id", "view_output_id", "expected_revision", "idempotency_key"), session=True),
     operation("resource.save", "save_global_resource", ("record", "expected_sequence", "idempotency_key")),
     operation("resource.delete", "delete_global_resource", ("identity", "expected_sequence", "idempotency_key")),
     operation("packages.configure", "configure_capability_packages", ("enabled_packages",)),
@@ -103,9 +91,29 @@ COMMANDS = (
     operation("consumer.run.control", "control_consumer",
               ("action", "expected_revision", "idempotency_key"),
               session=True, consumer=True),
+)
+
+# Kept out of GraphApplication dispatch/discovery. Receipt reads still need the
+# exact retired request contract to verify previously persisted results.
+RETIRED_RECEIPT_COMMANDS = (
+    operation("context.adopt", "adopt_context_view",
+              ("node_id", "view_output_id", "expected_revision", "idempotency_key"), session=True),
+    operation("session.rebind", "rebind_session",
+              ("definition_revision", "expected_revision", "expected_data_revision",
+               "expected_head_revision", "idempotency_key"), ("mappings",), session=True),
+    operation("candidate.select", "select_graph_candidate",
+              ("candidate_id", "expected_revision", "expected_data_revision", "expected_head_revision",
+               "idempotency_key"), session=True),
+    operation("candidate.fork", "fork_graph_candidate",
+              ("candidate_id", "expected_revision", "expected_data_revision", "expected_head_revision",
+               "idempotency_key"), session=True, status=201),
     operation("consumer.candidate.fork", "fork_consumer_candidate",
               ("candidate_id", "expected_revision", "expected_data_revision", "expected_head_revision",
                "idempotency_key"), session=True, consumer=True, status=201),
+    operation("draft.save", "save_draft",
+              ("address", "format_version", "value", "expected_sequence", "idempotency_key")),
+    operation("definition.save", "save_definition",
+              ("document", "expected_revision", "idempotency_key"), status=201),
 )
 
 QUERIES = (
@@ -133,6 +141,8 @@ QUERIES = (
     operation("session.read", "get_session", session=True),
     operation("session.actions", "_management_actions", session=True),
     operation("run.read", "get_run", ("chain_id",), session=True),
+    operation("checkpoint.list", "list_checkpoints", session=True),
+    operation("checkpoint.read", "read_checkpoint", ("checkpoint_id",), session=True),
     operation("event.bindings", "list_event_bindings",
               ("workflow_definition_id", "definition_revision"), session=True),
     operation("event.read", "read_event", ("chain_id",), session=True),
@@ -231,7 +241,7 @@ def validate_parameters(spec, parameters):
         if field == "idempotency_key":
             require(type(value) is str and 1 <= len(value) <= 128 and bool(value.strip()),
                     "invalid_request", "An idempotency key is required")
-        if field in ("workflow_definition_id", "chain_id", "candidate_id"):
+        if field in ("workflow_definition_id", "chain_id", "candidate_id", "checkpoint_id"):
             require(uuid_value(value), "invalid_request", "Invalid graph identity")
     if spec.name in ("definition.read", "definition.archive", "definition.delete",
                      "consumer.definition", "consumer.sessions"):

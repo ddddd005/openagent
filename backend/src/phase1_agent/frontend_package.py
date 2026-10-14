@@ -26,7 +26,8 @@ FRONTEND_EXTENSIONS = (
 
 def register_frontend(host):
     for extension in FRONTEND_EXTENSIONS:
-        host.register_frontend_extension(**extension, host_protocol_version=1)
+        protocol = 2 if extension["binding"]["slot"] == "node-fields" else 1
+        host.register_frontend_extension(**extension, host_protocol_version=protocol)
 
 
 def create_frontend_package():

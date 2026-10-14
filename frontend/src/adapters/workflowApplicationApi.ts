@@ -14,10 +14,13 @@ export function graphApplicationQuery(operation: string, parameters: Record<stri
   return workbenchRequest("/api/graph/queries", { body: { operation, parameters: graphClone(parameters) }, readOnly: true });
 }
 
-// Preserve persisted outbox coordinates while moving their transport to the named application entry.
-export function graphCommandOperation(path: string, body: Record<string, unknown>) {
+// Preserve persisted outbox coordinates for receipt reads without reopening retired writes.
+function graphRequestOperation(path: string, body: Record<string, unknown>, receiptOnly = false) {
   if (Object.prototype.hasOwnProperty.call(body, "session_id"))
     throw new WorkbenchApiError("unknown", "原请求包含与路径重复的会话目标，保留原请求");
+  if (path === "/api/graph/definitions" && !receiptOnly)
+    throw new WorkbenchApiError("unavailable", "旧整图发布入口已退役；正式保存暂不可用，未提交新请求",
+      undefined, "graph_definition_save_retired");
   const roots: Record<string, string> = {
     "/api/graph/definitions": "definition.save",
     "/api/graph/definitions/update": "definition.update",
@@ -30,6 +33,10 @@ export function graphCommandOperation(path: string, body: Record<string, unknown
   if (definition && graphUuid(definition[1]))
     return { operation: `definition.${definition[2]}`, parameters: { ...graphClone(body), identity: definition[1] } };
   const session = /^\/api\/graph\/sessions\/([0-9a-fA-F-]+)\/(runs|control|copy|rebind|archive|delete|data|events\/submit|candidates\/select|candidates\/fork)$/.exec(path);
+  if (session && !receiptOnly && ["rebind", "candidates/select", "candidates/fork"].includes(session[2]))
+    throw new WorkbenchApiError("rejected", session[2] === "rebind"
+      ? "会话修订重绑入口已退役；请新建会话"
+      : "候选历史恢复与分叉入口已退役；未提交新请求");
   const operations: Record<string, string> = {
     runs: "run.start", control: "run.control", copy: "session.copy", rebind: "session.rebind",
     data: "session.data.update", "candidates/select": "candidate.select", "candidates/fork": "candidate.fork",
@@ -41,6 +48,10 @@ export function graphCommandOperation(path: string, body: Record<string, unknown
   return { operation: operations[session[2]], parameters: { ...graphClone(body), session_id: session[1] } };
 }
 
+export function graphCommandOperation(path: string, body: Record<string, unknown>) {
+  return graphRequestOperation(path, body);
+}
+
 export async function sendGraphCommand(path: string, body: Record<string, unknown>): Promise<unknown> {
   const request = graphCommandOperation(path, body);
   const value = await workbenchRequest<unknown>("/api/graph/commands", { body: request });
@@ -48,7 +59,7 @@ export async function sendGraphCommand(path: string, body: Record<string, unknow
 }
 
 export async function readGraphReceipt(path: string, body: Record<string, unknown>): Promise<unknown> {
-  const request = graphCommandOperation(path, body);
+  const request = graphRequestOperation(path, body, true);
   const value = await workbenchRequest<unknown>("/api/graph/receipts/read", { body: request, readOnly: true });
   if (!graphObject(value) || value.schema_version !== 1 || value.kind !== "workflow.application-receipt-read")
     throw new WorkbenchApiError("unknown", "原工作流回执读取契约无效，保留原请求");

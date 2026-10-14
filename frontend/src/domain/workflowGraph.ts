@@ -55,6 +55,7 @@ export interface GraphObjectBinding {
   readers: string[];
   writers: string[];
   owner_node_id: string | null;
+  registrar_node_id?: string | null;
   default_value?: unknown;
 }
 export interface GraphSessionObject {
@@ -95,7 +96,14 @@ export interface GraphNodeType {
   executable: boolean;
   input_storage?: "inline" | "references";
   capabilities?: string[];
-  object_accesses?: Record<string, unknown>[];
+  object_accesses?: {
+    config_field: string;
+    multiple: boolean;
+    access: "read" | "write" | "read_write";
+    type_id: string;
+    schema_version: number;
+  }[];
+  provided_session_item_types?: { type_id: string; schema_version: number }[];
   config_node_references?: {
     config_field: string;
     multiple: boolean;
@@ -304,14 +312,17 @@ export function isGraphPackageLock(value: unknown): value is NonNullable<GraphDo
 export function isGraphObjectBinding(value: unknown, nodeIds?: Set<string>): value is GraphObjectBinding {
   if (!graphObject(value) || !boundedName(value.object_key) || !boundedName(value.type_id)
     || Object.keys(value).some(key => !["object_key", "type_id", "schema_version", "scope",
-      "readers", "writers", "owner_node_id", "default_value"].includes(key))
+      "readers", "writers", "owner_node_id", "registrar_node_id", "default_value"].includes(key))
     || !positive(value.schema_version) || !["shared", "private"].includes(String(value.scope))
     || !["readers", "writers"].every(key => Array.isArray(value[key]) && value[key].length <= 512
       && value[key].every(graphUuid) && new Set(value[key]).size === value[key].length)
-    || !(value.scope === "shared" ? value.owner_node_id === null : graphUuid(value.owner_node_id))) return false;
+    || !(value.scope === "shared" ? value.owner_node_id === null : graphUuid(value.owner_node_id))
+    || value.registrar_node_id !== undefined && value.registrar_node_id !== null
+      && !graphUuid(value.registrar_node_id)) return false;
   const members = [...value.readers as string[], ...value.writers as string[]];
   if (value.scope === "private" && members.some(id => id !== value.owner_node_id)) return false;
-  return !nodeIds || [...members, ...(value.owner_node_id ? [value.owner_node_id as string] : [])]
+  return !nodeIds || [...members, ...(value.owner_node_id ? [value.owner_node_id as string] : []),
+    ...(value.registrar_node_id ? [value.registrar_node_id as string] : [])]
     .every(id => nodeIds.has(id));
 }
 export function isGraphObjectBindings(value: unknown, nodes?: GraphNode[]): value is GraphObjectBinding[] {
@@ -345,10 +356,12 @@ function graphStorageObjectBindings(value: unknown, ids: Set<string>): value is 
   const keys = new Set<string>();
   return value.every(binding => {
     if (!graphObject(binding) || !graphExactKeys(binding, ["object_key", "type_id", "schema_version",
-      "scope", "readers", "writers", "owner_node_id"], ["default_value"])
+      "scope", "readers", "writers", "owner_node_id"], ["default_value", "registrar_node_id"])
       || !graphStorageName(binding.object_key) || keys.has(binding.object_key)
       || !graphStorageName(binding.type_id) || !positive(binding.schema_version)
       || binding.scope !== "shared" && binding.scope !== "private"
+      || Object.hasOwn(binding, "registrar_node_id") && binding.registrar_node_id !== null
+        && !(canonicalGraphUuid(binding.registrar_node_id) && ids.has(binding.registrar_node_id))
       || !["readers", "writers"].every(key => Array.isArray(binding[key]) && binding[key].length <= 512
         && binding[key].every(id => canonicalGraphUuid(id) && ids.has(id))
         && new Set(binding[key]).size === binding[key].length)
@@ -483,6 +496,18 @@ export function isGraphCatalog(value: unknown): value is GraphNodeType[] {
     && typeof p.port_id === "string" && typeof p.data_type === "string"
     && typeof p.required === "boolean" && typeof p.multiple === "boolean"
     && (p.data_schema_version === undefined || positive(p.data_schema_version)));
+  const providedTypes = (v: unknown) => {
+    if (v === undefined) return true;
+    if (!Array.isArray(v) || !v.every(item => graphObject(item)
+      && graphExactKeys(item, ["type_id", "schema_version"])
+      && boundedName(item.type_id) && positive(item.schema_version))) return false;
+    return new Set(v.map(item => `${item.type_id}@${item.schema_version}`)).size === v.length;
+  };
+  const objectAccesses = (v: unknown) => v === undefined || Array.isArray(v) && v.every(access =>
+    graphObject(access) && graphExactKeys(access, ["config_field", "multiple", "access", "type_id", "schema_version"])
+    && boundedName(access.config_field) && typeof access.multiple === "boolean"
+    && ["read", "write", "read_write"].includes(String(access.access))
+    && boundedName(access.type_id) && positive(access.schema_version));
   return Array.isArray(value) && value.every(type => graphObject(type)
     && typeof type.component_id === "string" && typeof type.component_version === "string"
     && typeof type.display_name === "string" && typeof type.category === "string"
@@ -490,6 +515,8 @@ export function isGraphCatalog(value: unknown): value is GraphNodeType[] {
     && ports(type.inputs) && ports(type.outputs) && typeof type.is_output === "boolean"
     && typeof type.executable === "boolean"
     && (type.input_storage === undefined || ["inline", "references"].includes(String(type.input_storage)))
+    && providedTypes(type.provided_session_item_types)
+    && objectAccesses(type.object_accesses)
     && (type.config_node_references === undefined || Array.isArray(type.config_node_references)
       && type.config_node_references.every(reference => graphObject(reference)
         && typeof reference.config_field === "string" && reference.config_field.length > 0

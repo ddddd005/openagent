@@ -46,4 +46,22 @@ def validate_agent_receipts(value):
 
 
 def receipts_references(value):
-    return [deepcopy(value["frozen_prompt_ref"]), deepcopy(value["model_ref"])]
+    references = [deepcopy(value["frozen_prompt_ref"]), deepcopy(value["model_ref"])]
+    if value.get("schema_version") == 2 and value.get("compaction_policy_ref") is not None:
+        references.append(deepcopy(value["compaction_policy_ref"]))
+    return references
+
+
+def agent_receipts_data_type_definition():
+    from .host_sdk import DataTypeDefinition
+    return DataTypeDefinition(
+        "AGENT_RECEIPTS", 1, {"type": "object"}, scope="content",
+        validator=validate_agent_receipts, references=receipts_references, max_bytes=1_000_000)
+
+
+def agent_receipts_data_type_definition_v2():
+    from .host_sdk import DataTypeDefinition
+    from .model_execution_contracts import validate_agent_receipts_v2
+    return DataTypeDefinition(
+        "AGENT_RECEIPTS", 2, {"type": "object"}, scope="content",
+        validator=validate_agent_receipts_v2, references=receipts_references, max_bytes=1_000_000)

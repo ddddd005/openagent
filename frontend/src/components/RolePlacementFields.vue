@@ -3,33 +3,22 @@ import { computed, ref, watch } from "vue";
 import type { RolePlacement } from "../domain/promptPresentation";
 import RawNumberInput from "./RawNumberInput.vue";
 
-const props = withDefaults(defineProps<{
+const props = defineProps<{
   modelValue: RolePlacement;
   label?: string;
   errors?: string[];
   labelPrefix?: string;
   depthLabel?: string;
   disabled?: boolean;
-  draftScope?: string;
-  draftBasis?: unknown;
-  persistNumericDrafts?: boolean;
-}>(), { persistNumericDrafts: true });
+  identity?: string;
+}>();
 const emit = defineEmits<{
   "update:modelValue": [value: RolePlacement];
   validity: [value: boolean];
 }>();
 const orderValid = ref(true), depthValid = ref(true);
-const orderInput = ref<InstanceType<typeof RawNumberInput> | null>(null);
-const depthInput = ref<InstanceType<typeof RawNumberInput> | null>(null);
 const valid = computed(() => orderValid.value && (props.modelValue.placement !== "middle" || depthValid.value));
 watch(valid, value => emit("validity", value), { immediate: true, flush: "sync" });
-defineExpose({
-  adoptBasis(nextBasis: unknown) {
-    const order = orderInput.value?.adoptBasis(nextBasis) ?? true;
-    const depth = depthInput.value?.adoptBasis(nextBasis) ?? true;
-    return order && depth;
-  },
-});
 
 function update(patch: Partial<RolePlacement>) {
   emit("update:modelValue", { ...props.modelValue, ...patch });
@@ -86,14 +75,11 @@ function changePlacement(placement: RolePlacement["placement"]) {
       <label v-if="modelValue.placement === 'middle'">
         <span>{{ depthLabel ?? '深度' }}</span>
         <RawNumberInput
-          ref="depthInput"
           :min="0"
           integer
           :model-value="modelValue.depth"
           :disabled="disabled"
-          :draft-scope="draftScope ? `${draftScope}:depth` : undefined"
-          :draft-basis="draftBasis"
-          :persist="persistNumericDrafts"
+          :identity="identity ? `${identity}:depth` : 'depth'"
           :aria-label="labelPrefix ? `${labelPrefix} 插入深度` : '中区深度'"
           @update:model-value="update({ depth: $event })"
           @validity="depthValid = $event"
@@ -102,13 +88,10 @@ function changePlacement(placement: RolePlacement["placement"]) {
       <label>
         <span>顺序</span>
         <RawNumberInput
-          ref="orderInput"
           integer
           :model-value="modelValue.order"
           :disabled="disabled"
-          :draft-scope="draftScope ? `${draftScope}:order` : undefined"
-          :draft-basis="draftBasis"
-          :persist="persistNumericDrafts"
+          :identity="identity ? `${identity}:order` : 'order'"
           :aria-label="labelPrefix ? `${labelPrefix} 装配顺序` : '装配顺序'"
           @update:model-value="update({ order: $event })"
           @validity="orderValid = $event"

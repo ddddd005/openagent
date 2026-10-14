@@ -664,6 +664,30 @@ _AGENT_MESSAGE = _union(
     _CONTEXT_MAINTENANCE_MESSAGE,
     _PROVIDER_MODEL_MESSAGE,
 )
+_SOURCE_FREE_CONTEXT_MESSAGE = _union(
+    _object(
+        ("message_id", "role", "blocks"),
+        message_id=_UUID, role={"const": "system"},
+        blocks={**_array(_TEXT), "minItems": 1},
+    ),
+    _object(
+        ("message_id", "role", "blocks"),
+        message_id=_UUID, role={"const": "user"},
+        blocks={**_array(_TEXT), "minItems": 1},
+    ),
+    _object(
+        ("message_id", "role", "blocks"),
+        message_id=_UUID, role={"const": "assistant"},
+        blocks={**_array(_union(_TEXT, _TOOL_CALL)), "minItems": 1},
+        thinking_summary={"type": ["string", "null"], "maxLength": 131072},
+        provider_metadata={"type": ["object", "null"]},
+    ),
+    _object(
+        ("message_id", "role", "blocks"),
+        message_id=_UUID, role={"const": "tool"},
+        blocks={**_array({"anyOf": [_TOOL_RESULT, _RUNTIME_TOOL_RESULT]}), "minItems": 1},
+    ),
+)
 _GENERATED_MESSAGE = {
     "allOf": [
         _AGENT_MESSAGE,
@@ -737,7 +761,6 @@ _OPERATION_VARIANTS = {
     "retry_publish": ("workflow_session", "run_record"),
     "interrupt": ("workflow_session", "run_record"),
     "resume": ("workflow_session", "run_record"),
-    "extend_budget": ("workflow_session", "run_record"),
     "reroll": ("workflow_session", "chain_run"),
     "close_execution": ("workflow_session", "chain_run"),
     "continue_workflow": ("workflow_session", "chain_run"),
@@ -801,7 +824,7 @@ CONTRACT_SCHEMAS: dict[str, dict] = {
         snapshot_id=_UUID, workflow_session_id=_UUID, node_binding_id=_UUID,
         input_id=_UUID, parent_turn_id=_UUID_OR_NULL,
         component_id=_UUID, component_version=_SYMBOL, config=_PRIVATE,
-        s0=_array(_AGENT_MESSAGE), tool_definitions=_array(
+        s0=_array(_union(_AGENT_MESSAGE, _SOURCE_FREE_CONTEXT_MESSAGE)), tool_definitions=_array(
             _object(("name", "version", "parameters_schema"),
                     name=_SYMBOL, version=_SYMBOL,
                     parameters_schema=_OBJECT_VALUE,
@@ -1131,18 +1154,88 @@ _VALIDATORS = {
     name: _StrictDraft202012Validator(schema, format_checker=_FORMATS)
     for name, schema in CONTRACT_SCHEMAS.items()
 }
+_SOURCE_FREE_CONTEXT_VALIDATOR = _StrictDraft202012Validator(
+    _SOURCE_FREE_CONTEXT_MESSAGE, format_checker=_FORMATS,
+)
+_RUNTIME_TOOL_RESULT_VALIDATOR = _StrictDraft202012Validator(
+    _RUNTIME_TOOL_RESULT, format_checker=_FORMATS,
+)
+
+
+def _is_runtime_tool_observation_candidate(block: Mapping[str, Any]) -> bool:
+    content = block.get("content") if type(block) is dict else None
+    return (type(block) is dict and block.get("status") == "error" and block.get("is_error") is True
+            and type(content) is dict
+            and {"reason_code", "error", "retry_guidance"} <= set(content))
+
+
+def is_runtime_tool_observation_block(block: Mapping[str, Any]) -> bool:
+    content = block.get("content") if type(block) is dict else None
+    return (_is_runtime_tool_observation_candidate(block)
+            and content["reason_code"] in _OBSERVATION_REASONS)
+
+
+def _validate_runtime_tool_observation_projection(block: Mapping[str, Any]) -> None:
+    content = block["content"]
+    if not all(content[field].strip() for field in ("error", "retry_guidance")):
+        raise ContractValidationError(
+            "Source-free runtime tool observations require nonempty error and retry guidance",
+        )
+    try:
+        projection = loads_strict(block["model_visible_text"])
+    except ContractValidationError:
+        raise ContractValidationError(
+            "Source-free runtime tool observations require a JSON projection",
+        ) from None
+    if canonical_bytes(projection) != canonical_bytes(content):
+        raise ContractValidationError(
+            "Source-free runtime tool observation projection differs from its content",
+        )
+
+
+def validate_context_history_message(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a source-free persisted message or an ordinary sourced message.
+
+    This narrow reader contract is for native context/history projections only.
+    Live Agent messages continue to use ``validate_record("agent_message", ...)``.
+    """
+    if type(value) is dict and "source" in value:
+        return validate_record("agent_message", value)
+    try:
+        validate_json_value(value)
+    except ContractValidationError as exc:
+        raise ContractValidationError(f"context history message: {exc}") from None
+    if type(value) is not dict:
+        raise ContractValidationError("Context history message must be an object")
+    error = next(_SOURCE_FREE_CONTEXT_VALIDATOR.iter_errors(value), None)
+    if error is not None:
+        path = _safe_error_path(error.absolute_path)
+        raise ContractValidationError(f"context history message{path}: invalid") from None
+    checked = copy.deepcopy(value)
+    _check_tool_arguments([checked])
+    if checked["role"] == "tool":
+        for block in checked["blocks"]:
+            if _is_runtime_tool_observation_candidate(block):
+                if not _RUNTIME_TOOL_RESULT_VALIDATOR.is_valid(block):
+                    raise ContractValidationError(
+                        "Source-free runtime tool observations must retain their exact block contract",
+                    )
+                _validate_runtime_tool_observation_projection(block)
+    return checked
 
 
 def _check_tool_arguments(messages: list[dict[str, Any]]) -> None:
     for message in messages:
-        if message["schema_version"] == 5:
+        if (message.get("schema_version") == 5
+                or "provider_metadata" in message or "thinking_summary" in message):
             from .provider_metadata import canonical_message_metadata
             canonical_message_metadata(message)
         for block in message["blocks"]:
             if block["kind"] == "tool_result":
-                if message["source"]["tool_execution_id"] != block["tool_execution_id"]:
+                if ("source" in message
+                        and message["source"]["tool_execution_id"] != block["tool_execution_id"]):
                     raise ContractValidationError("Tool result execution id differs from message source")
-                if message["schema_version"] == 2:
+                if message.get("schema_version") == 2:
                     source = message["source"]
                     content = block["content"]
                     if source["tool_call_id"] != block["tool_call_id"]:

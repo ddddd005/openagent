@@ -39,8 +39,8 @@ def assigned(name="value", value_type="string", value="Alice"):
             "assigned": True, "value": value}
 
 
-def invoke(registry, name, *, config=None, inputs=None, objects=None, external=None):
-    entry = registry.get("tools." + name, "1")
+def invoke(registry, name, *, version="1", config=None, inputs=None, objects=None, external=None):
+    entry = registry.get("tools." + name, version)
     config = {**deepcopy(entry.definition.default_config), **(config or {})}
     registry.validate_config(entry, config)
     inputs = deepcopy(inputs or {})
@@ -76,8 +76,9 @@ def test_independent_package_exports_exact_v2_ports_and_no_agent(registry):
         {"package_id": "workflow.content", "version": "1.0.0"},
         {"package_id": "workflow.tools", "version": "1.0.0"},
     ]
-    assert len(registry.catalog()) == 15
-    for item in registry.catalog():
+    tool_nodes = [item for item in registry.catalog() if item["component_id"].startswith("tools.")]
+    assert len(tool_nodes) == 16
+    for item in tool_nodes:
         assert item["component_id"].startswith("tools.")
         port_sets = [(item["inputs"], item["outputs"])] + [
             (mode["inputs"], mode["outputs"]) for mode in item.get("port_modes", {}).values()]
@@ -86,6 +87,19 @@ def test_independent_package_exports_exact_v2_ports_and_no_agent(registry):
     for name in ("variable-register", "variable-assign"):
         definition = registry.get("tools." + name, "1").definition
         assert definition.outputs == () and not definition.is_output
+
+
+def test_output_v2_declares_frontend_state_without_changing_v1_execution(registry):
+    legacy = registry.get("tools.output", "1")
+    current = registry.get("tools.output", "2")
+    assert legacy.definition.provided_session_item_types == ()
+    assert current.definition.to_dict()["provided_session_item_types"] == [
+        {"type_id": "workflow.frontend-state", "schema_version": 1}]
+    inputs, _ = current.definition.ports({"mode": "text"})
+    assert [port.port_id for port in inputs] == ["input"]
+    result, context = invoke(registry, "output", version="2", inputs={"input": text_content("visible")})
+    assert result["output"] == text_content("visible")
+    assert context.object_writes == []
 
 
 def test_text_current_input_and_output_do_not_interpret_macros(registry):

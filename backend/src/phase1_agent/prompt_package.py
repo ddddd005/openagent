@@ -66,7 +66,8 @@ def create_prompt_package(*, tool_catalog: Mapping | None = None) -> CapabilityP
 
     def register(host):
         for extension in PROMPT_FRONTEND_EXTENSIONS:
-            host.register_frontend_extension(**extension, host_protocol_version=1)
+            protocol = 2 if extension["binding"]["slot"] == "node-fields" else 1
+            host.register_frontend_extension(**extension, host_protocol_version=protocol)
         register_lifecycle_prompt_nodes(host, tools=tools)
         host.register_node(NodeDefinition(
             "prompts.assembly", "2", "Prompt assembly", "Prompt", {}, object_schema({}),
@@ -81,6 +82,7 @@ def create_prompt_package(*, tool_catalog: Mapping | None = None) -> CapabilityP
         exports={
             "data_types": [{"scope": "global", "type_id": PROMPT_RESOURCE_TYPE, "schema_version": 2}],
             "nodes": [{"component_id": "prompts." + name, "component_version": "2"}
-                      for name in (*LIFECYCLE_PROMPT_COMPONENTS, "assembly")],
+                      for name in (*LIFECYCLE_PROMPT_COMPONENTS, "assembly")]
+                     + [{"component_id": "prompts.item", "component_version": "3"}],
             "frontend_extensions": [{"extension_id": row["extension_id"]} for row in PROMPT_FRONTEND_EXTENSIONS],
         }), register)

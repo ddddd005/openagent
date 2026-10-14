@@ -33,7 +33,7 @@ function failure(kind: "rejected" | "unknown" | "unavailable", message: string, 
   return new WorkbenchApiError(kind, message, undefined, code);
 }
 
-// This application is uninstalled; the production workbench still owns host 1.
+// The workbench installs this application with its trusted extension registry.
 export function createWorkflowConfigurationApplication(ports: WorkflowConfigurationApplicationPorts) {
   const evidence = ports.evidence ?? requestEvidencePorts;
   const update = ports.update ?? updateGraphConfiguration, readReceipt = ports.readReceipt ?? readGraphConfigurationReceipt;

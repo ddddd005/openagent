@@ -474,9 +474,9 @@ def validate_graph_transition(kind: str, previous: dict | None, value: dict) -> 
             "storage_contract_violation", "Graph revision must advance once", 500)
     if kind in ("chain_run", "node_run"):
         transitions = {"prepared": {"running", "paused", "failed", "recovery_unavailable", "closed"},
-                       "running": {"running", "paused", "budget_exhausted", "archive_failed", "failed", "succeeded", "recovery_unavailable"},
+                       "running": {"running", "paused", "archive_failed", "failed", "succeeded", "recovery_unavailable"},
                        "paused": {"paused", "prepared", "running", "closed", "recovery_unavailable"},
-                       "budget_exhausted": {"budget_exhausted", "prepared", "running", "closed", "recovery_unavailable"},
+                       "budget_exhausted": {"closed", "recovery_unavailable"},
                        "archive_failed": {"prepared", "running", "closed", "recovery_unavailable"},
                        "failed": {"closed"}, "recovery_unavailable": {"closed"}}
         require(retry_transition or value["status"] in transitions.get(previous["status"], set()),

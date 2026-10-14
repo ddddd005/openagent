@@ -97,16 +97,24 @@ def register_lifecycle_prompt_nodes(host, *, tools) -> None:
     }
 
     def node(name, title, config, schema, execute, *, inputs=(), outputs=None,
-             capabilities=(), validator=None, **hooks):
+             capabilities=(), validator=None, component_version="2", adjustable_configuration=None, **hooks):
         host.register_node(NodeDefinition(
-            "prompts." + name, "2", title, "提示词", config, schema,
+            "prompts." + name, component_version, title, "提示词", config, schema,
             inputs=inputs, outputs=(material_port(),) if outputs is None else outputs,
             capabilities=capabilities, input_storage="references",
+            adjustable_configuration=adjustable_configuration,
         ), execute, config_validator=validator, **hooks)
 
     node("item", "提示词条目 · 生命周期", deepcopy(member), lifecycle_member_schema(),
          lambda config, inputs, context: {"output": _members({"members": [config]}, context, kind="prompt_item")},
          validator=lambda config: validate_lifecycle_members([config]))
+    from .workflow_configuration import PROMPT_CONFIGURATION_FIELDS
+    node("item", "提示词条目 · 生命周期", deepcopy(member), lifecycle_member_schema(),
+         lambda config, inputs, context: {"output": _members({"members": [config]}, context, kind="prompt_item")},
+         validator=lambda config: validate_lifecycle_members([config]), component_version="3",
+         adjustable_configuration={
+             "schema_version": 1, "policy": "prompt", "fields": list(PROMPT_CONFIGURATION_FIELDS),
+         })
     node("group", "提示词内容组 · 生命周期", {"members": [deepcopy(member)]},
          object_schema({"members": lifecycle_members_schema()}),
          lambda config, inputs, context: {"output": _members(config, context, kind="prompt_group")},
