@@ -77,5 +77,6 @@ The user explicitly approved the complete snapshot, worktree transition and resu
 - [Logical chat data-layer persistence, checkpoint schema4, independent reroll/select/floor-fork and exact-node consumers; scoped offline delivery, historical exclusions and unresolved multi-item computation bases](docs/中期检查2/55-聊天候选数据层与重roll检查点接续实施回执-2026-10-15.md).
 - [D/E legacy retirement survey and staged closeout inventory; current-menu version gap, receipt-only prerequisites, protected shared functionality and pending acceptance, investigation only](docs/中期检查2/56-D-E阶段旧内容退役勘察与收口清单-2026-10-15.md).
 - [D/E scoped legacy retirement and code closeout; current menu, receipt-only verification, mixed-test cleanup and final offline evidence, with deployment and real-model acceptance remaining](docs/中期检查2/57-D-E阶段旧内容退役与收口实施回执-2026-10-15.md).
+- [User-built minimal workflow two-round offline acceptance, committed D/E baseline and recommended same-commit develop/main fast-forward sequence; no merge or push performed](docs/中期检查2/58-用户极简工作流两轮离线验收与主干接续建议-2026-10-16.md).
 
 Moving a rule out of this file does not revoke it. Historical instructions are not current installation requirements; unresolved architecture questions go to the user.
