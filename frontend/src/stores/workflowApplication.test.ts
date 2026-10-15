@@ -35,22 +35,15 @@ function fixture() {
   graph.entries[id] = { document: current, saved_document: graphClone(current), saved_revision: 2,
     session_id: view.workflow_session_id, pending: null };
   graph.views[view.workflow_session_id] = view;
-  const candidateId = crypto.randomUUID(), chainId = crypto.randomUUID();
-  const directory = { schema_version: 1 as const, kind: "workflow.graph-candidates" as const,
-    workflow_session_id: view.workflow_session_id, workflow_definition_id: current.workflow_definition_id,
-    definition_revision: 2, session_revision: 3, head_revision: 2, candidates: [{ candidate_id: candidateId,
-      chain_run_id: chainId, source_session_id: crypto.randomUUID(), source_workflow_definition_id: old.workflow_definition_id,
-      source_definition_revision: old.revision, data_revision: 1, selected: false, can_select: true, diagnostic: null }] };
-  graph.candidates[view.workflow_session_id] = directory;
+  const candidate = { candidate_id: crypto.randomUUID(), chain_run_id: crypto.randomUUID(),
+    source_workflow_definition_id: old.workflow_definition_id, source_definition_revision: old.revision };
   const selected = { ...view, workflow_definition_id: old.workflow_definition_id, definition_revision: old.revision,
-    revision: 4, data_revision: 3, head_revision: 3, selected_chain_run_id: chainId };
-  return { graph, id, current, old, view, directory, candidateId, chainId, selected };
+    revision: 4, data_revision: 3, head_revision: 3, selected_chain_run_id: candidate.chain_run_id };
+  return { graph, id, current, old, view, candidate, selected };
 }
-function pendingCandidateSelect(view: GraphSession, directory: ReturnType<typeof fixture>["directory"],
-  candidateId: string): GraphCommand {
-  const candidate = directory.candidates.find(row => row.candidate_id === candidateId)!;
+function pendingCandidateSelect(view: GraphSession, candidate: ReturnType<typeof fixture>["candidate"]): GraphCommand {
   return { path: `/api/graph/sessions/${view.workflow_session_id}/candidates/select`,
-    body: { candidate_id: candidateId, expected_revision: view.revision, expected_data_revision: view.data_revision,
+    body: { candidate_id: candidate.candidate_id, expected_revision: view.revision, expected_data_revision: view.data_revision,
       expected_head_revision: view.head_revision, idempotency_key: crypto.randomUUID() },
     action: "candidate-select", source_session_id: view.workflow_session_id,
     expected_chain_run_id: candidate.chain_run_id, expected_definition_id: candidate.source_workflow_definition_id,
@@ -66,8 +59,8 @@ afterEach(() => {
 
 describe("workflow application coordination", () => {
   it("reconciles a previously selected candidate without replacing the editor or starting a run", async () => {
-    const { graph, id, current, old, selected, directory, candidateId, view } = fixture();
-    graph.entries[id].pending = pendingCandidateSelect(view, directory, candidateId);
+    const { graph, id, current, old, selected, candidate, view } = fixture();
+    graph.entries[id].pending = pendingCandidateSelect(view, candidate);
     const storage = memory(), backend = memoryLocalDraftStorage();
     const persistence = useWorkbenchPersistenceStore(); await persistence.initialize(storage, backend.ports);
     await persistence.save();
@@ -107,8 +100,8 @@ describe("workflow application coordination", () => {
   });
 
   it("retains the frozen candidate target and original body after reload and a lost receipt", async () => {
-    const { graph, id, current, old, selected, candidateId, view, directory } = fixture();
-    const original = pendingCandidateSelect(view, directory, candidateId);
+    const { graph, id, current, old, selected, candidate, view } = fixture();
+    const original = pendingCandidateSelect(view, candidate);
     graph.entries[id].pending = graphClone(original);
     const storage = memory(), backend = memoryLocalDraftStorage(), persistence = useWorkbenchPersistenceStore();
     await persistence.initialize(storage, backend.ports);
@@ -140,8 +133,8 @@ describe("workflow application coordination", () => {
   });
 
   it("keeps an accepted original request unknown when a later definition arrives during exact definition lookup", async () => {
-    const { graph, id, old, current, selected, view, directory, candidateId } = fixture();
-    const original = pendingCandidateSelect(view, directory, candidateId);
+    const { graph, id, old, current, selected, view, candidate } = fixture();
+    const original = pendingCandidateSelect(view, candidate);
     graph.entries[id].pending = graphClone(original);
     const lookup = deferred<Response>();
     const fetcher = vi.fn(async (path, init) => path === "/api/graph/receipts/read"
@@ -161,8 +154,8 @@ describe("workflow application coordination", () => {
   });
 
   it("accepts the original receipt after failed local saving while adopting a newer exact observed definition", async () => {
-    const { graph, id, old, current, selected, view, directory, candidateId } = fixture();
-    const original = pendingCandidateSelect(view, directory, candidateId);
+    const { graph, id, old, current, selected, view, candidate } = fixture();
+    const original = pendingCandidateSelect(view, candidate);
     graph.entries[id].pending = graphClone(original);
     let saves = 0;
     graph.setPersistenceGuard(() => ++saves !== 1);

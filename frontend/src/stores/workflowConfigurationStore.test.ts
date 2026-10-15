@@ -296,29 +296,27 @@ describe("workflow configuration store wiring", () => {
 
     const contextBinding = { object_key: "context", type_id: "workflow.effective-context", schema_version: 4,
       scope: "shared" as const, owner_node_id: null, readers: [contextId], writers: [] };
-    expect(graph.setExecutionRoot(outputId, true)).toBe(workflowId);
+    graph.document!.execution_roots = [outputId];
+    expect(graph.setControlDependencies(outputId, [agentId])).toBe(workflowId);
     await waitForUpdate(8);
     expect(requests[7]!.document.execution_roots).toEqual([outputId]);
-    expect(graph.setControlDependencies(outputId, [agentId])).toBe(workflowId);
-    await waitForUpdate(9);
-    expect(requests[8]!.document.control_edges).toMatchObject([
+    expect(requests[7]!.document.control_edges).toMatchObject([
       { source_node_id: agentId, target_node_id: outputId },
     ]);
     expect(graph.setObjectBindings([contextBinding])).toBe(workflowId);
-    await waitForUpdate(10);
-    expect(requests[9]!.document.object_bindings).toEqual([contextBinding]);
+    await waitForUpdate(9);
+    expect(requests[8]!.document.object_bindings).toEqual([contextBinding]);
     const event = { event_id: "test.output", schema_version: 1, display_name: "Test output",
       audience: "consumer" as const, target_node_ids: [outputId], payload_schema: { type: "object" as const } };
     expect(graph.setEventBindings([event])).toBe(workflowId);
-    await waitForUpdate(11);
-    expect(requests[10]!.document.event_bindings).toEqual([event]);
+    await waitForUpdate(10);
+    expect(requests[9]!.document.event_bindings).toEqual([event]);
     expect(requests.slice(7).every(request => request.document.schema_version === 3)).toBe(true);
     expect(requests.slice(7).every(request => request.document.package_lock?.find(
       item => item.package_id === "workflow.tools")?.version === "0.9.0")).toBe(true);
 
     const countBeforeInvalidEdits = requests.length;
     const missingNodeId = crypto.randomUUID();
-    expect(graph.setExecutionRoot(missingNodeId, true)).toBeNull();
     expect(graph.setControlDependencies(outputId, [missingNodeId])).toBeNull();
     expect(graph.replaceNode(missingNodeId, "tools.output@1")).toBeNull();
     expect(graph.setObjectBindings([{ ...contextBinding, readers: [missingNodeId] }])).toBeNull();
@@ -484,7 +482,7 @@ describe("workflow configuration store wiring", () => {
       graph.executionPackageLock = graphClone(frontendExecutionLock);
       const workflowId = graph.createWorkflow();
       await vi.waitFor(() => expect(graph.locked).toBe(false));
-      const providerId = graph.addNode("tools.output@2", { x: 0, y: 0 })!;
+      const providerId = graph.addNode("frontend.node@2", { x: 0, y: 0 })!;
       expect(providerId).toBeTruthy();
       const session = frontendSession(workflowId);
       const sessionId = session.workflow_session_id;
@@ -528,7 +526,7 @@ describe("workflow configuration store wiring", () => {
       const registrationRequests = requests.map(request => request.document.object_bindings
         .filter(binding => binding.registrar_node_id
           && request.document.nodes.find(node => node.node_binding_id === binding.registrar_node_id)
-            ?.component_id === "tools.output"));
+            ?.component_id === "frontend.node"));
       expect(registrationRequests[0]).toHaveLength(2);
       expect(new Set(registrationRequests[0].map(binding => binding.object_key)).size).toBe(2);
       expect(registrationRequests[0].find(binding => binding.registrar_node_id === providerId)).toEqual(

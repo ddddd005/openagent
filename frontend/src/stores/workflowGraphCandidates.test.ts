@@ -14,13 +14,7 @@ function fixture() {
     nodes: [], chains: [], outputs: [], data: { revision: 2, values: {} }, selected_chain_run_id: null };
   graph.entries[id].saved_revision = 1; graph.entries[id].saved_document = graphClone(graph.document!);
   graph.entries[id].session_id = sid; graph.views[sid] = view;
-  const directory = { schema_version: 1 as const, kind: "workflow.graph-candidates" as const,
-    workflow_session_id: sid, workflow_definition_id: view.workflow_definition_id, definition_revision: 1,
-    session_revision: 3, head_revision: 2, candidates: [{ candidate_id: candidate, chain_run_id: chain,
-      source_session_id: sid, source_workflow_definition_id: view.workflow_definition_id,
-      source_definition_revision: 1, data_revision: 1, selected: false, can_select: true, diagnostic: null }] };
-  graph.candidates[sid] = directory;
-  return { graph, id, sid, view, directory, candidate, chain };
+  return { graph, id, sid, view, candidate, chain };
 }
 function pendingCandidateFork(sid: string, view: GraphSession, candidateId: string, chain: string): GraphCommand {
   return { path: `/api/graph/sessions/${sid}/candidates/fork`,
@@ -32,19 +26,7 @@ function pendingCandidateFork(sid: string, view: GraphSession, candidateId: stri
 beforeEach(() => setActivePinia(createPinia()));
 afterEach(() => { useWorkflowGraphStore().$dispose(); useWorkspaceStore().$dispose(); vi.unstubAllGlobals(); });
 
-describe("workflow candidate retirement", () => {
-  it("keeps candidate listing read-only and removes candidate mutation APIs", async () => {
-    const { graph, id, sid, directory } = fixture();
-    const fetcher = vi.fn(async (path: string, init?: RequestInit) => new Response(JSON.stringify(directory)));
-    stubGraphApplicationFetch(fetcher);
-    await expect(graph.loadCandidates(id)).resolves.toEqual(directory);
-    expect(fetcher).toHaveBeenCalledOnce();
-    expect(fetcher.mock.calls[0]![0]).toBe(`/api/graph/sessions/${sid}/candidates`);
-    expect(fetcher.mock.calls[0]![1]?.method).toBe("GET");
-    expect("changeCandidate" in graph).toBe(false);
-    expect("restoreCandidate" in graph.management.commands).toBe(false);
-  });
-
+describe("workflow candidate receipt retirement", () => {
   it("reloads and reconciles an original select request through receipts only", async () => {
     const { graph, id, sid, view, candidate, chain } = fixture();
     const selected = { ...view, revision: 4, data_revision: 3, head_revision: 3,

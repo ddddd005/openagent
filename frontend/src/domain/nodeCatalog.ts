@@ -55,7 +55,7 @@ const policies: Record<string, FamilyPolicy> = {
   "tools.editable-input": simple("可编辑输入", "basic"),
   "tools.text": simple("文本", "basic"),
   "tools.regex": simple("正则处理", "basic"),
-  "tools.output": { label: "输出", category: "basic", preferred: "2" },
+  "tools.output": simple("输出", "basic"),
   "tools.text-to-json": simple("文本转 JSON", "conversion"),
   "tools.json-to-text": simple("JSON 转文本", "conversion"),
   "tools.text-to-prompt": simple("文本转提示词", "conversion"),
@@ -87,10 +87,7 @@ const policies: Record<string, FamilyPolicy> = {
   "lorebook.group": simple("世界书分组", "tavern"),
   "lorebook.global-reference": simple("全局世界书引用", "tavern"),
   "lorebook.global-activate": simple("世界书触发", "tavern"),
-  "frontend.state.output": simple("读取展示记录", "presentation"),
-  "frontend.state.append": simple("追加展示记录", "presentation"),
-  "frontend.presentation": simple("展示输出", "presentation"),
-  "frontend.node": simple("前端节点", "presentation"),
+  "frontend.node": { label: "前端节点", category: "presentation", preferred: "2" },
 };
 
 export const nodeTypeKey = (type: Pick<GraphNodeType, "component_id" | "component_version">) =>

@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { graphClone } from "./workflowGraph";
 import { createFrontendImplementationRegistry, isFrontendExtension, resolveFrontendExtensions, type FrontendExtension } from "./frontendExtensions";
-import { workflowFrontendExtensions } from "../plugins/workflowFrontendManifest";
+import { chatSessionObjectExtension, frontendChatNodeFieldsExtension,
+  frontendNodeFieldsExtensionForVersion, workflowFrontendExtensions } from "../plugins/workflowFrontendManifest";
 
 const packages = [{ package_id: "workflow.frontend", version: "1.0.0" }];
 const panel: FrontendExtension = { schema_version: 2, host_protocol_version: 1,
   extension_id: "local.panel", kind: "workbench-panel", entrypoint: "local.panel",
   component_id: null, component_version: null, package_id: "workflow.frontend", package_version: "1.0.0",
   binding: { surface: "workbench", slot: "panel", target: {} } };
-const renderer = workflowFrontendExtensions[0], fields = workflowFrontendExtensions[1];
+const renderer = chatSessionObjectExtension, fields = frontendChatNodeFieldsExtension;
 describe("trusted frontend host protocol", () => {
-  it("accepts all four exact full-package declarations", () => {
+  it("accepts the exact chat renderer and @2 node fields", () => {
     expect(workflowFrontendExtensions.every(isFrontendExtension)).toBe(true);
     expect(resolveFrontendExtensions(workflowFrontendExtensions, packages, workflowFrontendExtensions).available).toEqual(workflowFrontendExtensions);
   });
@@ -23,7 +24,7 @@ describe("trusted frontend host protocol", () => {
   it("does not load undeclared implementations, disabled packages or guessed versions", () => {
     expect(resolveFrontendExtensions([], packages, workflowFrontendExtensions).available).toEqual([]);
     expect(resolveFrontendExtensions(workflowFrontendExtensions, [], workflowFrontendExtensions).available).toEqual([]);
-    const row = graphClone(workflowFrontendExtensions[0]); row.package_version = "latest";
+    const row = graphClone(chatSessionObjectExtension); row.package_version = "latest";
     expect(resolveFrontendExtensions([row], [{ package_id: row.package_id, version: "latest" }], workflowFrontendExtensions).issues[0]).toContain("可信本地");
     row.package_version = "1.0.0"; row.entrypoint = "https://untrusted.example/plugin.js";
     expect(isFrontendExtension(row)).toBe(false);
@@ -43,16 +44,16 @@ describe("trusted frontend host protocol", () => {
   });
   it.each(["extension_id", "package_id", "package_version"] as const)("bounds %s exactly", key => {
     for (const value of ["", " leading", "trailing ", "x".repeat(129)]) {
-      expect(isFrontendExtension({ ...workflowFrontendExtensions[0], [key]: value })).toBe(false);
+      expect(isFrontendExtension({ ...chatSessionObjectExtension, [key]: value })).toBe(false);
     }
-    expect(isFrontendExtension({ ...workflowFrontendExtensions[0], [key]: "x".repeat(128) })).toBe(true);
+    expect(isFrontendExtension({ ...chatSessionObjectExtension, [key]: "x".repeat(128) })).toBe(true);
   });
   it("accepts bounded local symbols and rejects URLs, paths, scripts and oversized entrypoints", () => {
     for (const entrypoint of ["", "local.symbol\n", "https://host/plugin.js", "/plugin.js", "import('plugin')", "x".repeat(513)]) {
-      expect(isFrontendExtension({ ...workflowFrontendExtensions[0], entrypoint })).toBe(false);
+      expect(isFrontendExtension({ ...chatSessionObjectExtension, entrypoint })).toBe(false);
     }
-    expect(isFrontendExtension({ ...workflowFrontendExtensions[0], entrypoint: "plugin.local:panel-v1" })).toBe(true);
-    expect(isFrontendExtension({ ...workflowFrontendExtensions[0], entrypoint: "x".repeat(512) })).toBe(true);
+    expect(isFrontendExtension({ ...chatSessionObjectExtension, entrypoint: "plugin.local:panel-v1" })).toBe(true);
+    expect(isFrontendExtension({ ...chatSessionObjectExtension, entrypoint: "x".repeat(512) })).toBe(true);
   });
   it.each(["component_id", "component_version"] as const)("rejects empty or unbounded node identity %s", key => {
     for (const value of ["", " node", "node ", "x".repeat(129)]) {
@@ -78,6 +79,14 @@ describe("trusted frontend host protocol", () => {
     ])).toThrow("重复登记");
     expect(registry.entries()).toHaveLength(1);
     expect(resolveFrontendExtensions(workflowFrontendExtensions, packages, []).available).toEqual([]);
+  });
+  it("declares only @2 frontend node fields and the logical chat renderer", () => {
+    expect(workflowFrontendExtensions).toEqual([frontendChatNodeFieldsExtension, chatSessionObjectExtension]);
+    expect(frontendChatNodeFieldsExtension.binding.target).toEqual({
+      component_id: "frontend.node", component_version: "2",
+    });
+    expect(frontendNodeFieldsExtensionForVersion("1")).toBeUndefined();
+    expect(frontendNodeFieldsExtensionForVersion("2")).toBe(frontendChatNodeFieldsExtension);
   });
   it("requires schema 3 and independent frontend host 2 for registered node actions", () => {
     const action = {

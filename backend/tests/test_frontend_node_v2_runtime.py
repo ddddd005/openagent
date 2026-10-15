@@ -2,37 +2,115 @@
 
 from contextlib import closing
 from copy import deepcopy
+from dataclasses import replace
 
 import pytest
 
 from phase1_agent.chat_contracts import CHAT_CONTEXT_TYPE
-from phase1_agent.frontend_contracts import FRONTEND_STATE_TYPE
+from phase1_agent.contract_errors import ContractValidationError
+from phase1_agent.frontend_contracts import FRONTEND_COMMIT_TYPE
+from phase1_agent.frontend_node_contracts import FRONTEND_NODE_APPEND_TYPE
+from phase1_agent.graph_contracts import GraphCompiler, NodeDefinition, NodePort
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.session_objects import SessionObjectStore
-from test_frontend_node_runtime import _create, _graph as _old_graph, _output, _save
-from test_frontend_node_snapshots import _owner
-from test_graph_service import run
+from frontend_node_test_support import create as _create, graph as _graph
+from frontend_node_test_support import output as _output, owner as _owner, save as _save
+from test_graph_service import document, edge, node, run
 from test_success_checkpoints import checkpoint_history
 
 
-def _graph(service, **options):
-    graph, messages, frontends = _old_graph(service, **options)
-    for frontend in frontends:
-        frontend["component_version"] = "2"
-    for binding in graph["object_bindings"]:
-        binding["type_id"] = CHAT_CONTEXT_TYPE
-    return graph, messages, frontends
-
-
-def test_new_version_registers_logical_chat_without_changing_old_node_contract(tmp_path):
+def test_default_registry_exposes_only_current_logical_chat_contract(tmp_path):
     with closing(GraphWorkflowService(tmp_path / "v2-declarations.sqlite")) as service:
-        old = service.registry.get("frontend.node", "1").definition.to_dict()
+        assert service.registry.get("frontend.node", "1") is None
         current = service.registry.get("frontend.node", "2").definition.to_dict()
-        assert old["provided_session_item_types"] == [{"type_id": FRONTEND_STATE_TYPE, "schema_version": 1}]
         assert current["provided_session_item_types"] == [{"type_id": CHAT_CONTEXT_TYPE, "schema_version": 1}]
         assert current["outputs"][0]["data_schema_version"] == 2
-        assert old["outputs"][0]["data_schema_version"] == 1
-        assert current["default_config"] == old["default_config"]
+        assert current["outputs"][1]["data_type"] == FRONTEND_COMMIT_TYPE
+        assert service.registry.data_types.get(
+            FRONTEND_NODE_APPEND_TYPE, 2, scope="content") is not None
+        for retired in (
+                ("frontend.state.output", "1"), ("frontend.state.append", "1"),
+                ("frontend.presentation", "1")):
+            assert service.registry.get(*retired) is None
+
+
+@pytest.mark.parametrize("target", ["malformed", None, 4, "missing", "wrong_type", "wrong_version"])
+def test_optional_input_reference_rejects_invalid_or_inexact_targets(tmp_path, target):
+    with closing(GraphWorkflowService(tmp_path / "frontend-reference-invalid.sqlite")) as service:
+        graph, messages, frontends = _graph(service)
+        if target == "missing":
+            value = "00000000-0000-4000-8000-000000009999"
+        elif target in ("wrong_type", "wrong_version"):
+            value = messages[0]["node_binding_id"]
+            if target == "wrong_type":
+                messages[0]["component_id"] = "tools.text"
+                messages[0]["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
+            else:
+                original = service.registry.get("tools.editable-input", "1")
+                alternate = replace(original.definition, component_version="2", adjustable_configuration=None)
+                service.registry.register(alternate, original.executor)
+                messages[0]["component_version"] = "2"
+                messages[0]["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
+        else:
+            value = target
+        frontends[0]["config"]["input_node_id"] = value
+        with pytest.raises(ContractValidationError) as caught:
+            GraphCompiler(service.registry).compile(graph)
+        expected = (
+            "graph_missing_config_reference" if target == "missing"
+            else "graph_config_reference_type_mismatch" if target in ("wrong_type", "wrong_version")
+            else "graph_invalid_config"
+        )
+        assert caught.value.reason_code == expected
+
+
+def test_optional_input_reference_allows_only_empty_or_exact_editable_input(tmp_path):
+    with closing(GraphWorkflowService(tmp_path / "frontend-reference-valid.sqlite")) as service:
+        graph, messages, frontends = _graph(service)
+        declaration = service.registry.get("frontend.node", "2").definition.config_node_references[0]
+        assert declaration["allow_empty"] is True
+        empty = GraphCompiler(service.registry).compile(graph)
+        frontends[0]["config"]["input_node_id"] = messages[0]["node_binding_id"]
+        bound = GraphCompiler(service.registry).compile(graph)
+        assert empty.ordered_node_ids == bound.ordered_node_ids
+        assert empty.target_node_ids == bound.target_node_ids
+
+
+@pytest.mark.parametrize("allow_empty", [None, False])
+def test_required_reference_declarations_still_reject_empty(tmp_path, allow_empty):
+    with closing(GraphWorkflowService(tmp_path / "frontend-reference-required.sqlite")) as service:
+        reference = {
+            "config_field": "input_node_id", "multiple": False,
+            "target_types": [{"component_id": "tools.editable-input", "component_version": "1"}],
+        }
+        if allow_empty is not None:
+            reference["allow_empty"] = allow_empty
+        service.registry.register(NodeDefinition(
+            "test.frontend-required-reference", "1", "Required binding", "Test",
+            {"input_node_id": ""},
+            {"type": "object", "properties": {"input_node_id": {"type": "string"}},
+             "required": ["input_node_id"], "additionalProperties": False},
+            inputs=(NodePort("content", "TEXT", data_schema_version=2),),
+            outputs=(NodePort("output", "TEXT", data_schema_version=2),), is_output=True,
+            config_node_references=(reference,),
+        ), lambda config, inputs, context: {"output": inputs["content"]})
+        source = node(service.registry, "tools.text", 19201, text="literal")
+        target = node(service.registry, "test.frontend-required-reference", 19202)
+        graph = document([source, target], [edge(source, target, 19201, target_port="content")])
+        with pytest.raises(ContractValidationError):
+            GraphCompiler(service.registry).compile(graph)
+
+
+@pytest.mark.parametrize("allow_empty", [None, 1, "", "true"])
+def test_optional_reference_declaration_requires_a_real_boolean(tmp_path, allow_empty):
+    with closing(GraphWorkflowService(tmp_path / "frontend-reference-declaration.sqlite")) as service:
+        current = service.registry.get("frontend.node", "2").definition
+        reference = {**current.config_node_references[0], "allow_empty": allow_empty}
+        candidate = replace(current, component_id="test.invalid-empty-reference",
+                            config_node_references=(reference,))
+        with pytest.raises(ContractValidationError) as caught:
+            service.registry.register(candidate, lambda *args: {})
+        assert caught.value.reason_code == "graph_invalid_type"
 
 
 @pytest.mark.parametrize("bound", [False, True])

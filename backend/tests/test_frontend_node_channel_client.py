@@ -16,7 +16,7 @@ from phase1_agent.frontend_node_channel import FrontendNodeChannel
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.graph_store import GraphRecordStore
 
-from test_frontend_node_runtime import _graph, _save
+from frontend_node_test_support import graph as _graph, save as _save
 
 
 @pytest.mark.parametrize("mode", ["normal", "unknown"])
@@ -105,7 +105,9 @@ def test_client_to_real_channel_saves_input_then_runs_and_reads_stored_messages(
             ])
             session = service.get_session(completed["session_id"])
             assert session["status"] == "succeeded"
-            assert len(session["objects"]["chat-0"]["value"]["entries"]) == 1
+            chat = session["objects"]["chat-0"]["value"]
+            assert len(chat["rounds"]) == 1
+            assert chat["rounds"][0]["candidates"][0]["messages"][0]["text"] == "new message C"
             with closing(service._store()) as store:
                 assert len(GraphRecordStore(store).rows("workflow_session")) == 1
                 assert store._connection.execute(

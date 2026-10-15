@@ -55,19 +55,20 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
     expect(graph.catalog[0].outputs).toEqual([]);
     expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(true);
   });
-  it("edits roots and control predecessors as undoable document transactions with stable edge IDs", () => {
+  it("preserves stored execution roots while control predecessor edits remain undoable", () => {
     const { graph, write, read } = fixture();
-    graph.setExecutionRoot(write, true); graph.setControlDependencies(read, [write]);
+    graph.document!.execution_roots = [write];
+    graph.setControlDependencies(read, [write]);
     const controlId = graph.document!.control_edges![0].edge_id;
     expect(graph.document?.execution_roots).toEqual([write]);
     graph.setControlDependencies(read, [write]);
     expect(graph.document!.control_edges![0].edge_id).toBe(controlId);
     graph.undo();
     expect(graph.document?.control_edges).toEqual([]);
+    expect(graph.document?.execution_roots).toEqual([write]);
     graph.undo(true);
     expect(graph.document!.control_edges![0].edge_id).toBe(controlId);
     expect(graph.setControlDependencies(read, [crypto.randomUUID()])).toBeNull();
-    expect(graph.setExecutionRoot(crypto.randomUUID(), true)).toBeNull();
     expect(isGraphDocument(graph.document)).toBe(true);
   });
   it("validates binding edits against real node UUIDs and keeps node object keys explicit", () => {
@@ -85,7 +86,8 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
       scope: "private" as const, owner_node_id: write, default_value: { count: 0 } };
     graph.patchNode(write, { config: { object_key: owned.object_key, object_keys: ["shared/main", owned.object_key] } });
     graph.setObjectBindings([binding([write, read], [write]), owned]);
-    graph.setExecutionRoot(write, true); graph.setControlDependencies(read, [write]);
+    graph.document!.execution_roots = [write];
+    graph.setControlDependencies(read, [write]);
     graph.selectedNodeIds = [write, read]; graph.duplicateSelection();
     const [copiedWriter, copiedReader] = graph.selectedNodeIds;
     expect(graph.document?.execution_roots).toEqual([write, copiedWriter]);
@@ -107,7 +109,8 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
     const { graph, write, read } = fixture();
     graph.setObjectBindings([binding([write, read], [write]),
       { ...binding([write], [write]), object_key: "private/main", scope: "private", owner_node_id: write }]);
-    graph.setExecutionRoot(write, true); graph.setControlDependencies(read, [write]);
+    graph.document!.execution_roots = [write];
+    graph.setControlDependencies(read, [write]);
     graph.selectedNodeIds = [write]; graph.removeSelection();
     expect(graph.document?.execution_roots).toEqual([]);
     expect(graph.document?.control_edges).toEqual([]);
@@ -140,7 +143,8 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
     stubGraphApplicationFetch( fetcher);
     await graph.loadCatalog();
     expect(graph.dataTypes[0].type_id).toBe("plugin.object");
-    graph.setExecutionRoot(write, true); graph.setControlDependencies(read, [write]);
+    graph.document!.execution_roots = [write];
+    graph.setControlDependencies(read, [write]);
     graph.setObjectBindings([binding([write, read], [write])]);
     await graph.saveWorkflow();
     await graph.submitPrimary();
@@ -154,7 +158,8 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
   it("keeps the workflow identity, controls and object declarations when editing a saved graph", () => {
     const { graph, id, write, read } = fixture();
     graph.setObjectBindings([binding([write, read], [write])]);
-    graph.setExecutionRoot(write, true); graph.setControlDependencies(read, [write]);
+    graph.document!.execution_roots = [write];
+    graph.setControlDependencies(read, [write]);
     const before = graphClone(graph.document!);
     graph.entries[id].saved_document = graphClone(before); graph.entries[id].saved_revision = 1;
     useWorkspaceStore().activeWorkflow.state = "saved";

@@ -11,7 +11,7 @@ from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_receipts import read_graph_application_receipt
 from phase1_agent.graph_service import GraphWorkflowService
 
-from test_frontend_node_runtime import _create, _graph, _save
+from frontend_node_test_support import create as _create, graph as _graph, save as _save
 from test_graph_application_receipt_custody import raw_database
 from test_graph_receipt_http import post, serve_receipts
 

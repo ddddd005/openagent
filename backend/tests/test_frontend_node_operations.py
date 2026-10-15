@@ -14,7 +14,7 @@ from phase1_agent.graph_contracts import NodeDefinition
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.graph_records import graph_error
 
-from test_frontend_node_runtime import _create, _graph, _save
+from frontend_node_test_support import create as _create, graph as _graph, save as _save
 from test_graph_service import node
 
 
@@ -85,7 +85,7 @@ def test_binding_rejects_another_workflow_session(service):
 
 
 def test_binding_rejects_another_registered_frontend_contract_version(service):
-    definition = service.registry.get("frontend.node", "1").definition
+    definition = service.registry.get("frontend.node", "2").definition
     service.registry.register(replace(definition, component_version="3"), lambda *args: {})
     graph, _, frontends = _graph(service)
     graph["nodes"][1]["component_version"] = "3"
@@ -186,7 +186,7 @@ def test_patch_configuration_and_receipt_roll_back_together(service):
 def test_read_snapshot_delegates_only_exact_binding(service, monkeypatch):
     bound, _, _, view = prepared(service, session=True)
     calls = []
-    snapshot = {"entries": ["current"]}
+    snapshot = {"chat": {"rounds": []}}
     monkeypatch.setattr(
         service, "read_frontend_node_snapshot",
         lambda *args: calls.append(args) or deepcopy(snapshot), raising=False)
@@ -201,15 +201,17 @@ def test_bound_snapshot_reads_actual_accepted_messages_and_none_session_is_rejec
         unstarted.read_snapshot()
     bound, _, messages, view = prepared(service, session=True)
     empty = bound.read_snapshot()
-    assert empty["entries"] == []
+    assert empty["chat"] == {"rounds": []}
     started = bound.start(expected_session_revision=view["revision"], idempotency_key="snapshot-start")
     service.wait(started["start_result"]["active_chain_run_id"])
     current = bound.read_snapshot()
     assert current["owner"]["node_binding_id"] == bound.node_binding_id
     assert current["owner"]["workflow_session_id"] == bound.session_id
-    assert current["entries"][0]["content"]["text"] == messages[0]["config"]["text"]
-    current["entries"].clear()
-    assert len(bound.read_snapshot()["entries"]) == 1
+    assert current["chat"]["rounds"][0]["candidates"][0]["messages"][0]["text"] == (
+        messages[0]["config"]["text"])
+    current["chat"]["rounds"][0]["candidates"][0]["messages"][0]["text"] = "local"
+    assert bound.read_snapshot()["chat"]["rounds"][0]["candidates"][0]["messages"][0]["text"] == (
+        messages[0]["config"]["text"])
 
 
 def test_start_create_and_start_have_separate_native_receipts_and_no_replay_dispatch(service, monkeypatch):

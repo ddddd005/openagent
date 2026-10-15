@@ -17,7 +17,6 @@ from .content_contracts import (
     prompt_content, text_content,
 )
 from .contract_json import canonical_bytes, loads_strict
-from .frontend_contracts import FRONTEND_STATE_TYPE, frontend_state_data_type
 from .graph_contracts import NodeDefinition, NodePort
 from .host_sdk import ensure
 from .prompt_regex import RegexLimits, regex_replace_many, regex_rule_from_dict
@@ -254,7 +253,6 @@ def create_tool_package() -> CapabilityPackage:
 
     def register(host):
         host.register_data_type(variable_data_type())
-        host.register_shared_data_type(frontend_state_data_type())
 
         def install(name, display, category, config, fields, executor, *,
                     inputs=(), outputs=(), modes=None, capabilities=(), validator=None,
@@ -297,10 +295,6 @@ def create_tool_package() -> CapabilityPackage:
         install("output", "输出", "通用工具", {"mode": "text"},
                 {"mode": {"enum": list(_CONTENT_TYPES)}}, _output,
                 modes=_mode_ports(), is_output=True)
-        install("output", "输出", "通用工具", {"mode": "text"},
-                {"mode": {"enum": list(_CONTENT_TYPES)}}, _output,
-                modes=_mode_ports(), is_output=True, version="2",
-                provided_session_item_types=({"type_id": FRONTEND_STATE_TYPE, "schema_version": 1},))
         install("regex", "正则", "通用工具", {
             "mode": "text", "scope": "body", "pattern": "", "replacement": "",
             "flags": [], "replaceMode": "all",
@@ -361,12 +355,10 @@ def create_tool_package() -> CapabilityPackage:
         PACKAGE_ID, PACKAGE_VERSION, dependencies=(PackageDependency("workflow.content", "1.0.0"),),
         exports={
             "data_types": [{"scope": "session", "type_id": VARIABLE_TYPE,
-                            "schema_version": VARIABLE_SCHEMA_VERSION},
-                           {"scope": "session", "type_id": FRONTEND_STATE_TYPE, "schema_version": 1}],
+                            "schema_version": VARIABLE_SCHEMA_VERSION}],
             "nodes": [{"component_id": "tools." + name, "component_version": "1"}
                       for name in node_names if name not in ("output", "variable-register")]
                     + [{"component_id": "tools.variable-register", "component_version": "2"}]
-                    + [{"component_id": "tools.output", "component_version": version}
-                       for version in ("1", "2")],
+                    + [{"component_id": "tools.output", "component_version": "1"}],
         },
     ), register)

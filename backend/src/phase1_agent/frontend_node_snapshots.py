@@ -4,10 +4,7 @@ from contextlib import closing
 from copy import deepcopy
 
 from .chat_contracts import CHAT_CONTEXT_TYPE, validate_chat_context
-from .frontend_contracts import FRONTEND_STATE_TYPE, validate_frontend_state
-from .frontend_node_contracts import (
-    FRONTEND_NODE_CHAT_COMPONENT, FRONTEND_NODE_COMPONENTS,
-)
+from .frontend_node_contracts import FRONTEND_NODE_COMPONENT
 from .graph_records import require, uuid_value
 from .graph_store import GraphRecordStore
 
@@ -25,8 +22,8 @@ class GraphFrontendNodes:
         node = next((item for item in document["nodes"]
                      if item["node_binding_id"] == node_binding_id), None)
         require(node is not None
-                and (node["component_id"], node["component_version"]) in FRONTEND_NODE_COMPONENTS,
-                "frontend_node_binding_mismatch", "Binding must identify the exact frontend node", 409)
+                and (node["component_id"], node["component_version"]) == FRONTEND_NODE_COMPONENT,
+                "frontend_node_binding_mismatch", "Binding must identify the exact frontend.node@2", 409)
         entry = self.registry.get(node["component_id"], node["component_version"])
         require(entry is not None, "graph_missing_node_type",
                 "Frontend node implementation is unavailable", 409)
@@ -40,9 +37,7 @@ class GraphFrontendNodes:
         key = node["config"]["object_key"]
         objects = self._objects(repo)
         record = objects.read(session_id, key, node_id=node_binding_id)
-        logical_chat = (node["component_id"], node["component_version"]) == FRONTEND_NODE_CHAT_COMPONENT
-        expected_type = CHAT_CONTEXT_TYPE if logical_chat else FRONTEND_STATE_TYPE
-        require((record["type_id"], record["schema_version"]) == (expected_type, 1)
+        require((record["type_id"], record["schema_version"]) == (CHAT_CONTEXT_TYPE, 1)
                 and record["binding"].get("registrar_node_id") == node_binding_id,
                 "frontend_node_registration_mismatch",
                 "Frontend snapshot must read the node's own registered item", 409)
@@ -52,34 +47,9 @@ class GraphFrontendNodes:
             "workflow_session_id": session_id, "object_key": key,
         }
         basis = {"revision": record["revision"], "revision_id": record["revision_id"]}
-        if logical_chat:
-            snapshot = {
-                "schema_version": 2, "kind": "workflow.frontend-node-snapshot",
-                "owner": owner, "basis": basis, "chat": validate_chat_context(record["value"]),
-            }
-            return self._publish_frontend_snapshot(snapshot)
-        state = validate_frontend_state(record["value"])
-        roots = self.registry.data_types.references(
-            FRONTEND_STATE_TYPE, 1, state, scope="session")
-        allowed = self._artifact_closure(repo, roots)
-        history = self._history(repo, session_id)
-        entries = []
-        for item in state["entries"]:
-            reference = item["source_ref"]
-            require(reference["output_id"] in allowed, "session_object_reference_denied",
-                    "Display source is outside this exact stored object revision", 403)
-            source = objects._resolve_write_artifact(session_id, reference, history=history)
-            entries.append({
-                **deepcopy(item), "content": self.registry.validate_content(source["value"], "TEXT", 2),
-            })
-        source = None
-        if state["view_ref"] is not None:
-            source = objects._resolve_write_artifact(
-                session_id, state["view_ref"], history=history)["producer"]
         snapshot = {
-            "schema_version": 1, "kind": "workflow.frontend-node-snapshot",
-            "owner": owner, "basis": basis,
-            "entries": entries, "source": source,
+            "schema_version": 2, "kind": "workflow.frontend-node-snapshot",
+            "owner": owner, "basis": basis, "chat": validate_chat_context(record["value"]),
         }
         return self._publish_frontend_snapshot(snapshot)
 
@@ -122,7 +92,7 @@ class GraphFrontendNodes:
             document = self._document(repo, chain["workflow_definition_id"], chain["definition_revision"])
             node = next(item for item in document["nodes"]
                         if item["node_binding_id"] == event["node_binding_id"])
-            if (node["component_id"], node["component_version"]) not in FRONTEND_NODE_COMPONENTS:
+            if (node["component_id"], node["component_version"]) != FRONTEND_NODE_COMPONENT:
                 return
             run = repo.get("node_run", run_id=event["node_run_id"])
             require(event.get("settlement_committed") is True

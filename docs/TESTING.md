@@ -1,6 +1,6 @@
 # 测试说明
 
-默认按改动范围做离线验证，不自动运行全量、启动服务或调用真实模型。下面路径按 2026-10-11 开发版已落地范围订正；首批实际结果和未完成项见 [实施记录](中期检查/11-首批整改实施与离线验证-2026-10-11.md)。准备环境见 [快速启动](QUICKSTART.md)，历史节点验收见 [节点目录](NODE-DIRECTORY-2026-10-09.md)。
+默认按当前改动范围做离线验证，不自动运行全量、启动产品服务或调用真实模型。2026-10-15施工树聊天/检查点证据见[55号](中期检查2/55-聊天候选数据层与重roll检查点接续实施回执-2026-10-15.md)，退役清单见[56号](中期检查2/56-D-E阶段旧内容退役勘察与收口清单-2026-10-15.md)，实际整理和最终结果见[57号回执](中期检查2/57-D-E阶段旧内容退役与收口实施回执-2026-10-15.md)：后端52文件778项、前端21文件259项、类型及隔离构建通过。全后端4194项仅完成收集，不宣称历史全量执行绿色。旧节点/API专属测试不强迫新架构恢复兼容；混合测试保留有效身份、权限及回执断言，旧夹具须按原意订正。
 
 ## 测试依赖
 
@@ -24,13 +24,12 @@
 
 ```powershell
 New-Item -ItemType Directory -Force .local | Out-Null
-..\.venv\Scripts\python.exe -m pytest tests/test_current_node_directory.py tests/test_tool_package.py tests/test_graph_execution.py --basetemp .local/pytest-current-core -q
-..\.venv\Scripts\python.exe -m pytest tests/test_model_package.py tests/test_serial_agent_demo_integration.py tests/test_context_native_integration.py tests/test_agent_native_execution.py tests/test_result_acceptance_retry.py --basetemp .local/pytest-current-native -q
-..\.venv\Scripts\python.exe -m pytest tests/test_gemini_adapter.py tests/test_gemini_history.py tests/test_gemini_model_integration.py tests/test_gemini_joint_integration.py --basetemp .local/pytest-current-gemini -q
-..\.venv\Scripts\python.exe -m pytest tests/test_storage_initialization.py tests/test_development_reset.py tests/test_prompt_current_resources.py tests/test_global_resources.py --basetemp .local/pytest-current-storage -q
+..\.venv\Scripts\python.exe -m pytest tests/test_chat_contracts.py tests/test_workflow_chat_operations.py tests/test_workflow_chat_service.py tests/test_workflow_chat_integration.py --basetemp .local/pytest-current-chat-unique -q
+..\.venv\Scripts\python.exe -m pytest tests/test_chat_checkpoints.py tests/test_variable_checkpoints.py tests/test_checkpoint_repository.py tests/test_checkpoint_loading.py --basetemp .local/pytest-current-checkpoints-unique -q
+..\.venv\Scripts\python.exe -m pytest tests/test_variable_registration_contract.py tests/test_variable_http_registration.py tests/test_lorebook_engine.py --basetemp .local/pytest-current-variables-unique -q
 ```
 
-每批使用专用、新的 basetemp 目录；pytest 会管理并可能清空该目录，不指向产品库或证据目录。这些用例使用临时 SQLite 和受控/mock transport，不需要真实模型密钥。`workflow_test_support.py` 提供现行原生图及共用替身。
+每批使用专用、新的basetemp目录；pytest会管理并可能清空该目录，不指向产品库或证据目录。这些用例使用临时SQLite和受控执行器，不需要真实模型密钥。旧`workflow_test_support.py`里的模型/Agent图不能自动当作当前夹具；精确旧排除及原因按当批回执保留。
 
 最小无模型用例：
 
@@ -47,13 +46,14 @@ New-Item -ItemType Directory -Force .local | Out-Null
 从 `frontend/` 执行：
 
 ```powershell
-npm test -- src/domain/nodeCatalog.test.ts src/domain/nodeSelection.test.ts src/components/NodeProfileDialog.test.ts src/domain/serialAgentDemo.test.ts src/stores/workflowDemoActions.test.ts src/components/CurrentModelConfiguration.test.ts
-npm test -- src/adapters/workbenchPersistence.test.ts src/stores/workbenchLegacyIsolation.test.ts src/adapters/workflowReceiptApi.test.ts src/application/workflowClientBoundary.test.ts src/adapters/graphChatConsumer.test.ts
-npx vue-tsc --noEmit
+npm test -- src/domain/nodeCatalog.test.ts src/stores/workflowSessionRegistration.test.ts src/components/FrontendNodeFields.test.ts src/application/frontendNodeEntry.test.ts src/domain/chatContext.test.ts
+node node_modules/vue-tsc/bin/vue-tsc.js --noEmit
 npm run build
 ```
 
 `npm run build` 已包含类型检查；`dist/` 不提交。Vite >500 kB 提示与构建失败分别报告，不能仅凭 bundle 生成就判定测试或页面通过。
+
+若使用隔离源码副本及既有依赖，须明确副本路径、固定工具入口并核对源文件hash，不用npx临时下载不同版本冒充项目依赖。启动预检测试可用`OPENAGENT_LAUNCHER_TEST_WORKSPACE`指向明确的隔离源码副本；该变量仅属测试，不改变BAT的分支选择、缺依赖拒绝或产品库路径。
 
 获得明确范围后可在 `frontend/` 执行 `npm test` 运行前端全量；后端全量命令需另选专用 basetemp 并保留退出码、日志及 JUnit，不因其失败自动调用真实模型。
 
@@ -65,13 +65,14 @@ npm run build
 | 内容、端口、编译与引用 | `test_tool_package.py`、`test_graph_execution.py`；`domain/workflowGraph.test.ts` |
 | 模型来源与供应商资源 | `test_model_package.py`、`test_global_resources.py`、`test_gemini_model_integration.py`；`workflowResources`、`workflowModelResources`、`CurrentModelConfiguration` |
 | Gemini 工具、思考、签名及连续轮次 | `test_gemini_adapter.py`、`test_gemini_history.py`、`test_gemini_joint_integration.py` |
-| 原生上下文、精简与串行图 | `test_context_native_integration.py`、`test_agent_native_execution.py`、`test_compacting_serial_integration.py`、`test_serial_agent_demo_integration.py` |
+| 上下文准确项、快照和分叉 | `test_context_registration_fork_integration.py`、`test_checkpoint_loading.py`；Agent/模型历史夹具不自动纳入当前安装验收 |
 | 暂停、结果接纳与不重放 | `test_runtime_pause.py`、`test_result_acceptance_retry.py`、`test_gemini_model_integration.py`；`adapters/graphChatConsumer.test.ts` |
 | 显式重置、正常初始化与旧工作台隔离 | `test_development_reset.py`、`test_storage_initialization.py`、`test_prompt_current_resources.py`；`adapters/workbenchPersistence.test.ts`、`stores/workbenchLegacyIsolation.test.ts` |
 | 回执、未知结果、授权与身份 | `test_graph_receipt_http.py`、`test_graph_application_receipt_custody.py`、`test_graph_application_identity.py`；`adapters/workflowReceiptApi.test.ts`、`application/workflowClientBoundary.test.ts` |
-| 信息、公开摘要与消费者 | `test_graph_information_integration.py`、`test_plan12b_information_scope.py`、`test_tavern_chat_integration.py`；`application/workflowInformation.test.ts` |
+| 信息、公开摘要与准确节点消费者 | `test_graph_information_integration.py`、`test_frontend_node_chat_http.py`；`application/workflowInformation.test.ts` |
 | 静态资产与启动分支 | `test_server_workbench.py`、`test_branch_launcher.py`；`test_dev_launcher.py` 中预检/静态用例 |
-| 本机草稿、无效原文和异步保管 | `test_graph_drafts.py`；`localDraftsApi`、`formDrafts`、`useBoundFormDraft`、`resourceOutbox`、`consumerLocalDrafts`、`consumerDraftBuffer` |
+| 内存表单、原请求及异步归属 | `test_frontend_node_retired_receipts.py`、`test_frontend_node_evidence.py`；`useVolatileFormState`、`resourceOutbox`及现行管理原请求测试 |
+| 逻辑聊天、重roll及完整候选分叉 | `test_chat_contracts.py`、`test_workflow_chat_service.py`、`test_workflow_chat_integration.py`、`test_chat_checkpoints.py` |
 | 输入声明、提示词专用表单及不完整图 | `test_graph_input_declarations.py`、`test_prompt_package.py`；`graphInputDeclarationsApi`、`CurrentPromptResources` |
 | 连线拒绝与撤销记录 | `domain/graphConnections.test.ts`、`stores/workflowGraph.test.ts`；真实拖线用 `frontend_p56_browser.cjs` |
 | 正文/签名展示、本机名称和目录归档 | `resultPresentation`、`managementLabels`；冻结历史、确认取消及其他暂停会话用 `frontend_p56_browser.cjs` |
@@ -89,7 +90,7 @@ npm run build
 
 菜单的现行离线浏览器脚本为 `backend/tests/node_menu_browser.cjs`。以真实生产 `dist`、隔离 browser context 和显式 mock catalog 验证菜单及存档；静态资产和请求由脚本拦截，不监听端口。该结果不能代替真实后端启动、用户存档或整工作台移动适配。复现环境要求见脚本及 [节点目录证据](NODE-DIRECTORY-2026-10-09.md)。
 
-当前主干的 `backend/tests/frontend_drafts_browser.cjs` 同样不监听端口，使用具备 CAS/命名草稿契约的 fake 后端覆盖无效 JSON、长文本、未提交提示词的切换与冷重开、节点酒馆 URL、写失败和双窗口冲突。不能以原 localStorage mock 代替新本机草稿验收；命令和证据见 [P1/P2 记录](FRONTEND-P1-P2-2026-10-09.md)。
+旧P1/P2浏览器脚本及记录只代表当期持久草稿/酒馆入口合同，不作为当前验收。退役的预设创建和浏览器存档恢复脚本不再维护；当前普通工作台及新版节点页面的离线浏览器证据分别见49号、55号及后续收口回执。
 
 P3/P4 当期用 `frontend_p34_browser.cjs` 验证修订、Key、双协议模板及发现列表；当期结果见 [历史记录](FRONTEND-P3-P4-2026-10-09.md)。2026-10-10 已删除此内联配置夹具及无人引用的旧 `gemini_browser.cjs`，不继续维护旧凭证/模型路线。
 
@@ -110,9 +111,9 @@ P5/P6 用 `backend/tests/frontend_p56_browser.cjs` 验证正文置前、提示�
 
 确定失败、超时未知、暂停和接纳故障优先使用受控注入，不主动制造收费失败。Agent 可能多次请求模型或工具，“两个 Agent”不是固定“两次 HTTP”；运行次数/输出 token 限制也不是完整费用硬上限。
 
-## 当前结果
+## 历史结果
 
-以下是已登记的执行结果，不是本次文档订正重新运行的测试。本地合入 main 后只重新执行构建和正式 BAT 的 `-CheckOnly` 预检，均通过；未启动产品服务、打开产品库或调用上游，真实启动与模型调用待用户验收。
+以下表格是各历史批次结果，不是当前源码全量结果，也不是本次文档订正重跑。当前施工树的实际选组、准确失败/排除和页面边界以最新实施回执为准，不能累计重叠案例。
 
 | 范围 | 已登记结果与边界 |
 | --- | --- |

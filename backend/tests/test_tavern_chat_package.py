@@ -102,7 +102,7 @@ def test_ordinary_saved_graph_selection_and_session_reopen_without_migration(tmp
         assert not hasattr(reopened, "_native_runtime")
 
 
-def test_default_keeps_current_lorebook_frontend_nodes_and_explicit_display_nodes(tmp_path):
+def test_default_keeps_current_lorebook_and_logical_chat_node(tmp_path):
     assert DEFAULT_PACKAGES["workflow.tavern"] == "1.2.0"
     assert "workflow.frontend.workbench-panel" not in {
         row["extension_id"] for row in FRONTEND_EXTENSIONS}
@@ -110,9 +110,10 @@ def test_default_keeps_current_lorebook_frontend_nodes_and_explicit_display_node
         assert {"package_id": "workflow.tavern", "version": "1.2.0"} in service.registry.package_lock
         for component in LOREBOOK_COMPONENTS:
             assert service.registry.get(component, "1") is not None
-        for component in ("frontend.node", "frontend.state.output", "frontend.state.append",
-                          "frontend.presentation"):
-            assert service.registry.get(component, "1") is not None
+        assert service.registry.get("frontend.node", "2") is not None
+        assert service.registry.get("frontend.node", "1") is None
+        for component in ("frontend.state.output", "frontend.state.append", "frontend.presentation"):
+            assert service.registry.get(component, "1") is None
         assert not hasattr(service, "_native_runtime")
 
 

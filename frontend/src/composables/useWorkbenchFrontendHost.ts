@@ -3,7 +3,6 @@ import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { useWorkspaceStore } from "../stores/workspace";
 import { createWorkbenchFrontendHost } from "../application/workflowFrontendPackage";
 import { workbenchFrontendHostKey } from "../application/workbenchFrontendHost";
-import { readFrontendArtifact } from "../application/workflowFrontendDisplay";
 import { workflowFrontendSdkKey } from "../plugins/workflowFrontendSdk";
 import { createNodeConfigurationAccess } from "../application/workflowNodeConfiguration";
 import { createWorkflowConfigurationApplication } from "../application/workflowConfiguration";
@@ -22,7 +21,6 @@ export function useWorkbenchFrontendHost() {
     packages: computed(() => graph.packageLock), session: computed(() => graph.session),
     locked: computed(() => graph.editorLocked),
     lifecycle,
-    readArtifact: readFrontendArtifact,
     configureNode: createNodeConfigurationAccess({
       workflowId: () => workspace.activeWorkflowId, lifecycle: () => lifecycle.value,
       trustedExtensions: () => host.extensions.value.map(row => row.declaration),

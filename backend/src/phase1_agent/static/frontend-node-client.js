@@ -97,9 +97,8 @@
   }
   function snapshot(value, binding) {
     if (value === null) return true;
-    const logical = value?.schema_version === 2;
-    if (!exact(value, ["schema_version", "kind", "owner", "basis", ...(logical ? ["chat"] : ["entries", "source"])])
-      || ![1, 2].includes(value.schema_version) || value.kind !== "workflow.frontend-node-snapshot"
+    if (!exact(value, ["schema_version", "kind", "owner", "basis", "chat"])
+      || value.schema_version !== 2 || value.kind !== "workflow.frontend-node-snapshot"
       || !exact(value.owner, ["workflow_definition_id", "definition_revision", "node_binding_id",
         "workflow_session_id", "object_key"]) || value.owner.workflow_definition_id !== binding.workflow_definition_id
       || value.owner.definition_revision !== binding.definition_revision
@@ -108,22 +107,7 @@
       || typeof value.owner.object_key !== "string" || !value.owner.object_key
       || !exact(value.basis, ["revision", "revision_id"]) || !positive(value.basis.revision)
       || !uuid(value.basis.revision_id)) return false;
-    if (logical) return chatContext(value.chat);
-    if (!Array.isArray(value.entries) || value.entries.length > 4095) return false;
-    const ids = new Set();
-    for (const entry of value.entries) {
-      if (!exact(entry, ["entry_id", "role", "source_ref", "content"]) || !uuid(entry.entry_id)
-        || ids.has(entry.entry_id) || !["user", "assistant", "system"].includes(entry.role)
-        || !exact(entry.source_ref, ["scope", "output_id"]) || entry.source_ref.scope !== "artifact"
-        || !uuid(entry.source_ref.output_id) || !exact(entry.content, ["schema_version", "kind", "text"])
-        || entry.content.schema_version !== 2 || entry.content.kind !== "workflow.text"
-        || typeof entry.content.text !== "string") return false;
-      ids.add(entry.entry_id);
-    }
-    return value.source === null || exact(value.source, [
-      "workflow_session_id", "node_binding_id", "node_run_id", "chain_run_id"])
-      && uuid(value.source.workflow_session_id) && uuid(value.source.node_binding_id)
-      && uuid(value.source.node_run_id) && uuid(value.source.chain_run_id);
+    return chatContext(value.chat);
   }
   function evidence(value, binding) {
     const fields = ["schema_version", "kind", "operation", "idempotency_key", "owner_kind", "owner_id",

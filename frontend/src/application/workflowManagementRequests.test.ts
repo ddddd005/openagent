@@ -117,6 +117,45 @@ describe("formal management request custody", () => {
     expect(entry.pending.value).toBeNull();
   });
 
+  it("rejects new session data updates before storing evidence or sending", async () => {
+    const state = fixture();
+    const command = createGraphCommand(`/api/graph/sessions/${state.sessionId}/data`, {
+      expected_revision: 1, expected_data_revision: 0, variables: { legacy: 7 },
+    }, "data");
+
+    await expect(state.entry.dispatch(command)).rejects.toMatchObject({ kind: "rejected" });
+
+    expect(state.ports.evidence.write).not.toHaveBeenCalled();
+    expect(state.ports.send).not.toHaveBeenCalled();
+    expect(state.entry.pending.value).toBeNull();
+    expect([...state.evidence.records.values()]).toEqual([]);
+  });
+
+  it("keeps an original session data update receipt-readable without replay", async () => {
+    const state = fixture();
+    const path = `/api/graph/sessions/${state.sessionId}/data`;
+    const body = { expected_revision: 1, expected_data_revision: 0, variables: { legacy: 7 },
+      idempotency_key: crypto.randomUUID() };
+    const operation = graphCommandOperation(path, body);
+    await state.evidence.ports.write({ operation: operation.operation,
+      idempotency_key: body.idempotency_key, owner_kind: "workflow-management",
+      owner_id: state.workflowId, request: graphClone(operation.parameters) });
+    const accepted = { ...state.session, revision: 2, data_revision: 1,
+      data: { revision: 1, values: { legacy: 7 } } };
+    state.ports.readReceipt.mockResolvedValue(accepted);
+    const entry = createWorkflowManagementRequests(state.ports).forWorkflow(state.workflowId);
+
+    await entry.initialize();
+    expect(entry.pendingCommand.value).toEqual({ path, body, action: "data" });
+    expect(await entry.reconcile()).toBe(true);
+
+    expect(state.ports.readReceipt).toHaveBeenCalledWith(path, body);
+    expect(state.ports.send).not.toHaveBeenCalled();
+    expect(state.ports.accept).toHaveBeenCalledOnce();
+    expect(entry.pending.value).toBeNull();
+    expect([...state.evidence.records.values()][0].resolution).toBe("verified");
+  });
+
   it("reopens unresolved evidence without sending and reconciles the original key", async () => {
     const state = fixture();
     state.ports.send = vi.fn(async () => { throw new WorkbenchApiError("unknown", "unknown result"); });

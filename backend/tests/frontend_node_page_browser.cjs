@@ -46,26 +46,24 @@ function evidence(request) {
     request_digest: "original-digest", resolution: "pending" };
 }
 function initialSnapshot(binding, message) {
-  return { schema_version: 1, kind: "workflow.frontend-node-snapshot", owner: {
+  return { schema_version: 2, kind: "workflow.frontend-node-snapshot", owner: {
     workflow_definition_id: binding.workflow_definition_id, definition_revision: binding.definition_revision,
     node_binding_id: binding.node_binding_id, workflow_session_id: binding.session_id, object_key: "chat",
-  }, basis: { revision: 2, revision_id: id(60) }, entries: [{
-    entry_id: id(61), role: "user", source_ref: { scope: "artifact", output_id: id(62) },
-    content: { schema_version: 2, kind: "workflow.text", text: message },
-  }], source: { workflow_session_id: binding.session_id, node_binding_id: binding.node_binding_id,
-    chain_run_id: id(40), node_run_id: id(63) } };
+  }, basis: { revision: 2, revision_id: id(60) }, chat: { rounds: message ? [{
+    round_id: id(61), base_checkpoint_id: null, submitted_input: message,
+    candidates: [], selected_candidate_id: null,
+  }] : [] } };
 }
 function logicalSnapshot(binding) {
   const value = initialSnapshot(binding, "");
-  delete value.entries; delete value.source; value.schema_version = 2;
-  value.chat = { rounds: [0, 1].map(index => ({
+  value.chat.rounds = [0, 1].map(index => ({
     round_id: id(100 + index), base_checkpoint_id: index ? id(90) : null, submitted_input: "原始输入 " + index,
     candidates: [0, 1].map(candidate => ({
       candidate_id: id(110 + index * 2 + candidate), result_checkpoint_id: id(120 + index * 2 + candidate),
       messages: [{ message_id: id(130 + index * 2 + candidate), role: "assistant",
         text: "完整候选回复 " + index + "-" + candidate }],
     })), selected_candidate_id: id(111 + index * 2),
-  })) };
+  }));
   return value;
 }
 function parseBinding(pathname, suffix) {
@@ -252,7 +250,7 @@ async function screenshot(page, name) {
         const next = { ...binding, session_id: id(5) };
         const snapshot = initialSnapshot(next, "");
         snapshot.basis = { revision: 1, revision_id: id(95) };
-        snapshot.entries = []; snapshot.source = null;
+        snapshot.chat.rounds = [];
         sessions.set(id(5), { revision: 1, status: "idle", snapshot });
         value = result(body, { outcome: "succeeded", fork_result: {
           target_session_id: id(5), target_checkpoint_id: id(92),
@@ -326,8 +324,10 @@ async function screenshot(page, name) {
   const stateReads = report.operations.filter(row => row.operation === "state").length;
   const snap = sessions.get(id(3)).snapshot;
   snap.basis = { revision: 3, revision_id: id(70) };
-  snap.entries.push({ entry_id: id(71), role: "assistant", source_ref: { scope: "artifact", output_id: id(72) },
-    content: { schema_version: 2, kind: "workflow.text", text: "后端再次读取后的展示。" } });
+  snap.chat.rounds.push({ round_id: id(71), base_checkpoint_id: null, submitted_input: null,
+    candidates: [{ candidate_id: id(72), result_checkpoint_id: id(73), messages: [{
+      message_id: id(74), role: "assistant", text: "后端再次读取后的展示。",
+    }] }], selected_candidate_id: id(72) });
   await page.evaluate(snapshot => {
     const stream = window.__nodeStreams.at(-1); stream.emit("snapshot", snapshot); stream.emit("snapshot", snapshot);
   }, copy(snap));

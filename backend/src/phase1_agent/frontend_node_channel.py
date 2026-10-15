@@ -14,6 +14,7 @@ from .graph_store import GraphRecordStore
 _OWNER_FIELDS = {"workflow_definition_id", "definition_revision", "node_binding_id", "session_id"}
 _COMMANDS = {"patch_input", "start", "pause", "resume", "close", "fork_checkpoint",
              "reroll", "select_candidate", "fork_floor"}
+_CHAT_RECEIPT_OPERATIONS = {"reroll", "select_candidate", "fork_floor"}
 _CHAT_FIELDS = {"round_id", "expected_session_revision", "expected_data_revision",
                 "expected_head_revision", "expected_object_revision", "idempotency_key"}
 _MAX_REVISION = 2**53 - 1
@@ -41,9 +42,21 @@ class FrontendNodeChannel:
     def __init__(self, service, owner, *, evidence_adapter=None):
         self._service = service
         self._owner = _owner(owner)
-        self._bound = FrontendNodeOperations(service).bind(**self._owner)
+        self._bound = None
         self._evidence = (evidence_adapter if evidence_adapter is not None
                           else FrontendNodeEvidenceAdapter(service.database))
+
+    def _bind(self):
+        if self._bound is None:
+            self._bound = FrontendNodeOperations(self._service).bind(**self._owner)
+        return self._bound
+
+    def _require_chat_receipt_binding(self, bound):
+        with self._service._lock, closing(self._service._store()) as store:
+            node = bound._require_binding(GraphRecordStore(store))
+        require(node["component_version"] == "2",
+                "frontend_node_chat_unavailable",
+                "Chat receipts require frontend.node@2 and an exact session", 409)
 
     def _parameters(self, operation, value):
         require(type(value) is dict, "invalid_request", "Frontend parameters must be an object")
@@ -104,13 +117,14 @@ class FrontendNodeChannel:
         if operation == "state":
             require(type(parameters) is dict and not parameters,
                     "invalid_request", "Frontend state accepts no selectors")
-            return self._state()
+            return self._state(self._bind())
         if operation in ("checkpoints", "checkpoint"):
             fields = set() if operation == "checkpoints" else {"checkpoint_id"}
             require(type(parameters) is dict and set(parameters) == fields,
                     "invalid_request", "Frontend checkpoint read parameters differ")
+            bound = self._bind()
             if operation == "checkpoints":
-                data = self._bound.list_checkpoints()
+                data = bound.list_checkpoints()
                 session = data["session"]
                 result = {
                     "items": data["items"],
@@ -118,7 +132,7 @@ class FrontendNodeChannel:
                 }
             else:
                 uuid4_string(parameters["checkpoint_id"])
-                result = self._bound.read_checkpoint(parameters["checkpoint_id"])
+                result = bound.read_checkpoint(parameters["checkpoint_id"])
             return {"schema_version": 1, "kind": "workflow.frontend-node-" + operation,
                     "owner": deepcopy(self._owner), "result": result}
         if operation in ("receipt", "accept_receipt"):
@@ -133,27 +147,35 @@ class FrontendNodeChannel:
             require(_owner(original_request["owner"]) == owner,
                     "frontend_node_owner_mismatch", "Original request belongs to another frontend binding", 409)
             original = self._parameters(operation, original_request["parameters"])
+            if operation in _CHAT_RECEIPT_OPERATIONS:
+                bound = self._bind()
+                self._require_chat_receipt_binding(bound)
+            elif self._bound is not None:
+                bound = self._bound
+            else:
+                bound = FrontendNodeOperations(self._service).receipt_scope(**owner)
             if receipt_operation == "accept_receipt":
                 raw = self._evidence.accept_receipt(
-                    self._bound, operation, original_request)
+                    bound, operation, original_request)
             else:
                 try:
                     raw = self._evidence.read_receipt(
-                        self._bound, operation, original_request)
+                        bound, operation, original_request)
                 except ContractValidationError as exc:
                     if getattr(exc, "reason_code", None) != "request_evidence_missing":
                         raise
                     raw = None
             return self._result(operation, original, raw)
+        bound = self._bind()
         original = self._parameters(operation, parameters)
-        raw = self._evidence.execute(self._bound, operation, original)
+        raw = self._evidence.execute(bound, operation, original)
         return self._result(operation, original, raw)
 
-    def _state(self):
+    def _state(self, bound):
         with self._service._lock, closing(self._service._store()) as store:
             self._service._check_open()
             repo = GraphRecordStore(store)
-            self._bound._require_binding(repo, current=True)
+            bound._require_binding(repo, current=True)
             document = self._service._configuration_document(repo, self._owner["workflow_definition_id"])
             require(document["revision"] == self._owner["definition_revision"],
                     "stale_revision", "Frontend current definition revision changed", 409)
@@ -196,7 +218,7 @@ class FrontendNodeChannel:
         return {
             "schema_version": 1, "kind": "workflow.frontend-node-state",
             "owner": deepcopy(self._owner), "input": input_value, "run": run, "snapshot": snapshot,
-            "pending": self._evidence.pending(self._bound),
+            "pending": self._evidence.pending(bound),
         }
 
     def _phase(self, view):

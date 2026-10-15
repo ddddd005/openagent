@@ -35,20 +35,9 @@
       channel_url: prefix + "/channel", events_url: prefix + "/events", entry_url: prefix + "/entry" };
   }
   function validateSnapshot(value, owner) {
-    if (value?.schema_version === 2) {
-      if (!root.FrontendNodeData?.snapshot(value, owner)) fail("frontend_node_snapshot_mismatch");
-      return value;
-    }
-    if (!exact(value, ["schema_version", "kind", "owner", "basis", "entries", "source"])
-      || value.schema_version !== 1 || value.kind !== "workflow.frontend-node-snapshot"
-      || !exact(value.owner, ["workflow_definition_id", "definition_revision", "node_binding_id", "workflow_session_id", "object_key"])
-      || value.owner.workflow_definition_id !== owner.workflow_definition_id
-      || value.owner.definition_revision !== owner.definition_revision
-      || value.owner.node_binding_id !== owner.node_binding_id || owner.session_id === null
-      || value.owner.workflow_session_id !== owner.session_id
-      || typeof value.owner.object_key !== "string" || !value.owner.object_key
-      || !exact(value.basis, ["revision", "revision_id"]) || !positive(value.basis.revision)
-      || !uuid(value.basis.revision_id) || !Array.isArray(value.entries)) fail("frontend_node_snapshot_mismatch");
+    if (!exact(value, ["schema_version", "kind", "owner", "basis", "chat"])
+      || value.schema_version !== 2 || value.kind !== "workflow.frontend-node-snapshot"
+      || !root.FrontendNodeData?.snapshot(value, owner)) fail("frontend_node_snapshot_mismatch");
     return value;
   }
   async function jsonRequest(fetcher, url, options = {}) {

@@ -18,10 +18,10 @@ function held() {
   return { promise, resolve };
 }
 function snapshot(binding, revision = 1) {
-  return { schema_version: 1, kind: "workflow.frontend-node-snapshot", owner: {
+  return { schema_version: 2, kind: "workflow.frontend-node-snapshot", owner: {
     workflow_definition_id: binding.workflow_definition_id, definition_revision: binding.definition_revision,
     node_binding_id: binding.node_binding_id, workflow_session_id: binding.session_id, object_key: "chat",
-  }, basis: { revision, revision_id: id(30 + revision) }, entries: [], source: null };
+  }, basis: { revision, revision_id: id(30 + revision) }, chat: { rounds: [] } };
 }
 function result(envelope, body) {
   return { schema_version: 1, kind: "workflow.frontend-node-result", owner: copy(envelope.owner),
@@ -203,6 +203,17 @@ test("wrong snapshot/state event owner closes the connection without fetching or
     assert.equal(f.streams[0].closed, true); assert.equal(f.host.view().connection, "disconnected");
     assert.deepEqual(operations(f), ["state"]); f.host.dispose();
   }
+});
+
+test("legacy reference-display snapshot pushes are rejected before state refresh", async () => {
+  const binding = { ...owner, session_id: id(3) }, f = fixture();
+  await f.host.bind(binding);
+  const event = { ...snapshot(binding), schema_version: 1, entries: [], source: null };
+  f.streams[0].emit("snapshot", event); await tick();
+  assert.equal(f.streams[0].closed, true);
+  assert.equal(f.host.view().connection, "disconnected");
+  assert.deepEqual(operations(f), ["state"]);
+  f.host.dispose();
 });
 
 test("state_changed refresh coalesces an in-flight read without performing a business command", async () => {

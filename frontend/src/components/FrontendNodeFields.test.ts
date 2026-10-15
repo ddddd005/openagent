@@ -16,7 +16,7 @@ import { createWorkflowConfigurationApplication } from "../application/workflowC
 import { createWorkbenchFrontendHost } from "../application/workflowFrontendPackage";
 import { workbenchFrontendHostKey } from "../application/workbenchFrontendHost";
 import { workflowFrontendSdkKey, type WorkflowFrontendSdk } from "../plugins/workflowFrontendSdk";
-import { frontendChatNodeFieldsExtension, frontendNodeFieldsExtension, workflowFrontendExtensions } from "../plugins/workflowFrontendManifest";
+import { frontendChatNodeFieldsExtension, workflowFrontendExtensions } from "../plugins/workflowFrontendManifest";
 import { graphClone } from "../domain/workflowGraph";
 import type { GraphConfigurationResult, GraphConfigurationUpdateRequest } from "../domain/workflowConfiguration";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
@@ -66,7 +66,7 @@ function installRender() {
   }).outputText;
   Object.assign(FrontendNodeFields, { render: new Function("Vue", code)(Vue) });
 }
-async function fixture(version = "1") {
+async function fixture(version = "2") {
   vi.stubGlobal("window", { open: vi.fn(), confirm: () => false, addEventListener() {}, removeEventListener() {} });
   const evidence = memoryRequestEvidence();
   vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
@@ -98,7 +98,7 @@ async function fixture(version = "1") {
     catalog: computed(() => graph.catalog), packages: computed(() => graph.packageLock),
     session: computed(() => graph.session), locked: computed(() => graph.editorLocked),
     lifecycle: computed(() => JSON.stringify([id, graph.session?.workflow_session_id])),
-    configureNode, readArtifact: vi.fn(),
+    configureNode,
   };
   await vi.waitFor(() => expect(graph.locked).toBe(false));
   const selectedId = ref(sample.nodes[0]!.node_binding_id);
@@ -139,7 +139,7 @@ describe("whole frontend node workbench fields", () => {
     expect(html).not.toContain(`<option value="${f.sample.nodes[1]!.node_binding_id}"`);
     expect(html).toContain("role"); expect(html).toContain('class="object-access-field"');
     expect(html).not.toContain(">input_node_id<");
-    expect(f.host.extensions.value.find(row => row.declaration.extension_id === frontendNodeFieldsExtension.extension_id)!
+    expect(f.host.extensions.value.find(row => row.declaration.extension_id === frontendChatNodeFieldsExtension.extension_id)!
       .configurationFields).toEqual(["input_node_id"]);
     expect(f.update).not.toHaveBeenCalled();
   });
@@ -157,8 +157,8 @@ describe("whole frontend node workbench fields", () => {
     await vi.waitFor(() => expect(f.requests).toHaveLength(1));
     expect(f.configureNode).toHaveBeenCalledWith(expect.objectContaining({
       workflowId: f.id, nodeId: f.sample.nodes[0]!.node_binding_id,
-      componentId: "frontend.node", componentVersion: "1",
-      extensionId: frontendNodeFieldsExtension.extension_id,
+      componentId: "frontend.node", componentVersion: "2",
+      extensionId: frontendChatNodeFieldsExtension.extension_id,
       patch: { input_node_id: f.sample.inputs[1]!.node_binding_id },
     }));
     expect(f.graph.entries[f.id]!.saved_revision).toBe(2);

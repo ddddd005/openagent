@@ -14,14 +14,17 @@ from phase1_agent.session_objects import SessionObjectStore
 from test_candidate_mutation_retirement import _insert_test_only_legacy_receipt
 from test_graph_application_receipt_custody import raw_database
 from test_graph_receipt_http import post, serve_receipts
-from test_graph_service import service
-from test_stage4_http_closeout import output_document
+from test_graph_service import document, edge, service
+from test_stage4_model_request_installation import _node
 
 
 def _source_and_request(service):
-    document, _ = output_document(service, append=False)
+    source = _node(service, "tools.text", "1", text="copy fixture")
+    output = _node(service, "tools.output", "1")
+    graph = document([source, output], [edge(source, output, 1)])
+    graph.update(schema_version=3, package_lock=deepcopy(list(service.registry.execution_package_lock)))
     saved = service.update_definition(
-        document, workflow_definition_id=document["workflow_definition_id"],
+        graph, workflow_definition_id=graph["workflow_definition_id"],
         expected_edit_sequence=0, idempotency_key=str(uuid4()))
     source = service.create_session(
         saved["workflow_definition_id"], saved["definition_revision"], idempotency_key=str(uuid4()))

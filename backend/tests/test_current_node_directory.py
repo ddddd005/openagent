@@ -13,22 +13,32 @@ from phase1_agent.prompt_lifecycle import lifecycle_prompt_content, make_lifecyc
 from test_model_package import uid
 
 
-def test_default_directory_has_only_current_routes_and_protocol_options():
+def test_default_directory_has_only_current_routes():
     registry = create_package_registry().registry
     versions = {}
     for entry in registry.catalog():
         if entry["executable"]:
             versions.setdefault(entry["component_id"], set()).add(entry["component_version"])
-    assert len(versions) == 41
-    assert sum(map(len, versions.values())) == 44
-    assert versions["models.source"] == {"5", "6"}
-    assert versions["models.chat"] == {"3", "4"}
-    assert versions["agents.execute"] == {"4", "8"}
-    assert all(values == {"4"} for key, values in versions.items() if key.startswith("context."))
-    assert all(values == {"2"} for key, values in versions.items() if key.startswith("prompts."))
-    assert "agents.delta" not in versions
+    assert versions["models.source"] == {"7"}
+    assert versions["models.chat"] == {"5"}
+    assert versions["agents.execute"] == {"10"}
+    assert versions["agents.compaction-policy"] == {"2"}
+    assert versions["context.output"] == {"5"}
+    assert versions["context.assembly"] == {"5"}
+    assert versions["context.merge"] == {"6"}
+    assert versions["frontend.node"] == {"2"}
+    assert versions["tools.output"] == {"1"}
+    assert versions["tools.variable-register"] == {"2"}
+    assert versions["prompts.item"] == {"2", "3"}
+    assert all(values == {"2"} for key, values in versions.items()
+               if key.startswith("prompts.") and key != "prompts.item")
+    assert not {"agents.delta", "frontend.state.output", "frontend.state.append",
+                "frontend.presentation", "tavern.chat.output", "tavern.chat.append",
+                "tavern.chat.presentation"} & set(versions)
     assert not {"CONTEXT_UNIT", "AGENT_DELTA", "AGENT_CONTEXT", "CONTEXT_SUMMARY",
                 "CONTEXT_COMPRESSION_PLAN"} & {row["type_id"] for row in registry.data_types.catalog()}
+    assert not {"workflow.frontend-state", "FRONTEND_VIEW", "FRONTEND_DISPLAY"} & {
+        row["type_id"] for row in registry.data_types.catalog()}
     assert not any(row["package_id"] == "workflow.context-compression" for row in registry.package_lock)
 
 

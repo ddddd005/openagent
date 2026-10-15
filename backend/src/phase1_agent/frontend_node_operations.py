@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from .chat_contracts import CHAT_CONTEXT_TYPE
 from .contract_errors import require, uuid4_string
 from .contract_json import content_digest
-from .frontend_contracts import FRONTEND_STATE_TYPE
 from .frontend_node_contracts import FRONTEND_NODE_COMPONENT
 from .graph_store import GraphRecordStore
 from .workflow_operations import WorkflowOperations, read_native_receipt
@@ -25,6 +24,9 @@ _OPERATIONS = {
     "select_candidate": "graph.frontend-node.select-candidate",
     "fork_floor": "graph.frontend-node.fork-floor",
 }
+_RECEIPT_ONLY_OPERATIONS = frozenset({
+    "patch_input", "start", "pause", "resume", "close", "fork_checkpoint",
+})
 _CHAT_FIELDS = {"round_id", "expected_session_revision", "expected_data_revision",
                 "expected_head_revision", "expected_object_revision"}
 _MAX_REVISION = 2**53 - 1
@@ -38,6 +40,15 @@ def _revision(value, *, nullable=False):
 class FrontendNodeOperations:
     def __init__(self, service):
         self._service = service
+
+    def receipt_scope(self, *, workflow_definition_id, definition_revision, node_binding_id, session_id=None):
+        uuid4_string(workflow_definition_id)
+        uuid4_string(node_binding_id)
+        _revision(definition_revision)
+        if session_id is not None:
+            uuid4_string(session_id)
+        return FrontendNodeReceiptScope(
+            self._service, workflow_definition_id, definition_revision, node_binding_id, session_id)
 
     def bind(self, *, workflow_definition_id, definition_revision, node_binding_id, session_id=None):
         uuid4_string(workflow_definition_id)
@@ -77,16 +88,15 @@ class BoundFrontendNodeOperations:
         require(node is not None, "frontend_node_binding_mismatch",
                 "The saved frontend node binding is unavailable", 409)
         identity = node["component_id"], node["component_version"]
-        require(identity in (FRONTEND_NODE_COMPONENT, ("frontend.node", "2")),
-                "frontend_node_binding_mismatch", "The binding must be exactly frontend.node@1 or @2", 409)
+        require(identity == FRONTEND_NODE_COMPONENT,
+                "frontend_node_binding_mismatch", "The binding must be exactly frontend.node@2", 409)
         entry = service.registry.get(*identity)
         require(entry is not None, "frontend_node_binding_mismatch",
                 "The exact frontend node contract is unavailable", 409)
         service.registry.validate_config(entry, node["config"])
         binding = next((item for item in document.get("object_bindings", [])
                         if item["object_key"] == node["config"]["object_key"]), None)
-        expected_type = CHAT_CONTEXT_TYPE if identity == ("frontend.node", "2") else FRONTEND_STATE_TYPE
-        require(binding is not None and binding["type_id"] == expected_type
+        require(binding is not None and binding["type_id"] == CHAT_CONTEXT_TYPE
                 and binding["schema_version"] == 1
                 and binding.get("registrar_node_id") == self.node_binding_id
                 and self.node_binding_id in binding["readers"]
@@ -286,3 +296,22 @@ class BoundFrontendNodeOperations:
         if operation == "fork_checkpoint":
             return operations.read_fork_result(receipt)
         return operations.read_control_result(receipt, operation=operation)
+
+
+@dataclass(frozen=True)
+class FrontendNodeReceiptScope:
+    """Read-only projection for a frozen frontend owner; it has no dispatch methods."""
+
+    _service: object
+    workflow_definition_id: str
+    definition_revision: int
+    node_binding_id: str
+    session_id: str | None
+
+    def read_receipt(self, operation, original_request):
+        require(type(operation) is str and operation in _RECEIPT_ONLY_OPERATIONS, "invalid_request",
+                "This receipt operation is not available through retired-node verification")
+        bound = BoundFrontendNodeOperations(
+            self._service, self.workflow_definition_id, self.definition_revision,
+            self.node_binding_id, self.session_id)
+        return bound.read_receipt(operation, original_request)

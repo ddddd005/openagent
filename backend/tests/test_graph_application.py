@@ -96,7 +96,7 @@ def test_retired_consumer_receipt_remains_readable_without_new_dispatch(service)
 @pytest.mark.parametrize("name,parameters", [
     ("session.read", {}), ("object.list", {}), ("object.read", {}),
     ("manifest.read", {}), ("run.read", {}),
-    ("candidate.list", {}), ("resource.read", {}), ("catalog.node-types", {}),
+    ("resource.read", {}), ("catalog.node-types", {}),
 ])
 def test_consumer_scope_cannot_dispatch_management_queries(service, name, parameters):
     with pytest.raises(ContractValidationError) as failure:

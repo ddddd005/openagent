@@ -111,7 +111,7 @@ def event_document(service):
     return doc
 
 
-def test_definition_update_then_create_fixed_revision_and_update_data_roundtrip(service):
+def test_definition_update_then_create_fixed_revision_roundtrip(service):
     app = GraphApplication(service)
     doc = fixed_configuration(text_graph(service.registry))
     created = roundtrip(app, "definition.update", {
@@ -131,10 +131,7 @@ def test_definition_update_then_create_fixed_revision_and_update_data_roundtrip(
         "idempotency_key": str(uuid4()),
     })
     assert view["definition_revision"] == 2
-    view = roundtrip(app, "session.data.update", {
-        "session_id": view["workflow_session_id"], "expected_revision": view["revision"],
-        "expected_data_revision": view["data_revision"], "idempotency_key": str(uuid4()),
-    })
+    assert view["data_revision"] == 0
 
 
 def test_completed_start_reads_the_original_frozen_result(service):

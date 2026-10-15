@@ -2,7 +2,7 @@ import { WorkbenchApiError } from "./workbenchApi";
 import { graphApplicationQuery } from "./workflowApplicationApi";
 import { isFrontendExtension } from "../domain/frontendExtensions";
 import { graphObject, isGraphCatalog, isGraphDocument, isGraphSession, isGraphPackageLock, type GraphDocument,
-  graphUuid, type GraphNodeType, type GraphDataType, type GraphSession, type GraphRunDetail, type GraphCandidates } from "../domain/workflowGraph";
+  graphUuid, type GraphNodeType, type GraphDataType, type GraphSession, type GraphRunDetail } from "../domain/workflowGraph";
 
 export async function readGraphCatalogDetails() {
   const response = await graphApplicationQuery("catalog.node-types", { protocol_version: 2 });
@@ -74,20 +74,4 @@ export async function readGraphRun(sessionId: string, chainId: string): Promise<
     const { agent: _privateAgent, ...record } = run as typeof run & { agent?: unknown };
     return record;
   }) };
-}
-export async function readGraphCandidates(sessionId: string, definitionId: string): Promise<GraphCandidates> {
-  const value = await graphApplicationQuery("candidate.list", { session_id: sessionId });
-  const positive = (n: unknown) => Number.isSafeInteger(n) && Number(n) > 0;
-  if (!graphObject(value) || value.schema_version !== 1 || value.kind !== "workflow.graph-candidates"
-    || value.workflow_session_id !== sessionId || value.workflow_definition_id !== definitionId
-    || !positive(value.definition_revision) || !positive(value.session_revision) || !positive(value.head_revision)
-    || !Array.isArray(value.candidates) || !value.candidates.every(row => graphObject(row)
-      && graphUuid(row.candidate_id) && graphUuid(row.chain_run_id) && graphUuid(row.source_session_id)
-      && graphUuid(row.source_workflow_definition_id) && positive(row.source_definition_revision)
-      && Number.isSafeInteger(row.data_revision) && Number(row.data_revision) >= 0
-      && typeof row.selected === "boolean" && typeof row.can_select === "boolean"
-      && (row.diagnostic === null || graphObject(row.diagnostic)))
-    || new Set(value.candidates.map(row => row.candidate_id)).size !== value.candidates.length)
-    throw new WorkbenchApiError("unavailable", "工作流候选归属或数据契约不匹配");
-  return value as unknown as GraphCandidates;
 }

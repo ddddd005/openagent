@@ -42,7 +42,7 @@ def graph_fixture(service):
     ), compute)
     source = node(service.registry, "tools.editable-input", 55101, text="draft")
     calc = node(service.registry, "test.chat-compute", 55102)
-    frontend = node(service.registry, "frontend.node", 55103, object_key="chat",
+    frontend = node(service.registry, "frontend.node", 55103, object_key="chat", role="assistant",
                     input_node_id=source["node_binding_id"])
     frontend["component_version"] = "2"
     graph = document([source, calc, frontend], [

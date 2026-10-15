@@ -90,28 +90,11 @@ def serial_graph(service):
     connect(handoff, agents["B"]["assembly"], target_port="materials", order=1)
     precede(agents["B"]["execute"], agents["A"]["merge"])
     precede(agents["A"]["merge"], agents["B"]["merge"])
-    read_user = make("frontend.state.output", object_key="frontend")
-    user = make("frontend.state.append", object_key="frontend", role="user")
-    read_assistant = make("frontend.state.output", object_key="frontend")
-    assistant = make("frontend.state.append", object_key="frontend", role="assistant")
-    display = make("frontend.presentation")
-    display["public_outputs"] = ["display"]
-    precede(agents["B"]["merge"], read_user)
-    connect(read_user, user, source_port="view", target_port="view")
-    connect(current, user, target_port="content")
-    precede(user, read_assistant)
-    connect(read_assistant, assistant, source_port="view", target_port="view")
-    connect(agents["B"]["execute"], assistant, source_port="result", target_port="content")
-    connect(assistant, display, source_port="view", target_port="view")
-    bindings.append(ObjectBinding("frontend", "workflow.frontend-state", 1, "shared",
-        readers=tuple(entry["node_binding_id"] for entry in (read_user, user, read_assistant, assistant)),
-        writers=(user["node_binding_id"], assistant["node_binding_id"])).to_dict())
     doc = document(entries, connections)
     doc.update(schema_version=2, package_lock=list(registry.execution_package_lock), object_bindings=bindings,
                control_edges=controls, execution_roots=[
-                   agents["A"]["merge"]["node_binding_id"], agents["B"]["merge"]["node_binding_id"],
-                   display["node_binding_id"]])
-    return doc, agents, display
+                   agents["A"]["merge"]["node_binding_id"], agents["B"]["merge"]["node_binding_id"]])
+    return doc, agents
 
 
 def result(view, entry, port="output"):
@@ -122,7 +105,7 @@ def result(view, entry, port="output"):
 def assert_round(view, agents, roots, *, local_rounds=None):
     local_rounds = len(roots) if local_rounds is None else local_rounds
     assert view["status"] == "succeeded", view["chains"]
-    assert set(view["objects"]) == {"context/a", "context/b", "frontend"}
+    assert set(view["objects"]) == {"context/a", "context/b"}
     for label in ("A", "B"):
         key = f"context/{label.lower()}"
         merged = result(view, agents[label]["merge"])
@@ -132,13 +115,6 @@ def assert_round(view, agents, roots, *, local_rounds=None):
         assert len(view["objects"][key]["value"]["accepted_delta_ids"]) == len(roots)
         assert view["objects"][key]["revision"] == local_rounds + 1
         assert result(view, agents[label]["merge"], "commit")["receipt"]["revision_id"] == view["objects"][key]["revision_id"]
-    frontend = view["objects"]["frontend"]
-    assert len(frontend["value"]["entries"]) == len(roots) * 2
-    assert [entry["role"] for entry in frontend["value"]["entries"]] == ["user", "assistant"] * len(roots)
-    assert len({entry["entry_id"] for entry in frontend["value"]["entries"]}) == len(roots) * 2
-    assert frontend["revision"] == local_rounds * 2 + 1
-
-
 def assert_serial_packages(service):
     packages = {item["package_id"] for item in service.registry.package_lock}
     assert set(DEFAULT_PACKAGES) <= packages and "workflow.compat" not in packages
@@ -154,7 +130,7 @@ def test_serial_two_rounds_distinct_contexts_exact_handoff_and_completed_checkpo
     with closing(GraphWorkflowService(database, public_model_factory=transport.factory)) as service:
         assert_serial_packages(service)
         ModelDatabaseFixture.write(service, 1)
-        doc, agents, display = serial_graph(service)
+        doc, agents = serial_graph(service)
         initial = create(service, doc)
         assert transport.calls == []
         first = run(service, initial, "first original question")
@@ -170,7 +146,6 @@ def test_serial_two_rounds_distinct_contexts_exact_handoff_and_completed_checkpo
                 "kind": "text", "role": "user",
                 "content": "first original question" if index == 0 else "second original question"}
         assert not any(message.get("content") == "A-answer-1" for message in transport.calls[3]["messages"])
-        assert result(second, display, "display")["entries"] == second["objects"]["frontend"]["value"]["entries"]
         forked = service.fork_graph_candidate(
             second["workflow_session_id"], candidate_id=candidate["candidate_id"],
             expected_revision=second["revision"], expected_data_revision=second["data_revision"],
@@ -199,7 +174,7 @@ def test_serial_copy_remaps_agents_keeps_parent_future_outside_child(tmp_path, m
     with closing(GraphWorkflowService(tmp_path / "serial-copy.sqlite", public_model_factory=transport.factory)) as service:
         assert_serial_packages(service)
         ModelDatabaseFixture.write(service, 1)
-        doc, agents, _ = serial_graph(service)
+        doc, agents = serial_graph(service)
         first = run(service, create(service, doc), "shared first")
         copied = deepcopy(doc)
         copied["workflow_definition_id"] = str(uuid4())

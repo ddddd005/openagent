@@ -212,52 +212,12 @@ describe("workflow management requests installed in the graph store", () => {
     expect(graph.sessions[id]).toEqual([sibling]);
   });
 
-  it("writes session data with both CAS coordinates in the exact original request", async () => {
-    const { graph, id, document } = seedSavedWorkflow("Data target");
+  it("does not expose the retired session data write wrapper", async () => {
+    const { graph, id } = seedSavedWorkflow("Data target");
     await initializeManagement(graph, id);
-    const current = session(document);
-    graph.entries[id].session_id = current.workflow_session_id;
-    graph.views[current.workflow_session_id] = current;
-    const { send } = transport();
-    send.mockResolvedValue(session(document, {
-      ...current, revision: current.revision + 1, data_revision: current.data_revision + 1,
-      data: { revision: current.data_revision + 1, values: { retained: "after", added: 7 } },
-    }));
-    const variables = { added: 7 };
-    const shared = { retained: "after" };
-
-    expect(await graph.writeData(variables, shared)).toBe(true);
-
-    const [path, body] = send.mock.calls[0]!;
-    expect(path).toBe(`/api/graph/sessions/${current.workflow_session_id}/data`);
-    expect(body).toEqual({
-      expected_revision: current.revision, expected_data_revision: current.data_revision,
-      variables, shared, idempotency_key: expect.any(String),
-    });
-    expect(storedEvidence("session.data.update", id)).toMatchObject({
-      resolution: "verified",
-      request: { ...body, session_id: current.workflow_session_id },
-    });
-    expect(graph.session?.revision).toBe(current.revision + 1);
-    expect(graph.session?.data_revision).toBe(current.data_revision + 1);
-  });
-
-  it.each([
-    ["running", { status: "running" as const, can_submit: false }],
-    ["archived", { archived: true, readonly: true, can_submit: false, available_actions: [] }],
-  ])("rejects %s session data writes before evidence or transport", async (_label, state) => {
-    const { graph, id, document } = seedSavedWorkflow("Read-only data target");
-    await initializeManagement(graph, id);
-    const current = session(document, state);
-    graph.entries[id].session_id = current.workflow_session_id;
-    graph.views[current.workflow_session_id] = current;
-    const { send } = transport();
-
-    expect(await graph.writeData({ attempted: true })).toBe(false);
-
-    expect(evidence.ports.write).not.toHaveBeenCalled();
-    expect(send).not.toHaveBeenCalled();
-    expect([...evidence.records.values()]).toEqual([]);
+    expect("writeData" in graph).toBe(false);
+    expect([...evidence.records.values()].filter(record =>
+      record.operation === "session.data.update" && record.owner_id === id)).toEqual([]);
   });
 
   it("reopens an unknown create under the same owner and reads its original receipt without resending", async () => {

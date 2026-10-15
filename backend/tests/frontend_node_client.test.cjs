@@ -42,14 +42,15 @@ function clock() {
 }
 function snapshot(owner) {
   return {
-    schema_version: 1, kind: "workflow.frontend-node-snapshot",
+    schema_version: 2, kind: "workflow.frontend-node-snapshot",
     owner: { workflow_definition_id: owner.workflow_definition_id, definition_revision: owner.definition_revision,
       node_binding_id: owner.node_binding_id, workflow_session_id: owner.session_id, object_key: "chat" },
-    basis: { revision: 1, revision_id: id(30) }, entries: [{
-      entry_id: id(31), role: "user", source_ref: { scope: "artifact", output_id: id(32) },
-      content: { schema_version: 2, kind: "workflow.text", text: "display-only" },
-    }], source: { workflow_session_id: owner.session_id, node_binding_id: owner.node_binding_id,
-      chain_run_id: id(33), node_run_id: id(34) },
+    basis: { revision: 1, revision_id: id(30) }, chat: { rounds: [{
+      round_id: id(31), base_checkpoint_id: null, submitted_input: "display-only",
+      candidates: [{ candidate_id: id(32), result_checkpoint_id: id(34),
+        messages: [{ message_id: id(33), role: "assistant", text: "display-only" }] }],
+      selected_candidate_id: id(32),
+    }] },
   };
 }
 function envelopeResult(request, result) {
@@ -557,14 +558,14 @@ test("original fixed false confirmation evidence is preserved exactly while reco
 test("snapshot is backend-provided display only and all returned values are independent copies", async () => {
   const f = fixture({ owner: { ...binding, session_id: id(3) } });
   await f.client.initialize();
-  const first = f.client.view(); first.snapshot.entries[0].content.text = "edited";
+  const first = f.client.view(); first.snapshot.chat.rounds[0].candidates[0].messages[0].text = "edited";
   first.owner.node_binding_id = id(8);
-  assert.equal(f.client.view().snapshot.entries[0].content.text, "display-only");
+  assert.equal(f.client.view().snapshot.chat.rounds[0].candidates[0].messages[0].text, "display-only");
   assert.equal(f.client.view().owner.node_binding_id, id(2));
-  f.state.snapshot.entries[0].content.text = "backend refreshed";
-  assert.equal(f.client.view().snapshot.entries[0].content.text, "display-only");
+  f.state.snapshot.chat.rounds[0].candidates[0].messages[0].text = "backend refreshed";
+  assert.equal(f.client.view().snapshot.chat.rounds[0].candidates[0].messages[0].text, "display-only");
   await f.client.refresh();
-  assert.equal(f.client.view().snapshot.entries[0].content.text, "backend refreshed");
+  assert.equal(f.client.view().snapshot.chat.rounds[0].candidates[0].messages[0].text, "backend refreshed");
   assert.equal(commands(f).length, 0);
 });
 
@@ -572,22 +573,25 @@ test("a dirty refresh cannot rebase the input save but may update run and displa
   const f = fixture({ owner: { ...binding, session_id: id(3) } });
   await f.client.initialize(); f.client.update("my dirty text");
   f.state.input = { ...f.state.input, text: "another writer", edit_sequence: 7 };
-  f.state.run.revision = 20; f.state.snapshot.entries[0].content.text = "new display";
+  f.state.run.revision = 20; f.state.snapshot.chat.rounds[0].candidates[0].messages[0].text = "new display";
   await f.client.refresh();
   assert.equal(f.client.view().text, "my dirty text");
   assert.equal(f.client.view().input.edit_sequence, 1);
   assert.equal(f.client.view().run.revision, 20);
-  assert.equal(f.client.view().snapshot.entries[0].content.text, "new display");
+  assert.equal(f.client.view().snapshot.chat.rounds[0].candidates[0].messages[0].text, "new display");
   await f.client.flush();
   assert.equal(commands(f)[0].parameters.expected_edit_sequence, 1);
 });
 
-test("display snapshot accepts another authorized producer without changing its exact owner", async () => {
+test("legacy reference-display snapshots are rejected without upgrading or guessing", async () => {
   const f = fixture({ owner: { ...binding, session_id: id(3) } });
-  f.state.snapshot.source.node_binding_id = id(70);
-  await f.client.initialize();
-  assert.equal(f.client.view().snapshot.source.node_binding_id, id(70));
-  assert.equal(f.client.view().snapshot.owner.node_binding_id, binding.node_binding_id);
+  f.state.snapshot = { schema_version: 1, kind: "workflow.frontend-node-snapshot",
+    owner: { workflow_definition_id: binding.workflow_definition_id, definition_revision: binding.definition_revision,
+      node_binding_id: binding.node_binding_id, workflow_session_id: id(3), object_key: "chat" },
+    basis: { revision: 1, revision_id: id(30) }, entries: [], source: null };
+  await assert.rejects(f.client.initialize(), /state_mismatch/);
+  assert.equal(f.client.view().initialized, false);
+  assert.equal(commands(f).length, 0);
 });
 
 test("dispose cancels pending timer without save/control and late results cannot notify another owner", async () => {

@@ -19,8 +19,7 @@ from phase1_agent.host_sdk import ObjectBinding
 from phase1_agent.workflow_chat_runtime import read_chat_round_inputs
 from test_checkpoint_collection import transaction
 from test_checkpoint_loading import EMPTY_CONTEXT, agent_value
-from test_frontend_node_runtime import _save
-from test_frontend_node_v2_runtime import _graph as frontend_graph
+from frontend_node_test_support import graph as frontend_graph, save as _save
 from test_graph_application_receipt_custody import raw_database
 from test_graph_service import edge, node
 from test_success_checkpoints import checkpoint_history

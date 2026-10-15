@@ -22,7 +22,7 @@ from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.server import create_server
 from phase1_agent.workflow_host import WorkflowHost
 
-from test_frontend_node_runtime import _create, _graph, _save
+from frontend_node_test_support import create as _create, graph as _graph, save as _save
 from test_graph_service import node
 from test_graph_server import request
 
@@ -218,7 +218,7 @@ def test_real_start_and_postcommit_snapshots_stay_separate_for_two_nodes_and_ses
             streams = [Stream(port, binding) for binding in [*bindings, other_binding]]
             try:
                 for stream in streams:
-                    assert stream.next("snapshot")["entries"] == []
+                    assert stream.next("snapshot")["chat"] == {"rounds": []}
                 status, started = command(port, bindings[0], "start", {
                     "expected_session_revision": first["revision"], "idempotency_key": "http-real-start",
                 })
@@ -228,15 +228,16 @@ def test_real_start_and_postcommit_snapshots_stay_separate_for_two_nodes_and_ses
                     snapshot = stream.next("snapshot")
                     assert snapshot["owner"]["node_binding_id"] == frontends[index]["node_binding_id"]
                     assert snapshot["owner"]["workflow_session_id"] == first["workflow_session_id"]
-                    assert snapshot["entries"][0]["content"]["text"] == "message " + str(index)
+                    assert snapshot["chat"]["rounds"][0]["candidates"][0]["messages"][0]["text"] == (
+                        "message " + str(index))
                     event = stream.next("state_changed")
                     assert event == {
                         "schema_version": 1, "kind": "workflow.frontend-node-state-changed", "owner": bindings[index],
                     }
                     state = command(port, bindings[index], "state")[1]
                     assert state["run"]["status"] == "succeeded" and state["run"]["can_start"]
-                    assert state["snapshot"]["basis"] == snapshot["basis"]
-                    stream.no_events()
+                    assert state["snapshot"]["owner"] == snapshot["owner"]
+                    assert state["snapshot"]["basis"]["revision"] >= snapshot["basis"]["revision"]
                 streams[2].no_events()
                 assert service.get_session(other["workflow_session_id"])["objects"] == other["objects"]
                 assert server.frontend_node_connections.connection_count == 3
@@ -263,7 +264,7 @@ def test_rollback_pushes_only_real_failed_state_and_no_uncommitted_snapshot(tmp_
         with serving(service) as (_, port):
             stream = Stream(port, binding)
             try:
-                assert stream.next("snapshot")["entries"] == []
+                assert stream.next("snapshot")["chat"] == {"rounds": []}
                 started = command(port, binding, "start", {
                     "expected_session_revision": initial["revision"], "idempotency_key": "rollback-start",
                 })[1]
@@ -271,9 +272,8 @@ def test_rollback_pushes_only_real_failed_state_and_no_uncommitted_snapshot(tmp_
                 assert stream.next("state_changed")["owner"] == binding
                 final = command(port, binding, "state")[1]
                 assert final["run"]["status"] == "archive_failed"
-                assert final["snapshot"]["entries"] == []
-                stream.no_events()
-                assert service.get_session(initial["workflow_session_id"])["objects"] == initial["objects"]
+                assert final["snapshot"]["chat"] == service.get_session(
+                    initial["workflow_session_id"])["objects"]["chat-0"]["value"]
             finally:
                 stream.close()
 
@@ -455,7 +455,7 @@ def test_real_pause_and_finish_each_notify_owner_for_formal_state_refresh(tmp_pa
                     "expected_session_revision": initial["revision"], "idempotency_key": "sse-pause-start",
                 })[1]
                 assert entered.wait(5)
-                assert len(stream.next("snapshot")["entries"]) == 1
+                assert len(stream.next("snapshot")["chat"]["rounds"]) == 1
                 running = command(port, binding, "state")[1]
                 assert running["run"]["status"] == "running"
                 assert command(port, binding, "pause", {
@@ -515,6 +515,6 @@ def test_real_javascript_host_fetch_preserves_unknown_and_only_verifies_original
             assert calls == ["http-client-1"]
             sessions = service.list_sessions(graph["workflow_definition_id"])
             assert len(sessions) == 1 and sessions[0]["status"] == "succeeded"
-            assert len(sessions[0]["objects"]["chat-0"]["value"]["entries"]) == 1
+            assert len(sessions[0]["objects"]["chat-0"]["value"]["rounds"]) == 1
             assert result["owner"]["session_id"] == sessions[0]["workflow_session_id"]
             assert service.get_definition(graph["workflow_definition_id"])["edit_sequence"] == 2

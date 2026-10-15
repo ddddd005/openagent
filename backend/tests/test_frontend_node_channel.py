@@ -11,7 +11,7 @@ from phase1_agent.frontend_node_channel import FrontendNodeChannel
 from phase1_agent.graph_contracts import NodeDefinition
 from phase1_agent.graph_service import GraphWorkflowService
 
-from test_frontend_node_runtime import _create, _graph, _save
+from frontend_node_test_support import create as _create, graph as _graph, save as _save
 from test_graph_service import node
 
 
@@ -78,9 +78,11 @@ def test_state_has_no_input_when_unbound_and_real_snapshot_when_session_exists(s
     assert state["run"] == {
         "revision": view["revision"], "status": "idle", "can_start": True, "can_pause": False,
         "can_resume": False, "can_close": False, "can_fork": True,
+        "data_revision": view["data_revision"], "head_revision": view["head_revision"],
+        "object_revision": view["objects"]["chat-0"]["revision"],
     }
     assert state["snapshot"]["owner"]["workflow_session_id"] == view["workflow_session_id"]
-    assert state["snapshot"]["entries"] == []
+    assert state["snapshot"]["chat"] == {"rounds": []}
     assert set(state) == {"schema_version", "kind", "owner", "input", "run", "snapshot", "pending"}
 
 
@@ -219,7 +221,7 @@ def test_start_projects_both_native_phases_and_only_returns_next_owner(service):
     target_channel = FrontendNodeChannel(service, phases["next_owner"])
     state = target_channel.handle(request(phases["next_owner"], "state"))
     assert state["run"]["status"] == "succeeded"
-    assert state["snapshot"]["entries"][0]["content"]["text"] == "message 0"
+    assert state["snapshot"]["chat"]["rounds"][0]["candidates"][0]["messages"][0]["text"] == "message 0"
 
 
 def test_partial_create_keeps_real_session_and_failed_start_diagnostic(service, monkeypatch):

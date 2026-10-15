@@ -203,27 +203,6 @@ export interface GraphManagementResult {
   archived: boolean;
   deleted: boolean;
 }
-export interface GraphCandidate {
-  candidate_id: string;
-  chain_run_id: string;
-  source_session_id: string;
-  source_workflow_definition_id: string;
-  source_definition_revision: number;
-  data_revision: number;
-  selected: boolean;
-  can_select: boolean;
-  diagnostic: GraphDiagnostic | null;
-}
-export interface GraphCandidates {
-  schema_version: 1;
-  kind: "workflow.graph-candidates";
-  workflow_session_id: string;
-  workflow_definition_id: string;
-  definition_revision: number;
-  session_revision: number;
-  head_revision: number;
-  candidates: GraphCandidate[];
-}
 export interface GraphRunDetail {
   chain: GraphSession["chains"][number];
   node_runs: { run_id: string; chain_run_id: string; node_binding_id: string; workflow_session_id: string;

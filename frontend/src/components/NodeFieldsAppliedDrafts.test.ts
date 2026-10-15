@@ -172,7 +172,6 @@ async function mount(kind: "model" | "lorebook") {
     document: computed(() => graph.document), catalog: computed(() => graph.catalog),
     packages: computed(() => graph.packageLock), session: computed(() => graph.session),
     locked: computed(() => graph.editorLocked), lifecycle,
-    readArtifact: vi.fn(async () => null as never),
     configureNode: request => graph.patchNodeConfiguration(request),
   };
   installRender(RawNumberInput, "RawNumberInput.vue");

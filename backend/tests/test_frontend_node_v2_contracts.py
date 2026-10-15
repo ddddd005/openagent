@@ -13,7 +13,7 @@ from phase1_agent.frontend_node_v2_contracts import (
     validate_frontend_node_chat_write,
 )
 from phase1_agent.host_sdk import ObjectBinding
-from test_frontend_business import binding, ref, uid
+from frontend_node_test_support import binding, ref, uid
 
 
 def proof_fixture():

@@ -77,7 +77,7 @@ function fixture(initial = [newPromptResource()]) {
     workflowId: computed(() => document.workflow_definition_id), document: computed(() => document),
     catalog: computed(() => []), packages: computed(() => document.package_lock), session: computed(() => null),
     locked: computed(() => locked.value), lifecycle: computed(() => lifecycle.value),
-    readArtifact: vi.fn(), configureNode,
+    configureNode,
   };
   const definition: GraphNodeType = {
     component_id: node.component_id, component_version: node.component_version, display_name: "Prompt reference",

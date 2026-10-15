@@ -69,7 +69,7 @@ class CompactingSerialTransport:
         return Transport()
 
 
-def compacting_serial_graph(service, *, with_frontend=False):
+def compacting_serial_graph(service):
     nodes, connections, controls, bindings = [], [], [], []
 
     def make(component, version="1", **config):
@@ -129,26 +129,6 @@ def compacting_serial_graph(service, *, with_frontend=False):
     precede(agents["B"]["execute"], agents["A"]["merge"])
     precede(agents["A"]["merge"], agents["B"]["merge"])
     roots = [agents[label]["merge"]["node_binding_id"] for label in ("A", "B")]
-    if with_frontend:
-        read_user = make("frontend.state.output", object_key="frontend")
-        user = make("frontend.state.append", object_key="frontend", role="user")
-        read_assistant = make("frontend.state.output", object_key="frontend")
-        assistant = make("frontend.state.append", object_key="frontend", role="assistant")
-        display = make("frontend.presentation")
-        display["public_outputs"] = ["display"]
-        precede(agents["B"]["merge"], read_user)
-        connect(read_user, user, source_port="view", target_port="view")
-        connect(current, user, target_port="content")
-        precede(user, read_assistant)
-        connect(read_assistant, assistant, source_port="view", target_port="view")
-        connect(agents["B"]["execute"], assistant, source_port="result", target_port="content")
-        connect(assistant, display, source_port="view", target_port="view")
-        bindings.append(ObjectBinding(
-            "frontend", "workflow.frontend-state", 1, "shared",
-            readers=tuple(entry["node_binding_id"] for entry in (read_user, user, read_assistant, assistant)),
-            writers=(user["node_binding_id"], assistant["node_binding_id"]),
-        ).to_dict())
-        roots.append(display["node_binding_id"])
     doc = document(nodes, connections)
     doc.update(schema_version=2, package_lock=list(service.registry.package_lock),
                object_bindings=bindings, control_edges=controls,
@@ -161,8 +141,7 @@ def effective(view, agents, label):
 
 
 def once_sources(value):
-    from phase1_agent.context_prompt_v6 import injected_once_sources
-    return injected_once_sources({"messages": value["messages"], "layout": value["layout"]})
+    return {item["source"]["item_instance_id"] for item in value["layout"] if item["kind"] == "once"}
 
 
 def new_once_sources(prompt):
@@ -199,23 +178,6 @@ def assert_clean_persistent_state(view, agents):
         assert ("CHECKPOINT_B" if label == "A" else "CHECKPOINT_A") not in str(value["messages"])
     assert not any(message["blocks"][0].get("text", "").startswith("A-answer-")
                    for message in views[1]["messages"])
-
-
-def test_serial_frontend_fixture_uses_explicit_business_state_and_public_presentation(tmp_path):
-    fixture = CompactingSerialTransport()
-    with closing(GraphWorkflowService(tmp_path / "serial-frontend.sqlite",
-                                      public_model_factory=fixture.factory)) as service:
-        ModelDatabaseFixture.write(service, 1)
-        doc, agents, _ = compacting_serial_graph(service, with_frontend=True)
-        display = next(entry for entry in doc["nodes"] if entry["component_id"] == "frontend.presentation")
-        assert display["public_outputs"] == ["display"]
-        assert display["node_binding_id"] in doc["execution_roots"]
-        assert next(binding for binding in doc["object_bindings"]
-                    if binding["object_key"] == "frontend")["schema_version"] == 1
-        initial = create(service, doc)
-        assert set(initial["objects"]) == {"context/a", "context/b", "frontend"}
-        assert initial["objects"]["frontend"]["value"] == {"entries": [], "view_ref": None}
-        assert len(agents) == 2 and fixture.calls == []
 
 
 def test_serial_native_compaction_preserves_order_tool_ids_once_state_edit_fork_and_reopen(tmp_path, monkeypatch):

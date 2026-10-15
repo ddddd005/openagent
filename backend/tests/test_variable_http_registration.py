@@ -4,6 +4,7 @@ from copy import deepcopy
 from uuid import uuid4
 
 from phase1_agent.host_sdk import ObjectBinding
+from phase1_agent.runtime_checkpoints import CHECKPOINT_SCHEMA_VERSION
 from phase1_agent.variable_contract import VARIABLE_SCHEMA_VERSION, VARIABLE_TYPE
 
 from test_graph_fresh_http import command, query, request, serve
@@ -168,7 +169,7 @@ def test_http_selected_checkpoint_initializes_fork_and_repeat_registration_never
         first = _run(host, port, source)
         first_history = checkpoint_history(host.graph_service, first)
         saved_state = deepcopy(first_history["state"])
-        assert first_history["latest"]["schema_version"] == 3
+        assert first_history["latest"]["schema_version"] == CHECKPOINT_SCHEMA_VERSION
         assert saved_state["variables"][branch["count_key"]]["value"]["value"] == 1
         assert saved_state["variables"][branch["flag_key"]]["value"]["value"] is False
         source = _run(host, port, first)

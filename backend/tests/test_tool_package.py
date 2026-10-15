@@ -80,7 +80,7 @@ def test_independent_package_exports_exact_v2_ports_and_no_agent(registry):
         {"package_id": "workflow.tools", "version": "1.0.0"},
     ]
     tool_nodes = [item for item in registry.catalog() if item["component_id"].startswith("tools.")]
-    assert len(tool_nodes) == 17
+    assert len(tool_nodes) == 16
     for item in tool_nodes:
         assert item["component_id"].startswith("tools.")
         port_sets = [(item["inputs"], item["outputs"])] + [
@@ -94,15 +94,13 @@ def test_independent_package_exports_exact_v2_ports_and_no_agent(registry):
     assert registry.get("tools.variable-register", "1") is None
 
 
-def test_output_v2_declares_frontend_state_without_changing_v1_execution(registry):
-    legacy = registry.get("tools.output", "1")
-    current = registry.get("tools.output", "2")
-    assert legacy.definition.provided_session_item_types == ()
-    assert current.definition.to_dict()["provided_session_item_types"] == [
-        {"type_id": "workflow.frontend-state", "schema_version": 1}]
+def test_output_v1_remains_the_only_registered_output_node(registry):
+    current = registry.get("tools.output", "1")
+    assert current.definition.provided_session_item_types == ()
+    assert registry.get("tools.output", "2") is None
     inputs, _ = current.definition.ports({"mode": "text"})
     assert [port.port_id for port in inputs] == ["input"]
-    result, context = invoke(registry, "output", version="2", inputs={"input": text_content("visible")})
+    result, context = invoke(registry, "output", version="1", inputs={"input": text_content("visible")})
     assert result["output"] == text_content("visible")
     assert context.object_writes == []
 

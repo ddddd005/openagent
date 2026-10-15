@@ -96,6 +96,31 @@ describe("receipt-only graph transport", () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
+  it("rejects new session data writes while retaining the frozen request for receipt reads", async () => {
+    const sessionId = crypto.randomUUID(), definitionId = crypto.randomUUID();
+    const path = `/api/graph/sessions/${sessionId}/data`;
+    const body = { expected_revision: 3, expected_data_revision: 2, variables: { legacy: 7 },
+      shared: { retained: true }, idempotency_key: crypto.randomUUID() };
+    const original = graphClone(body);
+    const result = { schema_version: 2, execution_model: "graph", workflow_definition_id: definitionId,
+      workflow_session_id: sessionId, definition_revision: 1, revision: 4, data_revision: 3,
+      head_revision: 2, status: "idle", can_submit: true, nodes: [], chains: [], outputs: [],
+      data: { revision: 3, values: { legacy: 7 } } };
+    const fetcher = vi.fn(async (route: string, options: RequestInit) => {
+      expect(route).toBe("/api/graph/receipts/read");
+      expect(JSON.parse(String(options.body))).toEqual({ operation: "session.data.update",
+        parameters: { ...body, session_id: sessionId } });
+      return graphReceiptReadResponse("session.data.update", { ...body, session_id: sessionId }, result);
+    });
+    vi.stubGlobal("fetch", fetcher);
+
+    await expect(sendGraphCommand(path, body)).rejects.toMatchObject({ kind: "rejected" });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(await readGraphReceipt(path, body)).toEqual(result);
+    expect(body).toEqual(original);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("reads the exact frozen command without sending a mutation or altering its inputs", async () => {
     const { path, body, command, result } = fixture(), before = graphClone(body);
     const fetcher = vi.fn(async (route: string, options: RequestInit) => {

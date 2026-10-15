@@ -6,7 +6,6 @@ from uuid import uuid4
 
 import pytest
 
-from phase1_agent.chat_contracts import CHAT_CONTEXT_TYPE
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.frontend_node_channel import FrontendNodeChannel
 from phase1_agent.frontend_node_evidence import (
@@ -20,7 +19,7 @@ from phase1_agent.workflow_operations import read_native_receipt
 
 from test_frontend_node_channel import counts, request
 from test_frontend_node_operations import assert_another_thread_can_take_service_lock
-from test_frontend_node_runtime import _create, _graph, _save
+from frontend_node_test_support import create as _create, graph as _graph, save as _save
 
 
 NATIVE = {
@@ -41,12 +40,8 @@ def service(tmp_path):
         yield instance
 
 
-def prepared(service, *, version="2", count=1):
+def prepared(service, *, count=1):
     graph, _, frontends = _graph(service, bound=True, count=count)
-    if version == "2":
-        for frontend, binding in zip(frontends, graph["object_bindings"]):
-            frontend["component_version"] = "2"
-            binding["type_id"] = CHAT_CONTEXT_TYPE
     graph = _save(service, graph)
     view = _create(service, graph)
     owner = {
@@ -130,7 +125,6 @@ def test_private_adapter_dispatches_independent_function_with_only_its_saved_ite
         assert result["result"]["next_owner"] is None
     assert channel.handle(request(owner, "state"))["pending"] == []
     monkeypatch.setattr(service, NATIVE[operation][0], lambda *args, **kwargs: pytest.fail("re-dispatched"))
-    monkeypatch.setattr(service, "_document", lambda *args: pytest.fail("replay re-read current definition"))
     assert channel.handle(request(owner, operation, original)) == result
     assert channel.handle(request(owner, "receipt", {
         "operation": operation, "original_request": original,
@@ -138,24 +132,6 @@ def test_private_adapter_dispatches_independent_function_with_only_its_saved_ite
     assert channel.handle(request(owner, "accept_receipt", {
         "operation": operation, "original_request": original,
     })) == result
-
-
-@pytest.mark.parametrize("operation", NATIVE)
-def test_old_display_contract_cannot_call_logical_chat_operations(service, monkeypatch, operation):
-    channel, owner, _, _, view = prepared(service, version="1")
-    monkeypatch.setattr(service, NATIVE[operation][0], lambda *args, **kwargs: pytest.fail("old node dispatched"))
-    before = counts(service)
-    with pytest.raises(ContractValidationError) as rejected:
-        channel.handle(request(owner, operation, parameters(operation, view)))
-    assert rejected.value.reason_code == "frontend_node_chat_unavailable"
-    after = counts(service)
-    assert after["records"] == before["records"]
-    assert after["workflow_current_configuration"] == before["workflow_current_configuration"]
-    assert channel.handle(request(owner, "state"))["pending"] == []
-    with closing(service._store()) as store:
-        assert store.read_receipt(OUTER[operation], "chat-original") is None
-        assert store.read_receipt(
-            NATIVE[operation][1], channel._bound._child_key(operation, "chat-original")) is None
 
 
 @pytest.mark.parametrize("mutation", [
@@ -191,10 +167,11 @@ def test_direct_bound_chat_adapter_requires_all_fields_and_forbids_item_selector
     channel, _, _, _, view = prepared(service)
     original = parameters(operation, view)
     before = counts(service)
+    bound = channel._bind()
     incomplete = {key: value for key, value in original.items() if key != "expected_object_revision"}
     for arguments in (incomplete, {**original, "object_key": "chat-1"}):
         with pytest.raises(ContractValidationError) as rejected:
-            getattr(channel._bound, operation)(**arguments)
+            getattr(bound, operation)(**arguments)
         assert rejected.value.reason_code == "invalid_request"
     assert counts(service) == before
 

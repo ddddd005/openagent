@@ -12,7 +12,7 @@ from .graph_records import require
 _MANAGEMENT_COMMANDS = {
     "definition.update", "session.create",
     "object.write",
-    "session.metadata.update", "session.data.update", "checkpoint.fork",
+    "session.metadata.update", "checkpoint.fork",
 }
 _LIFECYCLE_COMMANDS = {
     "definition.archive", "definition.delete", "session.archive", "session.delete",

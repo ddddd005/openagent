@@ -55,7 +55,7 @@ function fixture(initial = [newLorebookResource()], activate = false) {
     workflowId: computed(() => document.workflow_definition_id), document: computed(() => document),
     catalog: computed(() => []), packages: computed(() => document.package_lock),
     session: computed(() => null), locked: computed(() => locked.value), lifecycle: computed(() => lifecycle.value),
-    readArtifact: vi.fn(), configureNode,
+    configureNode,
   };
   return { resources, state, save, readReceipt, node, document, locked, lifecycle, configureNode, sdk };
 }

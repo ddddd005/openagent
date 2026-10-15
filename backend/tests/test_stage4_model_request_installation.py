@@ -11,7 +11,6 @@ import pytest
 from phase1_agent.checkpoint_repository import CheckpointRepository
 from phase1_agent.context_contract import EFFECTIVE_CONTEXT_TYPE
 from phase1_agent.contracts import ModelResponse, ModelToolCall
-from phase1_agent.frontend_contracts import FRONTEND_STATE_TYPE
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import ObjectBinding
 from phase1_agent.model_request_contracts import default_model_runtime
@@ -96,7 +95,7 @@ def _agent_graph(service, profile, *, count=2, writes=True, compaction=False):
         read = _node(service, "context.output", "5", object_key=key)
         assembly = _node(service, "context.assembly", "5")
         material = _node(service, "prompts.item", "2", text="RULE_" + str(index))
-        output = _node(service, "tools.output", "2")
+        output = _node(service, "tools.output", "1")
         nodes += [read, assembly, material, output]
         edges += [
             _edge(read, assembly, target_port="view"),
@@ -128,9 +127,6 @@ def _agent_graph(service, profile, *, count=2, writes=True, compaction=False):
                 key, EFFECTIVE_CONTEXT_TYPE, 4, "shared", readers=tuple(readers),
                 writers=tuple(writers),
                 registrar_node_id=agents[(index + 1) % count]["node_binding_id"]).to_dict(),
-            ObjectBinding(
-                "display-" + str(index), FRONTEND_STATE_TYPE, 1, "shared",
-                registrar_node_id=output["node_binding_id"]).to_dict(),
         ]
         branches.append(branch)
     return _save_graph(service, nodes, edges, bindings), branches
@@ -425,8 +421,8 @@ def test_explicit_merge_settlement_rolls_back_and_reuses_accepted_result(tmp_pat
         initial, branches = _agent_graph(service, profile, count=1)
         apply, fail = SessionObjectStore.apply, [True]
 
-        def fail_once(store, sid, *, node_id, writes):
-            result = apply(store, sid, node_id=node_id, writes=writes)
+        def fail_once(store, sid, *, node_id, writes, write_evidence=None):
+            result = apply(store, sid, node_id=node_id, writes=writes, write_evidence=write_evidence)
             if writes and fail[0]:
                 fail[0] = False
                 raise OSError("offline settlement fault")

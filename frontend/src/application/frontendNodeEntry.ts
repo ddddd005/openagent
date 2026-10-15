@@ -51,7 +51,7 @@ export function frontendNodeLaunchTarget(entry: GraphEntry | undefined,
     || target.document.revision !== saved.revision
     || !target.document.nodes.some(item => item.node_binding_id === node.node_binding_id
       && item.component_id === node.component_id && item.component_version === node.component_version)
-    || node.component_id !== "frontend.node" || !["1", "2"].includes(node.component_version))
+    || node.component_id !== "frontend.node" || node.component_version !== "2")
     return unavailable("缺少当前前端节点的准确已保存定义");
   const savedNode = saved.nodes.find(item => item.node_binding_id === node.node_binding_id);
   if (!savedNode || savedNode.component_id !== node.component_id

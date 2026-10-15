@@ -27,7 +27,7 @@ export const frontendChatNodeType: GraphNodeType = {
   object_accesses: [{ config_field: "object_key", multiple: false, access: "read_write",
     type_id: "workflow.chat-context", schema_version: 1 }],
 };
-export function frontendNodeFixture(version = "1") {
+export function frontendNodeFixture(version = "2") {
   const type = version === "2" ? frontendChatNodeType : frontendNodeType;
   const document = newGraph("Frontend nodes", [{ package_id: "workflow.frontend", version: "1.0.0" }]);
   document.schema_version = 3; document.edit_sequence = 1; document.object_bindings = [];

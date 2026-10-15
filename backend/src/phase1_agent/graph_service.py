@@ -7,7 +7,6 @@ from contextlib import closing
 from copy import deepcopy
 from pathlib import Path
 import os
-import hashlib
 from threading import RLock
 from typing import Any
 from uuid import uuid4
@@ -21,7 +20,7 @@ from .program_variable_store import ProgramVariableStore
 from .preparation_program import validate_program_state
 from .storage import SqliteStore
 from .graph_public import GraphPublic
-from .graph_candidates import GraphCandidateHost
+from .graph_history import GraphHistory
 from .graph_platform import GraphPlatform
 from .graph_runtime_host import GraphRuntimeHost
 from .frontend_node_snapshots import GraphFrontendNodes
@@ -39,10 +38,6 @@ from .workflow_chat_service import WorkflowChatService
 
 def _uid() -> str:
     return str(uuid4())
-
-
-def _state_key(prefix, key):
-    return prefix + hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 def _revision(value: Any, *, zero: bool = False) -> int:
@@ -75,7 +70,9 @@ class _GraphLease:
         self.file.close()
 
 
-class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowLifecycle, GraphEditingHost, GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost, GraphFrontendNodes, GraphResourceHost, GraphPlatform, GraphPublic, GraphCandidateHost):
+class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowLifecycle, GraphEditingHost,
+                           GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost,
+                           GraphFrontendNodes, GraphResourceHost, GraphPlatform, GraphPublic, GraphHistory):
     def __init__(self, database_path: str | Path, *, registry=None, fault_injector=None,
                  capability_packages=(), enabled_packages=None, trusted_package_entrypoints=(),
                  public_model_factory=None, credential_protector=None, provider_discovery_client_factory=None):
@@ -584,39 +581,6 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         if expected_head_revision is not None:
             require(self._head(repo, sid)["revision"] == _revision(expected_head_revision), "stale_head_revision", "Session Head changed", 409)
         return session
-
-    def update_data(self, sid, *, expected_revision, expected_data_revision, idempotency_key,
-                    variables=None, shared=None):
-        request = {"session": sid, "expected_revision": expected_revision, "expected_data_revision": expected_data_revision,
-                   "variables": variables, "shared": shared}
-        def change(repo):
-            session = repo.get("workflow_session", workflow_session_id=sid)
-            self._require_session_active(repo, session)
-            require(session["active_chain_run_id"] is None, "active_execution_not_editable",
-                    "Session data cannot be edited during an unfinished execution", 409)
-            require(session["revision"] == _revision(expected_revision), "stale_revision", "Session changed", 409)
-            state = ProgramVariableStore(repo.store).current(sid)
-            require(state["revision"] == _revision(expected_data_revision, zero=True), "stale_data_revision", "Data changed", 409)
-            if variables is not None:
-                require(type(variables) is dict and set(variables) <= set(state["values"]), "variable_not_registered", "Variable is not registered")
-                for name, value in variables.items():
-                    state["values"][name] = {"type": state["values"][name]["type"], "source": "assignment", "value": value}
-            if shared is not None:
-                from .resource_contracts import session_data_entry, validate_data_value
-                require(type(shared) is dict and set(shared) <= set(state.get("data", {})), "session_data_unregistered", "Shared data is not registered")
-                for name, value in shared.items():
-                    entry = state["data"][name]
-                    definition = entry["definition"]
-                    require(definition["writable"], "session_data_read_only", "Shared data is read-only", 409)
-                    validate_data_value(definition, value)
-                    state["data"][name] = session_data_entry(definition, value, assigned=True)
-            validate_program_state(state)
-            ProgramVariableStore(repo.store).write_in_transaction(sid, state, expected_revision=expected_data_revision,
-                key=_state_key("graph-data:", idempotency_key), request=request)
-            session["revision"] += 1
-            repo.put("workflow_session", session)
-            return self._view(repo, sid)
-        return self._change("graph.session.data", idempotency_key, request, change)
 
     def start(self, sid, *, expected_revision, idempotency_key, inputs=None):
         self._require_execution_owner()

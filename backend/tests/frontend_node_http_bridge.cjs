@@ -68,8 +68,8 @@ const host = new scope.FrontendNodePage.Host({
   }
   const finished = host.view().client;
   assert.equal(finished.run.status, "succeeded");
-  assert.equal(finished.snapshot.entries.length, 1);
-  assert.equal(finished.snapshot.entries[0].content.text, "actual HTTP message C");
+  assert.equal(finished.snapshot.chat.rounds.length, 1);
+  assert.equal(finished.snapshot.chat.rounds[0].submitted_input, "actual HTTP message C");
   assert.equal(trace.filter(packet => packet.operation === "patch_input").length, 1);
   assert.equal(trace.filter(packet => packet.operation === "start").length, 1);
   host.dispose();

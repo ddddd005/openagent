@@ -70,10 +70,10 @@ const create = owner => new scope.FrontendNodeClient({
   const finished = await bound.initialize();
   assert.equal(finished.run.status, "succeeded");
   assert.equal(finished.snapshot.owner.workflow_session_id, next.session_id);
-  assert.equal(finished.snapshot.entries.length, 1);
-  assert.equal(finished.snapshot.entries[0].content.text, "new message C");
-  finished.snapshot.entries[0].content.text = "local display edit";
-  assert.equal(bound.view().snapshot.entries[0].content.text, "new message C");
+  assert.equal(finished.snapshot.schema_version, 2);
+  assert.equal(finished.snapshot.chat.rounds.at(-1).submitted_input, "new message C");
+  finished.snapshot.chat.rounds.at(-1).submitted_input = "local display edit";
+  assert.equal(bound.view().snapshot.chat.rounds.at(-1).submitted_input, "new message C");
   bound.dispose();
   process.stdout.write(JSON.stringify({ done: true, session_id: next.session_id }) + "\n");
   lines.close();

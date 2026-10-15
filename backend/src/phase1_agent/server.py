@@ -139,7 +139,7 @@ def management_request(method, path, data):
     if method == "POST" and (
         re.fullmatch(r"/api/graph/definitions/[^/]+/(archive|delete)", path)
         or re.fullmatch(
-            r"/api/graph/sessions/[^/]+/(data|archive|delete|objects/read|objects/write|"
+            r"/api/graph/sessions/[^/]+/(archive|delete|objects/read|objects/write|"
             r"objects/artifacts/read|information/read|manifests/read|"
             r"outputs/read|outputs/history|events/bindings|events/read)", path)
     ):
@@ -161,7 +161,7 @@ def management_request(method, path, data):
     return (operation.startswith(("provider.", "credential.", "resource.", "content.metadata.", "request-evidence."))
             or operation in {
                 "definition.update", "definition.archive", "definition.delete",
-                "session.create", "session.metadata.update", "session.data.update",
+                "session.create", "session.metadata.update",
                 "session.archive", "session.delete", "object.write", "checkpoint.fork",
             } or operation not in {item.name for item in operations})
 
@@ -517,6 +517,11 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
                         )
                         self._json(200, result)
                         return
+                    if re.fullmatch(
+                        r"/api/graph/sessions/[^/]+/(?:data|candidates(?:/(?:select|fork))?)",
+                        path,
+                    ):
+                        raise _RequestError(404, "not_found", "未找到接口")
                     from .graph_http import dispatch_graph
                     step = "graph_dispatch"
                     target = (get_management_service() if management_request(method, path, data)

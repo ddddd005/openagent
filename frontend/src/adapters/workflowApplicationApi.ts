@@ -58,6 +58,8 @@ export function graphCommandOperation(path: string, body: Record<string, unknown
 
 export async function sendGraphCommand(path: string, body: Record<string, unknown>): Promise<unknown> {
   const request = graphCommandOperation(path, body);
+  if (request.operation === "session.data.update")
+    throw new WorkbenchApiError("rejected", "旧变量会话数据写入入口已退役；未提交新请求");
   const value = await workbenchRequest<unknown>("/api/graph/commands", { body: request });
   return validateGraphCommandResult(value, request);
 }

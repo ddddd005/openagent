@@ -3,11 +3,15 @@
 import re
 
 from .contract_errors import require
-from .frontend_node import FRONTEND_NODE_ENTRY
 from .frontend_node_channel import _owner
 from .frontend_node_operations import FrontendNodeOperations
 
 
+FRONTEND_NODE_ENTRY = {
+    "schema_version": 1, "component_id": "frontend.node", "component_version": "2",
+    "page_prefix": "/frontend-node/", "api_prefix": "/api/graph/frontend-nodes/",
+    "channel_suffix": "channel", "events_suffix": "events", "entry_suffix": "entry",
+}
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 _ADDRESS = rf"({_UUID})/([1-9][0-9]{{0,15}})/({_UUID})/({_UUID}|none)"
 

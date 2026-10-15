@@ -43,8 +43,7 @@ def document(nodes, edges):
         identity = entry["component_id"], entry["component_version"]
         provided_type = (
             ("workflow.effective-context", 4)
-            if identity in {("agents.execute", "5"), ("agents.execute", "9")}
-            else ("workflow.frontend-state", 1) if identity == ("tools.output", "2") else None
+            if identity in {("agents.execute", "5"), ("agents.execute", "9")} else None
         )
         if provided_type is not None:
             bindings.append({

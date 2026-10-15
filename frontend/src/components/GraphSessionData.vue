@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
-import { graphObject } from "../domain/workflowGraph";
 import { useInstalledWorkbenchFrontendHost } from "../application/workbenchFrontendHost";
 import ThinkingSummary from "./ThinkingSummary.vue";
 import { modelPresentationJson } from "../domain/modelPresentation";
@@ -14,15 +13,6 @@ const renderers = computed(() => objects.value.flatMap(object => frontendHost.ex
     && row.declaration.binding.target.type_id === object.type_id
     && row.declaration.binding.target.schema_version === object.schema_version)
   .map(row => ({ ...row, objectKey: object.key }))));
-const variables = computed(() => Object.entries(graph.session?.data.values ?? {}).map(([name, data]) => ({ name,
-  value: graphObject(data) ? data.value : data, type: graphObject(data) ? String(data.type) : "unknown" })));
-const dataLocked = computed(() => graph.locked || !graph.session?.can_submit
-  || !!graph.session?.archived || !!graph.session?.readonly);
-function write(name: string, event: Event) {
-  const input = event.target as HTMLTextAreaElement;
-  try { const value = JSON.parse(input.value); input.setCustomValidity(""); void graph.writeData({ [name]: value }); }
-  catch { input.setCustomValidity("请输入有效 JSON 值"); input.reportValidity(); }
-}
 </script>
 <template>
   <section v-if="graph.session?.objects !== undefined" class="graph-session-data"><h3>会话对象</h3>
@@ -33,13 +23,10 @@ function write(name: string, event: Event) {
     <component v-for="renderer in renderers" :key="`${renderer.declaration.extension_id}:${renderer.objectKey}`"
       :is="renderer.component" :object-key="renderer.objectKey" />
   </section>
-  <section v-if="variables.length" class="graph-session-data"><h3>旧变量（历史机制）</h3><label v-for="variable in variables" :key="variable.name"><span>{{ variable.name }} · {{ variable.type }}</span><textarea :value="JSON.stringify(variable.value) ?? 'null'" rows="2" :disabled="dataLocked" @change="write(variable.name, $event)" /></label></section>
 </template>
 <style scoped>
 .graph-session-data { display:grid; gap:9px; border-top:1px solid #45454d; padding-top:10px; }
 h3 { margin:0; font-size:12px; font-weight:500; }
-label { display:grid; gap:5px; font-size:11px; min-width:0; }
-textarea { width:100%; min-width:0; box-sizing:border-box; resize:vertical; background:#202024; border:1px solid #52525a; color:#dedee5; padding:6px; font:12px Consolas,monospace; }
 p,summary,small { font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
 p,small { color:#b2b8b6; }
 pre { margin:8px 0; font:12px Consolas,monospace; white-space:pre-wrap; overflow-wrap:anywhere; }

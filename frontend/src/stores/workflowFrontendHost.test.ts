@@ -1,13 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { requestEvidencePorts } from "../adapters/requestEvidenceApi";
 import { graphClone } from "../domain/workflowGraph";
 import { workflowFrontendExtensions } from "../plugins/workflowFrontendManifest";
-import { explicitFrontendGraph, frontendCatalog, frontendExecutionLock, frontendProjectLock, frontendSession } from "../testUtils/frontendFixture";
+import { frontendCatalog, frontendExecutionLock, frontendProjectLock, frontendSession } from "../testUtils/frontendFixture";
+import { memoryRequestEvidence } from "../testUtils/requestEvidence";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkspaceStore } from "./workspace";
 
-beforeEach(() => setActivePinia(createPinia()));
-afterEach(() => { useWorkflowGraphStore().$dispose(); useWorkspaceStore().$dispose(); vi.unstubAllGlobals(); });
+beforeEach(() => {
+  setActivePinia(createPinia());
+  const evidence = memoryRequestEvidence();
+  vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+  vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+  vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
+});
+afterEach(() => {
+  useWorkflowGraphStore().$dispose(); useWorkspaceStore().$dispose();
+  vi.restoreAllMocks(); vi.unstubAllGlobals();
+});
 describe("frontend catalog fail-closed lifecycle", () => {
   it("retains an existing explicit graph with only execution locks when UI is disabled", async () => {
     const graph = useWorkflowGraphStore(); graph.setPersistenceGuard(() => true);
@@ -18,11 +29,12 @@ describe("frontend catalog fail-closed lifecycle", () => {
     vi.stubGlobal("fetch", fetcher);
     await graph.loadCatalog();
     const id = graph.createWorkflow();
-    graph.entries[id].document = explicitFrontendGraph(id).document;
+    await vi.waitFor(() => expect(graph.locked).toBe(false));
+    expect(graph.addNode("frontend.node@2", { x: 0, y: 0 })).toBeTruthy();
+    const before = graphClone(graph.document);
     expect(graph.packageLock).toEqual(frontendProjectLock);
     expect(graph.document!.package_lock).toEqual(frontendExecutionLock);
     expect(graph.document!.package_lock!.some(pkg => pkg.package_id === "workflow.frontend")).toBe(false);
-    const before = graphClone(graph.document);
     fetcher.mockImplementation(async () => new Response(JSON.stringify({ ...packet,
       package_lock: frontendExecutionLock, frontend_extensions: [] })));
     await graph.loadCatalog();

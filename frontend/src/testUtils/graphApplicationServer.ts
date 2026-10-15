@@ -52,7 +52,6 @@ export function stubGraphApplicationFetch(handler: (...arguments_: any[]) => any
       "definition.sessions": `/api/graph/definitions/${parameters.workflow_definition_id}/sessions`,
       "session.read": `/api/graph/sessions/${sid}`,
       "run.read": `/api/graph/sessions/${sid}/runs/${parameters.chain_id}`,
-      "candidate.list": `/api/graph/sessions/${sid}/candidates`,
       "definition.archive": `/api/graph/definitions/${parameters.identity}/archive`,
       "definition.delete": `/api/graph/definitions/${parameters.identity}/delete`,
       "session.archive": `/api/graph/sessions/${sid}/archive`,

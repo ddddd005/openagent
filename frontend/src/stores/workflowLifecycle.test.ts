@@ -147,7 +147,7 @@ describe("object-scoped workflow lifecycle", () => {
     expect(await graph.manageSession(sid, "archive")).toBe(true);
     expect(graph.session).toMatchObject({ archived: true, readonly: true, can_submit: false });
     expect(graph.editorLocked).toBe(true);
-    expect(await graph.writeData({ changed: "not allowed" })).toBe(false);
+    expect("writeData" in graph).toBe(false);
     const count = calls.length; await graph.submitPrimary(); expect(calls).toHaveLength(count);
     expect(isGraphSession({ ...archived, can_submit: true }, id)).toBe(false);
   });

@@ -20,13 +20,18 @@ describe("current node directory", () => {
       { id: "tools.editable-input", label: "可编辑输入", disabled: false },
     ]);
   });
-  it("offers the whole frontend node without removing the existing explicit frontend nodes", () => {
-    const catalog = ["frontend.state.output", "frontend.state.append", "frontend.presentation", "frontend.node"].map(id => type(id));
+  it("offers only the @2 frontend node and current test output, not retired display nodes", () => {
+    const catalog = [...["frontend.state.output", "frontend.state.append", "frontend.presentation"].map(id => type(id)),
+      ...versions("frontend.node", ["1", "2"]), ...versions("tools.output", ["1", "2"])];
     const families = buildNodeFamilies(catalog);
     expect(nodeMenuGroups(families).find(row => row.id === "presentation")!.items.map(row => [row.id, row.label]))
-      .toEqual([["frontend.state.output", "读取展示记录"], ["frontend.state.append", "追加展示记录"],
-        ["frontend.presentation", "展示输出"], ["frontend.node", "前端节点"]]);
-    expect(families.find(row => row.id === "frontend.node")!.preferredKey).toBe("frontend.node@1");
+      .toEqual([["frontend.node", "前端节点"]]);
+    const frontendNode = families.find(row => row.id === "frontend.node")!;
+    expect(frontendNode.preferredKey).toBe("frontend.node@2");
+    expect(frontendNode.profiles.map(row => row.key)).toEqual(["frontend.node@2"]);
+    const output = families.find(row => row.id === "tools.output")!;
+    expect(output.preferredKey).toBe("tools.output@1");
+    expect(output.profiles.map(row => row.key)).toEqual(["tools.output@1"]);
   });
   it("offers only the exact current model and Agent declarations without mutating the backend catalog", () => {
     const catalog = [...versions("models.source", ["7", "6", "5", "4", "2", "1", "3"]),
@@ -40,7 +45,7 @@ describe("current node directory", () => {
     const before = graphClone(catalog), families = buildNodeFamilies(catalog);
     expect(catalog).toEqual(before);
     for (const [id, version] of [["models.source", "7"], ["models.chat", "5"],
-      ["agents.execute", "10"], ["agents.compaction-policy", "2"], ["tools.output", "2"],
+      ["agents.execute", "10"], ["agents.compaction-policy", "2"], ["tools.output", "1"],
       ["context.output", "5"], ["context.assembly", "5"], ["context.merge", "6"]]) {
       const family = families.find(row => row.id === id)!;
       expect(family.preferredKey).toBe(`${id}@${version}`);

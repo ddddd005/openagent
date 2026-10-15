@@ -6,7 +6,7 @@ import { nodePorts, type GraphNode, type GraphNodeType, type GraphPort } from ".
 import { nodeDisplayTitle, nodeProfileLabel, nodeTypeLabel } from "../domain/nodeCatalog";
 import { resultStatusLabel } from "../domain/resultPresentation";
 const props = defineProps<{ selected?: boolean; data: { node: GraphNode; definition?: GraphNodeType;
-  displayTitle?: string; status: string; inputs: string[]; outputs: string[]; error: boolean; executionRoot?: boolean;
+  displayTitle?: string; status: string; inputs: string[]; outputs: string[]; error: boolean;
   inputIssues?: Record<string, string | null>; outputIssues?: Record<string, string | null> } }>();
 function ports(direction: "inputs" | "outputs"): GraphPort[] {
   const known = nodePorts(props.data.definition, props.data.node, direction);
@@ -45,7 +45,7 @@ const profile = computed(() => props.data.definition ? nodeProfileLabel(props.da
         </div>
       </div>
     </div>
-    <footer>{{ resultStatusLabel(data.status) }}<span v-if="data.executionRoot">运行目标</span><span v-if="data.definition && !data.definition.executable">未接入执行器</span><span v-if="!data.definition">类型缺失</span></footer>
+    <footer>{{ resultStatusLabel(data.status) }}<span v-if="data.definition && !data.definition.executable">未接入执行器</span><span v-if="!data.definition">类型缺失</span></footer>
   </article>
 </template>
 

@@ -110,11 +110,10 @@ def dispatch_graph(service, method, path, data=None):
             return _query(application, "definition.sessions", {"workflow_definition_id": match[1]})
         return _query(application, "definition.read",
                       {"identity": match[1], "revision": int(match[2]) if match[2] else None})
-    match = re.fullmatch(prefix + r"/sessions/([^/]+)(?:/(runs|control|archive|delete|data|actions|outputs/public|outputs/read|outputs/history|candidates|events/submit|events/bindings|events/read))?", path)
+    match = re.fullmatch(prefix + r"/sessions/([^/]+)(?:/(runs|control|archive|delete|actions|outputs/public|outputs/read|outputs/history|events/submit|events/bindings|events/read))?", path)
     if match:
         require(uuid_value(match[1]), "not_found", "Session not found", 404)
-        reads = {None: "session.read", "outputs/public": "output.list",
-                 "candidates": "candidate.list", "actions": "session.actions"}
+        reads = {None: "session.read", "outputs/public": "output.list", "actions": "session.actions"}
         if method == "GET" and match[2] in reads:
             return _query(application, reads[match[2]], session_id=match[1])
     require(method == "POST", "not_found", "Graph route not found", 404)
@@ -124,7 +123,6 @@ def dispatch_graph(service, method, path, data=None):
         return _command(application, global_commands[route], data)
     commands = {"runs": "run.start", "control": "run.control",
                 "archive": "session.archive", "delete": "session.delete",
-                "data": "session.data.update",
                 "events/submit": "event.submit"}
     queries = {"outputs/read": "output.read", "outputs/history": "output.history",
                "events/bindings": "event.bindings", "events/read": "event.read"}

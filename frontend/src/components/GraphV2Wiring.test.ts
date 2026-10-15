@@ -38,7 +38,7 @@ describe("v2 workflow controls and object presentation", () => {
     expect(html).toContain(document.nodes[0].node_binding_id);
     expect(html).toContain("默认值初始化");
   });
-  it("presents authoritative session objects separately from legacy variables without issuing writes", async () => {
+  it("presents authoritative session objects without exposing legacy variables or writes", async () => {
     const pinia = createPinia(); const graph = useWorkflowGraphStore(pinia);
     graph.setPersistenceGuard(() => true); const id = graph.createWorkflow();
     const sid = crypto.randomUUID(); const revision = crypto.randomUUID();
@@ -50,15 +50,14 @@ describe("v2 workflow controls and object presentation", () => {
         deleted: false, value: "session-current", binding: { object_key: "same", type_id: "plugin.object",
           schema_version: 1, scope: "shared", owner_node_id: null, readers: [], writers: [] } } } };
     graph.entries[id].session_id = sid; graph.views[sid] = session;
-    const write = vi.spyOn(graph, "writeData");
     const html = await renderToString(createSSRApp(GraphSessionData).use(pinia).provide(workbenchFrontendHostKey,
       createWorkbenchFrontendHost(() => graph.frontendExtensions, () => graph.packageLock)));
     expect(html).toContain("会话对象"); expect(html).toContain("session-current");
-    expect(html).toContain("旧变量（历史机制）"); expect(html).toContain("legacy-only");
-    expect(html).toContain(revision); expect(write).not.toHaveBeenCalled();
+    expect(html).not.toContain("旧变量"); expect(html).not.toContain("legacy-only");
+    expect(html).toContain(revision);
     graph.$dispose(); useWorkspaceStore(pinia).$dispose();
   });
-  it("shows root and predecessor controls for a node with no content output handles", async () => {
+  it("removes the execution-root editor and node badge", async () => {
     const pinia = createPinia(); const graph = useWorkflowGraphStore(pinia);
     const definition: GraphNodeType = { component_id: "plugin.register", component_version: "1",
       display_name: "register", category: "plugin", config_schema: {}, default_config: {},
@@ -67,17 +66,17 @@ describe("v2 workflow controls and object presentation", () => {
         type_id: "plugin.state", schema_version: 1 }] };
     graph.setPersistenceGuard(() => true); graph.catalog = [definition]; graph.createWorkflow();
     const nodeId = graph.addNode("plugin.register@1", { x: 0, y: 0 })!;
-    graph.setExecutionRoot(nodeId, true);
     const html = await renderToString(createSSRApp(GraphWorkbench).use(pinia).provide(workbenchFrontendHostKey,
       createWorkbenchFrontendHost(() => graph.frontendExtensions, () => graph.packageLock)));
-    expect(html).toContain("作为运行目标"); expect(html).toContain("前序节点");
-    expect(html).toContain("会话绑定"); expect(html).toContain(nodeId);
-    expect(html).toContain("会话对象访问契约"); expect(html).toContain("plugin.state");
+    expect(html).not.toContain("作为运行目标"); expect(html).not.toContain("运行目标");
+    expect(html).toContain("会话绑定");
+    expect(graph.document?.control_edges).toEqual([]);
     const nodeHtml = await renderToString(createSSRApp(GraphCanvasNode, {
-      data: { node: graph.document!.nodes[0], definition, status: "idle", inputs: [], outputs: [],
-        error: false, executionRoot: true },
+      data: { node: { node_binding_id: nodeId, component_id: definition.component_id,
+        component_version: definition.component_version, title: "register", position: { x: 0, y: 0 }, config: {} },
+        definition, status: "idle", inputs: [], outputs: [], error: false },
     }).use(pinia));
-    expect(nodeHtml).toContain("运行目标");
+    expect(nodeHtml).not.toContain("运行目标");
     expect(nodeHtml).not.toContain("TEXT"); expect(nodeHtml).not.toContain("PROMPT");
     graph.$dispose(); useWorkspaceStore(pinia).$dispose();
   });

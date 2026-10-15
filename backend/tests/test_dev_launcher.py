@@ -10,22 +10,23 @@ import subprocess
 import sys
 from tempfile import TemporaryFile
 from time import monotonic, sleep
+from urllib.error import HTTPError
 from urllib.request import urlopen
 from uuid import uuid4
 
 import pytest
 
 
-WORKSPACE = Path(__file__).resolve().parents[2]
+WORKSPACE = Path(os.environ.get(
+    "OPENAGENT_LAUNCHER_TEST_WORKSPACE", str(Path(__file__).resolve().parents[2]),
+)).resolve()
 START = WORKSPACE / "scripts" / "start-services.ps1"
 STOP = WORKSPACE / "scripts" / "stop-services.ps1"
 EXPECTED_TAVERN_NODES = {
     "lorebook.global-reference",
     "lorebook.global-activate",
-    "tavern.chat.output",
-    "tavern.chat.append",
-    "tavern.chat.presentation",
 }
+RETIRED_TAVERN_NODES = {"tavern.chat.output", "tavern.chat.append", "tavern.chat.presentation"}
 
 
 def powershell():
@@ -120,6 +121,8 @@ def assert_source_identity(result, workspace=WORKSPACE):
     assert Path(result["frontend_root"]).resolve() == workspace / "frontend"
     assert {"package_id": "workflow.tavern", "version": "1.2.0"} in result["package_lock"]
     assert EXPECTED_TAVERN_NODES <= {row["component_id"] for row in result["tavern_nodes"]}
+    assert not RETIRED_TAVERN_NODES & {row["component_id"] for row in result["tavern_nodes"]}
+    assert "tavern_url" not in result
 
 
 def test_launcher_keeps_services_in_visible_consoles():
@@ -128,6 +131,16 @@ def test_launcher_keeps_services_in_visible_consoles():
     assert "-WindowStyle Hidden" not in source
     assert "-RedirectStandardOutput" not in source
     assert "-RedirectStandardError" not in source
+
+
+def test_launcher_checks_current_nodes_without_reopening_retired_chat():
+    source = START.read_text(encoding="utf-8")
+    assert 'loaded.registry.get("frontend.node", "2")' in source
+    assert all(identity not in source for identity in RETIRED_TAVERN_NODES)
+    assert "VITE_CHAT_UI_URL" not in source
+    assert 'Write-Host "Tavern:' not in source
+    assert "['tavern_url']" not in source
+    assert "api/health" in source
 
 
 def test_check_only_prefers_current_source_without_creating_database(tmp_path):
@@ -252,12 +265,15 @@ def dev_services(tmp_path_factory):
             assert database.is_file(), "Stopping owns processes, not database content"
 
 
-def test_real_launcher_serves_current_tavern_and_vite_proxy(dev_services):
+def test_real_launcher_serves_current_nodes_and_vite_proxy(dev_services):
     backend = dev_services["backend_url"].rstrip("/")
     frontend = dev_services["frontend_url"].rstrip("/")
     direct, proxied = catalog(backend), catalog(frontend)
     assert direct == proxied
     assert EXPECTED_TAVERN_NODES <= {row["component_id"] for row in direct["node_types"]}
+    assert not RETIRED_TAVERN_NODES & {row["component_id"] for row in direct["node_types"]}
+    assert any(row["component_id"] == "frontend.node" and row["component_version"] == "2"
+               for row in direct["node_types"])
     assert {"package_id": "workflow.tavern", "version": "1.2.0"} in direct["package_lock"]
     status, page = fetch(frontend, "/")
     assert status == 200 and "/src/main.ts" in page
@@ -265,7 +281,10 @@ def test_real_launcher_serves_current_tavern_and_vite_proxy(dev_services):
     assert status == 200 and "schema_version: 2" in current_graph
     status, current_store = fetch(frontend, "/src/stores/workflowGraph.ts")
     assert status == 200 and "registerWorkflowDraft" in current_store
-    assert fetch(backend, "/tavern/")[0] == 200
+    with pytest.raises(HTTPError) as retired:
+        fetch(backend, "/tavern/")
+    assert retired.value.code == 410
+    assert json.loads(retired.value.read())["reason_code"] == "legacy_frontend_entry_retired"
 
 
 def test_invalid_stop_metadata_cannot_stop_owned_services(dev_services, tmp_path):
@@ -289,49 +308,3 @@ def test_reused_pid_identity_is_rejected_before_stopping_any_owned_service(dev_s
     assert "no longer matches" in result.stdout + result.stderr
     assert fetch(dev_services["backend_url"].rstrip("/"), "/api/health")[0] == 200
     assert fetch(dev_services["frontend_url"].rstrip("/"), "/")[0] == 200
-
-
-@pytest.mark.parametrize("width", [1440, 1024], ids=["desktop", "narrow-desktop"])
-def test_current_workbench_empty_populated_and_tavern_share_canvas(dev_services, width):
-    from test_tavern_workbench_browser import browser_runtime
-
-    node, packages = browser_runtime()
-    evidence = dev_services["evidence"] / f"workflow-ui-{width}"
-    evidence.mkdir()
-    result = subprocess.run(
-        [node, str(Path(__file__).with_name("dev_launcher_workflow_browser.cjs")),
-         dev_services["frontend_url"].rstrip("/"), dev_services["backend_url"].rstrip("/"),
-         str(width), str(evidence)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env={**os.environ, "NODE_PATH": str(packages)}, timeout=100, check=False,
-    )
-    (evidence / "runner.stdout.txt").write_text(result.stdout, encoding="utf-8")
-    (evidence / "runner.stderr.txt").write_text(result.stderr, encoding="utf-8")
-    assert result.returncode == 0, result.stdout + result.stderr
-    observed = json.loads((evidence / "result.json").read_text(encoding="utf-8"))
-    assert observed["page_errors"] == [] and observed["asset_errors"] == []
-    assert observed["console_errors"] == []
-    assert observed["mutation_requests"] == []
-
-
-@pytest.mark.parametrize("width", [1440, 1024], ids=["desktop", "narrow-desktop"])
-def test_current_workbench_recovers_unreadable_local_record(dev_services, width):
-    from test_tavern_workbench_browser import browser_runtime
-
-    node, packages = browser_runtime()
-    evidence = dev_services["evidence"] / f"storage-recovery-{width}"
-    evidence.mkdir()
-    result = subprocess.run(
-        [node, str(Path(__file__).with_name("workbench_recovery_browser.cjs")),
-         dev_services["frontend_url"].rstrip("/"), dev_services["backend_url"].rstrip("/"),
-         str(width), str(evidence)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env={**os.environ, "NODE_PATH": str(packages)}, timeout=100, check=False,
-    )
-    (evidence / "runner.stdout.txt").write_text(result.stdout, encoding="utf-8")
-    (evidence / "runner.stderr.txt").write_text(result.stderr, encoding="utf-8")
-    assert result.returncode == 0, result.stdout + result.stderr
-    observed = json.loads((evidence / "result.json").read_text(encoding="utf-8"))
-    assert len(observed["scenarios"]) == 3
-    for field in ("page_errors", "asset_errors", "console_errors", "mutation_requests"):
-        assert observed[field] == []

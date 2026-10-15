@@ -59,14 +59,12 @@
     return button;
   }
   function renderMessages(snapshot, client) {
-    const logical = snapshot?.schema_version === 2;
-    const signature = JSON.stringify(snapshot ? [snapshot.owner, snapshot.basis,
-      ...(logical ? [client?.run, client?.dirty, client?.sending, client?.pending, client?.busy,
-        client?.confirmation, client?.next_owner] : [])] : null);
+    const signature = JSON.stringify(snapshot ? [snapshot.owner, snapshot.basis, client?.run, client?.dirty,
+      client?.sending, client?.pending, client?.busy, client?.confirmation, client?.next_owner] : null);
     if (signature === renderedSnapshot) return;
     renderedSnapshot = signature;
     const list = $("messages"); list.replaceChildren();
-    if (logical && snapshot.chat.rounds.length) {
+    if (snapshot?.chat.rounds.length) {
       const blocked = !client?.initialized || client.dirty || client.sending || client.confirmation || client.next_owner
         || client.run?.object_revision !== snapshot.basis.revision
         || Object.values(client.pending).some(Boolean) || Object.values(client.busy).some(Boolean);
@@ -109,14 +107,9 @@
       }
       icons(list); return;
     }
-    if (!snapshot || logical || !snapshot.entries.length) {
-      const empty = document.createElement("div"), symbol = document.createElement("i"), text = document.createElement("p");
-      empty.className = "empty"; symbol.dataset.lucide = "messages-square"; text.textContent = "暂无消息";
-      empty.append(symbol, text); list.append(empty); icons(empty); return;
-    }
-    for (const [index, entry] of snapshot.entries.entries()) {
-      list.append(messageArticle(entry.entry_id, entry.role, entry.content.text, "#" + (index + 1)));
-    }
+    const empty = document.createElement("div"), symbol = document.createElement("i"), text = document.createElement("p");
+    empty.className = "empty"; symbol.dataset.lucide = "messages-square"; text.textContent = "暂无消息";
+    empty.append(symbol, text); list.append(empty); icons(empty);
   }
   function renderPending(client) {
     const container = $("pending"); container.replaceChildren();
@@ -181,8 +174,8 @@
     $("input-status").textContent = !ready ? "正在读取正式输入" : client.input === null ? "未绑定输入节点"
       : inputLabels[client.status.patch_input] ?? client.status.patch_input;
     $("input-policy").textContent = client?.input ? `${client.input.policy === "fixed" ? "固定输入" : "可调输入"} · 编辑序号 ${client.input.edit_sequence}` : "";
-    $("snapshot-status").textContent = client?.snapshot ? `展示修订 ${client.snapshot.basis.revision} · ${
-      client.snapshot.schema_version === 2 ? client.snapshot.chat.rounds.length + " 轮" : client.snapshot.entries.length + " 条消息"}` : "";
+    $("snapshot-status").textContent = client?.snapshot
+      ? `展示修订 ${client.snapshot.basis.revision} · ${client.snapshot.chat.rounds.length} 轮` : "";
     const blockedSave = blockedInput || !!client?.pending.patch_input || !!client?.confirmation || !!client?.busy.patch_input;
     $("save").disabled = blockedSave || !client?.dirty;
     $("send").disabled = !ready || client.sending || client.next_owner !== null || !!client.pending.start

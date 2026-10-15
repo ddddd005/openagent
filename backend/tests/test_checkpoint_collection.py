@@ -27,9 +27,10 @@ from phase1_agent.checkpoint_collection import (
 from phase1_agent.contracts_v2 import validate_record
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.provider_metadata import remap_provider_metadata
-from test_context_native_integration import NativeTransport, native_graph
+from test_context_registration_fork_integration import (
+    DistinctAnswers, _create, _registered_graph,
+)
 from test_gemini_history import metadata
-from test_graph_service import create
 from test_models_service_integration import ModelDatabaseFixture
 
 
@@ -648,14 +649,14 @@ def test_composite_collector_returns_the_approved_logical_envelope(store):
     }
 
 
-def test_stock_schema_two_native_context_graph_collects_without_model_execution(tmp_path):
-    transport = NativeTransport()
+def test_current_schema_three_native_context_graph_collects_without_model_execution(tmp_path):
+    transport = DistinctAnswers()
     with closing(GraphWorkflowService(
             tmp_path / "native-context-collection.sqlite",
             public_model_factory=transport.factory)) as service:
         ModelDatabaseFixture.write(service, 1)
-        document, _ = native_graph(service, policy=False, once=False)
-        session = create(service, document)
+        document, _ = _registered_graph(service)
+        session = _create(service, document)
         store = service._store()
         try:
             with transaction(store._connection):
@@ -670,7 +671,7 @@ def test_stock_schema_two_native_context_graph_collects_without_model_execution(
         finally:
             store.close()
 
-    assert document["schema_version"] == 2
+    assert document["schema_version"] == 3
     assert transport.calls == []
     assert actual == {
         "configuration": {
@@ -679,4 +680,6 @@ def test_stock_schema_two_native_context_graph_collects_without_model_execution(
             "nodes": {},
         },
         "agent_contexts": {},
+        "variables": {},
+        "chat_contexts": {},
     }

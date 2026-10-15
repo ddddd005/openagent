@@ -27,7 +27,7 @@ $logDirectory = $null
 $metadataPath = $null
 $savedEnvironment = @{}
 foreach ($name in @('PYTHONPATH', 'PYTHONIOENCODING', 'PYTHONDONTWRITEBYTECODE',
-    'OPENAGENT_SOURCE_ROOT', 'OPENAGENT_API_PORT', 'VITE_CHAT_UI_URL')) {
+    'OPENAGENT_SOURCE_ROOT', 'OPENAGENT_API_PORT')) {
     $savedEnvironment[$name] = [System.Environment]::GetEnvironmentVariable($name, 'Process')
 }
 
@@ -128,7 +128,6 @@ try {
     $env:PYTHONDONTWRITEBYTECODE = '1'
     $env:OPENAGENT_SOURCE_ROOT = $sourceRoot
     $env:OPENAGENT_API_PORT = $BackendPort.ToString()
-    $env:VITE_CHAT_UI_URL = "http://127.0.0.1:$BackendPort/"
     $checkCode = @'
 import json, os
 from pathlib import Path
@@ -146,8 +145,9 @@ assert tavern_package in loaded.package_lock, "Current tavern package missing"
 tavern_manifest = next(manifest for manifest in loaded.package_manifests
                        if manifest["package_id"] == tavern_package["package_id"] and manifest["version"] == tavern_package["version"])
 tavern_nodes = tavern_manifest["exports"]["nodes"]
-assert {"lorebook.global-reference", "lorebook.global-activate", "tavern.chat.output", "tavern.chat.append",
-        "tavern.chat.presentation"} <= {node["component_id"] for node in tavern_nodes}, "Current tavern node directory incomplete"
+assert {"lorebook.global-reference", "lorebook.global-activate"} <= {
+    node["component_id"] for node in tavern_nodes}, "Current Lorebook node directory incomplete"
+assert loaded.registry.get("frontend.node", "2") is not None, "Current frontend node missing"
 assert all(loaded.registry.get(node["component_id"], node["component_version"]) for node in tavern_nodes)
 print(json.dumps({"server_module": str(Path(server.__file__).resolve()), "package_lock": list(loaded.package_lock),
                   "tavern_package": tavern_package,
@@ -242,14 +242,12 @@ print(json.dumps({"server_module": str(Path(server.__file__).resolve()), "packag
     }
     Write-ServiceMetadata -State 'ready'
     Write-Host "Workbench: $frontendUrl"
-    Write-Host "Tavern: ${backendUrl}tavern/"
     Write-Host "Launch metadata: $metadataPath"
     Write-Host 'Service logs are shown in the visible backend and frontend consoles.'
     Write-Host "Stop this launch: powershell.exe -NoProfile -File `"$PSScriptRoot\stop-services.ps1`" -MetadataPath `"$metadataPath`""
     $result['metadata_path'] = $metadataPath
     $result['backend_url'] = $backendUrl
     $result['frontend_url'] = $frontendUrl
-    $result['tavern_url'] = $backendUrl + 'tavern/'
     $result | ConvertTo-Json -Depth 8 -Compress
     if (-not $NoBrowser -and -not $env:NO_BROWSER) {
         try { Start-Process $frontendUrl }

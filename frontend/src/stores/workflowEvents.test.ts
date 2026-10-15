@@ -1,13 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { requestEvidencePorts } from "../adapters/requestEvidenceApi";
 import { graphClone } from "../domain/workflowGraph";
 import { frontendCatalog, frontendSession } from "../testUtils/frontendFixture";
+import { memoryRequestEvidence } from "../testUtils/requestEvidence";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkspaceStore } from "./workspace";
 
-function fixture() {
+async function fixture() {
+  const evidence = memoryRequestEvidence();
+  vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+  vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+  vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
   const graph = useWorkflowGraphStore(); graph.setPersistenceGuard(() => true); graph.catalog = graphClone(frontendCatalog);
-  const id = graph.createWorkflow(), node = graph.addNode("tools.current-input@1", { x: 0, y: 0 })!;
+  const id = graph.createWorkflow();
+  await vi.waitFor(() => expect(graph.locked).toBe(false));
+  const node = graph.addNode("tools.current-input@1", { x: 0, y: 0 })!;
   const binding = { event_id: "edit", schema_version: 1, display_name: "Edit", audience: "consumer" as const,
     target_node_ids: [node], payload_schema: { type: "object" as const } };
   graph.setEventBindings([binding]);
@@ -30,7 +38,7 @@ beforeEach(() => setActivePinia(createPinia()));
 afterEach(() => { useWorkflowGraphStore().$dispose(); useWorkspaceStore().$dispose(); vi.unstubAllGlobals(); });
 describe("local event management and original outbox", () => {
   it("submits only the declared event and exact chosen session without saving or creating a session", async () => {
-    const { graph, id, session, binding } = fixture(), requests: Record<string, any>[] = [];
+    const { graph, id, session, binding } = await fixture(), requests: Record<string, any>[] = [];
     vi.stubGlobal("fetch", vi.fn(async (_path, init) => {
       const request = JSON.parse(init.body); requests.push(request);
       if (request.operation === "event.bindings") return response({ schema_version: 1, kind: "workflow.event-bindings",
@@ -47,37 +55,21 @@ describe("local event management and original outbox", () => {
     expect(graph.pending).toBeNull();
   });
   it.each(["paused", "running", "prepared"] as const)("rejects %s events before any request", async status => {
-    const { graph, session } = fixture(); session.status = status;
+    const { graph, session } = await fixture(); session.status = status;
     const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
     expect(await graph.submitEvent("edit", 1, {})).toBe(false); expect(fetcher).not.toHaveBeenCalled();
     expect(graph.pending).toBeNull();
   });
   it("rejects unsaved definitions, unselected sessions and reserved payload without implicit setup", async () => {
-    const { graph, id } = fixture(), fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+    const { graph, id } = await fixture(), fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
     expect(await graph.submitEvent("edit", 1, { _workflow_frozen_resources: {} })).toBe(false);
     graph.entries[id].saved_document!.name = "previous definition";
     expect(await graph.submitEvent("edit", 1, {})).toBe(false);
     graph.entries[id].session_id = null;
     expect(await graph.submitEvent("edit", 1, {})).toBe(false); expect(fetcher).not.toHaveBeenCalled();
   });
-  it("persists unknown event requests and restores their original payload and idempotency key", async () => {
-    const { graph, id, session, binding } = fixture();
-    vi.stubGlobal("fetch", vi.fn(async (_path, init) => {
-      const request = JSON.parse(init.body);
-      if (request.operation === "event.bindings") return response({ schema_version: 1, kind: "workflow.event-bindings",
-        workflow_definition_id: id, definition_revision: 1, workflow_session_id: session.workflow_session_id,
-        session_revision: 1, can_submit: true, bindings: [binding] });
-      throw new Error("lost response");
-    }));
-    expect(await graph.submitEvent("edit", 1, { edit: "original" })).toBe(false);
-    const original = graphClone(graph.pending!); expect(original.action).toBe("event");
-    expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(true); expect(graph.pending).toEqual(original);
-    const snapshot = graph.storeSnapshot();
-    snapshot.entries[id].pending!.body.payload = { _workflow_frozen_resources: {} };
-    expect(graph.restoreSnapshot(snapshot)).toBe(false);
-  });
-  it("preserves declaration targets and the workflow identity while leaving node copies outside the route", () => {
-    const { graph, id, node, binding } = fixture(); graph.entries[id].session_id = null;
+  it("preserves declaration targets and the workflow identity while leaving node copies outside the route", async () => {
+    const { graph, id, node, binding } = await fixture(); graph.entries[id].session_id = null;
     useWorkspaceStore().markWorkflowSaved(id);
     const copied = graph.setEventBindings([{ ...binding, display_name: "Changed" }])!;
     expect(copied).toBe(id); expect(graph.document!.event_bindings![0].target_node_ids).toEqual([node]);

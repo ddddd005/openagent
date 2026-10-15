@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted } from "vue";
-import { RefreshCw } from "lucide-vue-next";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { graphUuid, resolveGraphRunInputs, type GraphDocument, type GraphRunDetail } from "../domain/workflowGraph";
 import GraphInformation from "./GraphInformation.vue";
@@ -18,7 +17,6 @@ const loading = ref(false);
 const informationOpen = ref(false);
 const frozenDefinition = ref<GraphDocument | null>(null), definitionError = ref("");
 const history = computed(() => [...(graph.session?.inherited_history ?? []), ...(graph.session?.chains ?? [])]);
-const candidates = computed(() => graph.session ? graph.candidates[graph.session.workflow_session_id]?.candidates ?? [] : []);
 const chain = computed(() => detail.value?.chain ?? history.value.find(row => row.chain_run_id === selected.value));
 const outputs = computed(() => detail.value?.outputs ?? graph.session?.outputs.filter(output => !selected.value || output.chain_run_id === selected.value) ?? []);
 function title(id: string) {
@@ -37,9 +35,6 @@ function inputEvidence(run: GraphRunDetail["node_runs"][number]) {
 let generation = 0;
 watch(() => graph.session?.workflow_session_id, () => {
   selected.value = graph.session?.selected_chain_run_id ?? history.value.at(-1)?.chain_run_id ?? null;
-}, { immediate: true });
-watch(() => [graph.session?.workflow_session_id, graph.session?.revision, graph.session?.head_revision], () => {
-  if (graph.session?.can_submit) void graph.loadCandidates();
 }, { immediate: true });
 watch(() => [graph.session?.workflow_session_id, selected.value,
   history.value.find(row => row.chain_run_id === selected.value)?.revision] as const, async ([sessionId, chainId]) => {
@@ -66,10 +61,6 @@ onUnmounted(() => { generation++; });
   <section class="graph-history" aria-label="工作流运行历史">
     <aside><header>运行历史</header><button v-for="(run, index) in history" :key="run.chain_run_id" type="button" :class="{ active: selected === run.chain_run_id }" @click="selected = run.chain_run_id"><strong>第 {{ index + 1 }} 次运行</strong><span>{{ resultStatusLabel(run.status) }}<template v-if="run.workflow_session_id && run.workflow_session_id !== graph.session?.workflow_session_id"> · 复制来源</template></span></button></aside>
     <main>
-      <section class="graph-candidates" aria-label="工作流候选"><header><span>候选</span><button type="button" title="刷新候选" aria-label="刷新候选" :disabled="graph.locked || !graph.session" @click="graph.loadCandidates()"><RefreshCw :size="14" /></button></header>
-        <div v-for="(candidate, index) in candidates" :key="candidate.candidate_id" class="graph-candidate"><button class="candidate-result" type="button" :class="{ active: selected === candidate.chain_run_id }" @click="selected = candidate.chain_run_id"><strong>查看候选 {{ index + 1 }}</strong><span>{{ candidate.selected ? '当前候选' : '候选' }} · 数据 r{{ candidate.data_revision }}</span><small>工作流修订 r{{ candidate.source_definition_revision }}</small><small v-if="candidate.diagnostic" class="error">{{ candidate.diagnostic.message }}</small></button></div>
-        <p v-if="!candidates.length">暂无已完成候选</p>
-      </section>
       <p v-if="loading">读取中</p><p v-if="error" class="error" role="status">{{ error }}</p><p v-if="definitionError" class="error" role="status">{{ definitionError }}；未使用当前编辑图替代。</p><p v-if="chain">工作流修订 r{{ chain.definition_revision }} · {{ resultStatusLabel(chain.status) }}</p>
       <details v-if="chain"><summary>运行技术详情</summary><pre>{{ modelPresentationJson(chain) }}</pre></details>
       <p v-if="contextMaintenanceDiagnosis(chain?.diagnostic)" class="error" role="status">{{ contextMaintenanceDiagnosis(chain?.diagnostic) }}</p>
@@ -100,12 +91,6 @@ p { color:#a3a3ad; font-size:12px; }
 .error { color:#e0a0a0; }
 details { padding:10px; font-size:11px; color:#b3c8be; border-bottom:1px solid #404047; }
 .node-history { margin-bottom:12px; }
-.graph-candidates { border-bottom:1px solid #45454c; padding-bottom:12px; margin-bottom:12px; }
-.graph-candidates > header { display:flex; justify-content:space-between; align-items:center; padding:0 0 8px; }
-.graph-candidates > header button { width:28px; flex:0 0 28px; padding:5px; align-items:center; justify-content:center; border:0; }
-.graph-candidate { display:flex; align-items:center; gap:4px; border-bottom:1px solid #414148; }
-.candidate-result { flex:1; min-width:0; border:0; padding:8px; }
-.candidate-result span,.candidate-result small { overflow-wrap:anywhere; }
 button:disabled { opacity:.4; }
 h3 { font-size:11px; font-weight:500; margin:8px 0; }
 </style>

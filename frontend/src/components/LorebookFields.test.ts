@@ -45,7 +45,7 @@ function fixture(group = false, entries = [newLorebookEntry()]) {
     workflowId: computed(() => document.workflow_definition_id), document: computed(() => document),
     catalog: computed(() => [definition]), packages: computed(() => document.package_lock ?? []),
     session: computed(() => null), locked: computed(() => locked.value), lifecycle: computed(() => lifecycle.value),
-    readArtifact: vi.fn(), configureNode,
+    configureNode,
   };
   return { node, document, definition, sdk, configureNode, locked, lifecycle };
 }

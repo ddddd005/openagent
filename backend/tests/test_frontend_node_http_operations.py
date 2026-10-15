@@ -12,7 +12,7 @@ from phase1_agent.graph_contracts import NodeDefinition
 from phase1_agent.graph_service import GraphWorkflowService
 
 from test_frontend_node_http import command, owner, path, serving
-from test_frontend_node_runtime import _create, _graph, _save
+from frontend_node_test_support import create as _create, graph as _graph, save as _save
 from test_graph_server import request
 from test_graph_service import node
 

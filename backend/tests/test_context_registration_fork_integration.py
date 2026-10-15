@@ -8,7 +8,6 @@ from uuid import uuid4
 
 from phase1_agent.context_contract import EFFECTIVE_CONTEXT_TYPE
 from phase1_agent.contracts import ModelResponse, ModelToolCall
-from phase1_agent.frontend_contracts import FRONTEND_STATE_TYPE
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import ObjectBinding
 
@@ -55,7 +54,7 @@ def _entry(service, component, version, number):
     return value
 
 
-def _registered_graph(service, *, write_context=True, write_display=True):
+def _registered_graph(service, *, write_context=True):
     current = _entry(service, "tools.current-input", "1", 9701)
     model = _entry(service, "models.source", "7", 9702)
     model["config"] = source_config()
@@ -66,9 +65,9 @@ def _registered_graph(service, *, write_context=True, write_display=True):
         read = _entry(service, "context.output", "5", base)
         assembly = _entry(service, "context.assembly", "5", base + 1)
         material = _entry(service, "prompts.item", "2", base + 2)
-        output = _entry(service, "tools.output", "2", base + 3)
+        output = _entry(service, "tools.output", "1", base + 3)
         material["config"]["text"] = label.upper() + "_RULE"
-        key, display_key = "context-" + label, "display-" + label
+        key = "context-" + label
         read["config"]["object_key"] = key
         # The executor is intentionally not the item's registrar.
         execute, registrar = agents[1 - index], agents[index]
@@ -94,33 +93,11 @@ def _registered_graph(service, *, write_context=True, write_display=True):
                 edge(execute, merge, base + 7, source_port="receipts", target_port="receipts"),
             ]
             branch["merge"] = merge
-        display_readers, display_writers = [], []
-        if write_display:
-            display_read = _entry(service, "frontend.state.output", "1", base + 5)
-            append = _entry(service, "frontend.state.append", "1", base + 6)
-            presentation = _entry(service, "frontend.presentation", "1", base + 7)
-            for entry in (display_read, append):
-                entry["config"]["object_key"] = display_key
-            presentation["public_outputs"] = ["display"]
-            display_readers = [display_read["node_binding_id"], append["node_binding_id"]]
-            display_writers = [append["node_binding_id"]]
-            nodes += [display_read, append, presentation]
-            edges += [
-                edge(display_read, append, base + 8, source_port="view", target_port="view"),
-                edge(output, append, base + 9, target_port="content"),
-                edge(append, presentation, base + 10, source_port="view", target_port="view"),
-            ]
-            branch.update(display_read=display_read, append=append, presentation=presentation)
         bindings += [
             ObjectBinding(
                 key, EFFECTIVE_CONTEXT_TYPE, 4, "shared",
                 readers=tuple(readers), writers=tuple(writers),
                 registrar_node_id=registrar["node_binding_id"],
-            ).to_dict(),
-            ObjectBinding(
-                display_key, FRONTEND_STATE_TYPE, 1, "shared",
-                readers=tuple(display_readers), writers=tuple(display_writers),
-                registrar_node_id=output["node_binding_id"],
             ).to_dict(),
         ]
         branches[label] = branch
@@ -169,24 +146,13 @@ def test_same_type_items_and_sessions_use_explicit_cross_registrar_updates(tmp_p
             assert evidence["owner"]["node_binding_id"] == branch["agent"]["node_binding_id"]
             assert evidence["owner"]["node_binding_id"] != current["binding"]["registrar_node_id"]
             assert current["revision"] == 2
-            display = first["objects"]["display-" + label]
-            assert display["revision"] == 2 and len(display["value"]["entries"]) == 1
-            assert _output(first, branch["presentation"], "display")["entries"] == display["value"]["entries"]
-            artifact = service.read_object_artifact(
-                first["workflow_session_id"], object_key="display-" + label,
-                node_id=branch["append"]["node_binding_id"],
-                reference=display["value"]["entries"][0]["source_ref"],
-            )
-            assert artifact["value"]["text"] == label + " answer"
         assert service.get_session(other["workflow_session_id"])["objects"] == before_other
         assert first["objects"]["context-alpha"]["revision_id"] != first["objects"]["context-beta"]["revision_id"]
-        assert first["objects"]["display-alpha"]["value"]["entries"] != first["objects"]["display-beta"]["value"]["entries"]
         frozen_read = deepcopy(_output(first, branches["alpha"]["read"], "output"))
         second = run(service, first, "second source input")
         assert second["status"] == "succeeded", second["chains"]
         assert _output(second, branches["alpha"]["read"], "output")["messages"] == first["objects"]["context-alpha"]["value"]["messages"]
         assert _output(first, branches["alpha"]["read"], "output") == frozen_read
-        assert len(second["objects"]["display-alpha"]["value"]["entries"]) == 2
         other = run(service, other, "independent input")
         assert other["status"] == "succeeded", other["chains"]
         assert "first source input" not in str(other["objects"]["context-alpha"]["value"])
@@ -194,7 +160,7 @@ def test_same_type_items_and_sessions_use_explicit_cross_registrar_updates(tmp_p
         assert len(transport.calls) == 6
 
 
-def test_fork_initializes_saved_values_without_nodes_and_excludes_test_display(tmp_path):
+def test_fork_initializes_saved_values_without_nodes(tmp_path):
     transport = DistinctAnswers()
     with closing(GraphWorkflowService(
             tmp_path / "registered-fork.sqlite", public_model_factory=transport.factory)) as service:
@@ -238,7 +204,6 @@ def test_fork_initializes_saved_values_without_nodes_and_excludes_test_display(t
             key = "context-" + label
             assert target["objects"][key]["value"] == first["objects"][key]["value"]
             assert target["objects"][key]["revision_id"] != first["objects"][key]["revision_id"]
-            assert target["objects"]["display-" + label]["value"] == {"entries": [], "view_ref": None}
         continued = run(service, target, "child input")
         assert continued["status"] == "succeeded", continued["chains"]
         assert "saved source input" in str(continued["objects"]["context-alpha"]["value"])
@@ -252,7 +217,7 @@ def test_agent_and_test_output_do_not_implicitly_write_registered_items(tmp_path
     with closing(GraphWorkflowService(
             tmp_path / "registered-read-only.sqlite", public_model_factory=transport.factory)) as service:
         ModelDatabaseFixture.write(service, 1)
-        graph, branches = _registered_graph(service, write_context=False, write_display=False)
+        graph, branches = _registered_graph(service, write_context=False)
         initial = _create(service, graph)
         before = deepcopy(initial["objects"])
         final = run(service, initial, "uncommitted computation")

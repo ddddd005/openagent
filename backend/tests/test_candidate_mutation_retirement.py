@@ -21,7 +21,7 @@ from phase1_agent.storage import SqliteStore, _record_id
 
 from test_graph_application_receipt_custody import raw_database
 from test_graph_receipt_http import post, serve_receipts
-from test_graph_service import create, gate_graph, run, service, text_graph
+from test_graph_service import create, run, service, text_graph
 from test_server import call
 
 
@@ -31,7 +31,22 @@ RETIRED = ("candidate.select", "candidate.fork", "consumer.candidate.fork")
 def _completed(service):
     document = text_graph(service.registry)
     view = run(service, create(service, document))
-    candidate = service.list_graph_candidates(view["workflow_session_id"])["candidates"][0]
+    sid = view["workflow_session_id"]
+    with closing(SqliteStore(service.database)) as store:
+        repo = GraphRecordStore(store)
+        chain = service._selected_chain(repo, sid)
+        assert chain["status"] == "succeeded"
+        commit = next(row for row in repo.rows("workflow_commit")
+                      if row["source"].get("kind") == "completed_execution"
+                      and row["source"].get("chain_run_id") == chain["chain_run_id"])
+        snapshot = repo.get("state_snapshot", state_snapshot_id=commit["state_snapshot_id"])
+        candidate = {
+            "candidate_id": commit["commit_id"], "chain_run_id": chain["chain_run_id"],
+            "source_session_id": chain["workflow_session_id"],
+            "source_workflow_definition_id": chain["workflow_definition_id"],
+            "source_definition_revision": chain["definition_revision"],
+            "data_revision": snapshot["data_revision"],
+        }
     request = {
         "session_id": view["workflow_session_id"],
         "candidate_id": candidate["candidate_id"],
@@ -166,17 +181,16 @@ def test_retired_candidate_writes_are_absent_from_application_http_and_service(s
                            f"/api/graph/sessions/{view['workflow_session_id']}/candidates/{suffix}", {})
         assert denied.value.reason_code == "not_found"
 
-    status, http_candidates = dispatch_graph(
-        service, "GET", f"/api/graph/sessions/{view['workflow_session_id']}/candidates")
-    assert status == 200 and http_candidates["candidates"][0]["candidate_id"] == candidate["candidate_id"]
+    with pytest.raises(ContractValidationError) as denied:
+        dispatch_graph(service, "GET", f"/api/graph/sessions/{view['workflow_session_id']}/candidates")
+    assert denied.value.reason_code == "not_found"
     assert service.get_session(view["workflow_session_id"]) == before
     assert {row["workflow_session_id"]
             for row in service.list_sessions(document["workflow_definition_id"])} == session_ids
 
-    listed = application.query("candidate.list", {"session_id": view["workflow_session_id"]})
-    assert listed["candidates"][0]["candidate_id"] == candidate["candidate_id"]
-    assert not listed["candidates"][0]["can_select"]
-    assert listed["candidates"][0]["diagnostic"] is None
+    with pytest.raises(ContractValidationError) as denied:
+        application.query("candidate.list", {"session_id": view["workflow_session_id"]})
+    assert denied.value.reason_code == "not_found"
     with pytest.raises(ContractValidationError) as denied:
         consumer.query("consumer.candidate.list", {
             "session_id": view["workflow_session_id"],
@@ -184,43 +198,6 @@ def test_retired_candidate_writes_are_absent_from_application_http_and_service(s
             "definition_revision": view["definition_revision"],
         })
     assert denied.value.reason_code == "not_found"
-
-
-def test_management_candidates_remain_readable_during_another_active_run(service):
-    sid, first_chain, release = gate_graph(service)
-    release.set()
-    service.wait(first_chain)
-    view = service.get_session(sid)
-    candidate = service.list_graph_candidates(sid)["candidates"][0]
-    release.clear()
-    active = service.start(sid, expected_revision=view["revision"], idempotency_key=str(uuid4()))
-    try:
-        projected = service.list_graph_candidates(sid)
-        assert not any(row["can_select"] for row in projected["candidates"])
-        assert [row["candidate_id"] for row in projected["candidates"]] == [candidate["candidate_id"]]
-    finally:
-        release.set()
-        service.wait(active["active_chain_run_id"])
-
-
-def test_archived_candidate_queries_preserve_saved_rows_and_the_bound_workflow_scope(service):
-    _, view, candidate, _ = _completed(service)
-    sid = view["workflow_session_id"]
-    archived = service.archive_session(sid, expected_revision=view["revision"], idempotency_key=str(uuid4()))
-    assert archived["archived"] is True
-    assert service.get_session(sid)["readonly"] is True
-    # Live-host initialization still changes file-header counters, not saved rows.
-    before = raw_database(service.database)
-    listed = service.list_graph_candidates(sid)
-    assert listed["candidates"][0]["can_select"] is False
-    assert listed["candidates"][0]["candidate_id"] == candidate["candidate_id"]
-    with pytest.raises(ContractValidationError) as denied:
-        GraphApplication(service).for_consumer().query("consumer.candidate.list", {
-            "session_id": sid, "workflow_definition_id": str(uuid4()),
-            "definition_revision": view["definition_revision"],
-        })
-    assert denied.value.reason_code == "not_found"
-    assert raw_database(service.database) == before
 
 
 @pytest.mark.parametrize("operation", ["candidate.select", "candidate.fork"])

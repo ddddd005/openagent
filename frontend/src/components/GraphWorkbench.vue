@@ -130,7 +130,6 @@ function titleForId(id: string) {
 const nodes = computed(() => graph.document?.nodes.map(node => ({ id: node.node_binding_id,
   type: "graph", position: { ...node.position }, selected: graph.selectedNodeIds.includes(node.node_binding_id),
   data: { node, definition: graph.typeFor(node), displayTitle: displayTitle(node), status: graph.session?.nodes.find(n => n.node_binding_id === node.node_binding_id)?.status ?? "idle",
-    executionRoot: graph.document?.execution_roots?.includes(node.node_binding_id) ?? false,
     error: !!graph.session?.nodes.find(n => n.node_binding_id === node.node_binding_id)?.diagnostic,
     inputIssues: portIssues(node, "inputs"), outputIssues: portIssues(node, "outputs"),
     inputs: graph.document!.edges.filter(e => e.target_node_id === node.node_binding_id).map(e => e.target_port_id),
@@ -284,13 +283,11 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; connecting.va
                 :disabled="graph.editorLocked || graph.catalogLoading || !!graph.catalogError || !families.length" @click="changeProfile"><Settings2 :size="15" /></button>
             </section>
             <GraphNodeConfiguration v-if="selectedType && graph.document" :node="selectedNode" :definition="selectedType" :document="graph.document" :catalog="graph.catalog" :disabled="graph.editorLocked" @change="graph.patchNode(selectedNode.node_binding_id, { config: $event })"
-              @policy-change="graph.patchNodeConfigurationPolicy(selectedNode.node_binding_id, $event)"
-              @source-change="(edgeId, source) => graph.patchFrontendSource(selectedNode!.node_binding_id, edgeId, source)" />
+              @policy-change="graph.patchNodeConfigurationPolicy(selectedNode.node_binding_id, $event)" />
             <pre v-else>{{ json(selectedNode.config) }}</pre>
             <GraphVariableRegistration :node-id="selectedNode.node_binding_id" />
-            <small class="graph-muted">{{ selectedType?.execution_class === 'non_working' ? '主动交互' : graph.document?.execution_roots?.includes(selectedNode.node_binding_id) ? '运行目标' : '按依赖执行' }} · {{ predecessors.length ? `等待 ${predecessors.length} 个前序节点` : '无前序等待' }}</small>
+            <small class="graph-muted">{{ selectedType?.execution_class === 'non_working' ? '主动交互 · ' : '' }}{{ predecessors.length ? `等待 ${predecessors.length} 个前序节点` : '无前序等待' }}</small>
             <details class="graph-runtime-settings"><summary>运行设置</summary>
-              <label class="graph-checkbox"><input type="checkbox" :checked="graph.document?.execution_roots?.includes(selectedNode.node_binding_id)" :disabled="graph.editorLocked || selectedType?.execution_class === 'non_working'" @change="graph.setExecutionRoot(selectedNode.node_binding_id, ($event.target as HTMLInputElement).checked)" />作为运行目标</label>
               <fieldset><legend>前序节点</legend><label v-for="node in graph.document?.nodes.filter(node => node.node_binding_id !== selectedNode?.node_binding_id)" :key="node.node_binding_id" class="graph-checkbox"><input type="checkbox" :checked="predecessors.includes(node.node_binding_id)" :disabled="graph.editorLocked" @change="predecessor(node.node_binding_id, $event)" />{{ displayTitle(node) }}</label></fieldset>
               <fieldset v-if="selectedType"><legend>允许聊天端读取的结果</legend><label v-for="port in nodePorts(selectedType, selectedNode, 'outputs')" :key="port.port_id" class="graph-checkbox"><input type="checkbox" :checked="selectedNode.public_outputs?.includes(port.port_id)" :disabled="graph.editorLocked" @change="graph.patchNode(selectedNode.node_binding_id, { public_outputs: ($event.target as HTMLInputElement).checked ? [...(selectedNode.public_outputs ?? []), port.port_id] : (selectedNode.public_outputs ?? []).filter(p => p !== port.port_id) })" />{{ port.port_id }}</label></fieldset>
             </details>

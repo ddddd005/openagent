@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from phase1_agent.capability_registry import create_package_registry
+from phase1_agent.chat_contracts import CHAT_CONTEXT_TYPE
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.content_contracts import json_content, text_content
 from phase1_agent.context_prompt_v6 import assemble_native_context_prompt
@@ -105,10 +106,13 @@ def settle(state, runtime):
 def test_admission_is_exact_default_deny_and_survives_registry_copy(registry):
     admitted = {(entry.type_id, entry.schema_version) for entry in registry.data_types.definitions()
                 if entry.checkpoint_admission}
-    assert admitted == {("workflow.effective-context", 4), (VARIABLE_TYPE, VARIABLE_SCHEMA_VERSION)}
+    assert admitted == {
+        ("workflow.effective-context", 4), (CHAT_CONTEXT_TYPE, 1), (VARIABLE_TYPE, VARIABLE_SCHEMA_VERSION),
+    }
     detached = registry.data_types.detached(frozen=True)
     assert detached.get(VARIABLE_TYPE, 1, scope="session").checkpoint_admission is True
-    assert detached.get("workflow.frontend-state", 1, scope="session").checkpoint_admission is False
+    assert detached.get(CHAT_CONTEXT_TYPE, 1, scope="session").checkpoint_admission is True
+    assert detached.get("workflow.frontend-state", 1, scope="session") is None
     assert detached.get(VARIABLE_TYPE, 1, scope="session").to_dict()["checkpoint_admission"] is True
     assert DataTypeDefinition("other", 1, {}).checkpoint_admission is False
     assert variable_data_type().default_value == empty_variable_value()

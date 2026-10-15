@@ -10,14 +10,13 @@ import pytest
 from phase1_agent.capability_packages import CapabilityPackage, PackageDependency, PackageManifest
 from phase1_agent.content_contracts import text_content
 from phase1_agent.contract_errors import ContractValidationError
-from phase1_agent.graph_contracts import NodeDefinition, NodePort
+from phase1_agent.graph_contracts import GraphCompiler, NodeDefinition, NodePort
 from phase1_agent.graph_records import graph_record, validate_graph_bundle, validate_graph_record, validate_graph_transition
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import DataTypeDefinition, ObjectBinding
 from phase1_agent.storage import SqliteStore
 
-from test_graph_public import rebind
-from test_graph_service import copy_current, create, document, edge, node, run
+from test_graph_service import create, document, edge, node, run
 
 
 class EventHarness:
@@ -51,7 +50,8 @@ class EventHarness:
                                 "required": ["count"], "additionalProperties": False}, {"count": 0}))
         host.register_node(NodeDefinition(
             "event.source", "1", "Event input", "Events", {}, {"type": "object", "additionalProperties": False},
-            outputs=(NodePort("output", "TEXT", data_schema_version=2),), capabilities=("external:read",)),
+            outputs=(NodePort("output", "TEXT", data_schema_version=2),), capabilities=("external:read",),
+            execution_class="non_working"),
             lambda config, inputs, context: self.source(config, inputs, context))
         host.register_node(NodeDefinition(
             "event.apply", "1", "Apply event", "Events", {"object_key": "main", "fail": False},
@@ -61,8 +61,15 @@ class EventHarness:
             outputs=(NodePort("output", "TEXT", data_schema_version=2),),
             capabilities=("objects:read", "objects:write"),
             object_accesses=({"config_field": "object_key", "type_id": "event.counter", "schema_version": 1,
-                              "multiple": False, "access": "read_write"},)),
+                              "multiple": False, "access": "read_write"},),
+            execution_class="non_working"),
             lambda config, inputs, context: self.apply(config, inputs, context))
+        host.register_node(NodeDefinition(
+            "event.output", "1", "Event output", "Events", {}, {"type": "object"},
+            inputs=(NodePort("input", "TEXT", data_schema_version=2),),
+            outputs=(NodePort("output", "TEXT", data_schema_version=2),), is_output=True,
+            execution_class="non_working"),
+            lambda config, inputs, context: {"output": inputs["input"]})
         host.register_node(NodeDefinition(
             "event.unrelated", "1", "Unrelated output", "Events", {}, {"type": "object"},
             outputs=(NodePort("output", "TEXT", data_schema_version=2),), is_output=True),
@@ -88,18 +95,18 @@ def event_service(tmp_path):
         harness.release.set()
 
 
-def event_document(service, *, audience="consumer", fail=False, allow=True):
+def event_document(service, *, audience="management", fail=False, allow=True):
     ordinary = node(service.registry, "text", 14101, text="ordinary round")
     output = node(service.registry, "output", 14102)
     source = node(service.registry, "event.source", 14103)
     apply = node(service.registry, "event.apply", 14104, fail=fail)
-    event_output = node(service.registry, "output", 14105)
+    event_output = node(service.registry, "event.output", 14105)
     unrelated = node(service.registry, "event.unrelated", 14106)
     doc = document([ordinary, output, source, apply, event_output, unrelated], [
         edge(ordinary, output, 14101), edge(source, apply, 14102), edge(apply, event_output, 14103),
     ])
     doc.update(schema_version=2, package_lock=deepcopy(list(service.registry.execution_package_lock)),
-        execution_roots=[output["node_binding_id"]], object_bindings=[
+        execution_roots=[], object_bindings=[
             ObjectBinding("main", "event.counter", 1, "shared", readers=(apply["node_binding_id"],),
                           writers=(apply["node_binding_id"],) if allow else ()).to_dict(),
         ], event_bindings=[{
@@ -118,9 +125,8 @@ def parameters(session, doc, *, key="event-once", payload=None):
             "expected_revision": session["revision"], "idempotency_key": key}
 
 
-def submit(service, session, doc, *, consumer=False, **overrides):
-    method = service.submit_consumer_event if consumer else service.submit_event
-    return method(session["workflow_session_id"], **{**parameters(session, doc), **overrides})
+def submit(service, session, doc, **overrides):
+    return service.submit_event(session["workflow_session_id"], **{**parameters(session, doc), **overrides})
 
 
 def records(service):
@@ -128,7 +134,7 @@ def records(service):
         return store.read_bundle(include_graph=True)
 
 
-def test_event_accepts_local_closure_and_object_write_without_replacing_round_candidate(event_service):
+def test_event_accepts_local_closure_and_object_write_without_replacing_round_checkpoint(event_service):
     service, harness = event_service
     doc = event_document(service)
     initial = create(service, doc)
@@ -148,7 +154,7 @@ def test_event_accepts_local_closure_and_object_write_without_replacing_round_ca
     assert current["head_revision"] == round_view["head_revision"]
     assert current["selected_chain_run_id"] == round_view["selected_chain_run_id"]
     assert current["nodes"][1]["outputs"] == round_view["nodes"][1]["outputs"]
-    assert len(service.list_graph_candidates(sid)["candidates"]) == 1
+    assert len(service.list_checkpoints(sid)) == 1
     assert [entry[0] for entry in harness.calls] == ["source", "apply"]
     after = records(service)
     assert before["workflow_commit"] == after["workflow_commit"]
@@ -174,93 +180,28 @@ def test_event_before_any_round_keeps_head_seed_and_selection_empty(event_servic
     assert current["head_commit_id"] == initial["head_commit_id"]
     assert current["selected_chain_run_id"] is None
     assert current["status"] == "idle" and current["can_submit"]
-    assert service.list_graph_candidates(initial["workflow_session_id"])["candidates"] == []
+    assert service.list_checkpoints(initial["workflow_session_id"]) == []
 
 
-def test_event_only_graph_with_empty_round_roots_executes_and_has_no_candidates(event_service):
+def test_event_only_graph_executes_without_an_ordinary_target_or_success_checkpoint(event_service):
     service, harness = event_service
     doc = event_document(service)
-    doc["execution_roots"] = []
+    doc["nodes"] = doc["nodes"][2:]
+    doc["edges"] = doc["edges"][1:]
     initial = create(service, doc)
     sid = initial["workflow_session_id"]
-    assert not service.get_consumer(sid)["can_submit"]
-    assert service.list_consumer_event_bindings(sid, workflow_definition_id=doc["workflow_definition_id"],
-                                               definition_revision=1)["can_submit"]
-    accepted = submit(service, initial, doc, consumer=True)
-    chain_id = accepted["receipt"]["chain_run_id"]
-    service.wait(chain_id)
-    assert service.get_session(sid)["objects"]["main"]["value"] == {"count": 2}
-    assert service.read_consumer_event(sid, chain_id=chain_id)["status"] == "succeeded"
-    assert service.list_graph_candidates(sid)["candidates"] == []
-    assert len(harness.calls) == 2
-
-
-def test_round_candidate_restore_and_fork_isolate_later_event_facts_and_state(event_service):
-    service, harness = event_service
-    doc = event_document(service)
-    first = run(service, create(service, doc))
-    sid = first["workflow_session_id"]
-    candidate = service.list_graph_candidates(sid)["candidates"][0]["candidate_id"]
-    accepted = submit(service, first, doc)
-    event_id = accepted["active_chain_run_id"]
-    service.wait(event_id)
-    current = service.get_session(sid)
-
-    def choose(method, view, identity, key):
-        return method(view["workflow_session_id"], candidate_id=identity,
-            expected_revision=view["revision"], expected_data_revision=view["data_revision"],
-            expected_head_revision=view["head_revision"], idempotency_key=key)
-
-    fork = choose(service.fork_graph_candidate, current, candidate, "fork-before-event")
-    assert fork["objects"]["main"]["value"] == {"count": 0}
-    assert event_id not in fork["history_refs"]
-    with pytest.raises(ContractValidationError):
-        service.read_consumer_event(fork["workflow_session_id"], chain_id=event_id)
-    after = run(service, current)
-    after_candidate = next(row["candidate_id"] for row in service.list_graph_candidates(sid)["candidates"]
-                          if row["chain_run_id"] == after["selected_chain_run_id"])
-    second = submit(service, after, doc, payload={"delta": 3}, idempotency_key="event-second")
-    second_id = second["active_chain_run_id"]
-    service.wait(second_id)
-    current = service.get_session(sid)
-    after_fork = choose(service.fork_graph_candidate, current, after_candidate, "fork-after-first-event")
-    assert after_fork["objects"]["main"]["value"] == {"count": 2}
-    assert event_id in after_fork["history_refs"] and second_id not in after_fork["history_refs"]
-    assert service.read_consumer_event(after_fork["workflow_session_id"], chain_id=event_id)["status"] == "succeeded"
-    restored = choose(service.select_graph_candidate, current, candidate, "restore-before-event")
-    assert restored["objects"]["main"]["value"] == {"count": 0}
-    assert restored["selected_chain_run_id"] == first["selected_chain_run_id"]
-    assert service.read_event(sid, chain_id=second_id)["status"] == "succeeded"
-    assert len(harness.calls) == 4
-
-
-def test_inherited_event_overview_uses_current_copy_scope_and_explicit_original_source(event_service):
-    service, _ = event_service
-    doc = event_document(service)
-    initial = create(service, doc)
+    with pytest.raises(ContractValidationError) as no_round:
+        GraphCompiler(service.registry).compile(doc)
+    assert no_round.value.reason_code == "graph_no_outputs"
+    assert service.list_event_bindings(sid, workflow_definition_id=doc["workflow_definition_id"],
+                                      definition_revision=1)["can_submit"]
     accepted = submit(service, initial, doc)
     chain_id = accepted["active_chain_run_id"]
     service.wait(chain_id)
-    parent = service.get_session(initial["workflow_session_id"])
-    target = deepcopy(doc)
-    target["workflow_definition_id"] = str(uuid4())
-    child = copy_current(service, parent, target)
-    overview = service.read_consumer_event(child["workflow_session_id"], chain_id=chain_id)
-    assert overview["workflow_definition_id"] == target["workflow_definition_id"]
-    assert overview["workflow_session_id"] == child["workflow_session_id"]
-    assert overview["definition_revision"] == target["revision"]
-    assert overview["session_revision"] == child["revision"]
-    assert overview["source"] == {
-        "workflow_definition_id": doc["workflow_definition_id"], "definition_revision": doc["revision"],
-        "workflow_session_id": parent["workflow_session_id"]}
-    assert {"inputs", "outputs", "objects", "state_manifests"}.isdisjoint(overview)
-    unrelated = service.create_session(doc["workflow_definition_id"], 1, idempotency_key="isolated-session")
-    with pytest.raises(ContractValidationError):
-        service.read_consumer_event(unrelated["workflow_session_id"], chain_id=chain_id)
-    child_event = submit(service, child, target, idempotency_key="child-event")
-    service.wait(child_event["active_chain_run_id"])
-    assert service.get_session(child["workflow_session_id"])["objects"]["main"]["value"] == {"count": 4}
-    assert service.get_session(parent["workflow_session_id"])["objects"]["main"]["value"] == {"count": 2}
+    assert service.get_session(sid)["objects"]["main"]["value"] == {"count": 2}
+    assert service.read_event(sid, chain_id=chain_id)["status"] == "succeeded"
+    assert service.list_checkpoints(sid) == []
+    assert len(harness.calls) == 2
 
 
 def test_event_request_replay_is_frozen_and_reopen_never_reexecutes(event_service):
@@ -291,12 +232,11 @@ def test_event_idempotency_includes_session_and_definition_identity(event_servic
     with pytest.raises(ContractValidationError) as failure:
         submit(service, other, doc)
     assert failure.value.reason_code == "idempotency_conflict"
-    current = service.get_session(initial["workflow_session_id"])
     revised = deepcopy(doc)
-    revised["revision"] = 2
-    rebound = rebind(service, current, revised)
+    revised["workflow_definition_id"] = str(uuid4())
+    separate = create(service, revised)
     with pytest.raises(ContractValidationError) as failure:
-        submit(service, rebound, revised)
+        submit(service, separate, revised)
     assert failure.value.reason_code == "idempotency_conflict"
     assert len(harness.calls) == 2
 
@@ -350,59 +290,35 @@ def test_event_scope_permissions_and_current_revision_are_checked_before_writes(
     assert failure.value.reason_code == "stale_revision"
 
 
-def test_consumer_binding_filter_receipt_and_event_overview_never_return_private_state(event_service):
+def test_management_event_overview_preserves_scope_without_private_state(event_service):
     service, harness = event_service
     doc = event_document(service)
     management = deepcopy(doc["event_bindings"][0])
-    management.update(event_id="counter.private", audience="management")
+    management.update(event_id="counter.second", audience="management")
     doc["event_bindings"].append(management)
     initial = create(service, doc)
     sid = initial["workflow_session_id"]
     scope = {"workflow_definition_id": doc["workflow_definition_id"], "definition_revision": 1}
     assert len(service.list_event_bindings(sid, **scope)["bindings"]) == 2
-    assert len(service.list_consumer_event_bindings(sid, **scope)["bindings"]) == 1
-    result = submit(service, initial, doc, consumer=True)
-    assert result["kind"] == "workflow.consumer.receipt"
-    assert result["receipt"]["operation"] == "event"
-    chain_id = result["receipt"]["chain_run_id"]
+    result = submit(service, initial, doc)
+    chain_id = result["active_chain_run_id"]
     service.wait(chain_id)
-    replay = submit(service, initial, doc, consumer=True)
-    assert replay["receipt"] == result["receipt"]
-    overview = service.read_consumer_event(sid, chain_id=chain_id)
-    assert overview == service.read_event(sid, chain_id=chain_id)
+    assert submit(service, initial, doc) == result
+    overview = service.read_event(sid, chain_id=chain_id)
     assert overview["status"] == "succeeded" and overview["execution_kind"] == "event"
     assert {"inputs", "outputs", "objects", "node_runs", "state_manifests", "private_states"}.isdisjoint(overview)
-    assert {"objects", "private_states", "data", "chains", "inputs_values"}.isdisjoint(replay["consumer"])
+    assert overview["source"] == {
+        "workflow_definition_id": doc["workflow_definition_id"], "definition_revision": doc["revision"],
+        "workflow_session_id": sid}
     assert len(harness.calls) == 2
+    unrelated = service.create_session(doc["workflow_definition_id"], 1, idempotency_key="isolated-session")
+    with pytest.raises(ContractValidationError) as denied:
+        service.read_event(unrelated["workflow_session_id"], chain_id=chain_id)
+    assert denied.value.reason_code == "not_found"
     current = service.get_session(sid)
-    with pytest.raises(ContractValidationError) as failure:
-        submit(service, current, doc, consumer=True, event_id="counter.private", idempotency_key="private-denied")
-    assert failure.value.reason_code == "graph_event_not_public"
-    private = submit(service, current, doc, event_id="counter.private", idempotency_key="private-management")
+    private = submit(service, current, doc, event_id="counter.second", idempotency_key="second-management")
     service.wait(private["active_chain_run_id"])
-    with pytest.raises(ContractValidationError) as failure:
-        service.read_consumer_event(sid, chain_id=private["active_chain_run_id"])
-    assert failure.value.reason_code == "graph_event_not_public"
-
-
-def test_current_consumer_authorization_is_required_even_when_replaying_old_receipt(event_service):
-    service, _ = event_service
-    doc = event_document(service)
-    initial = create(service, doc)
-    accepted = submit(service, initial, doc, consumer=True)
-    chain_id = accepted["receipt"]["chain_run_id"]
-    service.wait(chain_id)
-    current = service.get_session(initial["workflow_session_id"])
-    revised = deepcopy(doc)
-    revised["revision"] = 2
-    revised["event_bindings"][0]["audience"] = "management"
-    rebind(service, current, revised)
-    with pytest.raises(ContractValidationError):
-        submit(service, initial, doc, consumer=True)
-    with pytest.raises(ContractValidationError) as failure:
-        service.read_consumer_event(initial["workflow_session_id"], chain_id=chain_id)
-    assert failure.value.reason_code == "graph_event_not_public"
-    assert service.read_event(initial["workflow_session_id"], chain_id=chain_id)["status"] == "succeeded"
+    assert service.read_event(sid, chain_id=private["active_chain_run_id"])["status"] == "succeeded"
 
 
 def test_event_failure_and_close_never_create_completion_checkpoint(event_service):
@@ -419,7 +335,7 @@ def test_event_failure_and_close_never_create_completion_checkpoint(event_servic
     assert failed["available_actions"] == ["close"]
     with pytest.raises(ContractValidationError):
         submit(service, failed, doc, idempotency_key="blocked-failed")
-    overview = service.read_consumer_event(initial["workflow_session_id"], chain_id=chain_id)
+    overview = service.read_event(initial["workflow_session_id"], chain_id=chain_id)
     assert "private event payload" not in str(overview)
     closed = service.control(initial["workflow_session_id"], action="close",
                              expected_revision=failed["revision"], idempotency_key="close-event")
@@ -445,7 +361,7 @@ def test_active_event_status_and_controls_keep_round_selection_and_block_new_eve
         with pytest.raises(ContractValidationError):
             submit(service, current, doc, idempotency_key="blocked-running")
         scope = {"workflow_definition_id": doc["workflow_definition_id"], "definition_revision": 1}
-        assert not service.list_consumer_event_bindings(current["workflow_session_id"], **scope)["can_submit"]
+        assert not service.list_event_bindings(current["workflow_session_id"], **scope)["can_submit"]
         service.control(current["workflow_session_id"], action="pause",
                         expected_revision=current["revision"], idempotency_key="pause-event")
     finally:
@@ -532,7 +448,7 @@ def test_event_records_cannot_claim_other_binding_or_completion_checkpoint(event
     bundle = records(service)
     forged = deepcopy(bundle)
     event = next(row for row in forged["chain_run"] if row["execution_kind"] == "event")
-    event["event"]["audience"] = "management"
+    event["event"]["audience"] = "consumer"
     with pytest.raises(ContractValidationError):
         validate_graph_bundle(forged)
     forged = deepcopy(bundle)
@@ -590,43 +506,31 @@ def test_paused_event_reopen_preserves_status_and_never_reexecutes_request(event
         assert closed["selected_chain_run_id"] == round_view["selected_chain_run_id"]
 
 
-def test_event_public_history_applies_resets_only_after_its_starting_head(event_service):
+def test_event_public_history_keeps_exact_runs_and_session_scope(event_service):
     service, _ = event_service
     doc = event_document(service)
     event_output = doc["nodes"][4]
     event_output["public_outputs"] = ["output"]
     first = run(service, create(service, doc))
-    revised = deepcopy(doc)
-    revised["revision"] = 2
-    reset = [{"target_node_id": event_output["node_binding_id"], "action": "reset"}]
-    rebound = rebind(service, first, revised, mappings=reset)
-    accepted = submit(service, rebound, revised)
+    accepted = submit(service, first, doc)
     chain_id = accepted["active_chain_run_id"]
     service.wait(chain_id)
     history = service.get_run(first["workflow_session_id"], chain_id)
     event_run_id = history["chain"]["node_run_ids"][-1]
-    assert history["chain"]["base_commit_id"] == rebound["head_commit_id"]
-    query = {"workflow_definition_id": doc["workflow_definition_id"], "definition_revision": 2,
+    assert history["chain"]["base_commit_id"] == first["head_commit_id"]
+    query = {"workflow_definition_id": doc["workflow_definition_id"], "definition_revision": 1,
              "node_id": event_output["node_binding_id"], "port_id": "output", "run_id": event_run_id}
     public = service.read_public_output(first["workflow_session_id"], **query)["output"]
     assert public["payload"] == text_content("2")
-    copied_doc = deepcopy(revised)
-    copied_doc.update(workflow_definition_id=str(uuid4()), revision=1)
-    copied = copy_current(service, service.get_session(first["workflow_session_id"]), copied_doc)
-    inherited = service.read_public_output(copied["workflow_session_id"], **{
-        **query, "workflow_definition_id": copied_doc["workflow_definition_id"], "definition_revision": 1,
-    })["output"]
-    assert inherited["payload"] == text_content("2")
-    assert inherited["source"]["workflow_session_id"] == first["workflow_session_id"]
-    later = deepcopy(revised)
-    later["revision"] = 3
-    rebind(service, service.get_session(first["workflow_session_id"]), later, mappings=reset)
+    later = submit(service, service.get_session(first["workflow_session_id"]), doc,
+                   payload={"delta": 3}, idempotency_key="later-public-event")
+    service.wait(later["active_chain_run_id"])
+    assert service.read_public_output(first["workflow_session_id"], **query)["output"] == public
+    assert public["source"]["workflow_session_id"] == first["workflow_session_id"]
+    unrelated = service.create_session(doc["workflow_definition_id"], 1, idempotency_key="unrelated-public")
     with pytest.raises(ContractValidationError) as denied:
-        service.read_public_output(first["workflow_session_id"], **{**query, "definition_revision": 3})
+        service.read_public_output(unrelated["workflow_session_id"], **query)
     assert denied.value.reason_code == "not_found"
-    assert service.read_public_output(copied["workflow_session_id"], **{
-        **query, "workflow_definition_id": copied_doc["workflow_definition_id"], "definition_revision": 1,
-    })["output"]["payload"] == text_content("2")
 
 
 def test_event_baseline_cannot_be_replaced_with_another_sessions_head(event_service):

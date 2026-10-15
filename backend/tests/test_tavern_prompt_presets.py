@@ -10,7 +10,6 @@ import pytest
 from phase1_agent.content_contracts import default_presentation, object_schema, stable_item_id
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.contract_json import canonical_bytes
-from phase1_agent.context_prompt_v6 import injected_once_sources as once_sources
 from phase1_agent.global_resources import global_resource_reference
 from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
@@ -49,6 +48,15 @@ def identity(value):
 def request(value, *, key=None):
     return {"record": value, "expected_sequence": value["update_sequence"] - 1,
             "idempotency_key": key or str(uuid4())}
+
+
+def once_sources(value):
+    context = value.get("context", {})
+    frozen = {message["message_id"] for message in context.get("messages", [])}
+    return {
+        item["source"]["item_instance_id"] for message, item in zip(value["messages"], value["layout"])
+        if item["kind"] == "once" and message["message_id"] not in frozen
+    }
 
 
 def save(app, value):

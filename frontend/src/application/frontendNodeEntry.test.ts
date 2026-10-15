@@ -42,7 +42,7 @@ describe("frontend node saved entry", () => {
       if (reason === "missing-snapshot") delete f.entry.saved_document;
       if (reason === "missing-node") f.entry.saved_document!.nodes = [];
       if (reason === "changed-config") f.target.node.config.input_node_id = f.inputs[0]!.node_binding_id;
-      if (reason === "wrong-version") f.target.node.component_version = "2";
+      if (reason === "wrong-version") f.target.node.component_version = "1";
       if (reason === "pending") f.entry.pending = { action: "start", path: "/unused", body: {} };
       if (reason === "wrong-workflow") f.entry.saved_document!.workflow_definition_id = crypto.randomUUID();
       const before = graphClone(f.entry), result = f.launch();

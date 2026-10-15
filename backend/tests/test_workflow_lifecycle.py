@@ -14,6 +14,7 @@ from phase1_agent.graph_http import dispatch_graph
 from phase1_agent.graph_records import graph_record
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.graph_store import GraphRecordStore
+from phase1_agent.runtime_checkpoints import CHECKPOINT_SCHEMA_VERSION
 from phase1_agent.storage import SqliteStore
 from test_graph_service import create, document, gate_graph, run, save_definition_fixture, text_graph
 
@@ -37,7 +38,7 @@ def _save_configuration(service, document, *, key=None):
 
 def _checkpoint_root(workflow_id, session_id, fixed_revision=1):
     return {
-        "schema_version": 1,
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "checkpoint_id": str(uuid4()),
         "workflow_definition_id": workflow_id,
         "workflow_session_id": session_id,
@@ -52,6 +53,8 @@ def _checkpoint_root(workflow_id, session_id, fixed_revision=1):
                     "nodes": {},
                 },
                 "agent_contexts": {},
+                "variables": {},
+                "chat_contexts": {},
             },
         },
     }
@@ -105,16 +108,20 @@ def test_session_archive_keeps_history_but_cannot_run_edit_or_restore(service):
     assert archived["outputs"] == view["outputs"]
     assert archived["archived"] and archived["readonly"]
     assert not archived["can_submit"] and archived["available_actions"] == []
-    assert all(not candidate["can_select"] for candidate in service.list_graph_candidates(sid)["candidates"])
+    assert archived["history_refs"] == view["history_refs"]
     assert application.command("session.archive", request) == accepted
     with pytest.raises(ContractValidationError) as denied:
         service.start(sid, expected_revision=archived["revision"], idempotency_key=str(uuid4()))
     assert denied.value.reason_code == "session_archived"
     with pytest.raises(ContractValidationError) as denied:
-        service.update_data(sid, expected_revision=archived["revision"],
-                            expected_data_revision=archived["data_revision"],
-                            idempotency_key=str(uuid4()))
-    assert denied.value.reason_code == "session_archived"
+        application.command("session.data.update", {
+            "session_id": sid, "expected_revision": archived["revision"],
+            "expected_data_revision": archived["data_revision"], "idempotency_key": str(uuid4()),
+        })
+    assert denied.value.reason_code == "not_found"
+    with pytest.raises(ContractValidationError) as denied:
+        dispatch_graph(service, "POST", f"/api/graph/sessions/{sid}/data", {})
+    assert denied.value.reason_code == "not_found"
 
 
 def test_workflow_archive_is_backend_owned_readonly_and_has_no_restore(service):
@@ -307,16 +314,19 @@ def test_owner_filtered_records_preserve_insertion_order(service):
 
 
 def test_delete_rejects_unknown_mock_model_evidence_even_after_explicit_close(tmp_path):
-    from test_models_service_integration import ModelDatabaseFixture
+    from credential_test_support import TestProtector
+    from test_stage4_model_request_installation import Answers, _agent_graph, _execute, _resources
 
-    fixture = ModelDatabaseFixture()
-    fixture.fail = True
+    answers = Answers(unknown=True)
     with closing(GraphWorkflowService(tmp_path / "unknown-model.sqlite",
-                                      public_model_factory=fixture.factory)) as instance:
-        fixture.write(instance, 1)
-        failed = fixture.execute(instance, fixture.create(instance, fixture.document(instance)))
+                                      credential_protector=TestProtector(),
+                                      public_model_factory=answers.factory)) as instance:
+        _, profile = _resources(instance)
+        initial, _ = _agent_graph(instance, profile, count=1)
+        failed = _execute(instance, initial)
         sid, chain_id = failed["workflow_session_id"], failed["active_chain_run_id"]
         before = instance.get_run(sid, chain_id)["runtime_facts"]
+        assert before[-1]["details"]["classification"] == "dispatch_unknown"
         closed = instance.control(sid, action="close", expected_revision=failed["revision"],
                                   idempotency_key=str(uuid4()))
         with pytest.raises(ContractValidationError) as denied:
@@ -324,7 +334,7 @@ def test_delete_rejects_unknown_mock_model_evidence_even_after_explicit_close(tm
         assert denied.value.reason_code == "execution_result_unresolved"
         assert instance.get_session(sid) == closed
         assert instance.get_run(sid, chain_id)["runtime_facts"] == before
-        assert len(fixture.calls) == 1
+        assert len(answers.messages) == answers.closes == 1
 
 
 def test_delete_checks_unconfirmed_status_before_closing_target(service):

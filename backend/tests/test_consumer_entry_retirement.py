@@ -17,7 +17,7 @@ from phase1_agent.workflow_host import WorkflowHost
 
 from legacy_consumer_receipt_fixture import seed_legacy_consumer_receipt
 from test_frontend_node_http import serving
-from test_frontend_node_runtime import _create, _graph, _save
+from frontend_node_test_support import create as _create, graph as _graph, save as _save
 from test_graph_application_receipt_custody import raw_database
 from test_graph_server import request
 
@@ -270,13 +270,13 @@ def test_ordinary_management_http_keeps_execution_events_objects_and_public_read
         tmp_path / "ordinary-management.sqlite", public_model_factory=forbidden,
         provider_discovery_client_factory=forbidden,
     )) as service:
-        graph, _, frontends = _graph(service, bound=True)
+        graph, messages, frontends = _graph(service, bound=True)
         frontend = frontends[0]
         frontend["public_outputs"] = ["commit"]
         graph["execution_roots"] = [frontend["node_binding_id"]]
         graph["event_bindings"] = [{
-            "event_id": "node.append", "schema_version": 1, "display_name": "Append",
-            "audience": "management", "target_node_ids": [frontend["node_binding_id"]],
+            "event_id": "input.read", "schema_version": 1, "display_name": "Read input",
+            "audience": "management", "target_node_ids": [messages[0]["node_binding_id"]],
             "payload_schema": {"type": "object", "additionalProperties": False},
         }]
         graph = _save(service, graph)
@@ -294,7 +294,10 @@ def test_ordinary_management_http_keeps_execution_events_objects_and_public_read
             service.wait(started["active_chain_run_id"])
             current = request(port, "GET", f"/api/graph/sessions/{sid}")[1]
             assert current["status"] == "succeeded"
-            assert len(current["objects"]["chat-0"]["value"]["entries"]) == 1
+            rounds = current["objects"]["chat-0"]["value"]["rounds"]
+            assert len(rounds) == 1 and len(rounds[0]["candidates"]) == 1
+            assert rounds[0]["selected_candidate_id"] == rounds[0]["candidates"][0]["candidate_id"]
+            assert [message["text"] for message in rounds[0]["candidates"][0]["messages"]] == ["message 0"]
             status, public = request(port, "GET", f"/api/graph/sessions/{sid}/outputs/public")
             assert status == 200 and public["outputs"][0]["availability"] == "produced"
             public_owner = {
@@ -317,7 +320,7 @@ def test_ordinary_management_http_keeps_execution_events_objects_and_public_read
             }
             assert request(port, "POST", f"/api/graph/sessions/{sid}/events/bindings", event_scope)[0] == 200
             status, event = request(port, "POST", f"/api/graph/sessions/{sid}/events/submit", {
-                **event_scope, "event_id": "node.append", "event_schema_version": 1, "payload": {},
+                **event_scope, "event_id": "input.read", "event_schema_version": 1, "payload": {},
                 "expected_revision": current["revision"], "idempotency_key": str(uuid4()),
             })
             assert status == 202
@@ -326,5 +329,5 @@ def test_ordinary_management_http_keeps_execution_events_objects_and_public_read
                 "chain_id": event["active_chain_run_id"],
             })[1]["status"] == "succeeded"
             final = service.get_session(sid)
-            assert len(final["objects"]["chat-0"]["value"]["entries"]) == 2
+            assert final["objects"]["chat-0"]["value"]["rounds"] == rounds
             assert final["head_revision"] == current["head_revision"]

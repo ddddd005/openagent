@@ -76,7 +76,7 @@ describe("exact variable selectors and local registration state", () => {
         workflowId: computed(() => document.workflow_definition_id), document: computed(() => document),
         catalog: computed(() => [definition]), packages: computed(() => [selectedPackage]),
         session: computed(() => null), locked: computed(() => false), lifecycle: computed(() => "current"),
-        readArtifact: vi.fn(), configureNode: vi.fn(),
+        configureNode: vi.fn(),
       };
       const declarations = componentId === "lorebook.global-activate" ? globalTavernFrontendExtensions : tavernFrontendExtensions;
       const host = createWorkbenchFrontendHost(() => declarations, () => [selectedPackage]);
@@ -140,7 +140,7 @@ describe("exact variable selectors and local registration state", () => {
     expect((await render()).match(/type="checkbox"/g)).toHaveLength(2);
   });
 
-  it("presents registration as active interaction while leaving ordinary assignment root controls available", async () => {
+  it("presents registration as active interaction without exposing execution-root controls", async () => {
     vi.spyOn(requestEvidencePorts, "read").mockResolvedValue([]);
     const pinia = createPinia(), graph = useWorkflowGraphStore(pinia);
     graph.catalog = graphClone(variableCatalog); graph.createWorkflow();
@@ -152,13 +152,14 @@ describe("exact variable selectors and local registration state", () => {
       const registration = await render();
       expect(registration).toContain("主动交互");
       expect(registration).toContain("注册变量及初值");
-      expect(registration).toMatch(/<input type="checkbox" disabled[^>]*>作为运行目标/);
+      expect(registration).not.toContain("作为运行目标");
+      expect(registration).not.toContain("运行目标");
       graph.addNode("tools.variable-assign@1", { x: 200, y: 0 });
       const assignment = await render();
-      expect(assignment).toContain("按依赖执行");
       expect(assignment).not.toContain("主动交互");
       expect(assignment).not.toContain("注册变量及初值");
-      expect(assignment).toMatch(/<input type="checkbox"(?![^>]*disabled)[^>]*>作为运行目标/);
+      expect(assignment).toContain("前序节点");
+      expect(assignment).not.toContain("作为运行目标");
     } finally { graph.$dispose(); useWorkspaceStore(pinia).$dispose(); }
   });
 });

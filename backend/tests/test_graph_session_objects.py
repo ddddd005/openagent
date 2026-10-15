@@ -15,7 +15,8 @@ from phase1_agent.host_sdk import DataTypeDefinition, ObjectBinding, WriteIntent
 from phase1_agent.session_objects import SessionObjectStore
 from phase1_agent.storage import SqliteStore
 
-from test_graph_service import node, edge, document, create, run, copy_current
+from test_graph_service import node, edge, document, create, run
+from test_success_checkpoints import checkpoint_history
 
 
 def task_package():
@@ -168,52 +169,33 @@ def test_receipts_atomic_multi_write_and_delete_retains_checkpoint(service):
     assert result["head_commit_id"] == view["head_commit_id"]
 
 
-def test_full_objects_candidate_restore_copy_and_fork_independent(service):
-    first = run(service, create(service, object_graph(service)))
-    candidate = service.list_graph_candidates(first["workflow_session_id"])["candidates"][0]["candidate_id"]
-    second = run(service, first)
-    fork = service.fork_graph_candidate(second["workflow_session_id"], candidate_id=candidate,
-        expected_revision=second["revision"], expected_data_revision=second["data_revision"],
-        expected_head_revision=second["head_revision"], idempotency_key="fork")
-    assert fork["objects"]["main"]["value"] == {"count": 1}
-    assert fork["objects"]["main"]["revision_id"] == first["objects"]["main"]["revision_id"]
-    child = run(service, fork)
-    assert child["objects"]["main"]["value"] == {"count": 2}
-    assert service.get_session(second["workflow_session_id"])["objects"]["main"]["value"] == {"count": 2}
-    target = deepcopy(service.get_definition(second["workflow_definition_id"]))
-    target["workflow_definition_id"] = str(uuid4())
-    copied = copy_current(service, second, target)
-    assert copied["objects"]["main"]["value"] == second["objects"]["main"]["value"]
-    selected = service.select_graph_candidate(second["workflow_session_id"], candidate_id=candidate,
-        expected_revision=second["revision"], expected_data_revision=second["data_revision"],
-        expected_head_revision=second["head_revision"], idempotency_key="select")
-    assert selected["objects"]["main"]["value"] == {"count": 1}
-    assert selected["objects"]["main"]["revision"] > second["objects"]["main"]["revision"]
-    assert child["objects"]["main"]["revision_id"] != selected["objects"]["main"]["revision_id"]
-
-
-def test_failed_effect_is_rejected_and_has_no_success_candidate(service):
+def test_failed_effect_is_rejected_and_has_no_success_checkpoint(service):
     view = create(service, object_graph(service, fail=True))
     head = view["head_commit_id"]
     final = run(service, view)
     assert final["status"] == "failed" and final["objects"]["main"]["value"] == {"count": 0}
     assert final["head_commit_id"] == head
-    assert service.list_graph_candidates(final["workflow_session_id"])["candidates"] == []
+    assert checkpoint_history(service, final)["latest"] is None
     end = service.get_run(final["workflow_session_id"], final["chains"][-1]["chain_run_id"])["state_manifests"]["end"]
     assert end["status"] == "failed" and end["objects"]["main"]["revision"] == 1
 
 
-def test_missing_package_read_export_keeps_objects_and_blocks_run(tmp_path):
+def test_missing_package_keeps_objects_and_frozen_run_but_blocks_export_and_execution(tmp_path):
     path = tmp_path / "missing.sqlite"
     with closing(GraphWorkflowService(path, capability_packages=[task_package()],
                                       enabled_packages={"workflow.tools": "1.0.0", "example.tasks": "1.0.0"})) as service:
         doc = object_graph(service)
         final = run(service, create(service, doc))
         sid = final["workflow_session_id"]
+        chain_id = final["selected_chain_run_id"]
+        frozen_run = service.get_run(sid, chain_id)
         service.configure_capability_packages({"workflow.tools": "1.0.0"})
         assert service.get_session_objects(sid)["objects"]["main"]["value"] == {"count": 1}
-        assert service.read_public_output(sid, workflow_definition_id=doc["workflow_definition_id"],
-            definition_revision=1, node_id=doc["nodes"][0]["node_binding_id"], port_id="output")["output"]["payload"]["text"] == "1"
+        assert service.get_run(sid, chain_id) == frozen_run
+        with pytest.raises(ContractValidationError) as denied:
+            service.read_public_output(sid, workflow_definition_id=doc["workflow_definition_id"],
+                definition_revision=1, node_id=doc["nodes"][0]["node_binding_id"], port_id="output")
+        assert denied.value.reason_code == "graph_missing_node_type"
         with pytest.raises(ContractValidationError):
             service.start(sid, expected_revision=final["revision"], idempotency_key="missing-start")
     with closing(GraphWorkflowService(path)) as reopened:
@@ -240,7 +222,7 @@ def test_foreign_or_private_same_type_revision_reference_is_denied(service):
         assert denied.value.reason_code == "session_object_reference_denied"
 
 
-def test_fork_and_inherited_candidate_remap_refs_and_keep_producer_artifacts(service):
+def test_local_object_references_persist_and_foreign_artifacts_are_denied(service):
     doc = object_graph(service)
     writer = doc["nodes"][0]["node_binding_id"]
     doc["object_bindings"].append(ObjectBinding(
@@ -255,50 +237,41 @@ def test_fork_and_inherited_candidate_remap_refs_and_keep_producer_artifacts(ser
     ]
     edited = write(service, first, "links", {"refs": refs})
     second = run(service, edited)
-    candidate = next(row["candidate_id"] for row in service.list_graph_candidates(second["workflow_session_id"])["candidates"]
-                     if row["chain_run_id"] == second["chains"][-1]["chain_run_id"])
-    fork = service.fork_graph_candidate(second["workflow_session_id"], candidate_id=candidate,
-        expected_revision=second["revision"], expected_data_revision=second["data_revision"],
-        expected_head_revision=second["head_revision"], idempotency_key="ref-fork")
-    child_refs = fork["objects"]["links"]["value"]["refs"]
-    assert child_refs[0] == refs[0]
-    assert child_refs[1]["workflow_session_id"] == fork["workflow_session_id"]
-    assert service.read_session_object(fork["workflow_session_id"], object_key="main", node_id=writer,
+    assert second["objects"]["links"]["value"]["refs"] == refs
+    assert service.read_session_object(first["workflow_session_id"], object_key="main", node_id=writer,
         revision_id=refs[1]["revision_id"])["value"] == {"count": 1}
-    selected = service.select_graph_candidate(fork["workflow_session_id"], candidate_id=candidate,
-        expected_revision=fork["revision"], expected_data_revision=fork["data_revision"],
-        expected_head_revision=fork["head_revision"], idempotency_key="child-ref-select")
-    assert selected["objects"]["links"]["value"]["refs"][1]["workflow_session_id"] == fork["workflow_session_id"]
-    parent_later = run(service, second)
-    future = next(row for row in service.get_run(parent_later["workflow_session_id"],
-        parent_later["chains"][-1]["chain_run_id"])["outputs"] if row["node_binding_id"] == writer)
+    foreign = run(service, service.create_session(
+        doc["workflow_definition_id"], 1, idempotency_key="foreign-artifact"))
+    foreign_output = next(row for row in service.get_run(foreign["workflow_session_id"],
+        foreign["chains"][-1]["chain_run_id"])["outputs"] if row["node_binding_id"] == writer)
     with pytest.raises(ContractValidationError) as denied:
-        write(service, selected, "links", {"refs": [{"scope": "artifact", "output_id": future["output_id"]}]})
+        write(service, second, "links", {"refs": [
+            {"scope": "artifact", "output_id": foreign_output["output_id"]}]})
     assert denied.value.reason_code == "session_object_reference_denied"
+    assert service.get_session(second["workflow_session_id"])["objects"] == second["objects"]
 
 
-def test_tombstone_restore_reopen_and_unrelated_manifest_access(service):
+def test_tombstone_reopen_and_unrelated_manifest_access(service):
     final = run(service, create(service, object_graph(service)))
-    candidate = service.list_graph_candidates(final["workflow_session_id"])["candidates"][0]["candidate_id"]
     writer, sid = final["nodes"][0]["node_binding_id"], final["workflow_session_id"]
     deleted = service.update_session_objects(sid, node_id=writer, writes=[
         WriteIntent("main", final["objects"]["main"]["revision"], "logical-delete", operation="delete").to_dict()],
         expected_revision=final["revision"], idempotency_key="logical-delete")["session"]
-    restored = service.select_graph_candidate(sid, candidate_id=candidate,
-        expected_revision=deleted["revision"], expected_data_revision=deleted["data_revision"],
-        expected_head_revision=deleted["head_revision"], idempotency_key="undo-delete")
-    assert not restored["objects"]["main"]["deleted"]
-    assert restored["objects"]["main"]["value"] == {"count": 1}
+    assert deleted["objects"]["main"]["deleted"]
+    assert deleted["head_commit_id"] == final["head_commit_id"]
     other = service.create_session(final["workflow_definition_id"], 1, idempotency_key="other-manifest")
     with closing(SqliteStore(service.database)) as store:
-        commit = store._get("workflow_commit", candidate)
+        commit = store._get("workflow_commit", final["head_commit_id"])
     with pytest.raises(ContractValidationError) as denied:
         service.get_state_manifest(other["workflow_session_id"], snapshot_id=commit["state_snapshot_id"])
     assert denied.value.reason_code == "manifest_scope_mismatch"
     path = service.database
     service.close()
     with closing(GraphWorkflowService(path, capability_packages=[task_package()])) as reopened:
-        assert reopened.get_session(sid)["objects"] == restored["objects"]
+        assert reopened.get_session(sid)["objects"] == deleted["objects"]
+        with pytest.raises(ContractValidationError) as denied:
+            reopened.read_session_object(sid, object_key="main", node_id=writer)
+        assert denied.value.reason_code == "session_object_deleted"
 
 
 def test_project_selection_survives_restart_and_missing_install_is_diagnosed(tmp_path):
@@ -329,52 +302,15 @@ def test_long_valid_object_identity_has_a_bounded_automatic_operation_key(servic
     doc = object_graph(service)
     key = "k" * 128
     doc["nodes"][0]["config"]["key"] = key
+    doc["nodes"][1]["config"]["object_key"] = key
     doc["object_bindings"][0]["object_key"] = key
     final = run(service, create(service, doc))
     assert final["status"] == "succeeded" and final["objects"][key]["value"] == {"count": 1}
 
 
-def test_historical_definition_restores_exact_object_bindings_and_rebinding_keeps_cas(service):
-    from test_graph_candidates import choose
-
+def test_new_workflow_uses_its_own_private_node_permissions_and_empty_data(service):
     doc = object_graph(service)
     first = run(service, create(service, doc))
-    first_candidate = service.list_graph_candidates(first["workflow_session_id"])["candidates"][0]["candidate_id"]
-    revised = deepcopy(doc)
-    revised["revision"] = 2
-    writer = doc["nodes"][0]["node_binding_id"]
-    revised["object_bindings"].append(ObjectBinding(
-        "later", "example.task", 1, "private", readers=(writer,), writers=(writer,),
-        owner_node_id=writer).to_dict())
-    service.save_definition(revised, expected_revision=1, idempotency_key="objects-revision-two")
-    rebound = service.rebind_session(first["workflow_session_id"], definition_revision=2,
-        expected_revision=first["revision"], expected_data_revision=first["data_revision"],
-        expected_head_revision=first["head_revision"], idempotency_key="objects-bind-two")
-    second = run(service, rebound)
-    second_candidate = next(row["candidate_id"] for row in service.list_graph_candidates(second["workflow_session_id"])["candidates"]
-                            if row["source_definition_revision"] == 2)
-    edited = write(service, second, "later", {"count": 10})
-    restored_first = choose(service, edited, first_candidate)
-    assert restored_first["definition_revision"] == 1
-    assert set(restored_first["objects"]) == {"main", "other"}
-    restored_second = choose(service, restored_first, second_candidate)
-    assert restored_second["definition_revision"] == 2
-    assert restored_second["objects"]["later"]["value"] == {"count": 0}
-    assert restored_second["objects"]["later"]["revision"] > edited["objects"]["later"]["revision"]
-    restored_first = choose(service, restored_second, first_candidate)
-    explicitly_rebound = service.rebind_session(restored_first["workflow_session_id"], definition_revision=2,
-        expected_revision=restored_first["revision"], expected_data_revision=restored_first["data_revision"],
-        expected_head_revision=restored_first["head_revision"], idempotency_key="objects-explicit-bind-two")
-    assert explicitly_rebound["objects"]["later"]["revision"] > restored_second["objects"]["later"]["revision"]
-    assert len(service.list_graph_candidates(first["workflow_session_id"])["candidates"]) == 2
-
-
-def test_inherited_candidate_restores_historical_object_permissions_after_node_renaming(service):
-    from test_graph_candidates import choose
-
-    doc = object_graph(service)
-    first = run(service, create(service, doc))
-    candidate = service.list_graph_candidates(first["workflow_session_id"])["candidates"][0]["candidate_id"]
     target = deepcopy(doc)
     target["workflow_definition_id"] = str(uuid4())
     original, renamed = doc["nodes"][0]["node_binding_id"], str(uuid4())
@@ -387,39 +323,15 @@ def test_inherited_candidate_restores_historical_object_permissions_after_node_r
     for link in target["edges"]:
         if link["source_node_id"] == original:
             link["source_node_id"] = renamed
-    copied = copy_current(service, first, target,
-        mappings=[{"source_node_id": original, "target_node_id": renamed, "action": "copy"}])
-    restored = choose(service, copied, candidate)
-    assert restored["workflow_definition_id"] == doc["workflow_definition_id"]
-    assert restored["objects"]["other"]["binding"]["owner_node_id"] == original
-    assert service.read_session_object(restored["workflow_session_id"], object_key="other", node_id=original)
+    fresh = create(service, target)
+    assert fresh["objects"]["main"]["value"] == {"count": 0}
+    assert fresh["objects"]["other"]["binding"]["owner_node_id"] == renamed
+    assert service.read_session_object(fresh["workflow_session_id"], object_key="other", node_id=renamed)
     with pytest.raises(ContractValidationError) as denied:
-        service.read_session_object(restored["workflow_session_id"], object_key="other", node_id=renamed)
+        service.read_session_object(fresh["workflow_session_id"], object_key="other", node_id=original)
+    assert denied.value.reason_code == "session_object_access_denied"
+    assert service.read_session_object(first["workflow_session_id"], object_key="other", node_id=original)
+    with pytest.raises(ContractValidationError) as denied:
+        service.read_session_object(first["workflow_session_id"], object_key="other", node_id=renamed)
     assert denied.value.reason_code == "session_object_access_denied"
     assert service.get_session(first["workflow_session_id"]) == first
-
-
-def test_old_checkpoint_without_objects_or_manifest_removes_later_object_bindings(service):
-    from test_graph_candidates import choose
-    from test_graph_service import text_graph
-
-    doc = text_graph(service.registry)
-    first = run(service, create(service, doc))
-    candidate = service.list_graph_candidates(first["workflow_session_id"])["candidates"][0]["candidate_id"]
-    revised = deepcopy(doc)
-    revised.update(revision=2, schema_version=2)
-    writer = doc["nodes"][0]["node_binding_id"]
-    revised["object_bindings"] = [ObjectBinding(
-        "later", "example.task", 1, "shared", readers=(writer,), writers=(writer,)).to_dict()]
-    service.save_definition(revised, expected_revision=1, idempotency_key=str(uuid4()))
-    rebound = service.rebind_session(first["workflow_session_id"], definition_revision=2,
-        expected_revision=first["revision"], expected_data_revision=first["data_revision"],
-        expected_head_revision=first["head_revision"], idempotency_key=str(uuid4()))
-    with closing(SqliteStore(service.database)) as store:
-        commit = store._get("workflow_commit", candidate)
-        store._connection.execute(
-            "DELETE FROM graph_state_manifests WHERE owner_kind='state_snapshot' AND owner_id=?",
-            (commit["state_snapshot_id"],))
-    restored = choose(service, rebound, candidate)
-    assert restored["definition_revision"] == 1
-    assert restored["objects"] == {}

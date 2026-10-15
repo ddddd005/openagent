@@ -17,6 +17,7 @@ from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.graph_store import GraphRecordStore
 from phase1_agent.host_sdk import DataTypeDefinition
+from phase1_agent.program_variable_store import ProgramVariableStore
 from phase1_agent.storage import SqliteStore
 from legacy_consumer_receipt_fixture import seed_legacy_consumer_receipt
 
@@ -536,21 +537,28 @@ def test_internal_variable_receipt_cannot_replace_missing_outer_command_evidence
         "session_id": session["workflow_session_id"], "expected_revision": session["revision"],
         "expected_data_revision": session["data_revision"], "idempotency_key": "inner-data",
     }
-    with closing(new_service(path)) as instance:
-        GraphApplication(instance).command(operation, parameters)
+    inner_request = {
+        "session": session["workflow_session_id"],
+        "expected_revision": session["revision"],
+        "expected_data_revision": session["data_revision"],
+        "variables": None, "shared": None,
+    }
+    inner_key = "graph-data:" + sha256(parameters["idempotency_key"].encode()).hexdigest()
+    with closing(SqliteStore(path)) as store:
+        store._connection.execute("BEGIN IMMEDIATE")
+        variables = ProgramVariableStore(store)
+        variables.write_in_transaction(
+            session["workflow_session_id"], variables.current(session["workflow_session_id"]),
+            expected_revision=session["data_revision"], key=inner_key, request=inner_request,
+        )
+        store._connection.execute("COMMIT")
     with closing(sqlite3.connect(path, isolation_level=None)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM program_variable_receipts").fetchone()[0] >= 1
-        connection.execute(
-            "DELETE FROM idempotency WHERE operation='graph.session.data' AND key=?",
-            (parameters["idempotency_key"],),
-        )
-        connection.execute(
-            "DELETE FROM idempotency WHERE operation=? AND key=?",
-            (IDENTITY_OPERATION, companion_key(operation, "management", parameters["idempotency_key"])),
-        )
     before = raw_database(path)
     prohibit_coordinators(monkeypatch)
-    assert_unresolved(read_receipt(path, operation, parameters))
+    unresolved = read_receipt(path, operation, parameters)
+    assert_unresolved(unresolved)
+    assert unresolved["reason_code"] == "application_identity_missing"
     assert raw_database(path) == before
 
 

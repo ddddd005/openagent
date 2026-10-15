@@ -7,7 +7,6 @@ import { isVariableRegistrationNode, variableRegistrationChange,
   variableRegistrationIssues } from "../domain/workflowVariableRegistration";
 const props = defineProps<{ node: GraphNode; definition: GraphNodeType; document: GraphDocument; catalog?: GraphNodeType[]; disabled?: boolean }>();
 const emit = defineEmits<{ change: [value: Record<string, unknown>];
-  sourceChange: [edgeId: string | null, source: { nodeId: string; portId: string } | null];
   policyChange: [mode: "fixed" | "adjustable"] }>();
 const frontendHost = useInstalledWorkbenchFrontendHost();
 const editors = computed(() => frontendHost.extensions.value.filter(row => row.declaration.binding.slot === "node-fields"
@@ -35,9 +34,6 @@ const schema = computed(() => {
 });
 function changeConfiguration(value: Record<string, unknown>) {
   emit("change", registration.value ? variableRegistrationChange(props.node.config, value) : value);
-}
-function sourceChange(edgeId: string | null, source: { nodeId: string; portId: string } | null) {
-  emit("sourceChange", edgeId, source);
 }
 function objectBindings(access: NonNullable<GraphNodeType["object_accesses"]>[number]) {
   return (props.document.object_bindings ?? []).filter(binding =>
@@ -77,8 +73,7 @@ const configurationMode = computed(() => graphNodeAllowsAdjustable(props.node, p
 <template>
   <section class="graph-node-configuration">
     <component v-for="editor in editors" :key="editor.declaration.extension_id" :is="editor.component"
-      :node="node" :document="document" :catalog="catalog ?? []" :disabled="disabled"
-      @change="sourceChange" />
+      :node="node" :document="document" :catalog="catalog ?? []" :disabled="disabled" />
     <div v-if="configurationMode" class="configuration-mode">
       <span>配置模式</span>
       <div role="group" aria-label="配置模式" class="configuration-mode-options">

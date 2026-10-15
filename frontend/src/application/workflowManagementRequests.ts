@@ -137,6 +137,8 @@ export function createWorkflowManagementRequests(ports: WorkflowManagementReques
     async function dispatch(command: GraphCommand): Promise<GraphReceipt> {
       const request = graphCommandOperation(command.path, command.body);
       if (!valid(request)) throw unavailable("此写操作尚未接入管理原请求保护，未提交");
+      if (request.operation === "session.data.update")
+        throw new WorkbenchApiError("rejected", "旧变量会话数据写入入口已退役；未提交新请求");
       if (request.operation === "run.control"
         && (!controlActions.has(String(request.parameters.action))
           || ["add_model_requests", "add_model_attempts"].some(key => Object.hasOwn(request.parameters, key))))

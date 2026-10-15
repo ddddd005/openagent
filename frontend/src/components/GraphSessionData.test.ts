@@ -74,11 +74,6 @@ async function flush() {
 function elements(node: HostNode): HostNode[] {
   return [node, ...node.children.flatMap(elements)];
 }
-function textarea(root: HostNode) {
-  const input = elements(root).find(node => node.tag === "textarea");
-  expect(input).toBeDefined();
-  return input!;
-}
 async function mount(sessionChanges: Partial<GraphSession> = {}) {
   const evidence = memoryRequestEvidence();
   vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
@@ -112,7 +107,6 @@ async function mount(sessionChanges: Partial<GraphSession> = {}) {
   };
   graph.entries[workflowId]!.session_id = sessionId;
   graph.views[sessionId] = session;
-  const writeData = vi.spyOn(graph, "writeData").mockResolvedValue(true);
   const host = createWorkbenchFrontendHost(() => graph.frontendExtensions, () => graph.packageLock, []);
   const root = new HostNode(), app = renderer.createApp(GraphSessionData);
   app.use(pinia).provide(workbenchFrontendHostKey, host)
@@ -120,7 +114,7 @@ async function mount(sessionChanges: Partial<GraphSession> = {}) {
   apps.push(app);
   app.mount(root);
   await flush();
-  return { root, graph, writeData };
+  return { root };
 }
 
 afterEach(() => {
@@ -129,26 +123,20 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("session data edit availability", () => {
-  it("allows an idle submittable session to edit one legacy variable as JSON", async () => {
-    const f = await mount();
-    const input = textarea(f.root);
-    expect(input.props.disabled).toBe(false);
-    input.value = "7";
-    (input.props.onChange as (event: Event) => void)({ target: input } as unknown as Event);
-    await flush();
-    expect(f.writeData).toHaveBeenCalledOnce();
-    expect(f.writeData).toHaveBeenCalledWith({ counter: 7 });
-  });
-
-  it.each([
-    ["not submittable", { can_submit: false }],
-    ["archived", { archived: true }],
-    ["read only", { readonly: true }],
-  ] as const)("disables legacy variable edits when the session is %s", async (_label, state) => {
-    const f = await mount(state);
-    const input = textarea(f.root);
-    expect(input.props.disabled).toBe(true);
-    expect(f.writeData).not.toHaveBeenCalled();
+describe("session object presentation", () => {
+  it("shows authoritative object details without exposing legacy variable values or edits", async () => {
+    const f = await mount({
+      data: { revision: 0, values: { old: { type: "string", value: "legacy-only" } } },
+      objects: { current: { revision_id: crypto.randomUUID(), revision: 1, type_id: "plugin.state",
+        schema_version: 1, deleted: false, value: "session-current",
+        binding: { object_key: "current", type_id: "plugin.state", schema_version: 1,
+          scope: "shared", owner_node_id: null, readers: [], writers: [] } } },
+    });
+    const rendered = elements(f.root).map(node => node.text).join(" ");
+    expect(rendered).toContain("会话对象");
+    expect(rendered).toContain("session-current");
+    expect(rendered).not.toContain("legacy-only");
+    expect(rendered).not.toContain("旧变量");
+    expect(elements(f.root).some(node => node.tag === "textarea")).toBe(false);
   });
 });

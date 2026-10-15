@@ -13,7 +13,7 @@ from phase1_agent.graph_contracts import NodeDefinition
 from phase1_agent.graph_service import GraphWorkflowService
 
 from test_frontend_node_channel import prepared, request
-from test_frontend_node_runtime import _create, _graph, _save
+from frontend_node_test_support import create as _create, graph as _graph, save as _save
 from test_graph_application_receipt_custody import raw_database
 from test_graph_service import node
 
@@ -286,7 +286,8 @@ def test_private_pause_then_control_reuses_real_runtime_without_replaying_comple
         service.wait(chain_id)
     state = channel.handle(request(owner, "state"))
     assert state["run"]["status"] == ("succeeded" if action == "resume" else "closed")
-    assert len(state["snapshot"]["entries"]) == (1 if action == "resume" else 0)
+    rounds = state["snapshot"]["chat"]["rounds"]
+    assert len(rounds) == 1 and bool(rounds[0]["candidates"]) == (action == "resume")
     gate_run = next(item for item in before_runs if item["node_binding_id"] == gated["node_binding_id"])
     assert invocations == [gate_run["run_id"]]
     after_runs = service.get_run(owner["session_id"], chain_id)["node_runs"]

@@ -7,8 +7,15 @@ live object ACL/CAS and runtime evidence remain in place. See the
 [cleanup receipt](../docs/中期检查2/38-阶段D后旧架构代码整理实施回执-2026-10-15.md).
 The mainline/develop history below is not a deployment claim for this checkout.
 
-Stage E4 now provides node-owned HTTP entry/channel/events addresses and a
-display-only frontend page for the exact saved `frontend.node@1` instance.
+The scoped D/E retirement is now complete. The current menu creates
+`frontend.node@2`; old reference-display business, duplicate commit-candidate
+queries and session-data mutations are retired. Final scoped validation passed
+778 backend tests; existing services were not updated. See the
+[retirement and closeout receipt](../docs/中期检查2/57-D-E阶段旧内容退役与收口实施回执-2026-10-15.md)
+for exact evidence and remaining manual/real-model acceptance.
+
+Stage E4 installed node-owned HTTP entry/channel/events addresses and a
+display-only frontend page for the then-current `frontend.node@1` instance.
 Opening the page does not create a session or start execution. At E4 delivery,
 existing product services and legacy GraphChat/Tavern entries were unchanged. See the
 [E4 scoped delivery receipt](../docs/中期检查2/47-阶段E节点HTTP入口与页面限定验收实施回执-2026-10-15.md).
@@ -34,11 +41,18 @@ Logical chat is now stored in registered `workflow.chat-context@1` items and
 admitted to checkpoint schema4. Independent chat operations use the fixed
 pre-round checkpoint for reroll, select successful candidates, lock earlier
 floors and fork whole floors with target-owned checkpoint references.
-`frontend.node@2` consumes these functions through the exact-node channel;
-version 1 retains its original semantics. Existing schema3 product databases
+`frontend.node@2` consumes these functions through the exact-node channel.
+The current retirement batch removes version 1 from executable registration;
+its saved original requests retain receipt-only verification, not live business
+access or an automatic upgrade. Existing schema3 product databases
 were not migrated. Conflicting computation bases across participating chat
 items are rejected pending a separate user decision. See the
 [scoped chat delivery receipt](../docs/中期检查2/55-聊天候选数据层与重roll检查点接续实施回执-2026-10-15.md).
+
+## Historical Delivery
+
+The dated mainline/develop paragraphs below describe their original batches,
+not the current construction registry or an instruction to reopen retired APIs.
 
 Python workflow runtime for the OpenAgent graph workbench and node-owned frontend.
 The import package remains `phase1_agent`; it is not the retired fixed
@@ -100,6 +114,12 @@ owner. The startup record identifies the selected source, database and owned
 processes. See Quickstart before setting up a fresh clone or a `main` worktree.
 Git push updates the repository, not a running service or a deployment.
 
+The authorized construction branch is `retirement/architecture-2026-10-13`,
+not a `develop` checkout eligible for the development BAT. Use the explicit
+construction startup record with an isolated schema4 database and a workbench
+build whose base is `/workbench/`; do not bypass branch checks or automatically
+migrate an existing schema3 database.
+
 For an explicitly isolated backend-only session, run from this directory with
 Python 3.10 or later:
 
@@ -124,7 +144,7 @@ From `backend/`, after setting up the repository-root virtual environment:
 ```powershell
 ..\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 New-Item -ItemType Directory -Force .local | Out-Null
-..\.venv\Scripts\python.exe -m pytest tests/test_current_node_directory.py tests/test_serial_agent_demo_integration.py tests/test_result_acceptance_retry.py --basetemp .local/pytest-current-backend -q
+..\.venv\Scripts\python.exe -m pytest tests/test_chat_contracts.py tests/test_workflow_chat_operations.py tests/test_variable_registration_contract.py -q
 ```
 
 These tests use controlled model transports and temporary databases, not real
@@ -143,14 +163,16 @@ All files below are under `src/phase1_agent/`.
 | `server.py`, `graph_http.py` | Loopback HTTP and application routing |
 | `frontend_node_entry.py`, `frontend_node_http.py`, `frontend_node_channel.py` | Exact-node frontend addresses and private channel, outside generic commands |
 | `frontend_node_snapshots.py`, `frontend_node_connections.py`, `static/frontend-node-*` | Real postcommit display reads, node-owned notifications and frontend page |
+| `chat_contracts.py`, `workflow_chat_operations.py`, `workflow_chat_service.py`, `workflow_chat_runtime.py` | Registered logical chat, fixed reroll basis, candidate selection and floor fork |
+| `checkpoint_collection.py`, `runtime_checkpoints.py`, `checkpoint_repository.py`, `checkpoint_loading.py` | Explicit schema4 admission, full/diff storage and fresh-target loading |
 | `graph_application.py`, `graph_application_contracts.py` | Command/query boundary and identity checks |
 | `graph_input_declarations.py` | Management-only `definition.inputs`, editable declarations for incomplete graphs and separate active required inputs |
 | `workflow_host.py`, `graph_platform.py`, `graph_service.py` | Host composition, graph/session operations and object adoption |
 | `graph_execution.py`, `graph_runtime_host.py` | Compilation and hosted execution |
 | `agent_package.py`, `agent_executor.py`, `runtime.py`, `runtime_hosting.py` | Native Agent execution, tool boundaries and same-process continuation |
 | `capability_registry.py`, `capability_packages.py`, `builtin_packages.py` | Exact package selection and current declarations |
-| `storage.py`, `graph_store.py`, `runtime_fact_store.py`, `workflow_lifecycle.py` | Records, facts, scoped validation and storage-v17 target archive/deletion |
-| `graph_drafts.py`, `graph_editing_host.py` | Local editing drafts, CAS, non-secret intents and management/consumer scope checks |
+| `storage.py`, `graph_store.py`, `runtime_fact_store.py`, `workflow_lifecycle.py` | Storage version 20 records/facts and exact target archive/deletion |
+| `graph_drafts.py`, `graph_editing_host.py`, `workflow_configuration.py` | Original evidence reads, formal configuration/CAS and management scope checks, not persistent editing drafts |
 | `credential_contract.py`, `credential_store.py`, `graph_provider_host.py`, `provider_discovery.py` | Neutral credential contracts, independent ProviderConfigurationService, private vault, exact receipts and bounded discovery |
 | `content_configuration.py` | Independent trusted global-content management, excluding provider/profile types |
 | `model_contract.py`, `model_service.py`, `model_host_service.py`, `model_package.py` | Global named profiles, reference-only source nodes, recursively frozen configuration and model calls |
