@@ -1,5 +1,11 @@
 # OpenAgent Backend
 
+On 2026-10-16 the accepted architecture was locally fast-forwarded into both
+develop and main. See the [local promotion receipt](../docs/中期检查2/59-新架构本地晋升develop与main实施回执-2026-10-16.md)
+and [two-round offline acceptance](../docs/中期检查2/58-用户极简工作流两轮离线验收与主干接续建议-2026-10-16.md).
+No push, stable-service deployment or database migration occurred. Dated
+construction and service statements below describe their original batches.
+
 The 2026-10-15 construction checkout has retired unused history-closure restore
 authority and cross-workflow session copying. Current checkpoints initialize a
 new session through the dedicated checkpoint loader. Frozen receipt verification,
@@ -10,9 +16,10 @@ The mainline/develop history below is not a deployment claim for this checkout.
 The scoped D/E retirement is now complete. The current menu creates
 `frontend.node@2`; old reference-display business, duplicate commit-candidate
 queries and session-data mutations are retired. Final scoped validation passed
-778 backend tests; existing services were not updated. See the
+778 backend tests; services were not updated during that batch. See the
 [retirement and closeout receipt](../docs/中期检查2/57-D-E阶段旧内容退役与收口实施回执-2026-10-15.md)
-for exact evidence and remaining manual/real-model acceptance.
+for exact evidence; subsequent user-workflow evidence is in receipt 58 above.
+Real-model acceptance remains separate.
 
 Stage E4 installed node-owned HTTP entry/channel/events addresses and a
 display-only frontend page for the then-current `frontend.node@1` instance.

@@ -21,12 +21,12 @@
 - Work only within the current authorization. Permission to investigate or edit documents is not permission to change product code, run product tests, clean data, start services, call models, commit, merge or push.
 - Obtain approval for removal or migration outside the agreed scope. Explain the affected content and dependencies, and verify absolute data paths. Existing cleanup approvals remain subject to their documented stage and replacement prerequisites.
 - Protect credentials and original request evidence. Do not log secrets, rewrite confirmed execution facts or automatically replay unknown requests.
-- Normal development uses `develop`; the user approved the temporary `retirement/architecture-2026-10-13` branch in this worktree as the sole construction site. The original `openagent` directory is a read-only baseline. Do not write, test or run product code there.
+- Normal development uses `develop`. On 2026-10-16 the user approved local fast-forward promotion of the accepted retirement baseline into `develop` and `main`, superseding the temporary sole-construction-site and original-worktree read-only restrictions for that transition. Keep this retirement checkout and its local acceptance evidence; subsequent product work uses `develop` under its own task authorization.
 - The normal `start.bat` still selects a clean `main` checkout. Do not change that arrangement, bypass launcher branch checks, start product services or call real models without explicit authorization. Offline tests and builds for the approved construction scope are allowed here.
 
 ## Current Status and Documents
 
-The user explicitly approved the complete snapshot, worktree transition and resumption of product construction on 2026-10-13. This worktree is the only construction site. Work through already-decided retirement responsibilities in reviewed batches; unresolved new contracts still go to the user. Resumption does not authorize new architecture, real model calls, data imports, final merge or push.
+The user approved the complete snapshot and temporary retirement worktree on 2026-10-13, then local promotion after scoped D/E closeout and two-round offline acceptance on 2026-10-16. Clean `develop` and `main` worktrees were fast-forwarded to the same accepted baseline. The local promotion does not authorize pushing, proxy changes, deployment, database migration, real model calls or new product work; the user will adjust the network proxy before any later push.
 
 - [Snapshot, worktree and first retirement batch](docs/中期检查2/05-完整快照与退役施工首批授权回执-2026-10-13.md).
 - [Current product decisions and operation boundaries](docs/中期检查/41-当前产品决定与实施边界-2026-10-13.md).
@@ -78,5 +78,6 @@ The user explicitly approved the complete snapshot, worktree transition and resu
 - [D/E legacy retirement survey and staged closeout inventory; current-menu version gap, receipt-only prerequisites, protected shared functionality and pending acceptance, investigation only](docs/中期检查2/56-D-E阶段旧内容退役勘察与收口清单-2026-10-15.md).
 - [D/E scoped legacy retirement and code closeout; current menu, receipt-only verification, mixed-test cleanup and final offline evidence, with deployment and real-model acceptance remaining](docs/中期检查2/57-D-E阶段旧内容退役与收口实施回执-2026-10-15.md).
 - [User-built minimal workflow two-round offline acceptance, committed D/E baseline and recommended same-commit develop/main fast-forward sequence; no merge or push performed](docs/中期检查2/58-用户极简工作流两轮离线验收与主干接续建议-2026-10-16.md).
+- [Authorized local develop/main fast-forward promotion, clean-worktree checks and documentation handover; no push, deployment or database changes](docs/中期检查2/59-新架构本地晋升develop与main实施回执-2026-10-16.md).
 
 Moving a rule out of this file does not revoke it. Historical instructions are not current installation requirements; unresolved architecture questions go to the user.
