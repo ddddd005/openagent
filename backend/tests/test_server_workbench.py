@@ -1,4 +1,4 @@
-"""Production workbench assets share the current API and consumer origin."""
+"""Production workbench assets share the API origin without legacy chat entry."""
 
 from contextlib import contextmanager
 from pathlib import Path
@@ -48,14 +48,19 @@ def test_production_workbench_and_current_pages_api_share_one_origin(build):
             ("/workbench/", "text/html", b"/workbench/assets/index-test.js"),
             ("/workbench/assets/index-test.js", "text/javascript", b"currentBuild"),
             ("/workbench/assets/index-test.css", "text/css", b"color: black"),
-            ("/", "text/html", b"/static/chat-entry.js"),
-            ("/static/index.html", "text/html", b"/static/chat-entry.js"),
         ):
             status, headers, body = call(port, "GET", path)
             assert status == 200 and headers["Content-Type"].startswith(content_type) and marker in body
             assert headers["Cache-Control"] == "no-store"
             assert headers["X-Content-Type-Options"] == "nosniff"
             assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
+        for path in ("/", "/static/index.html", "/tavern/", "/tavern/index.html"):
+            status, headers, body = call(port, "GET", path)
+            assert status == 410 and headers["Content-Type"].startswith("application/json")
+            assert b"legacy_frontend_entry_retired" in body and b"<script" not in body
+            assert "Location" not in headers
+            assert headers["Cache-Control"] == "no-store"
+            assert headers["X-Content-Type-Options"] == "nosniff"
         assert service.calls == []
         assert call(port, "GET", "/api/health")[0] == 200
         assert command(port, {"operation": "example.current", "parameters": {}})[0] == 200

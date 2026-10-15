@@ -16,7 +16,6 @@ from workflow_test_support import output, run
 from test_context_native_integration import native_graph
 from test_graph_service import create
 from test_model_package import profile_config, source_config
-from test_tavern_chat_integration import add_chat, public_read
 from credential_test_support import seed_service_credential
 
 
@@ -77,9 +76,7 @@ def gemini_graph(service, route):
     source["component_version"] = "6"
     agent = next(node for node in doc["nodes"] if node["component_id"] == "agents.execute")
     agent["component_version"] = "9"
-    current = next(node for node in doc["nodes"] if node["component_id"] == "tools.current-input")
-    chat = add_chat(service, doc, current, agent)
-    return doc, chat
+    return doc
 
 
 def read_public_thinking(service, view):
@@ -108,12 +105,12 @@ def read_public_thinking(service, view):
 
 
 @pytest.mark.parametrize("route", ["native"])
-def test_gemini_agent_tools_context_cold_reopen_and_public_tavern(route, tmp_path, monkeypatch):
+def test_gemini_agent_tools_context_cold_reopen_and_public_thinking(route, tmp_path, monkeypatch):
     fixture = GeminiGraphFixture()
     database = tmp_path / (route + ".sqlite")
     with closing(GraphWorkflowService(database, public_model_factory=fixture.factory)) as service:
         fixture.write_provider(service)
-        doc, chat = gemini_graph(service, route)
+        doc = gemini_graph(service, route)
         first = run(service, create(service, doc), "First Gemini request")
         assert first["status"] == "succeeded", json.dumps([
             {"label": item["label"], "status": item["status"], "diagnostic": item.get("diagnostic")}
@@ -125,9 +122,7 @@ def test_gemini_agent_tools_context_cold_reopen_and_public_tavern(route, tmp_pat
                      for part in content["parts"] if "functionResponse" in part]
         assert [response["id"] for response in responses] == ["native-0-0", "native-0-1"]
         assert output(first, "agents.execute", "result")["text"] == "Gemini accepted answer"
-        _, _, texts = public_read(service, first, doc, chat)
-        assert texts == ["First Gemini request", "Gemini accepted answer"]
-        assert "Visible summary" not in "".join(texts)
+        assert "Visible summary" not in output(first, "agents.execute", "result")["text"]
         summaries = read_public_thinking(service, first)
         assert [item["thinking_summary"] for item in summaries] == [
             "Visible summary 0", "Visible summary 1", "Visible summary 2"]
@@ -152,6 +147,4 @@ def test_gemini_agent_tools_context_cold_reopen_and_public_tavern(route, tmp_pat
         assert len(fixture.wires) == 6
         for original in fixture.original_contents[:3]:
             assert original in fixture.wires[3]["contents"]
-        _, _, texts = public_read(reopened, second, doc, chat)
-        assert texts == ["First Gemini request", "Gemini accepted answer",
-                         "After cold reopen", "Gemini accepted answer"]
+        assert output(second, "agents.execute", "result")["text"] == "Gemini accepted answer"

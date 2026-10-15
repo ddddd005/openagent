@@ -204,11 +204,11 @@ def test_fork_initializes_saved_values_without_nodes_and_excludes_test_display(t
         assert first["status"] == "succeeded", first["chains"]
         saved_history = checkpoint_history(service, first)
         point = saved_history["latest"]
-        assert point["schema_version"] == 2
+        assert point["schema_version"] == 4
         metadata = service.read_checkpoint(
             first["workflow_session_id"], checkpoint_id=point["checkpoint_id"],
         )
-        assert metadata["schema_version"] == 2 and "state_storage" not in metadata and "state" not in metadata
+        assert metadata["schema_version"] == 4 and "state_storage" not in metadata and "state" not in metadata
         state = saved_history["state"]
         assert set(state["agent_contexts"]) == {"context-alpha", "context-beta"}
         assert all(set(entry) == {"value"} for entry in state["agent_contexts"].values())

@@ -48,8 +48,6 @@ COMMANDS = (
                "secret", "idempotency_key", "provider_seed")),
     operation("credential.delete", "delete_credential",
               ("credential_ref", "expected_generation", "idempotency_key")),
-    operation("consumer.draft.save", "save_consumer_draft",
-              ("address", "format_version", "value", "expected_sequence", "idempotency_key"), consumer=True),
     operation("definition.update", "update_definition",
               ("workflow_definition_id", "document", "expected_edit_sequence", "idempotency_key"),
               ("confirm_derivation",)),
@@ -66,10 +64,6 @@ COMMANDS = (
               ("workflow_definition_id", "definition_revision", "event_id", "event_schema_version",
                "payload", "expected_revision", "idempotency_key"), session=True, status=202),
     operation("run.control", "control", ("action", "expected_revision", "idempotency_key"), session=True),
-    operation("session.copy", "copy_session",
-              ("document", "expected_session_revision", "expected_data_revision",
-               "expected_definition_revision", "expected_head_revision", "idempotency_key"),
-              ("mappings",), session=True, status=201),
     operation("checkpoint.fork", "fork_checkpoint",
               ("checkpoint_id", "expected_session_revision", "expected_data_revision",
                "expected_head_revision", "idempotency_key"), session=True, status=201),
@@ -81,6 +75,13 @@ COMMANDS = (
     operation("resource.save", "save_global_resource", ("record", "expected_sequence", "idempotency_key")),
     operation("resource.delete", "delete_global_resource", ("identity", "expected_sequence", "idempotency_key")),
     operation("packages.configure", "configure_capability_packages", ("enabled_packages",)),
+)
+
+# Kept out of GraphApplication dispatch/discovery. Receipt reads still need the
+# exact retired request contract to verify previously persisted results.
+RETIRED_RECEIPT_COMMANDS = (
+    operation("consumer.draft.save", "save_consumer_draft",
+              ("address", "format_version", "value", "expected_sequence", "idempotency_key"), consumer=True),
     operation("consumer.session.create", "create_consumer_session",
               ("workflow_definition_id", "definition_revision", "idempotency_key"), consumer=True, status=201),
     operation("consumer.run.start", "start_consumer",
@@ -91,11 +92,10 @@ COMMANDS = (
     operation("consumer.run.control", "control_consumer",
               ("action", "expected_revision", "idempotency_key"),
               session=True, consumer=True),
-)
-
-# Kept out of GraphApplication dispatch/discovery. Receipt reads still need the
-# exact retired request contract to verify previously persisted results.
-RETIRED_RECEIPT_COMMANDS = (
+    operation("session.copy", "copy_session",
+              ("document", "expected_session_revision", "expected_data_revision",
+               "expected_definition_revision", "expected_head_revision", "idempotency_key"),
+              ("mappings",), session=True, status=201),
     operation("context.adopt", "adopt_context_view",
               ("node_id", "view_output_id", "expected_revision", "idempotency_key"), session=True),
     operation("session.rebind", "rebind_session",
@@ -152,38 +152,28 @@ QUERIES = (
     operation("object.artifact.read", "read_object_artifact",
               ("object_key", "node_id", "reference"), ("revision_id",), session=True),
     operation("registration.list", "_registration_list",
-              optional=("session_id", "chain_id", "node_id", "kind", "package_id", "channel_id", "limit", "cursor"),
-              consumer=True),
+              optional=("session_id", "chain_id", "node_id", "kind", "package_id", "channel_id", "limit", "cursor")),
     operation("information.read", "_information_read", ("reference", "owner", "generation"),
-              ("source_scope", "limit", "cursor"), session=True, consumer=True),
+              ("source_scope", "limit", "cursor"), session=True),
     operation("manifest.read", "get_state_manifest", optional=("snapshot_id", "chain_id", "boundary"), session=True),
     operation("resource.read", "get_global_resource", ("identity",)),
     operation("resource.list", "list_global_resources", optional=("scope", "type_id")),
-    operation("consumer.definition", "consumer_definition", ("identity",), consumer=True),
     operation("frontend.extensions.read", "consumer_frontend_extensions",
               ("workflow_definition_id", "definition_revision", "node_id", "port_id"),
-              session=True, consumer=True),
-    operation("consumer.sessions", "list_consumer_sessions", ("identity",), consumer=True),
-    operation("consumer.read", "get_consumer", session=True, consumer=True),
-    operation("consumer.candidate.list", "list_consumer_candidates",
-              ("workflow_definition_id", "definition_revision"), session=True, consumer=True),
-    operation("consumer.event.bindings", "list_consumer_event_bindings",
-              ("workflow_definition_id", "definition_revision"), session=True, consumer=True),
-    operation("consumer.event.read", "read_consumer_event", ("chain_id",), session=True, consumer=True),
-    operation("consumer.actions", "_consumer_actions", session=True, consumer=True),
-    operation("output.list", "public_outputs", session=True, consumer=True),
+              session=True),
+    operation("output.list", "public_outputs", session=True),
     operation("output.read", "read_public_output",
               ("workflow_definition_id", "definition_revision", "node_id", "port_id"), ("run_id",),
-              session=True, consumer=True),
+              session=True),
     operation("output.artifact.read", "read_public_artifact",
               ("workflow_definition_id", "definition_revision", "node_id", "port_id", "run_id", "reference"),
-              session=True, consumer=True),
+              session=True),
     operation("output.history", "public_output_history",
-              ("workflow_definition_id", "definition_revision", "node_id", "port_id"), session=True, consumer=True),
+              ("workflow_definition_id", "definition_revision", "node_id", "port_id"), session=True),
 )
 
 
-def validate_parameters(spec, parameters):
+def validate_parameters(spec, parameters, *, stored_evidence=False):
     required = spec.required | ({"session_id"} if spec.session else set())
     require(type(parameters) is dict and required <= set(parameters) <= required | spec.optional,
             "invalid_request", "Application operation fields differ")
@@ -192,7 +182,9 @@ def validate_parameters(spec, parameters):
         if spec.name in ("request-evidence.read", "request-evidence.write"):
             validate_evidence_owner(parameters["owner_kind"], parameters["owner_id"])
         if spec.name == "request-evidence.write":
-            validate_evidence_request(parameters["operation"], parameters["idempotency_key"], parameters["request"])
+            validate_evidence_request(
+                parameters["operation"], parameters["idempotency_key"], parameters["request"],
+                stored=stored_evidence)
         if spec.name == "request-evidence.resolve":
             from re import fullmatch
             require(type(parameters["operation"]) is str

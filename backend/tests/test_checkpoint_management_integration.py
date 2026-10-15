@@ -62,6 +62,8 @@ def _insert_empty_context_checkpoint(database, session):
             "nodes": {},
         },
         "agent_contexts": {},
+        "variables": {},
+        "chat_contexts": {},
     }
     store = SqliteStore(database)
     connection = store._connection
@@ -74,7 +76,7 @@ def _insert_empty_context_checkpoint(database, session):
             fixed_definition_revision=session["definition_revision"],
         )
         repository.insert({
-            "schema_version": 2,
+            "schema_version": 4,
             "checkpoint_id": checkpoint_id,
             "workflow_definition_id": session["workflow_definition_id"],
             "workflow_session_id": session["workflow_session_id"],
@@ -155,7 +157,7 @@ def test_management_host_forks_a_checkpoint_with_existing_receipt_and_queries(tm
         })
         assert set(target_detail) == DETAIL_FIELDS
         assert target_detail == {
-            "schema_version": 2,
+            "schema_version": 4,
             "checkpoint_id": result["target_checkpoint_id"],
             "workflow_definition_id": workflow_id,
             "workflow_session_id": result["target_session_id"],

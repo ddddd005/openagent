@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { saveLocalDraft, workbenchDraftAddress } from "../adapters/localDraftsApi";
-import { sendGraphCommand } from "../adapters/workflowApplicationApi";
+import { readGraphReceipt, sendGraphCommand } from "../adapters/workflowApplicationApi";
 import { readLegacyWorkbenchEvidence } from "../adapters/workbenchPersistence";
 import { graphClone, newGraph, type GraphCommand, type GraphEntry } from "../domain/workflowGraph";
 import { createGraphCommand, dispatchGraphCommand, type GraphCommandPorts } from "./workflowCommands";
+import { graphReceiptReadResponse } from "../testUtils/graphApplicationServer";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -88,6 +89,32 @@ describe("legacy graph command retirement", () => {
     })).rejects.toMatchObject({ kind: "unavailable", code: "graph_definition_save_retired" });
 
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("rejects direct session.copy transport while keeping exact receipt reads available", async () => {
+    const sid = crypto.randomUUID(), path = `/api/graph/sessions/${sid}/copy`;
+    const body = {
+      document: newGraph("Frozen copy"), expected_session_revision: 2, expected_data_revision: 1,
+      expected_definition_revision: 1, expected_head_revision: 1, idempotency_key: crypto.randomUUID(),
+    };
+    const original = graphClone(body), parameters = { ...original, session_id: sid };
+    const result = {
+      workflow_definition_id: body.document.workflow_definition_id, definition_revision: 1,
+      workflow_session_id: crypto.randomUUID(), revision: 1, data_revision: 1,
+      head_revision: 1, head_commit_id: crypto.randomUUID(), active_chain_run_id: null,
+    };
+    const fetcher = vi.fn(async (target: string, init: RequestInit) => {
+      expect(target).toBe("/api/graph/receipts/read");
+      expect(JSON.parse(String(init.body))).toEqual({ operation: "session.copy", parameters });
+      return graphReceiptReadResponse("session.copy", parameters, result);
+    });
+    vi.stubGlobal("fetch", fetcher);
+
+    await expect(sendGraphCommand(path, body)).rejects.toMatchObject({ kind: "rejected" });
+    expect(fetcher).not.toHaveBeenCalled();
+    await expect(readGraphReceipt(path, body)).resolves.toEqual(result);
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(body).toEqual(original);
   });
 
   it("rejects direct management draft writes before fetch", async () => {

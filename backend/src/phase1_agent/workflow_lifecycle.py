@@ -158,6 +158,8 @@ class WorkflowLifecycle:
                     "Another session still references this historical evidence", 409)
         object_revisions = set()
         for sid in ids:
+            from .workflow_chat_runtime import delete_chat_session_records
+            delete_chat_session_records(repo, sid)
             for table in ("session_object_bindings", "session_object_revision_membership"):
                 object_revisions.update(row[0] for row in connection.execute(
                     f"SELECT revision_id FROM {table} WHERE session_id=?", (sid,)))

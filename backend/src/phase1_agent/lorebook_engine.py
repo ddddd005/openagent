@@ -15,7 +15,7 @@ from .prompt_contract import _source_origins, check_prompt_schema
 from .prompt_lifecycle import (
     lifecycle_prompt_content, make_lifecycle_prompt_item, merge_lifecycle_prompt_materials,
 )
-from .tool_package import _scalar_text, _validate_variable
+from .variable_contract import scalar_text, validate_variable
 
 
 MAX_ENTRIES = 1024
@@ -94,13 +94,13 @@ def _variables(values):
             "Authorized variable values exceed their read budget")
     result = {}
     for value in values:
-        _validate_variable(value)
+        validate_variable(value)
         if not value["registered"]:
             continue
         name = value["name"]
         require(name not in result, "variable_name_conflict",
                 "Authorized variable objects declare the same name")
-        result[name] = _scalar_text(value["value_type"], value["value"]) if value["assigned"] else None
+        result[name] = scalar_text(value["value_type"], value["value"]) if value["assigned"] else None
     return result
 
 

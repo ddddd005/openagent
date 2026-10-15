@@ -85,6 +85,7 @@ class SqliteStore:
             from .content_configuration import initialize_content_metadata
             from .workflow_configuration import initialize_configuration_tables
             from .checkpoint_repository import initialize_checkpoint_tables
+            from .workflow_chat_runtime import initialize_chat_tables
             initialize_object_tables(self._connection)
             initialize_global_resource_tables(self._connection)
             initialize_type_contract_tables(self._connection)
@@ -94,6 +95,7 @@ class SqliteStore:
             initialize_content_metadata(self._connection)
             initialize_configuration_tables(self._connection)
             initialize_checkpoint_tables(self._connection)
+            initialize_chat_tables(self._connection)
             self._connection.execute(
                 "CREATE TABLE IF NOT EXISTS workflow_management ("
                 "object_kind TEXT NOT NULL CHECK(object_kind IN ('definition','session')), "

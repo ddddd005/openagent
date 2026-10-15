@@ -10,6 +10,7 @@ import { buildNodeFamilies, nodeDisplayTitle, nodeMenuGroups, nodeProfileLabel, 
 import { captureNodeSelection, nodeSelectionAllowed, nodeSelectionIssue, type NodeSelectionRequest } from "../domain/nodeSelection";
 import GraphCanvasNode from "./GraphCanvasNode.vue";
 import GraphNodeConfiguration from "./GraphNodeConfiguration.vue";
+import GraphVariableRegistration from "./GraphVariableRegistration.vue";
 import CanvasNodeMenu from "./CanvasNodeMenu.vue";
 import NodeProfileDialog from "./NodeProfileDialog.vue";
 import GraphSessionData from "./GraphSessionData.vue";
@@ -20,12 +21,13 @@ import GraphResult from "./GraphResult.vue";
 import { graphConnectionIssue } from "../domain/graphConnections";
 import { resultStatusLabel } from "../domain/resultPresentation";
 import { modelPresentationJson } from "../domain/modelPresentation";
-import { useInstalledWorkbenchFrontendHost } from "../application/workbenchFrontendHost";
 import { useCanvasNodeMenu } from "../composables/useCanvasNodeMenu";
 import { useVolatileFormState } from "../composables/useVolatileFormState";
 import { diagnosticRecovery } from "../domain/diagnosticPresentation";
+import { useInstalledWorkbenchFrontendHost } from "../application/workbenchFrontendHost";
 const graph = useWorkflowGraphStore();
 const workspace = useWorkspaceStore();
+const frontendHost = useInstalledWorkbenchFrontendHost();
 const navigationError = ref("");
 let navigationGeneration = 0;
 function leaveEditor(change: () => void) {
@@ -36,22 +38,18 @@ function leaveEditor(change: () => void) {
 }
 function selectNodes(ids: string[], edgeId: string | null = null, closePanels = false) {
   void leaveEditor(() => {
-    if (closePanels) showEvents.value = showFrontend.value = showBindings.value = showInformation.value = false;
+    if (closePanels) showEvents.value = showBindings.value = showInformation.value = false;
     graph.selectedNodeIds = ids; graph.selectedEdgeId = edgeId;
   });
 }
-function panel(name: "events" | "frontend" | "bindings" | "information") {
+function panel(name: "events" | "bindings" | "information") {
   void leaveEditor(() => {
-    const previous = { events: showEvents.value, frontend: showFrontend.value,
-      bindings: showBindings.value, information: showInformation.value };
+    const previous = { events: showEvents.value, bindings: showBindings.value, information: showInformation.value };
     showEvents.value = name === "events" && !previous.events;
-    showFrontend.value = name === "frontend" && !previous.frontend;
     showBindings.value = name === "bindings" && !previous.bindings;
     showInformation.value = name === "information" && !previous.information;
   });
 }
-const frontendHost = useInstalledWorkbenchFrontendHost();
-const frontendPanels = computed(() => frontendHost.extensions.value.filter(row => row.declaration.binding.slot === "panel"));
 const canvas = ref<HTMLElement | null>(null);
 const menu = useCanvasNodeMenu(canvas);
 const flow = shallowRef<VueFlowStore | null>(null);
@@ -87,7 +85,6 @@ let initialFit = true;
 const inspectorTab = ref<"config" | "result" | "information">("config");
 const showBindings = ref(false);
 const showInformation = ref(false);
-const showFrontend = ref(false);
 const showEvents = ref(false);
 const selectedNode = computed(() => graph.document?.nodes.find(n => graph.selectedNodeIds.includes(n.node_binding_id)));
 const titleDraft = ref("");
@@ -234,7 +231,7 @@ function locate(id?: string) {
     void nextTick(() => { void flow.value?.fitView({ nodes: [id], padding: 0.6, maxZoom: 1 }); });
   });
 }
-watch(() => workspace.activeWorkflowId, () => { flow.value = null; connecting.value = null; connectionMessage.value = ""; initialFit = true; menu.close(); selectionRequest.value = null; inspectorTab.value = "config"; showBindings.value = false; showInformation.value = false; showFrontend.value = false; showEvents.value = false; });
+watch(() => workspace.activeWorkflowId, () => { flow.value = null; connecting.value = null; connectionMessage.value = ""; initialFit = true; menu.close(); selectionRequest.value = null; inspectorTab.value = "config"; showBindings.value = false; showInformation.value = false; showEvents.value = false; });
 </script>
 
 <template>
@@ -245,7 +242,6 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; connecting.va
       <div class="graph-toolbar-actions">
         <button type="button" title="添加节点" aria-label="添加节点" :disabled="graph.editorLocked || graph.catalogLoading || !!graph.catalogError" @click="menu.open('add')"><Plus :size="15" /></button>
         <button type="button" :aria-pressed="showEvents" :disabled="!graph.document" @click="panel('events')">局部事件</button>
-        <button type="button" :aria-pressed="showFrontend" :disabled="!graph.document || !frontendPanels.length" @click="panel('frontend')">前端展示</button>
         <button type="button" :aria-pressed="showBindings" :disabled="!graph.document" @click="panel('bindings')">会话绑定</button>
         <button type="button" title="统一登记目录" aria-label="统一登记目录" :aria-pressed="showInformation" @click="panel('information')"><Database :size="15" /></button>
         <button type="button" title="撤销" aria-label="撤销" :disabled="!graph.canUndo" @click="leaveEditor(() => graph.undo())"><Undo2 :size="15" /></button>
@@ -269,11 +265,8 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; connecting.va
         <CanvasNodeMenu :state="menu.menu.value" :groups="menuGroups" @select="add" @add="menu.open('add', menu.menu.value ?? undefined)" @back="menu.open('context', menu.menu.value ?? undefined)" @dismiss="menu.close()" />
       </div>
       <aside class="graph-inspector" aria-label="节点详情">
-        <header><strong>{{ showEvents ? '局部事件' : showFrontend ? '前端展示接线' : showInformation ? '统一登记目录' : showBindings ? '会话对象绑定' : selectedNode ? displayTitle(selectedNode) : '运行结果' }}</strong><button v-if="!showEvents && !showFrontend && !showBindings && !showInformation && (selectedNode || graph.selectedEdgeId)" type="button" aria-label="删除选中" title="删除选中" :disabled="graph.editorLocked" @click="leaveEditor(() => graph.removeSelection())"><Trash2 :size="15" /></button></header>
+        <header><strong>{{ showEvents ? '局部事件' : showInformation ? '统一登记目录' : showBindings ? '会话对象绑定' : selectedNode ? displayTitle(selectedNode) : '运行结果' }}</strong><button v-if="!showEvents && !showBindings && !showInformation && (selectedNode || graph.selectedEdgeId)" type="button" aria-label="删除选中" title="删除选中" :disabled="graph.editorLocked" @click="leaveEditor(() => graph.removeSelection())"><Trash2 :size="15" /></button></header>
         <div v-if="showEvents" class="graph-inspector-content"><GraphEvents /></div>
-        <div v-else-if="showFrontend" class="graph-inspector-content"><component v-for="panel in frontendPanels"
-          :key="panel.declaration.extension_id" :is="panel.component" @connected="showFrontend = false; fit()" />
-          <p v-if="!frontendPanels.length" role="status">前端扩展不可用，请刷新目录。</p></div>
         <div v-else-if="showInformation" class="graph-inspector-content"><GraphInformation :session-id="graph.session?.workflow_session_id" /></div>
         <div v-else-if="showBindings && graph.document" class="graph-inspector-content">
           <GraphObjectBindings :document="graph.document" :types="graph.dataTypes" :disabled="graph.editorLocked" @change="graph.setObjectBindings($event)" />
@@ -294,9 +287,10 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; connecting.va
               @policy-change="graph.patchNodeConfigurationPolicy(selectedNode.node_binding_id, $event)"
               @source-change="(edgeId, source) => graph.patchFrontendSource(selectedNode!.node_binding_id, edgeId, source)" />
             <pre v-else>{{ json(selectedNode.config) }}</pre>
-            <small class="graph-muted">{{ graph.document?.execution_roots?.includes(selectedNode.node_binding_id) ? '运行目标' : '按依赖执行' }} · {{ predecessors.length ? `等待 ${predecessors.length} 个前序节点` : '无前序等待' }}</small>
+            <GraphVariableRegistration :node-id="selectedNode.node_binding_id" />
+            <small class="graph-muted">{{ selectedType?.execution_class === 'non_working' ? '主动交互' : graph.document?.execution_roots?.includes(selectedNode.node_binding_id) ? '运行目标' : '按依赖执行' }} · {{ predecessors.length ? `等待 ${predecessors.length} 个前序节点` : '无前序等待' }}</small>
             <details class="graph-runtime-settings"><summary>运行设置</summary>
-              <label class="graph-checkbox"><input type="checkbox" :checked="graph.document?.execution_roots?.includes(selectedNode.node_binding_id)" :disabled="graph.editorLocked" @change="graph.setExecutionRoot(selectedNode.node_binding_id, ($event.target as HTMLInputElement).checked)" />作为运行目标</label>
+              <label class="graph-checkbox"><input type="checkbox" :checked="graph.document?.execution_roots?.includes(selectedNode.node_binding_id)" :disabled="graph.editorLocked || selectedType?.execution_class === 'non_working'" @change="graph.setExecutionRoot(selectedNode.node_binding_id, ($event.target as HTMLInputElement).checked)" />作为运行目标</label>
               <fieldset><legend>前序节点</legend><label v-for="node in graph.document?.nodes.filter(node => node.node_binding_id !== selectedNode?.node_binding_id)" :key="node.node_binding_id" class="graph-checkbox"><input type="checkbox" :checked="predecessors.includes(node.node_binding_id)" :disabled="graph.editorLocked" @change="predecessor(node.node_binding_id, $event)" />{{ displayTitle(node) }}</label></fieldset>
               <fieldset v-if="selectedType"><legend>允许聊天端读取的结果</legend><label v-for="port in nodePorts(selectedType, selectedNode, 'outputs')" :key="port.port_id" class="graph-checkbox"><input type="checkbox" :checked="selectedNode.public_outputs?.includes(port.port_id)" :disabled="graph.editorLocked" @change="graph.patchNode(selectedNode.node_binding_id, { public_outputs: ($event.target as HTMLInputElement).checked ? [...(selectedNode.public_outputs ?? []), port.port_id] : (selectedNode.public_outputs ?? []).filter(p => p !== port.port_id) })" />{{ port.port_id }}</label></fieldset>
             </details>

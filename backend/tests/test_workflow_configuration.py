@@ -477,11 +477,12 @@ def test_missing_lifecycle_fields_are_legal_incomplete_configuration(service):
 
 
 def _copy(service, session, target):
-    return service.copy_session(
-        session["workflow_session_id"], document=target,
-        expected_session_revision=session["revision"], expected_data_revision=session["data_revision"],
-        expected_definition_revision=session["definition_revision"], expected_head_revision=session["head_revision"],
-        idempotency_key=str(uuid4()))
+    return GraphApplication(service).command("session.copy", {
+        "session_id": session["workflow_session_id"], "document": target,
+        "expected_session_revision": session["revision"], "expected_data_revision": session["data_revision"],
+        "expected_definition_revision": session["definition_revision"],
+        "expected_head_revision": session["head_revision"], "idempotency_key": str(uuid4()),
+    })
 
 
 def test_legacy_copy_cannot_bypass_schema3_source_partition(service):
@@ -493,7 +494,7 @@ def test_legacy_copy_cannot_bypass_schema3_source_partition(service):
     target["nodes"][0].pop("configuration_policy")
     with pytest.raises(ContractValidationError) as error:
         _copy(service, session, target)
-    assert error.value.reason_code == "graph_configuration_update_required"
+    assert error.value.reason_code == "not_found"
     assert bundle(service) == before
 
 
@@ -506,7 +507,7 @@ def test_legacy_copy_cannot_create_schema3_target_without_current_partition(serv
     before = bundle(service)
     with pytest.raises(ContractValidationError) as error:
         _copy(service, session, document())
-    assert error.value.reason_code == "graph_configuration_update_required"
+    assert error.value.reason_code == "not_found"
     assert bundle(service) == before
 
 

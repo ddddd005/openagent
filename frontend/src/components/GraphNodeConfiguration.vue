@@ -2,7 +2,9 @@
 import { computed } from "vue";
 import GraphSchemaFields from "./GraphSchemaFields.vue";
 import { useInstalledWorkbenchFrontendHost } from "../application/workbenchFrontendHost";
-import { graphObject, type GraphDocument, type GraphNode, type GraphNodeType } from "../domain/workflowGraph";
+import { graphNodeAllowsAdjustable, graphObject, type GraphDocument, type GraphNode, type GraphNodeType } from "../domain/workflowGraph";
+import { isVariableRegistrationNode, variableRegistrationChange,
+  variableRegistrationIssues } from "../domain/workflowVariableRegistration";
 const props = defineProps<{ node: GraphNode; definition: GraphNodeType; document: GraphDocument; catalog?: GraphNodeType[]; disabled?: boolean }>();
 const emit = defineEmits<{ change: [value: Record<string, unknown>];
   sourceChange: [edgeId: string | null, source: { nodeId: string; portId: string } | null];
@@ -13,19 +15,40 @@ const editors = computed(() => frontendHost.extensions.value.filter(row => row.d
   && row.declaration.binding.target.component_version === props.node.component_version));
 const configurationFields = computed(() => new Set(editors.value.flatMap(row => row.configurationFields)));
 const objectAccesses = computed(() => (props.definition.object_accesses ?? [])
-  .filter(access => access.type_id !== "workflow.variable"));
-const schema = computed(() => ({ ...props.definition.config_schema,
-  properties: Object.fromEntries(Object.entries(graphObject(props.definition.config_schema.properties)
+  .filter(access => !configurationFields.value.has(access.config_field)));
+const registration = computed(() => isVariableRegistrationNode(props.node));
+const issues = computed(() => registration.value ? variableRegistrationIssues(props.node.config) : {});
+const schema = computed(() => {
+  const properties = Object.fromEntries(Object.entries(graphObject(props.definition.config_schema.properties)
     ? props.definition.config_schema.properties : {}).filter(([key]) =>
-      !configurationFields.value.has(key) && !objectAccesses.value.some(access => access.config_field === key))) }));
+      !configurationFields.value.has(key) && !objectAccesses.value.some(access => access.config_field === key)));
+  if (registration.value) {
+    const field = (key: string) => graphObject(properties[key]) ? properties[key] : {};
+    properties.name = { ...field("name"), title: "变量名称" };
+    properties.value_type = { ...field("value_type"), title: "值类型",
+      "x-enum-labels": ["字符串", "整数", "数值", "布尔值"] };
+    properties.has_initial = { ...field("has_initial"), title: "设置初值" };
+    properties.initial_value = { ...field("initial_value"), title: "初值",
+      type: props.node.config.has_initial === true ? props.node.config.value_type : "null" };
+  }
+  return { ...props.definition.config_schema, properties };
+});
+function changeConfiguration(value: Record<string, unknown>) {
+  emit("change", registration.value ? variableRegistrationChange(props.node.config, value) : value);
+}
 function sourceChange(edgeId: string | null, source: { nodeId: string; portId: string } | null) {
   emit("sourceChange", edgeId, source);
 }
 function objectBindings(access: NonNullable<GraphNodeType["object_accesses"]>[number]) {
   return (props.document.object_bindings ?? []).filter(binding =>
     binding.type_id === access.type_id && binding.schema_version === access.schema_version
+    && (!providesObject(access) || binding.registrar_node_id === props.node.node_binding_id)
     && (access.access === "write" || binding.readers.includes(props.node.node_binding_id))
     && (access.access === "read" || binding.writers.includes(props.node.node_binding_id)));
+}
+function providesObject(access: NonNullable<GraphNodeType["object_accesses"]>[number]) {
+  return props.definition.provided_session_item_types?.some(type =>
+    type.type_id === access.type_id && type.schema_version === access.schema_version);
 }
 function selectedObjectKeys(access: NonNullable<GraphNodeType["object_accesses"]>[number]) {
   const value = props.node.config[access.config_field];
@@ -34,7 +57,7 @@ function selectedObjectKeys(access: NonNullable<GraphNodeType["object_accesses"]
   return typeof value === "string" ? value : null;
 }
 function patchObjectKeys(access: NonNullable<GraphNodeType["object_accesses"]>[number], event: Event) {
-  if (props.disabled) return;
+  if (props.disabled || providesObject(access)) return;
   const select = event.target as HTMLSelectElement;
   const value = access.multiple
     ? [...select.selectedOptions].map(option => option.value).filter(Boolean)
@@ -47,8 +70,8 @@ function hasSelectedObject(access: NonNullable<GraphNodeType["object_accesses"]>
   if (Array.isArray(selected)) return selected.every(key => allowed.has(key));
   return typeof selected === "string" && selected !== "" && allowed.has(selected);
 }
-const promptMode = computed(() => props.node.component_id === "prompts.item"
-  && props.node.component_version === "3" && props.document.schema_version === 3
+const configurationMode = computed(() => graphNodeAllowsAdjustable(props.node, props.definition)
+  && props.document.schema_version === 3
   ? props.node.configuration_policy?.prompt_mode ?? null : null);
 </script>
 <template>
@@ -56,18 +79,18 @@ const promptMode = computed(() => props.node.component_id === "prompts.item"
     <component v-for="editor in editors" :key="editor.declaration.extension_id" :is="editor.component"
       :node="node" :document="document" :catalog="catalog ?? []" :disabled="disabled"
       @change="sourceChange" />
-    <div v-if="promptMode" class="configuration-mode">
+    <div v-if="configurationMode" class="configuration-mode">
       <span>配置模式</span>
-      <div role="group" aria-label="提示词配置模式" class="configuration-mode-options">
-        <button type="button" :aria-pressed="promptMode === 'fixed'" :disabled="disabled || promptMode === 'fixed'"
+      <div role="group" aria-label="配置模式" class="configuration-mode-options">
+        <button type="button" :aria-pressed="configurationMode === 'fixed'" :disabled="disabled || configurationMode === 'fixed'"
           @click="emit('policyChange', 'fixed')">固定</button>
-        <button type="button" :aria-pressed="promptMode === 'adjustable'" :disabled="disabled || promptMode === 'adjustable'"
+        <button type="button" :aria-pressed="configurationMode === 'adjustable'" :disabled="disabled || configurationMode === 'adjustable'"
           @click="emit('policyChange', 'adjustable')">可调</button>
       </div>
     </div>
     <label v-for="access in objectAccesses" :key="access.config_field" class="object-access-field">
       <span>{{ access.multiple ? "会话数据项（可多选）" : "会话数据项" }}</span>
-      <select :value="selectedObjectKeys(access)" :multiple="access.multiple" :disabled="disabled"
+      <select :value="selectedObjectKeys(access)" :multiple="access.multiple" :disabled="disabled || providesObject(access)"
         @change="patchObjectKeys(access, $event)">
         <option v-if="!access.multiple" value="">选择准确的数据项</option>
         <option v-for="binding in objectBindings(access)" :key="binding.object_key" :value="binding.object_key">
@@ -76,9 +99,9 @@ const promptMode = computed(() => props.node.component_id === "prompts.item"
       </select>
       <small v-if="!hasSelectedObject(access)" role="status">当前键没有匹配的登记项和明确权限</small>
     </label>
-    <GraphSchemaFields :schema="schema" :value="node.config" :disabled="disabled"
+    <GraphSchemaFields :schema="schema" :value="node.config" :disabled="disabled" :errors="issues"
       :identity="`node:${node.node_binding_id}:${node.component_id}@${node.component_version}`"
-      @change="emit('change', $event)" />
+      @change="changeConfiguration" />
   </section>
 </template>
 <style scoped>

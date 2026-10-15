@@ -1,10 +1,8 @@
 import LorebookFields from "../components/LorebookFields.vue";
 import type { WorkbenchFrontendPackageModule } from "../application/workbenchFrontendHost";
-import { chatTavernFrontendExtensions, globalTavernFrontendExtensions, tavernFrontendExtensions } from "./tavernFrontendManifest";
+import { currentTavernFrontendExtensions, globalTavernFrontendExtensions, tavernFrontendExtensions } from "./tavernFrontendManifest";
 import CurrentLorebookPanel from "./tavern/CurrentLorebookPanel.vue";
 import GlobalLorebookFields from "./tavern/GlobalLorebookFields.vue";
-import TavernChatPanel from "./tavern/TavernChatPanel.vue";
-import TavernPresentationFields from "./tavern/TavernPresentationFields.vue";
 
 export const tavernFrontendPackage: WorkbenchFrontendPackageModule = {
   implementations: [
@@ -21,16 +19,14 @@ export const tavernFrontendPackage: WorkbenchFrontendPackageModule = {
       configurationFields: ["reference"] },
     { declaration: globalTavernFrontendExtensions[4]!, implementation: GlobalLorebookFields,
       configurationFields: ["object_keys"] },
-    { declaration: chatTavernFrontendExtensions[0]!, implementation: LorebookFields,
+    { declaration: currentTavernFrontendExtensions[0]!, implementation: LorebookFields,
       configurationFields: ["entry", "object_keys"] },
-    { declaration: chatTavernFrontendExtensions[1]!, implementation: LorebookFields,
+    { declaration: currentTavernFrontendExtensions[1]!, implementation: LorebookFields,
       configurationFields: ["entries", "object_keys"] },
-    { declaration: chatTavernFrontendExtensions[2]!, implementation: CurrentLorebookPanel },
-    { declaration: chatTavernFrontendExtensions[3]!, implementation: GlobalLorebookFields,
+    { declaration: currentTavernFrontendExtensions[2]!, implementation: CurrentLorebookPanel },
+    { declaration: currentTavernFrontendExtensions[3]!, implementation: GlobalLorebookFields,
       configurationFields: ["reference"] },
-    { declaration: chatTavernFrontendExtensions[4]!, implementation: GlobalLorebookFields,
+    { declaration: currentTavernFrontendExtensions[4]!, implementation: GlobalLorebookFields,
       configurationFields: ["object_keys"] },
-    { declaration: chatTavernFrontendExtensions[5]!, implementation: TavernChatPanel },
-    { declaration: chatTavernFrontendExtensions[6]!, implementation: TavernPresentationFields },
   ],
 };

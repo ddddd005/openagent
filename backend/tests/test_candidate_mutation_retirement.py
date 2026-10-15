@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from phase1_agent.contract_errors import ContractValidationError
-from phase1_agent.contract_json import canonical_bytes
+from phase1_agent.contract_json import canonical_bytes, loads_strict
 from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_application_identity import (
     APPLICATION_IDENTITY_OPERATION, application_command_digest, application_command_identity,
@@ -22,6 +22,7 @@ from phase1_agent.storage import SqliteStore, _record_id
 from test_graph_application_receipt_custody import raw_database
 from test_graph_receipt_http import post, serve_receipts
 from test_graph_service import create, gate_graph, run, service, text_graph
+from test_server import call
 
 
 RETIRED = ("candidate.select", "candidate.fork", "consumer.candidate.fork")
@@ -176,16 +177,16 @@ def test_retired_candidate_writes_are_absent_from_application_http_and_service(s
     assert listed["candidates"][0]["candidate_id"] == candidate["candidate_id"]
     assert not listed["candidates"][0]["can_select"]
     assert listed["candidates"][0]["diagnostic"] is None
-    projected = consumer.query("consumer.candidate.list", {
-        "session_id": view["workflow_session_id"],
-        "workflow_definition_id": view["workflow_definition_id"],
-        "definition_revision": view["definition_revision"],
-    })
-    assert projected["can_fork"] is False
-    assert projected["candidates"][0]["candidate_id"] == candidate["candidate_id"]
+    with pytest.raises(ContractValidationError) as denied:
+        consumer.query("consumer.candidate.list", {
+            "session_id": view["workflow_session_id"],
+            "workflow_definition_id": view["workflow_definition_id"],
+            "definition_revision": view["definition_revision"],
+        })
+    assert denied.value.reason_code == "not_found"
 
 
-def test_consumer_candidates_remain_readable_during_another_active_run(service):
+def test_management_candidates_remain_readable_during_another_active_run(service):
     sid, first_chain, release = gate_graph(service)
     release.set()
     service.wait(first_chain)
@@ -194,11 +195,8 @@ def test_consumer_candidates_remain_readable_during_another_active_run(service):
     release.clear()
     active = service.start(sid, expected_revision=view["revision"], idempotency_key=str(uuid4()))
     try:
-        projected = service.list_consumer_candidates(
-            sid, workflow_definition_id=view["workflow_definition_id"],
-            definition_revision=view["definition_revision"])
-        assert projected["status"] in ("prepared", "running")
-        assert projected["can_fork"] is False
+        projected = service.list_graph_candidates(sid)
+        assert not any(row["can_select"] for row in projected["candidates"])
         assert [row["candidate_id"] for row in projected["candidates"]] == [candidate["candidate_id"]]
     finally:
         release.set()
@@ -214,16 +212,14 @@ def test_archived_candidate_queries_preserve_saved_rows_and_the_bound_workflow_s
     # Live-host initialization still changes file-header counters, not saved rows.
     before = raw_database(service.database)
     listed = service.list_graph_candidates(sid)
-    projected = service.list_consumer_candidates(
-        sid, workflow_definition_id=view["workflow_definition_id"],
-        definition_revision=view["definition_revision"])
     assert listed["candidates"][0]["can_select"] is False
-    assert projected["can_fork"] is False
-    assert projected["candidates"][0]["candidate_id"] == candidate["candidate_id"]
+    assert listed["candidates"][0]["candidate_id"] == candidate["candidate_id"]
     with pytest.raises(ContractValidationError) as denied:
-        service.list_consumer_candidates(
-            sid, workflow_definition_id=str(uuid4()), definition_revision=view["definition_revision"])
-    assert denied.value.reason_code == "consumer_definition_mismatch"
+        GraphApplication(service).for_consumer().query("consumer.candidate.list", {
+            "session_id": sid, "workflow_definition_id": str(uuid4()),
+            "definition_revision": view["definition_revision"],
+        })
+    assert denied.value.reason_code == "not_found"
     assert raw_database(service.database) == before
 
 
@@ -296,3 +292,83 @@ def test_retired_consumer_fork_receipt_is_read_only_and_scope_bound(service, mon
             "operation": "consumer.candidate.fork", "parameters": request,
         }) == (200, matched)
     assert service.database.read_bytes() == before
+
+
+def test_cold_http_fork_receipt_survives_child_continuation_without_replay(service, monkeypatch):
+    document, parent, candidate, request = _completed(service)
+    child, _ = _test_only_consumer_child(service, document, parent, candidate)
+    _insert_test_only_legacy_receipt(
+        service.database, "consumer.candidate.fork", "consumer", request, child)
+    accepted = read_graph_application_receipt(
+        service.database, "consumer.candidate.fork", request, scope="consumer")
+    assert accepted["outcome"] == "matched"
+    continued = run(service, child)
+    assert continued["status"] == "succeeded"
+    service.close()
+    before = raw_database(service.database)
+    with serve_receipts(service.database, monkeypatch) as (host, port):
+        original = {"operation": "consumer.candidate.fork", "parameters": request}
+        assert post(port, "/api/graph/consumer/receipts/read", original) == (200, accepted)
+        assert post(port, "/api/graph/consumer/queries", {
+            "operation": "receipt.read", "parameters": original,
+        }) == (200, accepted)
+        changed = {**request, "candidate_id": str(uuid4())}
+        assert post(port, "/api/graph/consumer/receipts/read", {
+            "operation": "consumer.candidate.fork", "parameters": changed,
+        })[1]["outcome"] == "unresolved"
+        status, _, body = call(port, "GET", f"/tavern/?graph_workflow={document['workflow_definition_id']}")
+        assert status == 410 and b"legacy_frontend_entry_retired" in body and b"<script" not in body
+        assert host._graph is None
+    assert raw_database(service.database) == before
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda result: result["source"].update(head_commit_id=str(uuid4())),
+    lambda result: result["source"].update(object_source_session_id=str(uuid4())),
+    lambda result: result["source"].update(state_mappings=[{"action": "reset"}]),
+    lambda result: result.update(workflow_session_id=str(uuid4())),
+    lambda result: result.update(definition_revision=2),
+    lambda result: result.update(head_commit_id=str(uuid4())),
+    lambda result: result.update(selected_chain_run_id=str(uuid4())),
+    lambda result: result.update(history_refs=[]),
+])
+def test_frozen_consumer_fork_rejects_forged_source_child_and_checkpoint(service, mutate):
+    document, parent, candidate, request = _completed(service)
+    child, _ = _test_only_consumer_child(service, document, parent, candidate)
+    _insert_test_only_legacy_receipt(
+        service.database, "consumer.candidate.fork", "consumer", request, child)
+    matched = read_graph_application_receipt(
+        service.database, "consumer.candidate.fork", request, scope="consumer")
+    assert matched["outcome"] == "matched"
+    with closing(sqlite3.connect(service.database, isolation_level=None)) as connection:
+        raw = connection.execute(
+            "SELECT result_payload FROM idempotency WHERE operation=? AND key=?",
+            ("graph.candidate.fork", request["idempotency_key"]),
+        ).fetchone()[0]
+        payload = loads_strict(raw)
+        mutate(payload[0]["graph_result"])
+        connection.execute(
+            "UPDATE idempotency SET result_payload=? WHERE operation=? AND key=?",
+            (canonical_bytes(payload).decode(), "graph.candidate.fork", request["idempotency_key"]),
+        )
+    before = raw_database(service.database)
+    cold = read_graph_application_receipt(
+        service.database, "consumer.candidate.fork", request, scope="consumer")
+    assert cold["outcome"] == "unresolved" and cold["reason_code"] == "receipt_invalid"
+    assert raw_database(service.database) == before
+
+
+def test_frozen_consumer_fork_neither_creates_missing_database_nor_accepts_management_origin(service, tmp_path):
+    database = tmp_path / "absent-consumer-fork.sqlite"
+    _, parent, candidate, request = _completed(service)
+    assert read_graph_application_receipt(
+        database, "consumer.candidate.fork", request, scope="consumer")["outcome"] == "unresolved"
+    assert not database.exists()
+    child, _ = _test_only_consumer_child(
+        service, service.get_definition(parent["workflow_definition_id"]), parent, candidate)
+    _insert_test_only_legacy_receipt(service.database, "candidate.fork", "management", request, child)
+    before = raw_database(service.database)
+    cold = read_graph_application_receipt(
+        service.database, "consumer.candidate.fork", request, scope="consumer")
+    assert cold["outcome"] == "unresolved" and cold["reason_code"] == "application_identity_missing"
+    assert raw_database(service.database) == before

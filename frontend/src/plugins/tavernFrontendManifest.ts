@@ -29,23 +29,13 @@ export const globalTavernFrontendExtensions: FrontendExtension[] = [
   })),
 ];
 
-export const chatTavernFrontendExtensions: FrontendExtension[] = [
+export const currentTavernFrontendExtensions: FrontendExtension[] = [
   ...globalTavernFrontendExtensions.map(row => ({ ...row, package_version: "1.2.0",
     extension_id: row.extension_id + "-v1-2", entrypoint: row.entrypoint + "-v1-2" })),
-  { schema_version: 2, host_protocol_version: 1, extension_id: "workflow.tavern.chat-launch",
-    kind: "workbench-panel", entrypoint: "workflow.tavern.workbench.chat-launch",
-    component_id: null, component_version: null, package_id: "workflow.tavern", package_version: "1.2.0",
-    binding: { surface: "workbench", slot: "panel", target: {} } },
-  { schema_version: 3, host_protocol_version: 2, extension_id: "workflow.tavern.presentation-fields",
-    kind: "field-editor", entrypoint: "workflow.tavern.workbench.presentation-fields",
-    component_id: "tavern.chat.presentation", component_version: "1",
-    package_id: "workflow.tavern", package_version: "1.2.0",
-    binding: { surface: "workbench", slot: "node-fields",
-      target: { component_id: "tavern.chat.presentation", component_version: "1" } } },
 ];
 
 export function tavernExtensionsFor(packages: readonly { package_id: string; version: string }[]) {
   const version = packages.find(row => row.package_id === "workflow.tavern")?.version;
-  return version === "1.2.0" ? chatTavernFrontendExtensions
+  return version === "1.2.0" ? currentTavernFrontendExtensions
     : version === "1.1.0" ? globalTavernFrontendExtensions : version === "1.0.0" ? tavernFrontendExtensions : [];
 }

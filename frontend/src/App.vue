@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import {
-  AppWindow,
   List,
   Settings2,
   Variable,
@@ -13,7 +12,6 @@ import {
 } from "lucide-vue-next";
 import ErrorToast from "./components/ErrorToast.vue";
 import WorkbenchSidebar from "./components/WorkbenchSidebar.vue";
-import { chatUiUrl, graphChatInterfaceUrl } from "./adapters/chatUi";
 import { useWorkspaceStore } from "./stores/workspace";
 import { useWorkbenchPersistenceStore } from "./stores/workbenchPersistence";
 import { useWorkflowGraphStore } from "./stores/workflowGraph";
@@ -59,16 +57,6 @@ function discard() {
     : "移除当前仅存在于内存中的工作流？")) return;
   graph.discardDraft();
 }
-const userInterfaceUrl = computed(() => graph.document ? graphChatInterfaceUrl(
-  chatUiUrl, graph.document.workflow_definition_id, graph.active?.session_id ?? null,
-) : null);
-const chatInterfaceReady = computed(() => userInterfaceUrl.value !== null
-  && Number(graph.active?.saved_revision) > 0 && !graph.pending);
-const chatInterfaceTitle = computed(() => {
-  if (chatInterfaceReady.value) return "聊天前端";
-  if (!userInterfaceUrl.value) return "聊天入口地址或工作流身份不可用";
-  return graph.pending ? "核实原请求后打开聊天前端" : "正式工作流保存暂不可用";
-});
 function changeWorkspaceView(view: "canvas" | "history") {
   leaveEditor(() => { workspaceView.value = view; });
 }
@@ -170,19 +158,6 @@ watch(
       </div>
     </main>
 
-    <nav class="workbench-interface-rail" aria-label="工作区切换">
-      <a
-        class="workbench-tool-button"
-        :href="chatInterfaceReady ? userInterfaceUrl ?? undefined : undefined"
-        :aria-disabled="!chatInterfaceReady"
-        target="_blank"
-        rel="noopener noreferrer"
-        :title="chatInterfaceTitle"
-        aria-label="打开聊天前端"
-      >
-        <AppWindow :size="18" />
-      </a>
-    </nav>
     <ErrorToast />
   </div>
 </template>

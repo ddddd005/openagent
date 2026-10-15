@@ -126,6 +126,7 @@ def _types(*, include_other=False):
         default_value=deepcopy(EMPTY_CONTEXT),
         validator=validate_effective_context,
         write_validator=validate_native_context_write,
+        checkpoint_admission=True,
     ))
     if include_other:
         types.register(DataTypeDefinition(
@@ -254,6 +255,8 @@ def checkpoint_state(target, contexts):
     return {
         "configuration": deepcopy(target["fixed_configuration"]),
         "agent_contexts": deepcopy(contexts),
+        "variables": {},
+        "chat_contexts": {},
     }
 
 
@@ -325,7 +328,8 @@ def test_old_configuration_projection_survives_checkpoint_declaration_update(sto
         with transaction(store._connection):
             load_checkpoint_state_in_transaction(
                 GraphRecordStore(store), target["session"],
-                {"configuration": changed_identity, "agent_contexts": {}}, {},
+                {"configuration": changed_identity, "agent_contexts": {},
+                 "variables": {}, "chat_contexts": {}}, {},
                 types=target["types"], registry=target["registry"],
             )
     with transaction(store._connection):

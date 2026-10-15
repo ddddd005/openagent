@@ -11,7 +11,7 @@ from .lorebook_engine import (
     default_lorebook_entry, lorebook_entry_schema, validate_lorebook_entries,
 )
 from .lorebook_nodes import execute_lorebook
-from .tool_package import VARIABLE_SCHEMA_VERSION, VARIABLE_TYPE
+from .variable_contract import VARIABLE_SCHEMA_VERSION, VARIABLE_TYPE
 
 
 TAVERN_PACKAGE_ID = "workflow.tavern"

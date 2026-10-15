@@ -15,8 +15,8 @@ from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_receipts import read_graph_application_receipt
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import WriteIntent
-from workflow_test_support import graph as context_graph, run as run_agent, AgentTransportFixture
-from test_models_service_integration import ModelDatabaseFixture
+from phase1_agent.contract_errors import ContractValidationError
+from legacy_consumer_receipt_fixture import seed_legacy_consumer_receipt
 from test_graph_resource_host import prompt_record
 from test_graph_service import create, document, edge, node, run, service, text_graph
 from test_graph_session_objects import object_graph, task_package
@@ -24,7 +24,13 @@ from test_graph_session_objects import object_graph, task_package
 
 def roundtrip(app, operation, parameters):
     original = deepcopy(parameters)
-    accepted = app.command(operation, parameters)
+    if operation.startswith("consumer."):
+        accepted = seed_legacy_consumer_receipt(app._service, operation, parameters)
+        with pytest.raises(ContractValidationError) as retired:
+            app.command(operation, parameters)
+        assert retired.value.reason_code == "not_found"
+    else:
+        accepted = app.command(operation, parameters)
     frozen = read_graph_application_receipt(app._service.database, operation, original, scope=app.scope)
     assert frozen["outcome"] == "matched", frozen
     assert set(frozen) == {"schema_version", "kind", "outcome", "reason_code", "receipt", "result"}
@@ -131,21 +137,6 @@ def test_definition_update_then_create_fixed_revision_and_update_data_roundtrip(
     })
 
 
-def test_session_copy_roundtrip_remains_available(service):
-    app = GraphApplication(service)
-    doc = text_graph(service.registry)
-    view = initial(app, doc)
-    copied_document = deepcopy(doc)
-    copied_document.update(workflow_definition_id=str(uuid4()), revision=1)
-    copied = roundtrip(app, "session.copy", {
-        "session_id": view["workflow_session_id"], "document": copied_document,
-        "expected_session_revision": view["revision"],
-        "expected_data_revision": view["data_revision"], "expected_definition_revision": 1,
-        "expected_head_revision": view["head_revision"], "idempotency_key": str(uuid4()),
-    })
-    assert copied["workflow_session_id"] != view["workflow_session_id"]
-
-
 def test_completed_start_reads_the_original_frozen_result(service):
     app = GraphApplication(service)
     view = initial(app, text_graph(service.registry))
@@ -245,25 +236,21 @@ def test_current_resource_save_replace_and_delete_roundtrip(service):
     assert read_graph_application_receipt(service.database, "resource.save", parameters)["result"] == saved
 
 
-def test_context_adoption_roundtrip_and_malformed_object_receipts_stay_unresolved(tmp_path, monkeypatch):
-    transport = AgentTransportFixture()
-    with closing(GraphWorkflowService(tmp_path / "adoption-roundtrip.sqlite",
-        public_model_factory=transport.factory,
+def test_current_object_write_roundtrip_and_malformed_receipts_stay_unresolved(tmp_path):
+    with closing(GraphWorkflowService(
+        tmp_path / "object-receipt-negative.sqlite", capability_packages=[task_package()],
+        enabled_packages={"workflow.tools": "1.0.0", "example.tasks": "1.0.0"},
     )) as service:
-        ModelDatabaseFixture.write(service, 1)
-        final = run_agent(service, create(service, context_graph(service)), "Receipt test")
-        assert final["status"] == "succeeded"
-        writer = next(entry["node_binding_id"] for entry in final["nodes"] if entry["label"] == "context.merge")
-        output = next(entry["output_id"] for entry in final["outputs"]
-                      if entry["node_binding_id"] == writer and entry["port_id"] == "output")
+        final = create(service, object_graph(service))
+        writer = final["nodes"][0]["node_binding_id"]
         app = GraphApplication(service)
-        closed = final
-        parameters = {"session_id": closed["workflow_session_id"], "node_id": writer,
-            "view_output_id": output, "expected_revision": closed["revision"], "idempotency_key": str(uuid4())}
-        adopted = roundtrip(app, "context.adopt", parameters)
-        assert adopted["results"] == []
-        receipt = {"object_key": "context", **{key: final["objects"]["context"][key] for key in
-                   ("revision", "revision_id", "deleted")}}
+        parameters = {
+            "session_id": final["workflow_session_id"], "node_id": writer,
+            "writes": [WriteIntent("main", 1, "negative-object-receipt", {"count": 8}).to_dict()],
+            "expected_revision": final["revision"], "idempotency_key": str(uuid4()),
+        }
+        accepted = roundtrip(app, "object.write", parameters)
+        receipt = accepted["results"][0]
         variants = [
             [{"arbitrary": "receipt"}], [{**receipt, "revision_id": "not-an-id"}],
             [{**receipt, "revision": True}], [{**receipt, "deleted": True}],
@@ -272,21 +259,20 @@ def test_context_adoption_roundtrip_and_malformed_object_receipts_stay_unresolve
         with closing(sqlite3.connect(service.database, isolation_level=None)) as connection:
             raw = connection.execute(
                 "SELECT result_payload FROM idempotency WHERE operation=? AND key=?",
-                ("graph.context.adopt", parameters["idempotency_key"]),
+                ("graph.objects.update", parameters["idempotency_key"]),
             ).fetchone()[0]
             for malformed in variants:
                 payload = loads_strict(raw)
                 payload[0]["graph_result"]["results"] = malformed
                 connection.execute(
                     "UPDATE idempotency SET result_payload=? WHERE operation=? AND key=?",
-                    (canonical_bytes(payload).decode("utf-8"), "graph.context.adopt", parameters["idempotency_key"]),
+                    (canonical_bytes(payload).decode("utf-8"), "graph.objects.update", parameters["idempotency_key"]),
                 )
-                read = read_graph_application_receipt(service.database, "context.adopt", parameters)
+                read = read_graph_application_receipt(service.database, "object.write", parameters)
                 assert read["outcome"] == "unresolved" and read["reason_code"] == "receipt_invalid", read
             connection.execute(
                 "UPDATE idempotency SET result_payload=? WHERE operation=? AND key=?",
-                (raw, "graph.context.adopt", parameters["idempotency_key"]),
+                (raw, "graph.objects.update", parameters["idempotency_key"]),
             )
-        again = {**parameters, "expected_revision": adopted["session"]["revision"], "idempotency_key": str(uuid4())}
-        assert roundtrip(app, "context.adopt", again)["results"] == []
-        assert len(transport.calls) == 1
+        assert read_graph_application_receipt(
+            service.database, "object.write", parameters)["result"] == accepted

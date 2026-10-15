@@ -42,7 +42,7 @@ export function stubGraphApplicationFetch(handler: (...arguments_: any[]) => any
     if (path !== "/api/graph/queries" && path !== "/api/graph/commands") return handler(path, init);
     const { operation, parameters } = JSON.parse(String(init?.body));
     if (path === "/api/graph/commands"
-      && ["session.rebind", "candidate.select", "candidate.fork"].includes(operation))
+      && ["session.copy", "session.rebind", "candidate.select", "candidate.fork"].includes(operation))
       throw new Error(`Retired ${operation} writes are not available in fixtures`);
     const sid = parameters.session_id;
     const routes: Record<string, string> = {
@@ -60,7 +60,7 @@ export function stubGraphApplicationFetch(handler: (...arguments_: any[]) => any
       "session.metadata.read": `/api/graph/sessions/${sid}/metadata`,
       "session.metadata.update": `/api/graph/sessions/${sid}/metadata`,
       "session.create": "/api/graph/sessions", "run.start": `/api/graph/sessions/${sid}/runs`,
-      "run.control": `/api/graph/sessions/${sid}/control`, "session.copy": `/api/graph/sessions/${sid}/copy`,
+      "run.control": `/api/graph/sessions/${sid}/control`,
       "session.data.update": `/api/graph/sessions/${sid}/data`,
     };
     if (!routes[operation]) throw new Error(`Fixture has no application operation: ${operation}`);

@@ -167,12 +167,6 @@ class GraphPublic:
         with self._lock, closing(self._store()) as store:
             return self._consumer_view(GraphRecordStore(store), sid)
 
-    def consumer_definition(self, identity):
-        with self._lock, closing(self._store()) as store:
-            document = self._document(GraphRecordStore(store), identity)
-            return {"schema_version": 1, "kind": "workflow.consumer-definition",
-                    "workflow_definition_id": identity, "definition_revision": document["revision"], "name": document["name"]}
-
     def consumer_frontend_extensions(self, sid, *, workflow_definition_id, definition_revision, node_id, port_id):
         """Return consumer bindings only for an exact currently public root."""
         with self._lock, closing(self._store()) as store:
@@ -190,39 +184,6 @@ class GraphPublic:
             return {"schema_version": 1, "kind": "workflow.consumer-frontend-extensions",
                     **self._consumer_identity(session), "node_id": node_id, "port_id": port_id,
                     "package_lock": deepcopy(list(self.registry.package_lock)), "frontend_extensions": extensions}
-
-    def list_consumer_sessions(self, identity):
-        with self._lock, closing(self._store()) as store:
-            repo = GraphRecordStore(store)
-            self._document(repo, identity)
-            return [{**self._consumer_identity(row), "status": self._view(repo, row["workflow_session_id"])["status"]}
-                    for row in repo.rows("workflow_session") if row["workflow_definition_id"] == identity]
-
-    def list_consumer_candidates(self, sid, *, workflow_definition_id, definition_revision):
-        """Read completed candidates inside the bound workflow; candidate forking is retired."""
-        from .program_variable_store import ProgramVariableStore
-        with self._lock, closing(self._store()) as store:
-            self._check_open()
-            repo = GraphRecordStore(store)
-            session, _ = self._consumer_scope(repo, sid, workflow_definition_id, definition_revision)
-            view = self._view(repo, sid)
-            candidates = self.list_graph_candidates(sid)
-            pausing = (view["status"] in ("running", "prepared")
-                       and session["active_chain_run_id"] in self._pauses)
-            return {
-                "schema_version": 1, "kind": "workflow.consumer-candidates",
-                **self._consumer_identity(session),
-                "data_revision": ProgramVariableStore(store).current(sid)["revision"],
-                "head_revision": self._head(repo, sid)["revision"],
-                "status": "pausing" if pausing else view["status"],
-                "can_fork": False,
-                "candidates": [{key: deepcopy(row[key]) for key in (
-                    "candidate_id", "chain_run_id", "source_session_id",
-                    "source_workflow_definition_id", "source_definition_revision")}
-                    for row in candidates["candidates"]
-                    if row["diagnostic"] is None
-                    and row["source_workflow_definition_id"] == workflow_definition_id],
-            }
 
     def public_outputs(self, sid):
         consumer = self.get_consumer(sid)
@@ -312,21 +273,3 @@ class GraphPublic:
                     "reference": deepcopy(reference), "data_type": port["data_type"],
                     "data_schema_version": port.get("data_schema_version", 1),
                     "value": accepted["value"], "producer": accepted["producer"]}
-
-    def _consumer_receipt(self, result, operation, key):
-        return {"schema_version": 1, "kind": "workflow.consumer.receipt",
-                "receipt": {**self._consumer_identity(result), "status": result["status"],
-                            "chain_run_id": result["active_chain_run_id"], "operation": operation, "idempotency_key": key},
-                "consumer": self.get_consumer(result["workflow_session_id"])}
-
-    def create_consumer_session(self, **request):
-        result = self.create_session(**request)
-        return self._consumer_receipt(result, "create", request["idempotency_key"])
-
-    def start_consumer(self, sid, **request):
-        result = self.start(sid, **request)
-        return self._consumer_receipt(result, "start", request["idempotency_key"])
-
-    def control_consumer(self, sid, **request):
-        result = self.control(sid, **request)
-        return self._consumer_receipt(result, "control", request["idempotency_key"])

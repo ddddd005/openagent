@@ -30,9 +30,9 @@ def address(scope="management", kind="form", workflow=None, session=None, key="e
 def save(app, target, value, expected=0, key=None, version=1):
     request = {"address": target, "format_version": version, "value": value,
                "expected_sequence": expected, "idempotency_key": key or str(uuid4())}
-    if target["scope"] == "consumer":
-        return app.command("consumer.draft.save", request), request
-    validate_draft_address(target, "management")
+    scope = target["scope"]
+    operation = "consumer.draft.save" if scope == "consumer" else "draft.save"
+    validate_draft_address(target, scope)
     validate_draft_value(target, version, value)
     require(type(expected) is int and 0 <= expected <= MAX_DRAFT_SEQUENCE,
             "invalid_request", "Draft expected sequence is invalid")
@@ -40,13 +40,13 @@ def save(app, target, value, expected=0, key=None, version=1):
             and bool(request["idempotency_key"].strip()),
             "invalid_request", "An idempotency key is required")
     native_request = {key: item for key, item in request.items() if key != "idempotency_key"}
-    with bind_application_command("draft.save", "management", request):
+    with bind_application_command(operation, scope, request):
         with closing(app._service._store()) as store:
             result = LocalDraftStore(store).save(
-                "graph.draft.save", deepcopy(native_request), request["idempotency_key"],
+                "graph." + operation, deepcopy(native_request), request["idempotency_key"],
                 lambda owner, content: app._service._draft_owner(store, owner, content))
     receipt = application_command_receipt(
-        "draft.save", "management", request, result, authority="service_receipt")
+        operation, scope, request, result, authority="service_receipt")
     return {
         "schema_version": 1, "kind": "workflow.application-command",
         "receipt": receipt, "result": result,

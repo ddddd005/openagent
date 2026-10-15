@@ -1,13 +1,11 @@
 """Complete frontend package: business dependency and local UI declarations."""
 
 from .capability_packages import CapabilityPackage, PackageDependency, PackageManifest
+from .chat_contracts import CHAT_CONTEXT_TYPE
 from .frontend_contracts import FRONTEND_DISPLAY_TYPE, FRONTEND_STATE_TYPE
 
 
 FRONTEND_EXTENSIONS = (
-    {"extension_id": "workflow.frontend.workbench-panel", "kind": "workbench-panel",
-     "entrypoint": "workflow.frontend.workbench.panel", "component_id": None, "component_version": None,
-     "binding": {"surface": "workbench", "slot": "panel", "target": {}}},
     {"extension_id": "workflow.frontend.session-object", "kind": "renderer",
      "entrypoint": "workflow.frontend.workbench.session-object", "component_id": None, "component_version": None,
      "binding": {"surface": "workbench", "slot": "session-object",
@@ -21,6 +19,21 @@ FRONTEND_EXTENSIONS = (
      "entrypoint": "workflow.frontend.consumer.public-output", "component_id": None, "component_version": None,
      "binding": {"surface": "consumer", "slot": "public-output",
                  "target": {"scope": "content", "type_id": FRONTEND_DISPLAY_TYPE, "schema_version": 1}}},
+    {"extension_id": "workflow.frontend.node-entry-fields", "kind": "field-editor",
+     "entrypoint": "workflow.frontend.workbench.node-entry-fields",
+     "component_id": "frontend.node", "component_version": "1",
+     "binding": {"surface": "workbench", "slot": "node-fields",
+                 "target": {"component_id": "frontend.node", "component_version": "1"}}},
+    {"extension_id": "workflow.frontend.node-entry-fields-v2", "kind": "field-editor",
+     "entrypoint": "workflow.frontend.workbench.node-entry-fields",
+     "component_id": "frontend.node", "component_version": "2",
+     "binding": {"surface": "workbench", "slot": "node-fields",
+                 "target": {"component_id": "frontend.node", "component_version": "2"}}},
+    {"extension_id": "workflow.frontend.chat-session-object", "kind": "renderer",
+     "entrypoint": "workflow.frontend.workbench.chat-session-object",
+     "component_id": None, "component_version": None,
+     "binding": {"surface": "workbench", "slot": "session-object",
+                 "target": {"scope": "session", "type_id": CHAT_CONTEXT_TYPE, "schema_version": 1}}},
 )
 
 

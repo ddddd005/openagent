@@ -1,68 +1,70 @@
-import { parse } from "@vue/compiler-dom";
-import type { ElementNode, TemplateChildNode } from "@vue/compiler-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSSRApp } from "vue";
 import { createPinia, disposePinia, setActivePinia, type Pinia } from "pinia";
 import { renderToString } from "@vue/server-renderer";
 import App from "../App.vue";
+import WorkflowSidebar from "./WorkflowSidebar.vue";
 import { graphClone } from "../domain/workflowGraph";
 import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { memoryLocalDraftStorage } from "../testUtils/localDraftStorage";
+import { memoryRequestEvidence } from "../testUtils/requestEvidence";
+import { requestEvidencePorts } from "../adapters/requestEvidenceApi";
 
-vi.mock("@vue-flow/core", () => ({ MarkerType: { ArrowClosed: "arrowclosed" },
-  Position: { Left: "left", Right: "right" }, Handle: { render: () => null }, VueFlow: { render: () => null } }));
-vi.mock("@vue-flow/background", () => ({ Background: { render: () => null } }));
 vi.mock("./WorkbenchSidebar.vue", () => ({ default: { render: () => null } }));
+vi.mock("./GraphRunControls.vue", () => ({ default: { render: () => null } }));
+vi.mock("./GraphWorkbench.vue", () => ({ default: { render: () => null } }));
+vi.mock("./GraphSessions.vue", () => ({ default: { render: () => null } }));
+vi.mock("../composables/useWorkbenchFrontendHost", () => ({ useWorkbenchFrontendHost: () => {} }));
 let pinia: Pinia;
-beforeEach(() => { pinia = createPinia(); setActivePinia(pinia); vi.useFakeTimers(); vi.stubGlobal("fetch", vi.fn()); });
-afterEach(() => { disposePinia(pinia); vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
-function elements(nodes: readonly TemplateChildNode[]): ElementNode[] {
-  return nodes.flatMap(node => node.type === 1 ? [node, ...elements(node.children)] : []);
-}
+beforeEach(() => { pinia = createPinia(); setActivePinia(pinia); vi.stubGlobal("fetch", vi.fn()); });
+afterEach(() => { disposePinia(pinia); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 async function fixture() {
   let raw: string | null = null;
   const storage = { getItem: () => raw, setItem: vi.fn((_key: string, value: string) => { raw = value; }) };
-  const drafts = memoryLocalDraftStorage();
-  await useWorkbenchPersistenceStore().initialize(storage, drafts.ports);
-  const graph = useWorkflowGraphStore(); vi.spyOn(graph, "activate").mockResolvedValue();
-  const creation = [vi.spyOn(graph, "createSession"), vi.spyOn(graph, "selectSession"), vi.spyOn(graph, "submitPrimary")];
-  async function render() {
-    const html = await renderToString(createSSRApp(App).use(pinia));
-    const anchor = elements(parse(html).children).find(node => node.tag === "a"
-      && node.props.some(prop => prop.type === 6 && prop.name === "aria-label" && prop.value?.content === "打开聊天前端"))!;
-    return Object.fromEntries(anchor.props.flatMap(prop => prop.type === 6 ? [[prop.name, prop.value?.content ?? ""]] : []));
-  }
-  function passive() { expect(fetch).not.toHaveBeenCalled(); creation.forEach(spy => expect(spy).not.toHaveBeenCalled()); }
-  return { graph, storage, render, passive };
+  await useWorkbenchPersistenceStore().initialize(storage, memoryLocalDraftStorage().ports);
+  const evidence = memoryRequestEvidence();
+  vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+  vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+  vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
+  const graph = useWorkflowGraphStore();
+  vi.spyOn(graph, "activate").mockResolvedValue();
+  vi.spyOn(graph, "loadDefinitions").mockResolvedValue(false);
+  vi.spyOn(useWorkbenchPersistenceStore(), "selectLoadedWorkflow").mockImplementation(() => false);
+  graph.createWorkflow();
+  await vi.waitFor(() => expect(graph.locked).toBe(false));
+  const mutations = [vi.spyOn(graph, "createSession"), vi.spyOn(graph, "selectSession"), vi.spyOn(graph, "submitPrimary")];
+  return { graph, mutations, storage };
 }
-describe("current-only App chat handoff", () => {
-  it("disables an unsaved graph without creating a session or sending a request", async () => {
-    const f = await fixture(), original = graphClone(f.graph.storeSnapshot()), anchor = await f.render();
-    expect(anchor.href).toBeUndefined(); expect(anchor["aria-disabled"]).toBe("true");
-    expect(anchor.title).toBe("保存工作流后打开聊天前端");
-    expect(f.graph.storeSnapshot()).toEqual(original); f.passive();
-  });
-  it("opens the exact saved graph and selected session without changing state or outboxes", async () => {
-    const f = await fixture(), entry = f.graph.active!, session = crypto.randomUUID();
-    entry.saved_revision = 1; entry.session_id = session;
-    const original = graphClone(f.graph.storeSnapshot()), writes = f.storage.setItem.mock.calls.length;
-    const anchor = await f.render(), url = new URL(anchor.href!);
-    expect([...url.searchParams]).toEqual([["graph_workflow", entry.document.workflow_definition_id], ["graph_session", session]]);
-    expect(f.graph.storeSnapshot()).toEqual(original); expect(f.storage.setItem).toHaveBeenCalledTimes(writes); f.passive();
-  });
-  it("keeps the original pending body and disables the link until receipt reconciliation", async () => {
-    const f = await fixture(), entry = f.graph.active!;
-    entry.saved_revision = 1; entry.pending = { action: "save", path: "/api/graph/definitions",
-      body: { document: graphClone(entry.document), expected_revision: 1, idempotency_key: crypto.randomUUID() } };
-    const pending = entry.pending, original = graphClone(pending), anchor = await f.render();
-    expect(anchor.href).toBeUndefined(); expect(anchor.title).toBe("核实原请求后打开聊天前端");
-    expect(entry.pending).toBe(pending); expect(entry.pending).toEqual(original); f.passive();
-  });
-  it.each(["definition", "session"] as const)("rejects an invalid %s identity", async field => {
-    const f = await fixture(), entry = f.graph.active!; entry.saved_revision = 1;
-    if (field === "definition") entry.document.workflow_definition_id = "invalid"; else entry.session_id = "invalid";
-    const anchor = await f.render();
-    expect(anchor.href).toBeUndefined(); expect(anchor["aria-disabled"]).toBe("true"); f.passive();
+describe("ordinary workbench entry retirement", () => {
+  it.each(["unsaved", "saved", "pending"] as const)(
+    "renders %s without a workflow-only chat link or any opening side effect", async state => {
+      const f = await fixture(), entry = f.graph.active!;
+      if (state !== "unsaved") { entry.saved_revision = 1; entry.saved_document = graphClone(entry.document); }
+      if (state === "saved") entry.session_id = crypto.randomUUID();
+      if (state === "pending") entry.pending = { action: "save", path: "/api/graph/definitions",
+        body: { document: graphClone(entry.document), expected_revision: 1, idempotency_key: crypto.randomUUID() } };
+      const before = graphClone(f.graph.storeSnapshot()), pending = entry.pending;
+      const writes = f.storage.setItem.mock.calls.length;
+      const html = await renderToString(createSSRApp(App).use(pinia));
+      expect(html).not.toContain("打开聊天前端");
+      expect(html).not.toContain("workbench-interface-rail");
+      expect(html).not.toContain("graph_workflow=");
+      expect(f.graph.storeSnapshot()).toEqual(before);
+      expect(entry.pending).toBe(pending);
+      expect(f.storage.setItem).toHaveBeenCalledTimes(writes);
+      expect(fetch).not.toHaveBeenCalled();
+      f.mutations.forEach(spy => expect(spy).not.toHaveBeenCalled());
+    });
+  it("offers ordinary workflow creation without Tavern, serial Agent or compacting presets", async () => {
+    const f = await fixture(), before = graphClone(f.graph.storeSnapshot());
+    const html = await renderToString(createSSRApp(WorkflowSidebar).use(pinia));
+    expect(html).toContain('aria-label="新建工作流"');
+    for (const label of ["创建酒馆工作流", "创建串行 Agent 示例", "创建上下文精简串行示例"])
+      expect(html).not.toContain(label);
+    for (const method of ["createWorkflowDraft", "createSerialAgentExample", "createCompactingSerialAgentExample", "createSavedSession"])
+      expect(method in f.graph).toBe(false);
+    expect(f.graph.storeSnapshot()).toEqual(before);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

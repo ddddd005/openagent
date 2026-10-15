@@ -12,6 +12,7 @@ from phase1_agent.graph_application_contracts import COMMANDS, QUERIES
 from phase1_agent.graph_http import dispatch_graph
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import WriteIntent
+from legacy_consumer_receipt_fixture import seed_legacy_consumer_receipt
 
 from test_graph_service import create, gate_graph, service, text_graph
 from test_graph_session_objects import object_graph, task_package
@@ -66,27 +67,29 @@ def test_named_commands_and_queries_preserve_original_receipts(service):
     assert not hasattr(service, "_native_runtime")
 
 
-def test_consumer_receipt_remains_stable_after_fresh_observation_changes(service):
+def test_retired_consumer_receipt_remains_readable_without_new_dispatch(service):
     management, consumer = GraphApplication(service), GraphApplication(service, scope="consumer")
     doc = public_document(service)
     view = create(service, doc)
     original = {"workflow_definition_id": doc["workflow_definition_id"], "definition_revision": 1,
                 "idempotency_key": "consumer-application-create"}
-    created = consumer.command("consumer.session.create", original)
+    created = seed_legacy_consumer_receipt(service, "consumer.session.create", original)
     sid = created["receipt"]["accepted"]["workflow_session_id"]
     assert created["result"]["consumer"]["status"] == "idle"
     started = management.command("run.start", {"session_id": sid,
         "expected_revision": created["receipt"]["accepted"]["session_revision"], "idempotency_key": "run-after-create"})
     service.wait(started["result"]["active_chain_run_id"])
-    replay = consumer.command("consumer.session.create", original)
+    with pytest.raises(ContractValidationError) as retired:
+        consumer.command("consumer.session.create", original)
+    assert retired.value.reason_code == "not_found"
+    replay = consumer.query("receipt.read", {"operation": "consumer.session.create", "parameters": original})
     assert replay["receipt"] == created["receipt"]
-    assert replay["result"]["receipt"] == created["result"]["receipt"]
-    assert replay["result"]["consumer"]["status"] == "succeeded"
-    assert replay["result"] != created["result"]
+    assert replay["result"] == {"receipt": created["result"]["receipt"]}
     assert len(management.query("definition.sessions", {"workflow_definition_id": doc["workflow_definition_id"]})) == 2
-    public = consumer.query("consumer.read", {"session_id": sid})
+    public = management.query("output.list", {"session_id": sid})
     assert public["outputs"][0]["payload"]["text"] == "pear pear"
-    assert not {"data", "objects", "private_states", "messages", "runtime_facts"} & public.keys()
+    with pytest.raises(ContractValidationError):
+        consumer.query("consumer.read", {"session_id": sid})
     assert view["workflow_session_id"] != sid
 
 
@@ -122,9 +125,9 @@ def test_retired_commands_are_not_dispatchable(service, name):
 
 def test_discovery_reports_only_bound_operation_scope_and_idempotency(service):
     consumer = GraphApplication(service, scope="consumer").describe()
-    assert {item["name"] for item in consumer["commands"]} == {
-        "consumer.session.create", "consumer.run.start", "consumer.run.control",
-        "consumer.event.submit", "consumer.draft.save"}
+    assert consumer["commands"] == []
+    assert {item["name"] for item in consumer["queries"]} == {
+        "consumer.draft.read", "consumer.draft.list", "receipt.read"}
     assert all(item["scope"] == "consumer" for item in consumer["queries"])
     assert consumer["boundary"]["caller"] == "trusted_local"
     assert consumer["boundary"]["remote_plugin_authentication"] is False
@@ -247,9 +250,9 @@ def test_rest_http_routes_use_application_command_and_query(service, monkeypatch
     _, session = dispatch_graph(service, "POST", "/api/graph/sessions", {
         "workflow_definition_id": doc["workflow_definition_id"], "definition_revision": 1, "idempotency_key": "rest-http-create"})
     sid = session["workflow_session_id"]
-    assert dispatch_graph(service, "GET", "/api/graph/sessions/" + sid + "/consumer")[1]["kind"] == "workflow.consumer"
+    assert dispatch_graph(service, "GET", "/api/graph/sessions/" + sid + "/actions")[1]["kind"] == "workflow.application-actions"
     assert calls == [("command", "definition.update"), ("query", "definition.read"),
-                     ("command", "session.create"), ("query", "consumer.read")]
+                     ("command", "session.create"), ("query", "session.actions")]
 
 
 def test_http_envelopes_preserve_original_identity_and_consumer_scope(tmp_path):

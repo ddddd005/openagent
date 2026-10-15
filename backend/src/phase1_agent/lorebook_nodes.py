@@ -7,7 +7,7 @@ from .context_prompt_v6 import validate_native_context_prompt
 from .contract_json import canonical_bytes
 from .graph_contracts import require
 from .lorebook_engine import evaluate_lorebook
-from .tool_package import VARIABLE_SCHEMA_VERSION, VARIABLE_TYPE
+from .variable_contract import read_variable
 
 
 def execute_lorebook(config, inputs, context, *, grouped=False):
@@ -25,10 +25,7 @@ def execute_lorebook(config, inputs, context, *, grouped=False):
 
     variables = []
     for key in config["object_keys"]:
-        record = context.object_read(key)
-        require((record["type_id"], record["schema_version"]) == (
-            VARIABLE_TYPE, VARIABLE_SCHEMA_VERSION),
-            "variable_binding_type_mismatch", "Lorebook keywords require workflow.variable@1 objects")
+        record = read_variable(context, key)
         variables.append(deepcopy(record["value"]))
 
     result = evaluate_lorebook(

@@ -1,4 +1,4 @@
-"""Real workbench resource panels and exact tavern handoff on temporary state."""
+"""Current resource panels and ordinary workflows on isolated temporary state."""
 
 from contextlib import closing
 from copy import deepcopy
@@ -13,13 +13,10 @@ import pytest
 
 from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_service import GraphWorkflowService
-from workflow_test_support import run
-from test_context_native_integration import NativeTransport, native_graph, versioned_node
-from test_graph_service import create
-from test_models_service_integration import ModelDatabaseFixture
-from test_tavern_chat_integration import add_chat
+from phase1_agent.content_contracts import default_presentation
+from phase1_agent.host_sdk import ResourceIdentity
+from phase1_agent.prompt_package import PROMPT_RESOURCE_TYPE
 from test_tavern_global_lorebook import record as lorebook_record, identity as lorebook_identity
-from test_tavern_prompt_presets import record as prompt_record, member as prompt_member
 
 
 def browser_runtime():
@@ -44,65 +41,66 @@ def browser_runtime():
 
 
 @pytest.mark.parametrize("width", [1440, 1024], ids=["desktop", "narrow-desktop"])
-def test_real_workbench_resource_management_and_tavern_launch(tmp_path, monkeypatch, width):
+def test_real_workbench_resources_and_ordinary_creation(tmp_path, width):
     node, packages = browser_runtime()
-    configured_port = os.environ.get("TAVERN_WORKBENCH_PORT")
-    if not configured_port:
-        pytest.skip("Set TAVERN_WORKBENCH_PORT to the isolated build-time VITE_CHAT_UI_URL port")
-    port = int(configured_port)
-    assert 1024 <= port <= 65535 and port != 8765, "Do not use the existing product API port"
+    port = int(os.environ.get("TAVERN_WORKBENCH_PORT", "0"))
+    assert port == 0 or 1024 <= port <= 65535 and port != 8765, "Do not use the product API port"
     workspace = Path(__file__).resolve().parents[2]
-    dist = workspace / "frontend" / "dist"
-    assert (dist / "index.html").is_file(), "Build the current frontend before browser acceptance"
-    assert '"/workbench/assets/' in (dist / "index.html").read_text(encoding="utf-8"), (
-        "Build with npm run build -- --base=/workbench/ before same-origin browser acceptance")
-    transport = NativeTransport()
+    dist = Path(os.environ.get("TAVERN_WORKBENCH_DIST", str(workspace / "frontend" / "dist")))
+    assert (dist / "index.html").is_file(), "Build the current frontend into an isolated directory"
+    assert '"/workbench/assets/' in (dist / "index.html").read_text(encoding="utf-8")
+    model_calls = []
+
+    def forbid_model(*args, **kwargs):
+        model_calls.append(True)
+        raise AssertionError("Resource checks must not initialize model services")
+
     evidence = tmp_path / f"workbench-{width}"
     evidence.mkdir()
-    database = evidence / "workbench.sqlite"
-    with closing(GraphWorkflowService(database, public_model_factory=transport.factory)) as service:
-        ModelDatabaseFixture.write(service, 1)
+    with closing(GraphWorkflowService(evidence / "workbench.sqlite", public_model_factory=forbid_model)) as service:
         book = lorebook_record(text="WORKBENCH_SEEDED_BOOK", resource_id=str(uuid4()))
-        prompt = prompt_record(prompt_member(9800, "WORKBENCH_SEEDED_PROMPT"))
+        prompt = {
+            **ResourceIdentity("workspace", PROMPT_RESOURCE_TYPE, str(uuid4())).to_dict(),
+            "data_schema_version": 2, "update_sequence": 1,
+            "value": {"enabled": True, "members": [{
+                "id": str(uuid4()), "text": "WORKBENCH_SEEDED_PROMPT", "metadata": {},
+                "presentation": default_presentation(), "lifecycle": "per_request", "compaction": "never",
+            }]},
+        }
         app = GraphApplication(service)
         for saved in (book, prompt):
             app.command("resource.save", {
                 "record": saved, "expected_sequence": 0, "idempotency_key": str(uuid4()),
             })
-        doc, native = native_graph(service, policy=False, once=False)
-        current = next(row for row in doc["nodes"] if row["component_id"] == "tools.current-input")
-        add_chat(service, doc, current, native["a"]["agent"], after=native["a"]["merge"])
-        references = []
-        for index in range(2):
-            reference = versioned_node(service, "lorebook.global-reference", "1", 7900 + index)
-            reference["title"] = f"Shared Lorebook {index + 1}"
-            reference["config"] = {"reference": lorebook_identity(book)}
-            references.append(reference)
-        prompt_reference = versioned_node(service, "prompts.global-reference", "2", 7902)
-        prompt_reference["title"] = "Explicit Prompt Group"
-        prompt_reference["config"] = {"reference": {
-            field: prompt[field] for field in ("envelope_version", "scope", "type_id", "resource_id")}}
-        doc["nodes"] += [*references, prompt_reference]
+
+        def configured_node(component, version, title, config):
+            definition = service.registry.get(component, version).definition
+            return {"node_binding_id": str(uuid4()), "component_id": component,
+                    "component_version": version, "title": title, "position": {"x": 0, "y": 0},
+                    "configuration_policy": {"schema_version": 1, "prompt_mode": "fixed"},
+                    "config": {**deepcopy(definition.default_config), **config}}
+
+        references = [
+            configured_node("lorebook.global-reference", "1", f"Shared Lorebook {index + 1}",
+                            {"reference": lorebook_identity(book)})
+            for index in range(2)
+        ]
+        prompt_reference = configured_node("prompts.global-reference", "2", "Explicit Prompt Group", {"reference": {
+            field: prompt[field] for field in ("envelope_version", "scope", "type_id", "resource_id")}})
+        doc = {"schema_version": 3, "workflow_definition_id": str(uuid4()), "revision": 1,
+               "name": "Ordinary resource references", "nodes": [*references, prompt_reference], "edges": [],
+               "object_bindings": [], "execution_roots": [], "control_edges": [],
+               "package_lock": list(service.registry.package_lock)}
         for index, row in enumerate(doc["nodes"]):
-            row["position"] = {"x": (index % 3) * 440, "y": (index // 3) * 350}
-        first = run(service, create(service, doc), "Browser acceptance original input.")
-        assert first["status"] == "succeeded", first["chains"]
-        before = deepcopy(service.get_session(first["workflow_session_id"]))
-        assert len(transport.calls) == 1
+            row["position"] = {"x": index * 440, "y": 0}
+        saved = service.update_definition(doc, workflow_definition_id=doc["workflow_definition_id"],
+                                          expected_edit_sequence=0, idempotency_key=str(uuid4()))
+        assert saved["outcome"] == "saved"
+        doc = saved["document"]
         workflow_id = doc["workflow_definition_id"]
-        cache = {
-            "schemaVersion": 7, "kind": "graph-workbench", "revision": 1,
-            "savedAt": "2026-10-08T00:00:00.000Z", "activeWorkflowId": workflow_id,
-            "selectedWorkflowId": workflow_id,
-            "catalog": [{"id": workflow_id, "title": doc["name"], "description": "Browser acceptance",
-                         "nodeCount": len(doc["nodes"]), "state": "saved"}],
-            "graph": {"schema_version": 1, "entries": {workflow_id: {
-                "document": doc, "saved_document": doc, "saved_revision": 1,
-                "session_id": first["workflow_session_id"], "pending": None,
-            }}},
-        }
-        seed = {"cache": cache, "lorebook_nodes": [row["node_binding_id"] for row in references],
-                "prompt_node": prompt_reference["node_binding_id"], "original_session": first["workflow_session_id"],
+        seed = {"workflow_id": workflow_id, "workflow_name": doc["name"],
+                "lorebook_nodes": [row["node_binding_id"] for row in references],
+                "prompt_node": prompt_reference["node_binding_id"], "original_prompt_id": prompt["resource_id"],
                 "width": width, "evidence": str(evidence)}
         seed_path = evidence / "seed.json"
         seed_path.write_text(json.dumps(seed, ensure_ascii=False), encoding="utf-8")
@@ -131,8 +129,11 @@ def test_real_workbench_resource_management_and_tavern_launch(tmp_path, monkeypa
         assert observed["console_errors"] == []
         assert observed["overflow"] == [] and observed["overlaps"] == []
         assert observed["native_calls"] is False
-        assert service.get_session(first["workflow_session_id"]) == before
-        assert len(transport.calls) == 1
+        assert model_calls == []
+        assert service.list_sessions(workflow_id) == []
+        assert service.list_sessions(observed["new_workflow"]) == []
+        ordinary = service.get_definition(observed["new_workflow"])
+        assert ordinary["nodes"] == [] and ordinary["edges"] == [] and ordinary["object_bindings"] == []
         saved_books = service.list_global_resources(type_id="workflow.tavern.lorebook")
         actual_book = next(row for row in saved_books if row["resource_id"] == observed["book_id"])
         assert actual_book["update_sequence"] == 2
@@ -141,7 +142,8 @@ def test_real_workbench_resource_management_and_tavern_launch(tmp_path, monkeypa
         groups = service.list_global_resources(type_id="workflow.prompt-resource")
         original = next(row for row in groups if row["resource_id"] == observed["prompt_original"])
         copied = next(row for row in groups if row["resource_id"] == observed["prompt_copy"])
-        assert original["value"]["members"][0]["text"] == "WORKBENCH_GROUP_FIRST"
+        assert [row["text"] for row in original["value"]["members"]] == [
+            "WORKBENCH_GROUP_FIRST", "WORKBENCH_GROUP_SECOND"]
         assert [row["text"] for row in copied["value"]["members"]] == [
             "WORKBENCH_GROUP_SECOND", "WORKBENCH_GROUP_FIRST"]
         assert {row["id"] for row in original["value"]["members"]}.isdisjoint(

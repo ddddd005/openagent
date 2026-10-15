@@ -16,30 +16,27 @@ from .content_contracts import (
     default_presentation, json_content, make_prompt_item, presentation_schema,
     prompt_content, text_content,
 )
-from .contract_errors import ContractValidationError
-from .contract_json import canonical_bytes, loads_strict, validate_json_value
+from .contract_json import canonical_bytes, loads_strict
 from .frontend_contracts import FRONTEND_STATE_TYPE, frontend_state_data_type
 from .graph_contracts import NodeDefinition, NodePort
-from .host_sdk import DataTypeDefinition, ensure
+from .host_sdk import ensure
 from .prompt_regex import RegexLimits, regex_replace_many, regex_rule_from_dict
+from .variable_contract import (
+    VARIABLE_SCHEMA_VERSION, VARIABLE_TYPE, VARIABLE_TYPES, read_variable,
+    scalar_text, validate_typed_value, validate_variable, validate_variable_name,
+    variable_data_type,
+)
 
 
 PACKAGE_ID = "workflow.tools"
 PACKAGE_VERSION = "1.0.0"
-VARIABLE_TYPE = "workflow.variable"
-VARIABLE_SCHEMA_VERSION = 1
 WIRE_BYTES = 4_000_000
-VARIABLE_TYPES = ("string", "integer", "number", "boolean")
 _CONTENT_TYPES = {"text": "TEXT", "prompt": "PROMPT", "json": "JSON"}
 _TOKEN = re.compile(r"\{\{([^{}]+)\}\}")
 _IDENTITY = {"type": "string", "minLength": 1, "maxLength": 128}
 _STRING = {"type": "string"}
 _SCALAR = {"type": ["string", "integer", "number", "boolean"]}
 _OBJECT_KEYS = {"type": "array", "items": _IDENTITY, "uniqueItems": True, "maxItems": 1024}
-_EMPTY_VARIABLE = {
-    "registered": False, "name": None, "value_type": None,
-    "assigned": False, "value": None,
-}
 
 
 def _schema(properties: dict) -> dict:
@@ -54,53 +51,6 @@ def _port(name: str, family: str, *, required: bool = True) -> NodePort:
 def _mode_ports(*, source: bool = False) -> dict:
     return {mode: (() if source else (_port("input", family),), (_port("output", family),))
             for mode, family in _CONTENT_TYPES.items()}
-
-
-def _variable_name(value: Any) -> None:
-    ensure(type(value) is str and 0 < len(value) <= 128
-           and (value[0].isalpha() or value[0] == "_")
-           and all(character.isalnum() or character == "_" for character in value),
-           "variable_invalid_name", "Variable name must be a Unicode identifier")
-
-
-def _typed_value(value_type: str, value: Any) -> None:
-    accepted = {"string": type(value) is str, "integer": type(value) is int,
-                "number": type(value) in (int, float), "boolean": type(value) is bool}
-    ensure(value_type in VARIABLE_TYPES and accepted[value_type],
-           "variable_type_mismatch", "Variable value differs from its registered scalar type")
-    if value_type == "integer":
-        ensure(-(2**53 - 1) <= value <= 2**53 - 1,
-               "variable_type_mismatch", "Integer exceeds the interoperable safe range")
-    try:
-        validate_json_value(value)
-    except ContractValidationError as exc:
-        ensure(False, "variable_type_mismatch", str(exc))
-
-
-def _validate_variable(value: Any) -> None:
-    ensure(type(value) is dict and set(value) == set(_EMPTY_VARIABLE)
-           and type(value["registered"]) is bool and type(value["assigned"]) is bool,
-           "variable_invalid_state", "Variable object fields are invalid")
-    if not value["registered"]:
-        ensure(value == _EMPTY_VARIABLE, "variable_invalid_state",
-               "An unregistered variable must remain an empty object shell")
-        return
-    _variable_name(value["name"])
-    ensure(value["value_type"] in VARIABLE_TYPES, "variable_invalid_state",
-           "Registered variable type is unavailable")
-    if value["assigned"]:
-        _typed_value(value["value_type"], value["value"])
-    else:
-        ensure(value["value"] is None, "variable_invalid_state",
-               "An unassigned variable cannot hold a value")
-
-
-def _read_variable(context, object_key: str) -> dict:
-    item = context.object_read(object_key)
-    ensure(item["type_id"] == VARIABLE_TYPE and item["schema_version"] == VARIABLE_SCHEMA_VERSION,
-           "variable_binding_type_mismatch", "Variable nodes require a workflow.variable@1 object")
-    _validate_variable(item["value"])
-    return item
 
 
 def _presentation(config: dict) -> None:
@@ -196,13 +146,16 @@ def _regex(config, inputs, context):
 
 
 def _validate_register(config):
-    _variable_name(config["name"])
+    validate_variable_name(config["name"])
     if config["has_initial"]:
-        _typed_value(config["value_type"], config["initial_value"])
+        validate_typed_value(config["value_type"], config["initial_value"])
 
 
 def _register(config, inputs, context):
-    basis = _read_variable(context, config["object_key"])
+    basis = read_variable(context, config["object_key"])
+    ensure(basis["binding"].get("registrar_node_id") == context.node_binding_id,
+           "variable_registration_target_mismatch",
+           "Variable registration must target its own provided item")
     existing = basis["value"]
     if existing["registered"]:
         ensure(existing["name"] == config["name"] and existing["value_type"] == config["value_type"],
@@ -211,31 +164,26 @@ def _register(config, inputs, context):
     value = {"registered": True, "name": config["name"], "value_type": config["value_type"],
              "assigned": config["has_initial"],
              "value": copy.deepcopy(config["initial_value"]) if config["has_initial"] else None}
-    _validate_variable(value)
+    validate_variable(value)
     context.object_write(config["object_key"], value, expected_revision=basis["revision"])
     return {}
 
 
 def _assign(config, inputs, context):
-    basis = _read_variable(context, config["object_key"])
+    basis = read_variable(context, config["object_key"])
     value = copy.deepcopy(basis["value"])
     ensure(value["registered"], "variable_not_registered", "Assignment needs a registered variable")
     incoming = inputs["value"]["value"] if "value" in inputs else config["value"]
-    _typed_value(value["value_type"], incoming)
+    validate_typed_value(value["value_type"], incoming)
     if config["operation"] != "set":
         ensure(value["value_type"] in ("integer", "number") and value["assigned"],
                "variable_type_mismatch", "Arithmetic needs an assigned numeric variable")
         incoming = (value["value"] + incoming if config["operation"] == "add"
                     else value["value"] - incoming)
-        _typed_value(value["value_type"], incoming)
+        validate_typed_value(value["value_type"], incoming)
     value.update(assigned=True, value=copy.deepcopy(incoming))
     context.object_write(config["object_key"], value, expected_revision=basis["revision"])
     return {}
-
-
-def _scalar_text(value_type: str, value: Any) -> str:
-    _typed_value(value_type, value)
-    return value if value_type == "string" else canonical_bytes(value).decode("utf-8")
 
 
 class _VariableResolver:
@@ -244,7 +192,7 @@ class _VariableResolver:
     def __init__(self, context, object_keys: list[str]):
         self._values: dict[str, dict] = {}
         for key in object_keys:
-            entry = _read_variable(context, key)["value"]
+            entry = read_variable(context, key)["value"]
             if not entry["registered"]:
                 continue
             ensure(entry["name"] not in self._values, "variable_name_conflict",
@@ -256,7 +204,7 @@ class _VariableResolver:
                "Referenced variable is not registered in the authorized object set")
         entry = self._values[name]
         ensure(entry["assigned"], "variable_unassigned", "Referenced variable has not been assigned")
-        return _scalar_text(entry["value_type"], entry["value"])
+        return scalar_text(entry["value_type"], entry["value"])
 
 
 def _replace(config, inputs, context, *, selected: bool):
@@ -283,14 +231,14 @@ def _replace_selected(config, inputs, context):
 
 def _validate_selected(config):
     for name in config["names"]:
-        _variable_name(name)
+        validate_variable_name(name)
 
 
 def _variable_to_content(config, inputs, context):
-    value = _read_variable(context, config["object_key"])["value"]
+    value = read_variable(context, config["object_key"])["value"]
     ensure(value["registered"], "variable_not_registered", "Content source needs a registered variable")
     ensure(value["assigned"], "variable_unassigned", "Content source needs an assigned variable")
-    output = (text_content(_scalar_text(value["value_type"], value["value"]))
+    output = (text_content(scalar_text(value["value_type"], value["value"]))
               if config["mode"] == "text" else json_content(value["value"]))
     return {"output": output}
 
@@ -298,26 +246,21 @@ def _variable_to_content(config, inputs, context):
 def create_tool_package() -> CapabilityPackage:
     """Return the independently loadable general-tools capability package."""
     node_names = (
-        "text", "current-input", "output", "regex", "text-to-prompt", "prompt-to-text",
+        "text", "editable-input", "current-input", "output", "regex", "text-to-prompt", "prompt-to-text",
         "text-to-json", "json-to-text", "json-to-prompt", "prompt-to-json",
         "variable-register", "variable-assign", "variable-replace-all",
         "variable-replace-selected", "variable-to-content",
     )
 
     def register(host):
-        host.register_data_type(DataTypeDefinition(
-            VARIABLE_TYPE, VARIABLE_SCHEMA_VERSION,
-            _schema({"registered": {"type": "boolean"}, "name": {"type": ["string", "null"]},
-                     "value_type": {"enum": [None, *VARIABLE_TYPES]}, "assigned": {"type": "boolean"},
-                     "value": {"type": ["string", "integer", "number", "boolean", "null"]}}),
-            default_value=_EMPTY_VARIABLE, validator=_validate_variable, max_bytes=WIRE_BYTES,
-        ))
+        host.register_data_type(variable_data_type())
         host.register_shared_data_type(frontend_state_data_type())
 
         def install(name, display, category, config, fields, executor, *,
                     inputs=(), outputs=(), modes=None, capabilities=(), validator=None,
                     is_output=False, external_validator=None, external_declaration=None,
-                    version="1", provided_session_item_types=()):
+                    version="1", provided_session_item_types=(), execution_class="working",
+                    adjustable_configuration=None, checkpoint_save=None):
             accesses = ()
             if name in ("variable-register", "variable-assign", "variable-to-content",
                         "variable-replace-all", "variable-replace-selected"):
@@ -334,11 +277,19 @@ def create_tool_package() -> CapabilityPackage:
                 capabilities=capabilities, is_output=is_output, input_storage="references",
                 object_accesses=accesses,
                 provided_session_item_types=provided_session_item_types,
+                execution_class=execution_class,
+                adjustable_configuration=adjustable_configuration,
+                checkpoint_save=checkpoint_save or {"config_paths": []},
             ), executor, config_validator=validator, external_inputs_validator=external_validator,
                 external_inputs_declaration=external_declaration)
 
         install("text", "文本", "通用工具", {"text": ""}, {"text": _STRING}, _text,
                 outputs=(_port("output", "TEXT"),))
+        install("editable-input", "可编辑输入", "通用工具", {"text": ""},
+                {"text": {"type": "string", "maxLength": 1_000_000}}, _text,
+                outputs=(_port("output", "TEXT"),),
+                adjustable_configuration={"schema_version": 1, "policy": "input", "fields": ["text"]},
+                checkpoint_save={"config_paths": [["text"]]})
         install("current-input", "当前输入", "通用工具", {"input_name": "text"},
                 {"input_name": _IDENTITY}, _current_input, outputs=(_port("output", "TEXT"),),
                 capabilities=("external:read",), external_validator=_validate_external,
@@ -374,12 +325,16 @@ def create_tool_package() -> CapabilityPackage:
             install(name, display, "格式转换", {}, {}, executor,
                     inputs=(_port("input", source),), outputs=(_port("output", target),))
         install("variable-register", "变量注册", "变量", {
-            "object_key": "variable/value", "name": "value", "value_type": "string",
+            "object_key": "", "name": "value", "value_type": "string",
             "has_initial": False, "initial_value": None,
-        }, {"object_key": _IDENTITY, "name": _IDENTITY, "value_type": {"enum": list(VARIABLE_TYPES)},
+        }, {"object_key": {"type": "string", "maxLength": 128},
+            "name": _IDENTITY, "value_type": {"enum": list(VARIABLE_TYPES)},
             "has_initial": {"type": "boolean"},
             "initial_value": {"type": ["string", "integer", "number", "boolean", "null"]}},
-            _register, capabilities=("objects:read", "objects:write"), validator=_validate_register)
+            _register, capabilities=("objects:read", "objects:write"), validator=_validate_register,
+            version="2", execution_class="non_working",
+            provided_session_item_types=({"type_id": VARIABLE_TYPE,
+                                          "schema_version": VARIABLE_SCHEMA_VERSION},))
         install("variable-assign", "变量赋值", "变量",
                 {"object_key": "variable/value", "operation": "set", "value": ""},
                 {"object_key": _IDENTITY, "operation": {"enum": ["set", "add", "subtract"]},
@@ -409,7 +364,8 @@ def create_tool_package() -> CapabilityPackage:
                             "schema_version": VARIABLE_SCHEMA_VERSION},
                            {"scope": "session", "type_id": FRONTEND_STATE_TYPE, "schema_version": 1}],
             "nodes": [{"component_id": "tools." + name, "component_version": "1"}
-                      for name in node_names if name != "output"]
+                      for name in node_names if name not in ("output", "variable-register")]
+                    + [{"component_id": "tools.variable-register", "component_version": "2"}]
                     + [{"component_id": "tools.output", "component_version": version}
                        for version in ("1", "2")],
         },

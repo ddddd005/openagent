@@ -18,6 +18,7 @@ from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.graph_store import GraphRecordStore
 from phase1_agent.host_sdk import DataTypeDefinition
 from phase1_agent.storage import SqliteStore
+from legacy_consumer_receipt_fixture import seed_legacy_consumer_receipt
 
 
 IDENTITY_OPERATION = "graph.application.command-identity.v1"
@@ -112,12 +113,17 @@ def document(instance, *, revision=1):
         "nodes": [
             {"node_binding_id": uid(2), "component_id": "tools.text", "component_version": "1",
              "title": "Source", "position": {"x": 0, "y": 0}, "config": {"text": "private body"}},
-            {"node_binding_id": uid(3), "component_id": "tools.output", "component_version": "1",
-             "title": "Output", "position": {"x": 200, "y": 0}, "config": {"mode": "text"},
+            {"node_binding_id": uid(3), "component_id": "tools.regex", "component_version": "1",
+             "title": "Regex", "position": {"x": 200, "y": 0},
+             "config": deepcopy(instance.registry.get("tools.regex", "1").definition.default_config)},
+            {"node_binding_id": uid(5), "component_id": "tools.output", "component_version": "1",
+             "title": "Output", "position": {"x": 400, "y": 0}, "config": {"mode": "text"},
              "public_outputs": ["output"]},
         ],
         "edges": [{"edge_id": uid(4), "source_node_id": uid(2), "source_port_id": "output",
-                   "target_node_id": uid(3), "target_port_id": "input", "order": 0}],
+                   "target_node_id": uid(3), "target_port_id": "input", "order": 0},
+                  {"edge_id": uid(6), "source_node_id": uid(3), "source_port_id": "output",
+                   "target_node_id": uid(5), "target_port_id": "input", "order": 0}],
     }
 
 
@@ -130,10 +136,16 @@ def seed_created(path, *, consumer=False, direct=False):
     with closing(new_service(path, enabled_packages=TOOLS)) as instance:
         app = GraphApplication(instance, scope="consumer" if consumer else "management")
         value = document(instance)
-        GraphApplication(instance).command("definition.save", {
-            "document": value, "expected_revision": 0, "idempotency_key": "custody-definition",
+        value["schema_version"] = 3
+        for node in value["nodes"]:
+            node["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
+        GraphApplication(instance).command("definition.update", {
+            "workflow_definition_id": value["workflow_definition_id"],
+            "document": value, "expected_edit_sequence": 0, "idempotency_key": "custody-definition",
         })
-        origin = (instance.create_session(**parameters) if direct else app.command(operation, parameters))
+        origin = (instance.create_session(**parameters) if direct else
+                  seed_legacy_consumer_receipt(instance, operation, parameters) if consumer else
+                  app.command(operation, parameters))
     return operation, parameters, origin
 
 
@@ -165,23 +177,26 @@ def test_real_origin_matches_without_storage_initialization_and_preserves_every_
     assert raw_database(path) == before
 
 
-def test_original_create_receipt_survives_later_publication_and_new_session(tmp_path, monkeypatch):
+def test_original_create_receipt_survives_later_derivation_and_new_session(tmp_path, monkeypatch):
     path = tmp_path / "new-revision-session.sqlite"
     operation, parameters, origin = seed_created(path)
     original = origin["result"]
     with closing(new_service(path)) as instance:
         app = GraphApplication(instance)
-        app.command("definition.save", {
-            "document": document(instance, revision=2), "expected_revision": 1,
+        revised = instance.get_definition(original["workflow_definition_id"])
+        revised["nodes"][0]["config"]["text"] = "new fixed configuration"
+        derived = app.command("definition.update", {
+            "workflow_definition_id": original["workflow_definition_id"], "document": revised,
+            "expected_edit_sequence": 1, "confirm_derivation": True,
             "idempotency_key": "custody-definition-second",
-        })
+        })["result"]
+        assert derived["outcome"] == "derived"
         current = app.command("session.create", {
-            "workflow_definition_id": original["workflow_definition_id"],
-            "definition_revision": 2,
+            "workflow_definition_id": derived["workflow_definition_id"], "definition_revision": 1,
             "idempotency_key": "custody-session-second-revision",
         })["result"]
         assert current["workflow_session_id"] != original["workflow_session_id"]
-        assert current["definition_revision"] == 2
+        assert current["workflow_definition_id"] != original["workflow_definition_id"]
         assert instance.get_session(original["workflow_session_id"])["definition_revision"] == 1
     before = raw_database(path)
     prohibit_coordinators(monkeypatch)
@@ -343,9 +358,8 @@ def test_original_start_request_keeps_its_cas_and_prepared_receipt_after_complet
         "idempotency_key": "custody-start",
     }
     with closing(new_service(path)) as instance:
-        origin = GraphApplication(instance, scope="consumer" if consumer else "management").command(
-            operation, parameters,
-        )
+        origin = (seed_legacy_consumer_receipt(instance, operation, parameters) if consumer else
+                  GraphApplication(instance).command(operation, parameters))
         chain_id = (origin["result"]["receipt"]["chain_run_id"] if consumer
                     else origin["result"]["active_chain_run_id"])
         instance.wait(chain_id)
@@ -470,8 +484,13 @@ def test_first_native_write_and_companion_insert_share_one_rollback(tmp_path):
     path = tmp_path / "atomic-origin.sqlite"
     with closing(new_service(path, enabled_packages=TOOLS)) as instance:
         app = GraphApplication(instance)
-        app.command("definition.save", {
-            "document": document(instance), "expected_revision": 0,
+        value = document(instance)
+        value["schema_version"] = 3
+        for item in value["nodes"]:
+            item["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
+        app.command("definition.update", {
+            "workflow_definition_id": value["workflow_definition_id"], "document": value,
+            "expected_edit_sequence": 0,
             "idempotency_key": "atomic-definition",
         })
         with closing(sqlite3.connect(path, isolation_level=None)) as connection:

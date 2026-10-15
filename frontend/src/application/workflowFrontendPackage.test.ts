@@ -14,9 +14,14 @@ import { memoryRequestEvidence } from "../testUtils/requestEvidence";
 import { requestEvidencePorts } from "../adapters/requestEvidenceApi";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { useWorkspaceStore } from "../stores/workspace";
+import type { FrontendExtension } from "../domain/frontendExtensions";
 
 function fakePackage() {
-  const declarations = workflowFrontendExtensions.slice(0, 3).map(row => {
+  const panel: FrontendExtension = { schema_version: 2, host_protocol_version: 1,
+    extension_id: "plugin.panel", kind: "workbench-panel", entrypoint: "plugin.local.panel",
+    component_id: null, component_version: null, package_id: "plugin.custom-ui", package_version: "2.1.0",
+    binding: { surface: "workbench", slot: "panel", target: {} } };
+  const declarations = [panel, workflowFrontendExtensions[0], workflowFrontendExtensions[1]].map(row => {
     const declaration = graphClone(row);
     declaration.package_id = "plugin.custom-ui"; declaration.package_version = "2.1.0";
     declaration.extension_id = `plugin.custom-ui.${row.binding.slot}`;
@@ -66,14 +71,16 @@ describe("local package composition lifecycle", () => {
     const declarations = ref(workflowFrontendExtensions);
     const packages = ref([{ package_id: "workflow.frontend", version: "1.0.0" }]);
     const host = createWorkbenchFrontendHost(() => declarations.value, () => packages.value);
-    expect(host.extensions.value.map(row => row.declaration.binding.slot)).toEqual(["panel", "session-object", "node-fields"]);
+    expect(host.extensions.value.map(row => row.declaration.binding.slot)).toEqual([
+      "session-object", "node-fields", "node-fields", "node-fields", "session-object",
+    ]);
     expect(host.extensions.value.every(row => !!row.component)).toBe(true);
     packages.value = [];
     expect(host.extensions.value).toEqual([]);
     packages.value = [{ package_id: "workflow.frontend", version: "2.0.0" }];
     expect(host.extensions.value).toEqual([]);
     packages.value = [{ package_id: "workflow.frontend", version: "1.0.0" }];
-    expect(host.extensions.value).toHaveLength(3);
+    expect(host.extensions.value).toHaveLength(5);
     declarations.value = [];
     expect(host.extensions.value).toEqual([]);
   });
@@ -82,12 +89,12 @@ describe("local package composition lifecycle", () => {
     const declarations = ref([...workflowFrontendExtensions, ...fake.declarations]);
     const packages = ref([{ package_id: "workflow.frontend", version: "1.0.0" }, fake.package]);
     const host = createWorkbenchFrontendHost(() => declarations.value, () => packages.value);
-    expect(host.extensions.value).toHaveLength(3);
+    expect(host.extensions.value).toHaveLength(5);
     expect(host.issues.value).toHaveLength(3);
     host.register(fake.module);
     expect(host.issues.value).toEqual([]);
-    expect(host.extensions.value).toHaveLength(6);
-    expect(host.extensions.value.filter(row => row.declaration.binding.slot === "panel")).toHaveLength(2);
+    expect(host.extensions.value).toHaveLength(8);
+    expect(host.extensions.value.filter(row => row.declaration.binding.slot === "panel")).toHaveLength(1);
     const custom = host.extensions.value.filter(row => row.declaration.package_id === fake.package.package_id);
     const html = await renderToString(createSSRApp({
       render: () => h("main", custom.map(row => h(row.component, { objectKey: "custom-object",
@@ -96,7 +103,7 @@ describe("local package composition lifecycle", () => {
     expect(html).toContain("panel:custom-object"); expect(html).toContain("session-object:custom-object");
     expect(html).toContain("node-fields:custom-object");
     packages.value = packages.value.filter(row => row.package_id !== fake.package.package_id);
-    expect(host.extensions.value).toHaveLength(3);
+    expect(host.extensions.value).toHaveLength(5);
   });
   it("accepts arbitrary trusted package modules during construction without builtins", () => {
     const fake = fakePackage();
@@ -107,12 +114,14 @@ describe("local package composition lifecycle", () => {
   });
   it("rejects every competing exact target even when both local packages are trusted", () => {
     const fake = fakePackage();
-    fake.declarations[1].binding.target = graphClone(workflowFrontendExtensions[1].binding.target);
+    fake.declarations[1].binding.target = graphClone(workflowFrontendExtensions[0].binding.target);
     const host = createWorkbenchFrontendHost(() => [...workflowFrontendExtensions, ...fake.declarations],
       () => [{ package_id: "workflow.frontend", version: "1.0.0" }, fake.package]);
     host.register(fake.module);
-    expect(host.extensions.value.filter(row => row.declaration.binding.slot === "session-object")).toEqual([]);
-    expect(host.extensions.value.filter(row => row.declaration.binding.slot === "panel")).toHaveLength(2);
+    expect(host.extensions.value.filter(row => row.declaration.binding.slot === "session-object"
+      && row.declaration.binding.target.type_id === "workflow.frontend-state")).toEqual([]);
+    expect(host.extensions.value.filter(row => row.declaration.binding.target.type_id === "workflow.chat-context")).toHaveLength(1);
+    expect(host.extensions.value.filter(row => row.declaration.binding.slot === "panel")).toHaveLength(1);
     expect(host.issues.value.filter(issue => issue.includes("冲突"))).toHaveLength(2);
   });
   it("shares one registry across the actual panel, session renderer and node field slots", async () => {

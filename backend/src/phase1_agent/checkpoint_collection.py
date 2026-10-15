@@ -1,13 +1,15 @@
-"""Collect fixed configuration and accepted allowlisted context values."""
+"""Collect fixed configuration and explicitly admitted session item values."""
 
 from __future__ import annotations
 
 from copy import deepcopy
 
+from .chat_contracts import CHAT_CONTEXT_TYPE, CHAT_CONTEXT_SCHEMA_VERSION
 from .context_contract import EFFECTIVE_CONTEXT_TYPE, validate_agent_checkpoint_value
 from .graph_contracts import NodeRegistry, require
 from .host_sdk import ObjectBinding, TypeRegistry
 from .session_objects import SessionObjectStore
+from .variable_contract import VARIABLE_TYPE, VARIABLE_SCHEMA_VERSION
 from .workflow_configuration import fixed_configuration_projection, validate_node_configuration
 
 
@@ -90,8 +92,8 @@ def collect_checkpoint_configuration(
     }
 
 
-def checkpoint_context_bindings(document, *, types: TypeRegistry, registry: NodeRegistry):
-    """Resolve only exact registered effective-context items from the fixed graph."""
+def _checkpoint_bindings(document, exact_type, *, types: TypeRegistry, registry: NodeRegistry):
+    """Resolve admitted exact items without borrowing ordinary consumer permissions."""
     require(type(document) is dict and isinstance(types, TypeRegistry)
             and isinstance(registry, NodeRegistry),
             "checkpoint_context_registration_invalid",
@@ -100,11 +102,14 @@ def checkpoint_context_bindings(document, *, types: TypeRegistry, registry: Node
     bindings, registered_instances = {}, set()
     for raw in document.get("object_bindings", []):
         binding = ObjectBinding.from_dict(raw)
-        if (binding.type_id, binding.schema_version) != (EFFECTIVE_CONTEXT_TYPE, 4):
+        if (binding.type_id, binding.schema_version) != exact_type:
             continue
-        require(types.get(EFFECTIVE_CONTEXT_TYPE, 4, scope="session") is not None,
+        definition_type = types.get(*exact_type, scope="session")
+        require(definition_type is not None,
                 "checkpoint_context_type_unavailable",
-                "The approved effective-context@4 session type is unavailable", 409)
+                "The exact checkpoint session type is unavailable", 409)
+        if not definition_type.checkpoint_admission:
+            continue
         registrar_id = binding.registrar_node_id
         registrar = nodes.get(registrar_id)
         require(registrar is not None,
@@ -137,6 +142,24 @@ def checkpoint_context_bindings(document, *, types: TypeRegistry, registry: Node
                 object_key=binding.object_key)
         bindings[binding.object_key] = binding
     return bindings
+
+
+def checkpoint_context_bindings(document, *, types: TypeRegistry, registry: NodeRegistry):
+    """Resolve explicitly admitted effective-context items from the fixed graph."""
+    return _checkpoint_bindings(
+        document, (EFFECTIVE_CONTEXT_TYPE, 4), types=types, registry=registry)
+
+
+def checkpoint_variable_bindings(document, *, types: TypeRegistry, registry: NodeRegistry):
+    """Resolve explicitly admitted independent variable items from the fixed graph."""
+    return _checkpoint_bindings(
+        document, (VARIABLE_TYPE, VARIABLE_SCHEMA_VERSION), types=types, registry=registry)
+
+
+def checkpoint_chat_bindings(document, *, types: TypeRegistry, registry: NodeRegistry):
+    """Resolve admitted logical chat items without assuming a particular consumer node."""
+    return _checkpoint_bindings(
+        document, (CHAT_CONTEXT_TYPE, CHAT_CONTEXT_SCHEMA_VERSION), types=types, registry=registry)
 
 
 def collect_agent_contexts_in_transaction(
@@ -179,12 +202,41 @@ def collect_agent_contexts_in_transaction(
 
 def collect_checkpoint_state(repo, workflow_definition_id, fixed_definition_revision,
                              source_session, *, types: TypeRegistry, registry: NodeRegistry):
-    """Compose the two independently reviewed checkpoint collector results."""
+    """Compose fixed configuration and the complete explicitly admitted item states."""
     _require_transaction(repo)
     _, document = _fixed_definition(repo, workflow_definition_id, fixed_definition_revision)
+    contexts = collect_agent_contexts_in_transaction(
+        repo, source_session, document, types=types, registry=registry)
+    objects = SessionObjectStore(repo.store, types)
+    variables = {}
+    for key, binding in sorted(checkpoint_variable_bindings(
+            document, types=types, registry=registry).items()):
+        record = objects._checkpoint_current_value(source_session, key, binding)
+        require(record is not None and not record["deleted"],
+                "checkpoint_variable_state_unavailable",
+                "An admitted variable item requires its current logical state", 409, object_key=key)
+        value = types.validate(
+            binding.type_id, binding.schema_version, record["value"], scope="session")
+        variables[key] = {
+            "type_id": binding.type_id, "schema_version": binding.schema_version,
+            "value": value,
+        }
+    chat_contexts = {}
+    for key, binding in sorted(checkpoint_chat_bindings(
+            document, types=types, registry=registry).items()):
+        record = objects._checkpoint_current_value(source_session, key, binding)
+        require(record is not None and not record["deleted"],
+                "checkpoint_chat_state_unavailable",
+                "An admitted chat item requires its current logical state", 409, object_key=key)
+        value = types.validate(
+            binding.type_id, binding.schema_version, record["value"], scope="session")
+        chat_contexts[key] = {
+            "type_id": binding.type_id, "schema_version": binding.schema_version, "value": value,
+        }
     return {
         "configuration": collect_checkpoint_configuration(
             repo, workflow_definition_id, fixed_definition_revision, registry=registry),
-        "agent_contexts": collect_agent_contexts_in_transaction(
-            repo, source_session, document, types=types, registry=registry),
+        "agent_contexts": contexts,
+        "variables": variables,
+        "chat_contexts": chat_contexts,
     }

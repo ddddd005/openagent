@@ -44,7 +44,7 @@ function openSection(value: SidebarSection) {
       </button>
     </nav>
     <div id="workbench-sidebar-panel" v-show="!sidebarCollapsed" class="workbench-sidebar-panel">
-      <WorkflowSidebar v-show="section === 'workflows'" @open-content="openSection('content')" />
+      <WorkflowSidebar v-show="section === 'workflows'" />
       <ProviderSidebar v-show="section === 'providers'" />
       <ContentSidebar v-show="section === 'content'" />
     </div>

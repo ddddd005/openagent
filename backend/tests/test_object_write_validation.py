@@ -72,6 +72,23 @@ def test_delete_and_initialize_hook_have_explicit_context_and_bad_shapes_are_rej
         registry.validate_write(TYPE, 1, DEFAULT, write_context(operation="delete"))
 
 
+def test_optional_writer_identity_preserves_old_context_and_rejects_untrusted_shapes():
+    registry = TypeRegistry()
+    registry.register(DataTypeDefinition(TYPE, 1, SCHEMA, DEFAULT))
+    for context in (
+        write_context(), {**write_context(), "writer_node_id": uid(3)},
+        {**write_context(operation="initialize"), "writer_node_id": None},
+    ):
+        assert registry.validate_write(TYPE, 1, DEFAULT, context) == DEFAULT
+    for invalid in ("not-a-node", False, 7, {}):
+        with pytest.raises(HostContractError) as caught:
+            registry.validate_write(TYPE, 1, DEFAULT, {**write_context(), "writer_node_id": invalid})
+        assert caught.value.reason_code == "host_invalid_write_context"
+    with pytest.raises(HostContractError) as caught:
+        registry.validate_write(TYPE, 1, DEFAULT, {**write_context(), "unreviewed_writer": uid(3)})
+    assert caught.value.reason_code == "host_invalid_write_context"
+
+
 def guarded_package(calls):
     def guard(value, context):
         calls.append((deepcopy(value), {key: deepcopy(item) for key, item in context.items()
@@ -84,10 +101,15 @@ def guarded_package(calls):
                 raise HostContractError("guard_delete_denied", "Populated objects cannot be deleted")
         elif value["artifact_ref"] is not None:
             artifact = context["resolve_artifact"](value["artifact_ref"])
-            assert set(artifact) == {"value", "component_id", "component_version", "config", "producer", "input_refs"}
+            assert set(artifact) == {
+                "value", "component_id", "component_version", "config", "producer", "input_refs",
+                "consumed_config", "reads",
+            }
             assert artifact["component_id"] == "tools.text"
             assert artifact["component_version"] == "1"
             assert artifact["config"]["text"] == artifact["value"]["text"]
+            assert artifact["consumed_config"]["text"] == artifact["value"]["text"]
+            assert artifact["reads"] == []
             if artifact["value"]["text"] != context["object_key"]:
                 raise HostContractError("guard_owner_mismatch", "Artifact belongs to another object")
 
@@ -178,7 +200,7 @@ def test_cas_and_reference_checks_precede_hook_and_rejected_defaults_roll_back(g
     assert denied.value.reason_code == "guard_bad_default"
 
 
-def test_inherited_copy_and_checkpoint_restore_bypass_transition_hook(guarded_service):
+def test_new_session_initializes_independent_defaults_instead_of_inheriting_values(guarded_service):
     service, calls = guarded_service
     doc = object_graph(service)
     initial = create(service, doc)
@@ -188,11 +210,13 @@ def test_inherited_copy_and_checkpoint_restore_bypass_transition_hook(guarded_se
     with closing(SqliteStore(service.database)) as store:
         store._connection.execute("BEGIN IMMEDIATE")
         objects = SessionObjectStore(store, service.registry.data_types)
-        objects.initialize(sid, doc, inherited=changed["objects"], source_session_id=changed["workflow_session_id"])
-        assert objects.current(sid)["main"]["value"] == {"count": 1, "artifact_ref": None}
-        objects.restore(sid, doc, objects.references(sid))
+        objects.initialize(sid, doc)
+        initialized = objects.current(sid)
+        assert initialized["main"]["value"] == DEFAULT
+        assert initialized["main"]["revision_id"] != changed["objects"]["main"]["revision_id"]
+        assert objects.current(changed["workflow_session_id"]) == changed["objects"]
         store._connection.execute("ROLLBACK")
-    assert not calls
+    assert [context["operation"] for _, context in calls] == ["initialize", "initialize"]
 
 
 def test_write_resolver_rejects_foreign_session_and_unaccepted_producer(guarded_service):
@@ -215,37 +239,3 @@ def test_write_resolver_rejects_foreign_session_and_unaccepted_producer(guarded_
                                             if kind == "node_run" else original(kind, identity))
         with pytest.raises(ContractValidationError):
             objects._resolve_write_artifact(first["workflow_session_id"], reference)
-
-
-def test_rebind_initializes_only_new_bindings_preserving_populated_and_deleted_heads(guarded_service):
-    service, calls = guarded_service
-    doc = object_graph(service)
-    view = create(service, doc)
-    view = update(service, view, "main", {"count": 7, "artifact_ref": None})
-    view = update(service, view, "other", None, operation="delete")
-    before = deepcopy(view["objects"])
-    writer = doc["nodes"][2]["node_binding_id"]
-    added = deepcopy(doc)
-    added["object_bindings"].append(ObjectBinding(
-        "new", TYPE, 1, "shared", readers=(writer,), writers=(writer,)).to_dict())
-    calls.clear()
-    with closing(SqliteStore(service.database)) as store:
-        store._connection.execute("BEGIN IMMEDIATE")
-        objects = SessionObjectStore(store, service.registry.data_types)
-        objects.rebind(view["workflow_session_id"], added)
-        current = objects.current(view["workflow_session_id"])
-        assert current["main"] == before["main"]
-        assert current["other"] == before["other"] and current["other"]["deleted"]
-        assert current["new"]["value"] == DEFAULT and current["new"]["revision"] == 1
-        assert [(context["object_key"], context["operation"]) for _, context in calls] == [("new", "initialize")]
-        store._connection.execute("ROLLBACK")
-    calls.clear()
-    added["object_bindings"][-1]["default_value"] = {"count": 99, "artifact_ref": None}
-    with closing(SqliteStore(service.database)) as store:
-        store._connection.execute("BEGIN IMMEDIATE")
-        objects = SessionObjectStore(store, service.registry.data_types)
-        with pytest.raises(HostContractError) as rejected:
-            objects.rebind(view["workflow_session_id"], added)
-        assert rejected.value.reason_code == "guard_bad_default"
-        store._connection.execute("ROLLBACK")
-        assert objects.current(view["workflow_session_id"]) == before

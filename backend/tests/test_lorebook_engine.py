@@ -6,7 +6,9 @@ import pytest
 
 import phase1_agent.lorebook_engine as engine
 from phase1_agent.content_contracts import default_presentation, text_content
+from phase1_agent.context_contract import project_agent_context_message
 from phase1_agent.context_prompt_v6 import assemble_native_context_prompt
+from phase1_agent.context_v4 import read_native_context_v5
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.lorebook_engine import (
     default_lorebook_entry, evaluate_lorebook, validate_lorebook_entries, validate_lorebook_entry,
@@ -17,7 +19,7 @@ from phase1_agent.prompt_lifecycle import (
 )
 
 from test_context_update import tool_pair
-from test_prompt_lifecycle import history_text, ref, uid, view
+from test_prompt_lifecycle import history_text, ref, uid
 
 
 def entry(number=1, *, presentation=None, **changes):
@@ -31,8 +33,16 @@ def entry(number=1, *, presentation=None, **changes):
 def scan(current="seed", *, messages=None, layout=None, materials=None):
     prepared = [] if materials is None else [merge_lifecycle_prompt_materials([
         lifecycle_prompt_content(materials)])]
+    context = read_native_context_v5({
+        "type_id": "workflow.effective-context", "schema_version": 4, "deleted": False,
+        "revision": 1, "revision_id": uid(802),
+        "value": {
+            "messages": [project_agent_context_message(message) for message in (messages or [])],
+            "layout": deepcopy(layout or []), "accepted_delta_ids": [], "generation": 0,
+        },
+    }, uid(800), "context")
     return assemble_native_context_prompt(
-        prepared, view(messages, layout), text_content(current),
+        prepared, context, text_content(current),
         context_ref=ref(900), current_input_ref=ref(901))
 
 

@@ -1,7 +1,47 @@
 # OpenAgent Backend
 
-Python workflow runtime for the OpenAgent graph workbench, GraphChat and Tavern
-client. The import package remains `phase1_agent`; it is not the retired fixed
+The 2026-10-15 construction checkout has retired unused history-closure restore
+authority and cross-workflow session copying. Current checkpoints initialize a
+new session through the dedicated checkpoint loader. Frozen receipt verification,
+live object ACL/CAS and runtime evidence remain in place. See the
+[cleanup receipt](../docs/中期检查2/38-阶段D后旧架构代码整理实施回执-2026-10-15.md).
+The mainline/develop history below is not a deployment claim for this checkout.
+
+Stage E4 now provides node-owned HTTP entry/channel/events addresses and a
+display-only frontend page for the exact saved `frontend.node@1` instance.
+Opening the page does not create a session or start execution. At E4 delivery,
+existing product services and legacy GraphChat/Tavern entries were unchanged. See the
+[E4 scoped delivery receipt](../docs/中期检查2/47-阶段E节点HTTP入口与页面限定验收实施回执-2026-10-15.md).
+
+Stage E5 retires legacy GraphChat/Tavern page entry, active consumer mutations
+and preset workflow creation. Only ordinary workflows are created. Lorebook,
+current explicit display nodes, exact frontend-node routes and original request
+evidence remain. Four old page addresses return 410; retained old source is
+served as non-executable plain text. Two exact legacy test workflows were deleted
+from the named construction databases, preserving ordinary workflows and global
+resources. Product services were not started or restarted. See the
+[E5 scoped delivery receipt](../docs/中期检查2/49-阶段E旧入口退役与测试工作流清理实施回执-2026-10-15.md).
+
+Workflow operations are now independent of frontend nodes:
+`WorkflowOperations` owns create/start coordination, pause/resume/close and
+checkpoint metadata reads/fork calls over the existing service. Exact-node
+adapters verify ownership before calling it; the node page now exposes resume,
+end-round and checkpoint controls. Original start/pause request identities remain
+readable without redispatch. See the
+[operation delivery receipt](../docs/中期检查2/53-工作流独立操作与节点入口补齐实施回执-2026-10-15.md).
+
+Logical chat is now stored in registered `workflow.chat-context@1` items and
+admitted to checkpoint schema4. Independent chat operations use the fixed
+pre-round checkpoint for reroll, select successful candidates, lock earlier
+floors and fork whole floors with target-owned checkpoint references.
+`frontend.node@2` consumes these functions through the exact-node channel;
+version 1 retains its original semantics. Existing schema3 product databases
+were not migrated. Conflicting computation bases across participating chat
+items are rejected pending a separate user decision. See the
+[scoped chat delivery receipt](../docs/中期检查2/55-聊天候选数据层与重roll检查点接续实施回执-2026-10-15.md).
+
+Python workflow runtime for the OpenAgent graph workbench and node-owned frontend.
+The import package remains `phase1_agent`; it is not the retired fixed
 `A -> B -> Output` host.
 
 The current mainline supports graph definitions and workflow sessions, native
@@ -70,7 +110,8 @@ python -m phase1_agent.server --port 8877 --database .local/backend-debug.sqlite
 ```
 
 The server binds to loopback only. This command does not start the Vue
-workbench; the backend also serves GraphChat and `/tavern/`. A previously built
+workbench; this construction checkout serves exact frontend-node pages, not the
+retired GraphChat or `/tavern/` business entries. A previously built
 workbench can be served with `--workbench-dist ../frontend/dist`; it is loaded as
 an asset snapshot at startup. The retired `--mode` argument is not accepted.
 Model calls are controlled by workflow configuration, not an implicit offline
@@ -100,6 +141,8 @@ All files below are under `src/phase1_agent/`.
 | Entry | Responsibility |
 | --- | --- |
 | `server.py`, `graph_http.py` | Loopback HTTP and application routing |
+| `frontend_node_entry.py`, `frontend_node_http.py`, `frontend_node_channel.py` | Exact-node frontend addresses and private channel, outside generic commands |
+| `frontend_node_snapshots.py`, `frontend_node_connections.py`, `static/frontend-node-*` | Real postcommit display reads, node-owned notifications and frontend page |
 | `graph_application.py`, `graph_application_contracts.py` | Command/query boundary and identity checks |
 | `graph_input_declarations.py` | Management-only `definition.inputs`, editable declarations for incomplete graphs and separate active required inputs |
 | `workflow_host.py`, `graph_platform.py`, `graph_service.py` | Host composition, graph/session operations and object adoption |
@@ -114,7 +157,7 @@ All files below are under `src/phase1_agent/`.
 | `adapter.py`, `gemini_adapter.py`, `gemini_capabilities.py`, `provider_metadata.py` | Protocol conversion, thinking validation and original signed parts |
 | `context_v4.py`, `context_v4_nodes.py`, `context_receipt.py` | Native context, verified writeback and CAS receipts |
 | `prompt_package.py`, `prompt_lifecycle.py`, `prompt_assembly.py`, `context_prompt_v6.py` | Lifecycle materials, ordinary `PROMPT@2` and native Agent `PROMPT@6` |
-| `tavern/`, `static/graph-chat.js`, `static/graph-chat-core.js` | Tavern and GraphChat consumers |
+| `tavern/`, `lorebook_nodes.py`, `lorebook_engine.py` | Current Lorebook nodes/resources; old chat source retained only as source/attribution |
 
 Schemas are checked in under `backend/schemas/`; exporters are under
 `backend/scripts/`.

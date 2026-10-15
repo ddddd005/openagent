@@ -149,6 +149,7 @@ def _context_types():
         default_value=deepcopy(EMPTY_CONTEXT),
         validator=validate_effective_context,
         write_validator=validate_native_context_write,
+        checkpoint_admission=True,
     ))
     return types
 
@@ -642,6 +643,8 @@ def test_composite_collector_returns_the_approved_logical_envelope(store):
             "nodes": {},
         },
         "agent_contexts": {},
+        "variables": {},
+        "chat_contexts": {},
     }
 
 

@@ -30,7 +30,8 @@ class NodeExecutionContext:
     def __init__(self, *, definition: NodeDefinition, node_binding_id: str,
                  workflow_session_id: str, chain_run_id: str, node_run_id: str,
                  state: dict, private_states: dict, external_inputs: dict, host=None,
-                 object_states: dict | None = None, type_registry=None, input_refs=None, object_accesses=None):
+                 object_states: dict | None = None, type_registry=None, input_refs=None, object_accesses=None,
+                 chat_append_context=None):
         self.definition = definition
         self.node_binding_id, self.workflow_session_id = node_binding_id, workflow_session_id
         self.chain_run_id, self.node_run_id = chain_run_id, node_run_id
@@ -41,10 +42,15 @@ class NodeExecutionContext:
         self._type_registry = type_registry
         self._input_refs = copy.deepcopy(input_refs or {})
         self._object_accesses = object_accesses
+        self._chat_append_context = copy.deepcopy(chat_append_context)
         self.object_writes: list[dict] = []
         self.effects: list[dict] = []
         self.reads: list[dict] = []
         self._last_variables_read: tuple[int, int] | None = None
+
+    @property
+    def chat_append_context(self):
+        return copy.deepcopy(self._chat_append_context)
 
     def validate_content(self, value: Any, type_id: str, schema_version: int = 1) -> dict:
         require(self._type_registry is not None, "host_unknown_type", "Content types are unavailable")
@@ -239,14 +245,6 @@ def default_private_states(document: dict, registry: NodeRegistry) -> dict:
     return result
 
 
-def copy_private_state(value: Any, source: NodeDefinition, target: NodeDefinition) -> Any:
-    require((source.component_id, source.component_version) == (target.component_id, target.component_version)
-            and canonical_bytes(source.private_state_schema) == canonical_bytes(target.private_state_schema),
-            "graph_private_state_incompatible", "Private state has no declared compatible migration")
-    NodeRegistry.validate_private_state(source, value)
-    return NodeRegistry.validate_private_state(target, value)
-
-
 def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_id: str,
                   chain_run_id: str, node_run_ids: dict[str, str], state: dict,
                   private_states: dict | None = None, external_inputs: dict | None = None,
@@ -257,7 +255,8 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
                   object_states: dict | None = None, artifact_refs: dict | None = None,
                   validate_output_references: Callable | None = None,
                   runtime_host=None, acceptance_cache=None,
-                  result_recovery: Callable | None = None) -> GraphExecutionResult:
+                  result_recovery: Callable | None = None,
+                  chat_append_contexts: dict | None = None) -> GraphExecutionResult:
     """Resume only from a persisted completed boundary; never retry unknown effects."""
     uuid4_string(workflow_session_id)
     uuid4_string(chain_run_id)
@@ -381,6 +380,7 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
                 private_states=private, external_inputs=external, host=host,
                 object_states=objects, type_registry=registry.data_types,
                 input_refs=input_refs,
+                chat_append_context=(chat_append_contexts or {}).get(identity),
                 object_accesses={
                     key: access["access"] for access in definition.object_accesses
                     for key in (node["config"][access["config_field"]] if access["multiple"]

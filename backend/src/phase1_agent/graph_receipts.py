@@ -235,7 +235,27 @@ def _configuration_result(parameters, result):
                    and result["definition_revision"] == submitted["revision"] + ("fixed" in categories))
 
 
+def _lifecycle_result(operation, parameters, result):
+    kind, action = operation.split(".")
+    fields = {
+        "schema_version", "kind", "workflow_definition_id", "revision", "archived", "deleted",
+    } | ({"workflow_session_id"} if kind == "session" else set())
+    deleted = action == "delete"
+    _check(set(result) == fields
+           and type(result["schema_version"]) is int and result["schema_version"] == 1
+           and result["kind"] == "workflow." + kind + "-management"
+           and uuid_value(result["workflow_definition_id"])
+           and _integer(result["revision"], 1) and result["revision"] == parameters["expected_revision"]
+           and type(result["archived"]) is bool and result["archived"] == (not deleted)
+           and type(result["deleted"]) is bool and result["deleted"] == deleted)
+    target = "workflow_session_id" if kind == "session" else "workflow_definition_id"
+    _check(result[target] == parameters["session_id" if kind == "session" else "identity"])
+
+
 def _validate_result(operation, parameters, result, connection=None):
+    if operation in ("definition.archive", "definition.delete", "session.archive", "session.delete"):
+        _lifecycle_result(operation, parameters, result)
+        return
     if operation.startswith("request-evidence."):
         from .request_evidence import validate_evidence_record
         validate_evidence_record(result)
@@ -532,7 +552,7 @@ def read_graph_application_receipt(database_path, operation, parameters, scope="
     if scope == "consumer" and not spec.consumer:
         return _unresolved("application_scope_denied")
     try:
-        request = deepcopy(validate_parameters(spec, parameters))
+        request = deepcopy(validate_parameters(spec, parameters, stored_evidence=True))
         validate_json_value(request)
         operation_scope = "consumer" if spec.consumer else "management"
         identity = application_command_identity(operation, operation_scope, request)

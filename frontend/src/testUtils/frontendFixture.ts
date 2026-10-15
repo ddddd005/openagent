@@ -1,5 +1,5 @@
-import { frontendPackage, frontendStateType } from "../domain/frontendWiring";
-import { graphClone, type GraphNodeType, type GraphPort, type GraphSession, type GraphSessionObject } from "../domain/workflowGraph";
+import { frontendStateType } from "../domain/frontendWiring";
+import { graphClone, newGraph, type GraphNodeType, type GraphPort, type GraphSession, type GraphSessionObject } from "../domain/workflowGraph";
 import type { FrontendDisplayEntry } from "../domain/frontendDisplay";
 
 const port = (port_id: string, data_type: string, version = 1, multiple = false): GraphPort =>
@@ -29,9 +29,42 @@ export const frontendCatalog: GraphNodeType[] = [
     inputs: [port("view", "FRONTEND_VIEW")], outputs: [port("display", "FRONTEND_DISPLAY")] },
 ];
 export const frontendLock = [{ package_id: "workflow.content", version: "1.0.0" },
-  { package_id: "workflow.tools", version: "1.0.0" }, frontendPackage];
+  { package_id: "workflow.tools", version: "1.0.0" },
+  { package_id: "workflow.frontend-business", version: "1.0.0" }];
 export const frontendExecutionLock = frontendLock;
 export const frontendProjectLock = [...frontendExecutionLock, { package_id: "workflow.frontend", version: "1.0.0" }];
+export function explicitFrontendGraph(definitionId?: string) {
+  const document = newGraph("Existing explicit frontend", frontendExecutionLock);
+  if (definitionId) document.workflow_definition_id = definitionId;
+  const sourceId = crypto.randomUUID(), registrarId = crypto.randomUUID();
+  const readId = crypto.randomUUID(), appendId = crypto.randomUUID(), presentationId = crypto.randomUUID();
+  const objectKey = "item/output-test";
+  document.nodes = [
+    { node_binding_id: sourceId, component_id: "tools.current-input", component_version: "1",
+      title: "Input", position: { x: 0, y: 0 }, config: { input_name: "text" } },
+    { node_binding_id: registrarId, component_id: "tools.output", component_version: "2",
+      title: "Output", position: { x: 0, y: 100 }, config: { mode: "text" } },
+    { node_binding_id: readId, component_id: "frontend.state.output", component_version: "1",
+      title: "Read", position: { x: 300, y: 0 }, config: { object_key: objectKey } },
+    { node_binding_id: appendId, component_id: "frontend.state.append", component_version: "1",
+      title: "Append", position: { x: 600, y: 0 }, config: { object_key: objectKey, role: "user" } },
+    { node_binding_id: presentationId, component_id: "frontend.presentation", component_version: "1",
+      title: "Display", position: { x: 900, y: 0 }, config: {}, public_outputs: ["display"] },
+  ];
+  document.edges = [
+    { edge_id: crypto.randomUUID(), source_node_id: readId, source_port_id: "view",
+      target_node_id: appendId, target_port_id: "view", order: 0 },
+    { edge_id: crypto.randomUUID(), source_node_id: sourceId, source_port_id: "output",
+      target_node_id: appendId, target_port_id: "content", order: 0 },
+    { edge_id: crypto.randomUUID(), source_node_id: appendId, source_port_id: "view",
+      target_node_id: presentationId, target_port_id: "view", order: 0 },
+  ];
+  document.execution_roots = [presentationId];
+  document.object_bindings = [{ object_key: objectKey, type_id: frontendStateType, schema_version: 1,
+    scope: "shared", owner_node_id: null, readers: [readId, appendId], writers: [appendId],
+    registrar_node_id: registrarId, default_value: { entries: [], view_ref: null } }];
+  return { document, sourceId, registrarId, readId, appendId, presentationId, objectKey };
+}
 export function frontendEntry(): FrontendDisplayEntry {
   return { entry_id: crypto.randomUUID(), role: "assistant",
     source_ref: { scope: "artifact", output_id: crypto.randomUUID() } };

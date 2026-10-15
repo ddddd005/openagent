@@ -7,10 +7,10 @@ import { createWorkflowManagementRequests } from "../application/workflowManagem
 import { createWorkflowManagement, workflowManagementQueries } from "../application/workflowManagement";
 import { createWorkflowEditing } from "../application/workflowEditing";
 import { createWorkflowConfigurationApplication } from "../application/workflowConfiguration";
-import { editFrontendSource, wireFrontendDisplay, type FrontendWiringRequest } from "../domain/frontendWiring";
+import { editFrontendSource } from "../domain/frontendWiring";
 import { newerGraphObservation } from "../domain/graphObservation";
 import { graphConnectionIssue } from "../domain/graphConnections";
-import { graphClone, graphObject, graphUuid, isGraphDocument, newGraph,
+import { defaultGraphConfigurationPolicy, graphClone, graphNodeAllowsAdjustable, graphObject, graphUuid, isGraphDocument, newGraph,
   isGraphObjectBindings, isGraphEventBindings, isGraphJsonValue, graphSignature, upgradeGraph,
   type GraphCommand, type GraphDocument, type GraphEdge, type GraphEntry, type GraphNode,
   type GraphNodeType, type GraphSession, type GraphCandidates, type GraphDataType,
@@ -21,7 +21,7 @@ import type { FrontendExtension } from "../domain/frontendExtensions";
 import { isGraphConfigurationDocument, type GraphConfigurationResult,
   type GraphConfigurationUpdateDocument, type GraphConfigurationUpdateRequest } from "../domain/workflowConfiguration";
 import type { WorkflowNodeConfigurationRequest, WorkflowNodeConfigurationResult } from "../plugins/workflowFrontendSdk";
-import { createCompactingSerialAgentDemo, createSerialAgentDemo, type SerialAgentModelConfig } from "../domain/serialAgentDemo";
+import { syncVariableRegistrationEvent, variableRegistrationTarget } from "../domain/workflowVariableRegistration";
 
 type WorkflowConfigurationApplication = ReturnType<typeof createWorkflowConfigurationApplication>;
 type ConfigurationHistoryAction = "edit" | "undo" | "redo" | "none";
@@ -41,7 +41,8 @@ function configurationUpdateDocument(document: GraphDocument, editSequence: numb
 }
 
 function syncProvidedSessionItems(document: GraphDocument, nodeId: string,
-  provided: NonNullable<GraphNodeType["provided_session_item_types"]>, preserveExact: boolean) {
+  provided: NonNullable<GraphNodeType["provided_session_item_types"]>, preserveExact: boolean,
+  accesses: NonNullable<GraphNodeType["object_accesses"]> = []) {
   const bindings = document.object_bindings ?? [];
   const prior = bindings.filter(binding => binding.registrar_node_id === nodeId);
   document.object_bindings = bindings.filter(binding => binding.registrar_node_id !== nodeId);
@@ -60,6 +61,16 @@ function syncProvidedSessionItems(document: GraphDocument, nodeId: string,
     document.object_bindings.push({ object_key: objectKey, type_id: item.type_id,
       schema_version: item.schema_version, scope: "shared", owner_node_id: null,
       readers: [], writers: [], registrar_node_id: nodeId });
+  }
+  const node = document.nodes.find(row => row.node_binding_id === nodeId);
+  if (!node) return;
+  for (const access of accesses) {
+    const own = document.object_bindings.find(binding => binding.registrar_node_id === nodeId
+      && binding.type_id === access.type_id && binding.schema_version === access.schema_version);
+    if (!own) continue;
+    if (access.access !== "write" && !own.readers.includes(nodeId)) own.readers.push(nodeId);
+    if (access.access !== "read" && !own.writers.includes(nodeId)) own.writers.push(nodeId);
+    node.config[access.config_field] = access.multiple ? [own.object_key] : own.object_key;
   }
 }
 
@@ -178,25 +189,6 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   }
   function createWorkflow() {
     return registerWorkflowDraft(newGraph("新工作流", executionPackageLock.value));
-  }
-  function createWorkflowDraft(value: GraphDocument, description = "") {
-    if (locked.value || !isGraphDocument(value) || entries.value[value.workflow_definition_id]
-      || workspace.workflows.some(row => row.id === value.workflow_definition_id)) return null;
-    return registerWorkflowDraft(value, description);
-  }
-  function createSerialAgentExample(modelConfig?: SerialAgentModelConfig, compacting = false) {
-    if (catalogLoading.value || catalogError.value) return null;
-    try {
-      const builder = compacting ? createCompactingSerialAgentDemo : createSerialAgentDemo;
-      const doc = builder(catalog.value, executionPackageLock.value, modelConfig);
-      return registerWorkflowDraft(doc, compacting ? "A → B 串行，独立上下文与精简策略" : "A → B 串行");
-    } catch (failure) {
-      report(failure, "创建串行 Agent 示例");
-      return null;
-    }
-  }
-  function createCompactingSerialAgentExample(modelConfig?: SerialAgentModelConfig) {
-    return createSerialAgentExample(modelConfig, true);
   }
   async function saveWorkflow(_id = workspace.activeWorkflowId) {
     notices.notify("unavailable", "旧整图发布入口已退役；正式保存暂不可用，未提交新请求", "保存工作流");
@@ -409,8 +401,9 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     const id = workspace.activeWorkflowId;
     return editable(id, document => {
       const node = document.nodes.find(row => row.node_binding_id === nodeId);
-      if (!node || node.component_id !== "prompts.item" || node.component_version !== "3"
-        || document.schema_version !== 3 || !node.configuration_policy) return false;
+      if (!node || !graphNodeAllowsAdjustable(node, typeFor(node))
+        || document.schema_version !== 3 || !node.configuration_policy
+        || !["fixed", "adjustable"].includes(mode)) return false;
       node.configuration_policy = { ...node.configuration_policy, prompt_mode: mode };
       return true;
     });
@@ -640,10 +633,10 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     const type = catalog.value.find(row => `${row.component_id}@${row.component_version}` === component);
     if (!type) return null;
     const node: GraphNode = { node_binding_id: crypto.randomUUID(), component_id: type.component_id,
-      component_version: type.component_version, title: type.display_name, position: { ...position }, config: graphClone(type.default_config) };
+      component_version: type.component_version, title: type.display_name, position: { ...position },
+      config: graphClone(type.default_config), configuration_policy: defaultGraphConfigurationPolicy(type) };
     const providedTypes = type.provided_session_item_types ?? [];
     for (const access of type.object_accesses ?? []) {
-      if (access.type_id === "workflow.variable") continue;
       node.config[access.config_field] = access.multiple ? [] : "";
     }
     const id = editable(workspace.activeWorkflowId, doc => {
@@ -652,20 +645,12 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
         || type.capabilities?.some(capability => capability.startsWith("objects:")) || providedTypes.length)
         prepareGraphEdit(doc);
       doc.nodes.push(node);
-      syncProvidedSessionItems(doc, node.node_binding_id, providedTypes, false);
+      syncProvidedSessionItems(doc, node.node_binding_id, providedTypes, false, type.object_accesses);
+      syncVariableRegistrationEvent(doc, node);
       return true;
     });
     if (id) selectedNodeIds.value = [node.node_binding_id];
     return id ? node.node_binding_id : null;
-  }
-  function attachFrontendDisplay(request: FrontendWiringRequest) {
-    let added: string[] = [];
-    const id = editable(workspace.activeWorkflowId, doc => {
-      added = wireFrontendDisplay(doc, catalog.value, executionPackageLock.value, request);
-      return true;
-    });
-    if (id) { selectedNodeIds.value = added; selectedEdgeId.value = null; }
-    return id;
   }
   function patchFrontendSource(nodeId: string, edgeId: string | null, source: { nodeId: string; portId: string } | null) {
     return editable(workspace.activeWorkflowId, doc => editFrontendSource(doc, catalog.value, nodeId, edgeId, source));
@@ -763,7 +748,8 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
         copy.position.x += 35; copy.position.y += 35; return copy;
       });
       const copiedProviderBindings: NonNullable<GraphDocument["object_bindings"]> = [];
-      const copiedItemKeys = new Map<string, { object_key: string; type_id: string; schema_version: number }>();
+      const copiedItemKeys = new Map<string, { object_key: string; type_id: string; schema_version: number;
+        readers: string[]; writers: string[] }>();
       for (const [copyId, source] of sourceForCopy) {
         for (const provided of typeFor(source)?.provided_session_item_types ?? []) {
           const sourceBinding = (doc.object_bindings ?? []).find(binding =>
@@ -787,6 +773,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
           });
           if (sourceBinding) copiedItemKeys.set(sourceBinding.object_key, {
             object_key: objectKey, type_id: provided.type_id, schema_version: provided.schema_version,
+            readers: sourceBinding.readers, writers: sourceBinding.writers,
           });
         }
       }
@@ -797,6 +784,8 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
             if (typeof key !== "string") return key;
             const item = copiedItemKeys.get(key);
             return item?.type_id === access.type_id && item.schema_version === access.schema_version
+              && (access.access !== "write" && item.readers.includes(source.node_binding_id)
+                || access.access !== "read" && item.writers.includes(source.node_binding_id))
               ? item.object_key : key;
           };
           const value = source.config[access.config_field];
@@ -841,7 +830,9 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
         });
         doc.object_bindings.push(...privateBindings, ...copiedProviderBindings);
       }
-      doc.nodes.push(...nodes); doc.edges.push(...edges); return !!nodes.length;
+      doc.nodes.push(...nodes); doc.edges.push(...edges);
+      for (const node of nodes) syncVariableRegistrationEvent(doc, node);
+      return !!nodes.length;
     });
     if (changed) selectedNodeIds.value = clonedIds;
   }
@@ -853,16 +844,19 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       const hadRegistration = (doc.object_bindings ?? []).some(binding => binding.registrar_node_id === id);
       node.component_id = type.component_id; node.component_version = type.component_version;
       node.config = graphClone(type.default_config); node.public_outputs = [];
+      node.configuration_policy ??= defaultGraphConfigurationPolicy(type);
+      if (node.configuration_policy.prompt_mode === "adjustable" && !graphNodeAllowsAdjustable(node, type))
+        node.configuration_policy = { schema_version: 1, prompt_mode: "fixed" };
       if (type.input_storage === "references" || type.capabilities?.some(capability => capability.startsWith("objects:"))
         || [...type.inputs, ...type.outputs, ...Object.values(type.port_modes ?? {}).flatMap(mode =>
           [...mode.inputs, ...mode.outputs])].some(port => (port.data_schema_version ?? 1) !== 1)
         || (type.provided_session_item_types?.length ?? 0) > 0 || hadRegistration)
         prepareGraphEdit(doc);
       for (const access of type.object_accesses ?? []) {
-        if (access.type_id !== "workflow.variable")
-          node.config[access.config_field] = access.multiple ? [] : "";
+        node.config[access.config_field] = access.multiple ? [] : "";
       }
-      syncProvidedSessionItems(doc, id, type.provided_session_item_types ?? [], true);
+      syncProvidedSessionItems(doc, id, type.provided_session_item_types ?? [], true, type.object_accesses);
+      syncVariableRegistrationEvent(doc, node);
       // Changed types preserve old edges for explicit diagnosis, never guess port mappings.
       return true;
     });
@@ -957,17 +951,6 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     catch (failure) { report(failure, "创建工作流会话"); return false; }
     finally { busy.value = null; }
   }
-  async function createSavedSession(workflowId: string, expectedDefinitionId: string, expectedRevision: number) {
-    if (locked.value || !entries.value[workflowId]) return false;
-    busy.value = "create";
-    try {
-      await management.commands.createSavedSession({ workflowId }, {
-        definitionId: expectedDefinitionId, definitionRevision: expectedRevision,
-      });
-      return true;
-    } catch (failure) { report(failure, "创建已保存修订会话"); return false; }
-    finally { busy.value = null; }
-  }
   async function selectSession(id: string) {
     if (mutationLocked.value || !active.value) return;
     const workflowId = workspace.activeWorkflowId;
@@ -1028,6 +1011,14 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       schedulePoll(id, viewGeneration); return true; }
     catch (failure) { report(failure, "提交局部事件"); return false; }
     finally { busy.value = null; }
+  }
+  function registrationTarget(nodeId: string) {
+    return variableRegistrationTarget(active.value, session.value, nodeId);
+  }
+  async function submitVariableRegistration(nodeId: string) {
+    const target = registrationTarget(nodeId);
+    if (!target?.canSubmit || !target.event || locked.value) return false;
+    return submitEvent(target.event.event_id, target.event.schema_version, {});
   }
   async function reconcile(id = workspace.activeWorkflowId) {
     const entry = entries.value[id]; if (!entry || busy.value) return;
@@ -1183,12 +1174,12 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       { source_node_id: nodeId, target_node_id: nodeId, action: "reset" }];
   }
   return { entries, catalog, frontendExtensions, packageLock, executionPackageLock, dataTypes, catalogLoading, catalogError, definitionsLoading, sessions, views, candidates, history, busy, receiptChecks, active, document,
-    session, pending, locked, controlLocked, editorLocked, primaryAction, statusLabel, selectedNodeIds, selectedEdgeId, canUndo, canRedo, setEventBindings, submitEvent,
-    isGeneric, createWorkflow, createWorkflowDraft, createSerialAgentExample, createCompactingSerialAgentExample, typeFor, loadCatalog, setPersistenceGuard, storeSnapshot, restoreSnapshot,
+    session, pending, locked, controlLocked, editorLocked, primaryAction, statusLabel, selectedNodeIds, selectedEdgeId, canUndo, canRedo, setEventBindings, submitEvent, registrationTarget, submitVariableRegistration,
+    isGeneric, createWorkflow, typeFor, loadCatalog, setPersistenceGuard, storeSnapshot, restoreSnapshot,
     saveWorkflow, loadDefinitions, manageWorkflow, manageSession, copyWorkflow, renameWorkflow, refreshPublishedRevision, addNode, patchNode,
     patchNodeConfiguration, patchNodeConfigurationPolicy, moveNodes, connect, removeSelection, reorderEdge, undo, duplicateSelection,
-    replaceNode, setExecutionRoot, setControlDependencies, setObjectBindings, attachFrontendDisplay, patchFrontendSource,
-    activate, refresh, createSession, createSavedSession, selectSession, submitPrimary, reconcile, canRetryRejectedCopy, retryRejectedCopy, discardDraft, discardRejectedCopy, writeData, closeRun, setInputs, resetPrivateState, submitAgentAction, loadCandidates,
+    replaceNode, setExecutionRoot, setControlDependencies, setObjectBindings, patchFrontendSource,
+    activate, refresh, createSession, selectSession, submitPrimary, reconcile, canRetryRejectedCopy, retryRejectedCopy, discardDraft, discardRejectedCopy, writeData, closeRun, setInputs, resetPrivateState, submitAgentAction, loadCandidates,
     management, editing, installWorkflowConfigurationApplication, configurationPendingRequests, reconcileConfiguration,
     managementPendingRequests };
 });

@@ -71,6 +71,8 @@ def checkpoint_database(tmp_path):
                 "nodes": {},
             },
             "agent_contexts": {},
+            "variables": {},
+            "chat_contexts": {},
         }
         repository = CheckpointRepository(
             connection,
@@ -79,7 +81,7 @@ def checkpoint_database(tmp_path):
             fixed_definition_revision=1,
         )
         root = {
-            "schema_version": 2,
+            "schema_version": 4,
             **owner,
             "checkpoint_id": root_id,
             "parent_checkpoint_id": None,
@@ -93,7 +95,7 @@ def checkpoint_database(tmp_path):
             "config": {"private_test_value": "not returned by checkpoint.read"},
         }
         child = {
-            "schema_version": 2,
+            "schema_version": 4,
             **owner,
             "checkpoint_id": child_id,
             "parent_checkpoint_id": root_id,
@@ -111,7 +113,7 @@ def checkpoint_database(tmp_path):
             fixed_definition_revision=1,
         )
         other_repository.insert({
-            "schema_version": 2,
+            "schema_version": 4,
             **other_owner,
             "checkpoint_id": other_root_id,
             "parent_checkpoint_id": None,
@@ -124,6 +126,8 @@ def checkpoint_database(tmp_path):
                         "nodes": {},
                     },
                     "agent_contexts": {},
+                    "variables": {},
+                    "chat_contexts": {},
                 },
             },
         })
@@ -185,7 +189,7 @@ def test_checkpoint_queries_use_the_approved_minimal_list_and_detail(checkpoint_
             "checkpoint_id": child_id,
         })
         assert details == {
-            "schema_version": 2,
+            "schema_version": 4,
             "checkpoint_id": child_id,
             "workflow_definition_id": checkpoint_database["workflow_id"],
             "workflow_session_id": session_id,

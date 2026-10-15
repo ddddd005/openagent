@@ -180,9 +180,11 @@ def test_checkpoint_repository_materializes_old_point_without_definition_manager
             },
         },
         "agent_contexts": {},
+        "variables": {},
+        "chat_contexts": {},
     }
     point = {
-        "schema_version": 2,
+        "schema_version": 4,
         "checkpoint_id": _identity(),
         **owner,
         "parent_checkpoint_id": None,
@@ -211,5 +213,5 @@ def test_checkpoint_repository_materializes_old_point_without_definition_manager
         materialized = repository.materialize(point["checkpoint_id"])
 
     assert materialized == state
-    assert set(materialized) == {"configuration", "agent_contexts"}
+    assert set(materialized) == {"configuration", "agent_contexts", "variables", "chat_contexts"}
     assert "messages" not in materialized

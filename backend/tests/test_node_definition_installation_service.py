@@ -10,6 +10,7 @@ from phase1_agent.capability_registry import create_package_registry
 from phase1_agent.checkpoint_repository import CheckpointRepository
 from phase1_agent.content_contracts import text_content
 from phase1_agent.contract_errors import ContractValidationError
+from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_contracts import GraphDiagnosticError, NodeDefinition, NodePort
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.graph_store import GraphRecordStore
@@ -242,9 +243,12 @@ def test_explicit_event_executes_only_its_non_working_target_and_keeps_payload_a
             "payload": {"text": "explicit"}, "expected_revision": session["revision"],
             "idempotency_key": str(uuid4()),
         }
+        assert not hasattr(service, "submit_consumer_event")
         with pytest.raises(ContractValidationError) as caught:
-            service.submit_consumer_event(session["workflow_session_id"], **request)
-        assert caught.value.reason_code == "graph_event_not_public"
+            GraphApplication(service).for_consumer().command(
+                "consumer.event.submit", {"session_id": session["workflow_session_id"], **request})
+        assert caught.value.reason_code == "not_found"
+        assert calls == [] and service.get_session(session["workflow_session_id"]) == session
         with pytest.raises(GraphDiagnosticError) as caught:
             service.submit_event(session["workflow_session_id"], **{**request, "payload": {"text": 1}})
         assert caught.value.reason_code == "graph_event_payload_invalid"

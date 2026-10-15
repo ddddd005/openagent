@@ -12,7 +12,7 @@ from ..host_sdk import DataTypeDefinition, ResourceIdentity, bounded_name
 from ..lorebook_engine import lorebook_entry_schema, validate_lorebook_entries
 from ..lorebook_nodes import execute_lorebook
 from ..prompt_contract import check_prompt_schema
-from ..tool_package import VARIABLE_SCHEMA_VERSION, VARIABLE_TYPE
+from ..variable_contract import VARIABLE_SCHEMA_VERSION, VARIABLE_TYPE
 
 
 LOREBOOK_RESOURCE_TYPE = "workflow.tavern.lorebook"

@@ -3,31 +3,24 @@ import { computed } from "vue";
 import { createWorkbenchFrontendHost } from "../application/workflowFrontendPackage";
 import { frontendExtensionIdentity } from "../domain/frontendExtensions";
 import { promptFrontendExtensions } from "../plugins/promptFrontendManifest";
-import { chatTavernFrontendExtensions } from "../plugins/tavernFrontendManifest";
-import { useWorkflowGraphStore } from "../stores/workflowGraph";
-const graph = useWorkflowGraphStore();
+import { currentTavernFrontendExtensions } from "../plugins/tavernFrontendManifest";
 const promptDeclaration = promptFrontendExtensions[0]!;
-const lorebookDeclaration = chatTavernFrontendExtensions[2]!;
+const lorebookDeclaration = currentTavernFrontendExtensions[2]!;
 const host = createWorkbenchFrontendHost(() => [promptDeclaration, lorebookDeclaration], () => [
   { package_id: promptDeclaration.package_id, version: promptDeclaration.package_version },
   { package_id: lorebookDeclaration.package_id, version: lorebookDeclaration.package_version },
 ]);
-const workflowHost = createWorkbenchFrontendHost(() => graph.frontendExtensions, () => graph.packageLock);
 const promptPanelIdentity = frontendExtensionIdentity(promptDeclaration);
 const promptPanel = computed(() => host.extensions.value.find(row =>
   frontendExtensionIdentity(row.declaration) === promptPanelIdentity));
 const lorebookPanel = computed(() => host.extensions.value.find(row =>
   frontendExtensionIdentity(row.declaration) === frontendExtensionIdentity(lorebookDeclaration)));
-const tavernChatPanel = computed(() => workflowHost.extensions.value.find(row =>
-  row.declaration.extension_id === "workflow.tavern.chat-launch"));
 </script>
 
 <template>
   <section class="current-content-sidebar" aria-label="全局内容">
     <header class="workbench-panel-heading"><h1>内容</h1></header>
     <div class="current-content-sidebar-body">
-      <component v-if="tavernChatPanel" :is="tavernChatPanel.component"
-        :key="frontendExtensionIdentity(tavernChatPanel.declaration)" />
       <component v-if="promptPanel" :is="promptPanel.component"
         :key="frontendExtensionIdentity(promptPanel.declaration)" />
       <div v-else class="content-sidebar-status content-sidebar-warning" role="status">

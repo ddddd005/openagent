@@ -302,6 +302,7 @@ class DataTypeDefinition:
     artifact_bindings: Callable[[Any], list[dict]] | None = None
     write_validator: Callable[[Any, dict], Any] | None = None
     public_references: Callable[[Any], list[dict]] | None = None
+    checkpoint_admission: bool = False
 
     def to_dict(self) -> dict:
         value = {
@@ -312,6 +313,7 @@ class DataTypeDefinition:
             "has_references": self.references is not None,
             "has_reference_mapper": self.reference_mapper is not None,
             "has_migrator": self.migrator is not None,
+            "checkpoint_admission": self.checkpoint_admission,
         }
         if self.default_value is not _MISSING:
             value["default_value"] = copy.deepcopy(self.default_value)
@@ -333,7 +335,7 @@ def _copy_definition(value: DataTypeDefinition) -> DataTypeDefinition:
         _MISSING if value.default_value is _MISSING else copy.deepcopy(value.default_value),
         value.scope, value.validator, value.references, value.reference_mapper,
         value.migrator, value.max_bytes, value.content_transformer, value.artifact_bindings,
-        value.write_validator, value.public_references,
+        value.write_validator, value.public_references, value.checkpoint_admission,
     )
 
 
@@ -349,6 +351,8 @@ class TypeRegistry:
         ensure(isinstance(definition, DataTypeDefinition) and bounded_name(definition.type_id)
                and type(definition.schema_version) is int and 1 <= definition.schema_version <= 2**53 - 1
                and definition.scope in ("content", "session", "global")
+               and type(definition.checkpoint_admission) is bool
+               and (not definition.checkpoint_admission or definition.scope == "session")
                and type(definition.max_bytes) is int and 0 < definition.max_bytes <= 4_000_000,
                "host_invalid_type", "Data type identity, scope or limit is invalid")
         key = definition.scope, definition.type_id, definition.schema_version
@@ -409,10 +413,14 @@ class TypeRegistry:
     def validate_write(self, type_id: str, schema_version: int, value: Any, write_context: dict) -> Any:
         """Validate an object transition without letting a hook rewrite its value."""
         definition = self._required(type_id, schema_version, "session")
-        ensure(type(write_context) is dict and set(write_context) == {
+        ensure(type(write_context) is dict and {
             "workflow_session_id", "object_key", "current_record", "operation", "resolve_artifact",
+        } <= set(write_context) <= {
+            "workflow_session_id", "object_key", "current_record", "operation", "resolve_artifact", "writer_node_id",
+            "write_evidence",
         } and canonical_uuid(write_context["workflow_session_id"])
             and bounded_name(write_context["object_key"])
+            and (write_context.get("writer_node_id") is None or canonical_uuid(write_context["writer_node_id"]))
             and write_context["operation"] in ("put", "delete", "initialize")
             and callable(write_context["resolve_artifact"])
             and (write_context["current_record"] is None

@@ -29,7 +29,8 @@ def registry():
 def object_state(registry, *, value=None, type_id="workflow.variable", schema_version=1):
     value = registry.data_types.default(type_id, schema_version) if value is None else deepcopy(value)
     binding = ObjectBinding(KEY, type_id, schema_version, "shared",
-                            readers=(NODE_ID,), writers=(NODE_ID,)).to_dict()
+                            readers=(NODE_ID,), writers=(NODE_ID,),
+                            registrar_node_id=NODE_ID).to_dict()
     return {KEY: {"type_id": type_id, "schema_version": schema_version, "value": value,
                   "binding": binding, "revision": 1, "revision_id": str(uuid4()), "deleted": False}}
 
@@ -39,9 +40,11 @@ def assigned(name="value", value_type="string", value="Alice"):
             "assigned": True, "value": value}
 
 
-def invoke(registry, name, *, version="1", config=None, inputs=None, objects=None, external=None):
+def invoke(registry, name, *, version=None, config=None, inputs=None, objects=None, external=None):
+    version = version or ("2" if name == "variable-register" else "1")
     entry = registry.get("tools." + name, version)
-    config = {**deepcopy(entry.definition.default_config), **(config or {})}
+    provided_config = {"object_key": KEY} if name == "variable-register" else {}
+    config = {**deepcopy(entry.definition.default_config), **provided_config, **(config or {})}
     registry.validate_config(entry, config)
     inputs = deepcopy(inputs or {})
     ports, output_ports = entry.definition.ports(config)
@@ -77,7 +80,7 @@ def test_independent_package_exports_exact_v2_ports_and_no_agent(registry):
         {"package_id": "workflow.tools", "version": "1.0.0"},
     ]
     tool_nodes = [item for item in registry.catalog() if item["component_id"].startswith("tools.")]
-    assert len(tool_nodes) == 16
+    assert len(tool_nodes) == 17
     for item in tool_nodes:
         assert item["component_id"].startswith("tools.")
         port_sets = [(item["inputs"], item["outputs"])] + [
@@ -85,8 +88,10 @@ def test_independent_package_exports_exact_v2_ports_and_no_agent(registry):
         assert all(port["data_schema_version"] == 2
                    for inputs, outputs in port_sets for port in inputs + outputs)
     for name in ("variable-register", "variable-assign"):
-        definition = registry.get("tools." + name, "1").definition
+        version = "2" if name == "variable-register" else "1"
+        definition = registry.get("tools." + name, version).definition
         assert definition.outputs == () and not definition.is_output
+    assert registry.get("tools.variable-register", "1") is None
 
 
 def test_output_v2_declares_frontend_state_without_changing_v1_execution(registry):
@@ -100,6 +105,51 @@ def test_output_v2_declares_frontend_state_without_changing_v1_execution(registr
     result, context = invoke(registry, "output", version="2", inputs={"input": text_content("visible")})
     assert result["output"] == text_content("visible")
     assert context.object_writes == []
+
+
+def test_editable_input_exports_current_configuration_and_exact_execution_contract(registry):
+    entry = registry.get("tools.editable-input", "1")
+    descriptor = entry.definition.to_dict()
+    assert descriptor["display_name"] == "可编辑输入"
+    assert descriptor["default_config"] == {"text": ""}
+    assert descriptor["config_schema"] == {
+        "type": "object", "properties": {"text": {"type": "string", "maxLength": 1_000_000}},
+        "required": ["text"], "additionalProperties": False,
+    }
+    assert descriptor["inputs"] == []
+    assert descriptor["outputs"] == [{
+        "port_id": "output", "data_type": "TEXT", "required": True,
+        "multiple": False, "data_schema_version": 2,
+    }]
+    assert descriptor["execution_class"] == "working"
+    assert descriptor["input_storage"] == "references"
+    assert descriptor["adjustable_configuration"] == {
+        "schema_version": 1, "policy": "input", "fields": ["text"],
+    }
+    assert descriptor["checkpoint_save"] == {"config_paths": [["text"]]}
+    assert descriptor["default_configuration_policy"] == {
+        "schema_version": 1, "prompt_mode": "adjustable",
+    }
+    assert entry.executor is registry.get("tools.text", "1").executor
+    assert entry.external_inputs_validator is None
+    assert entry.external_inputs_declaration is None
+    for literal in ("", "  {{missing}}\r\n<PRESET>  ", "x" * 1_000_000):
+        result, context = invoke(registry, "editable-input", config={"text": literal},
+                                 external={"text": "must not use external input"})
+        assert result == {"output": text_content(literal)}
+        assert context.object_writes == []
+    for config in ({"text": "x" * 1_000_001}, {"text": None}, {"text": True},
+                   {"text": "valid", "input_name": "not allowed"}):
+        with pytest.raises(ContractValidationError):
+            invoke(registry, "editable-input", config=config)
+
+
+def test_catalog_default_configuration_policy_is_always_trusted_and_explicit(registry):
+    for descriptor in registry.catalog():
+        assert descriptor["default_configuration_policy"] == {
+            "schema_version": 1,
+            "prompt_mode": "adjustable" if descriptor["component_id"] == "tools.editable-input" else "fixed",
+        }
 
 
 def test_text_current_input_and_output_do_not_interpret_macros(registry):

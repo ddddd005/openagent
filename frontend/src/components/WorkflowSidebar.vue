@@ -1,20 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { Archive, ArrowRight, BookOpen, Circle, File, GitBranch, Minimize2, Plus, RefreshCw, Trash2, Workflow } from "lucide-vue-next";
+import { Archive, ArrowRight, Circle, File, Plus, RefreshCw, Trash2, Workflow } from "lucide-vue-next";
 import { useWorkspaceStore } from "../stores/workspace";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 import GraphSessions from "./GraphSessions.vue";
 
-const emit = defineEmits<{ openContent: [] }>();
 const workspace = useWorkspaceStore();
 const graph = useWorkflowGraphStore();
 const persistence = useWorkbenchPersistenceStore();
 const showArchived = ref(false), navigationError = ref("");
 const listedWorkflows = computed(() => workspace.workflows.filter(row => !row.deleted && (showArchived.value || !row.archived)));
-const tavernTemplateAvailable = computed(() => graph.packageLock.some(row =>
-  row.package_id === "workflow.tavern" && row.version === "1.2.0")
-  && graph.frontendExtensions.some(row => row.extension_id === "workflow.tavern.chat-launch"));
 watch(() => persistence.ready, ready => {
   if (ready && typeof window !== "undefined")
     void graph.loadDefinitions().then(() => persistence.selectLoadedWorkflow());
@@ -49,17 +45,7 @@ function openWorkflow(id: string) { leaveEditor(() => workspace.openWorkflow(id)
         :aria-pressed="showArchived" @click="showArchived = !showArchived"><Archive :size="14" /></button>
       <button class="workbench-tool-button" type="button" title="新建工作流" aria-label="新建工作流"
         @click="leaveEditor(() => graph.createWorkflow())"><Plus :size="15" /></button>
-      <button class="workbench-tool-button" type="button" title="创建串行 Agent 示例（模型资源与模型名待选择，配置后运行）"
-        aria-label="创建串行 Agent 示例" :disabled="graph.catalogLoading || !graph.catalog.length"
-        @click="leaveEditor(() => graph.createSerialAgentExample())"><GitBranch :size="15" /></button>
-      <button class="workbench-tool-button" type="button" title="创建上下文精简串行示例" aria-label="创建上下文精简串行示例"
-        :disabled="graph.catalogLoading || !graph.catalog.length"
-        @click="leaveEditor(() => graph.createCompactingSerialAgentExample())"><Minimize2 :size="15" /></button>
     </header>
-    <button class="workbench-tavern-template" type="button"
-      :title="tavernTemplateAvailable ? '创建酒馆工作流' : '当前酒馆模板未启用，请核对节点目录与包选择'"
-      aria-label="创建酒馆工作流" :disabled="graph.locked || graph.catalogLoading || !!graph.catalogError || !tavernTemplateAvailable"
-      @click="leaveEditor(() => emit('openContent'))"><BookOpen :size="15" />创建酒馆工作流</button>
     <ul class="workbench-workflow-list" aria-label="工作流列表">
       <li v-for="workflow in listedWorkflows" :key="workflow.id" class="workflow-row">
         <button class="workbench-workflow-item"
@@ -106,9 +92,6 @@ function openWorkflow(id: string) { leaveEditor(() => workspace.openWorkflow(id)
 </template>
 
 <style scoped>
-.workbench-tavern-template { display:flex; align-items:center; gap:7px; margin:8px 12px; padding:7px 9px;
-  min-height:30px; border:1px solid #64776d; border-radius:3px; font-size:12px; }
-.workbench-tavern-template:disabled { opacity:.5; }
 .workflow-row { position:relative; }
 .workflow-row:has(.workflow-delete) .workbench-workflow-item { padding-right:70px; }
 .workflow-row:has(.workflow-switch) .workbench-workflow-item { padding-right:132px; }

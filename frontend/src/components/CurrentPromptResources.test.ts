@@ -20,7 +20,6 @@ import { workbenchFrontendHostKey } from "../application/workbenchFrontendHost";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import { localDraftPorts } from "../adapters/localDraftsApi";
 import { memoryLocalDraftStorage } from "../testUtils/localDraftStorage";
-import { useFormDraftsStore } from "../stores/formDrafts";
 import { graphClone, newGraph, type GraphNode, type GraphNodeType } from "../domain/workflowGraph";
 import { newPromptMember, newPromptResource, promptIdentity,
   type CurrentPromptResource } from "../domain/workflowPromptResources";
@@ -78,7 +77,7 @@ function fixture(initial = [newPromptResource()]) {
     workflowId: computed(() => document.workflow_definition_id), document: computed(() => document),
     catalog: computed(() => []), packages: computed(() => document.package_lock), session: computed(() => null),
     locked: computed(() => locked.value), lifecycle: computed(() => lifecycle.value),
-    attachDisplay: () => false, readArtifact: vi.fn(), configureNode,
+    readArtifact: vi.fn(), configureNode,
   };
   const definition: GraphNodeType = {
     component_id: node.component_id, component_version: node.component_version, display_name: "Prompt reference",
@@ -228,12 +227,12 @@ describe("current prompt panel form interactions", () => {
     const drafts = memoryLocalDraftStorage(), root = await mount(CurrentPromptPanel, f, drafts);
     expect(elements(root).some(node => node.text === "Saved formal name")).toBe(true);
     await trigger(find(root, node => node.props.class === "resource-edit"), "Click");
-    const forms = useFormDraftsStore(), flushDraft = vi.spyOn(forms, "flush").mockResolvedValue(false);
     model(label(root, "提示词显示名称"), "Renamed prompt");
     await trigger(label(root, "保存提示词显示名称"), "Click");
     expect(f.nameSave).toHaveBeenCalledWith({ reference: promptIdentity(record), display_name: "Renamed prompt",
       expected_metadata_sequence: 7, idempotency_key: expect.any(String) });
-    expect(flushDraft).not.toHaveBeenCalled(); expect(f.save).not.toHaveBeenCalled();
+    expect(drafts.ports.read).not.toHaveBeenCalled(); expect(drafts.ports.save).not.toHaveBeenCalled();
+    expect(f.save).not.toHaveBeenCalled();
     expect(f.resources.records.value).toEqual([original]);
     expect(elements(root).some(node => node.text === "Renamed prompt")).toBe(true);
     expect(label(root, "提示词显示名称").parent?.parent?.parent?.tag).not.toBe("fieldset");
@@ -281,14 +280,11 @@ describe("current prompt panel form interactions", () => {
     const record = newPromptResource(2), member = newPromptMember("Target prompt", 2);
     record.value.members = [member];
     const f = fixture([record]), drafts = memoryLocalDraftStorage(), root = await mount(CurrentPromptPanel, f, drafts);
-    const forms = useFormDraftsStore();
-    const flushAll = vi.spyOn(forms, "flushAll").mockResolvedValue(false), flushTarget = vi.spyOn(forms, "flush");
     await trigger(find(root, node => node.props.class === "resource-edit"), "Click");
     model(label(root, "条目 1 装配顺序"), "007"); await flush();
     await trigger(label(root, "提示词当前资源表单"), "Submit");
     expect(f.save).toHaveBeenCalledOnce();
     expect(f.save.mock.calls[0]![0].record.value.members[0].presentation.order).toBe(7);
-    expect(flushAll).not.toHaveBeenCalled(); expect(flushTarget).not.toHaveBeenCalled();
     expect(drafts.ports.read).not.toHaveBeenCalled(); expect(drafts.ports.save).not.toHaveBeenCalled();
   });
   it("preserves ordinary text and numeric input after a definitive body CAS rejection without saving a draft", async () => {

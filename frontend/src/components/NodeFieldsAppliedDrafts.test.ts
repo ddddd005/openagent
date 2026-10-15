@@ -10,7 +10,9 @@ import LorebookFields from "./LorebookFields.vue";
 import LorebookKeywordFields from "./LorebookKeywordFields.vue";
 import RolePlacementFields from "./RolePlacementFields.vue";
 import RawNumberInput from "./RawNumberInput.vue";
-import { graphClone, type GraphNode, type GraphNodeType } from "../domain/workflowGraph";
+import GraphNodeConfiguration from "./GraphNodeConfiguration.vue";
+import GraphSchemaFields from "./GraphSchemaFields.vue";
+import { graphClone, type GraphDocument, type GraphNode, type GraphNodeType } from "../domain/workflowGraph";
 import { createWorkflowConfigurationApplication } from "../application/workflowConfiguration";
 import { createWorkbenchFrontendHost } from "../application/workflowFrontendPackage";
 import { workbenchFrontendHostKey } from "../application/workbenchFrontendHost";
@@ -22,6 +24,7 @@ import { workflowFrontendSdkKey, type WorkflowFrontendSdk } from "../plugins/wor
 import { newProvider, newModelProfile, modelProfileIdentity } from "../domain/workflowModelResources";
 import { lorebookPackage, newLorebookEntry } from "../domain/lorebook";
 import { memoryRequestEvidence } from "../testUtils/requestEvidence";
+import { editableInputType } from "../testUtils/editableInputFixture";
 import { requestEvidencePorts } from "../adapters/requestEvidenceApi";
 import type { GraphConfigurationResult, GraphConfigurationUpdateRequest } from "../domain/workflowConfiguration";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
@@ -169,7 +172,7 @@ async function mount(kind: "model" | "lorebook") {
     document: computed(() => graph.document), catalog: computed(() => graph.catalog),
     packages: computed(() => graph.packageLock), session: computed(() => graph.session),
     locked: computed(() => graph.editorLocked), lifecycle,
-    attachDisplay: () => false, readArtifact: vi.fn(async () => null as never),
+    readArtifact: vi.fn(async () => null as never),
     configureNode: request => graph.patchNodeConfiguration(request),
   };
   installRender(RawNumberInput, "RawNumberInput.vue");
@@ -213,6 +216,47 @@ async function edit(f: Awaited<ReturnType<typeof mount>>) {
   }
 }
 const formLabel = (kind: "model" | "lorebook") => kind === "model" ? "模型配置引用" : "Lorebook 配置";
+
+describe("declared node configuration modes and ordinary input fields", () => {
+  it("renders generic policy controls and emits original text through the schema editor", async () => {
+    const definition = shallowRef(graphClone(editableInputType));
+    const node: GraphNode = { node_binding_id: crypto.randomUUID(), component_id: editableInputType.component_id,
+      component_version: "1", title: "Input", position: { x: 0, y: 0 }, config: { text: "" },
+      configuration_policy: { schema_version: 1, prompt_mode: "adjustable" } };
+    const document: GraphDocument = { schema_version: 3, workflow_definition_id: crypto.randomUUID(),
+      revision: 1, name: "Input configuration", nodes: [node], edges: [], object_bindings: [] };
+    const changes = vi.fn(), policies = vi.fn();
+    installRender(GraphNodeConfiguration, "GraphNodeConfiguration.vue");
+    installRender(GraphSchemaFields, "GraphSchemaFields.vue");
+    const root = new HostNode("root");
+    const app = renderer.createApp({ setup() {
+      return () => h(GraphNodeConfiguration, { node, definition: definition.value, document,
+        onChange: changes, onPolicyChange: policies });
+    } }).provide(workbenchFrontendHostKey, createWorkbenchFrontendHost(() => [], () => []))
+      .provide(Vue.ssrContextKey, { modules: new Set() });
+    apps.push(app); app.mount(root); await flush();
+    expect(label(root, "配置模式").props.role).toBe("group");
+    const fixed = find(root, value => value.tag === "button" && value.text === "固定");
+    const adjustable = find(root, value => value.tag === "button" && value.text === "可调");
+    expect(adjustable.props["aria-pressed"]).toBe(true);
+    await trigger(fixed, "Click");
+    expect(policies).toHaveBeenCalledWith("fixed");
+    const textarea = find(root, value => value.tag === "textarea");
+    const original = "  first line\nsecond line  ";
+    await trigger(textarea, "Input", { value: original });
+    expect(changes).not.toHaveBeenCalled();
+    await trigger(textarea, "Change", { value: original });
+    expect(changes).toHaveBeenCalledWith({ text: original });
+    await trigger(textarea, "Change", { value: "" });
+    expect(changes).toHaveBeenLastCalledWith({ text: "" });
+    expect(node.config.text).toBe("");
+
+    definition.value = { ...definition.value, component_version: "2" }; await flush();
+    expect(elements(root).some(value => value.props["aria-label"] === "配置模式")).toBe(false);
+    definition.value = { ...definition.value, component_version: "1", adjustable_configuration: undefined }; await flush();
+    expect(elements(root).some(value => value.props["aria-label"] === "配置模式")).toBe(false);
+  });
+});
 
 describe("node field consumers through formal configuration", () => {
   it.each(["model", "lorebook"] as const)("submits the exact %s node identity and approved fields", async kind => {

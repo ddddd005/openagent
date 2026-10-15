@@ -24,6 +24,7 @@ from phase1_agent.tavern.lorebook_resources import (
 )
 from phase1_agent.tavern.package import GLOBAL_TAVERN_FRONTEND_EXTENSIONS
 
+from test_graph_service import save_definition_fixture
 from test_tavern_package import KEY, NODE_ID, entry, object_state, ref, scan_prompt, uid, variable
 
 
@@ -67,13 +68,13 @@ def graph(registry, reference, *, number=1000, texts=("match", "absent"), gate=N
             )}
         registry.register(NodeDefinition(
             "test.lorebook-scan", "1", "Scan", "Test", {}, object_schema({}),
-            inputs=(NodePort("view", "CONTEXT_VIEW", data_schema_version=4),
+            inputs=(NodePort("view", "CONTEXT_VIEW", data_schema_version=5),
                     NodePort("current_input", "TEXT", data_schema_version=2)),
             outputs=(NodePort("output", "PROMPT", data_schema_version=6),),
         ), source)
         registry.register(NodeDefinition(
             "test.lorebook-view", "1", "Empty view", "Test", {}, object_schema({}),
-            outputs=(NodePort("output", "CONTEXT_VIEW", data_schema_version=4),),
+            outputs=(NodePort("output", "CONTEXT_VIEW", data_schema_version=5),),
         ), lambda config, inputs, context: {"output": deepcopy(scan_prompt()["context"])})
         registry.register(NodeDefinition(
             "test.lorebook-text", "1", "Current input", "Test", {"text": ""},
@@ -122,7 +123,7 @@ def graph(registry, reference, *, number=1000, texts=("match", "absent"), gate=N
 
 
 def create(service, document):
-    service.save_definition(document, expected_revision=0, idempotency_key=str(uuid4()))
+    save_definition_fixture(service, document)
     return service.create_session(
         document["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
 
@@ -296,7 +297,8 @@ def test_new_global_nodes_cannot_be_loaded_from_old_exact_lock():
         current.registry.get("lorebook.item", "1").definition.to_dict())
     assert [row for row in current.frontend_extensions if row["package_id"] == "workflow.tavern"] == sorted([{
         "component_id": None, "component_version": None, **deepcopy(row),
-        "schema_version": 2, "host_protocol_version": 1,
+        "schema_version": 3 if row["binding"]["slot"] == "node-fields" else 2,
+        "host_protocol_version": 2 if row["binding"]["slot"] == "node-fields" else 1,
         "package_id": "workflow.tavern", "package_version": "1.1.0",
     } for row in GLOBAL_TAVERN_FRONTEND_EXTENSIONS], key=lambda row: row["extension_id"])
 

@@ -39,7 +39,7 @@ export const nodeCategories = [
   { id: "models", label: "模型" },
   { id: "agents", label: "Agent" },
   { id: "context", label: "上下文" },
-  { id: "tavern", label: "酒馆" },
+  { id: "tavern", label: "世界书" },
   { id: "presentation", label: "前端展示" },
   { id: "other", label: "其他" },
 ] as const;
@@ -52,6 +52,7 @@ const simple = (label: string, category: string): FamilyPolicy => ({ label, cate
 // These are display policies for exact installed declarations, not contract migrations.
 const policies: Record<string, FamilyPolicy> = {
   "tools.current-input": simple("当前输入", "basic"),
+  "tools.editable-input": simple("可编辑输入", "basic"),
   "tools.text": simple("文本", "basic"),
   "tools.regex": simple("正则处理", "basic"),
   "tools.output": { label: "输出", category: "basic", preferred: "2" },
@@ -61,7 +62,7 @@ const policies: Record<string, FamilyPolicy> = {
   "tools.prompt-to-text": simple("提示词转文本", "conversion"),
   "tools.json-to-prompt": simple("JSON 转提示词", "conversion"),
   "tools.prompt-to-json": simple("提示词转 JSON", "conversion"),
-  "tools.variable-register": simple("变量注册", "variables"),
+  "tools.variable-register": { label: "变量注册", category: "variables", preferred: "2" },
   "tools.variable-assign": simple("变量赋值", "variables"),
   "tools.variable-to-content": simple("变量转内容", "variables"),
   "tools.variable-replace-selected": simple("替换指定变量", "variables"),
@@ -86,12 +87,10 @@ const policies: Record<string, FamilyPolicy> = {
   "lorebook.group": simple("世界书分组", "tavern"),
   "lorebook.global-reference": simple("全局世界书引用", "tavern"),
   "lorebook.global-activate": simple("世界书触发", "tavern"),
-  "tavern.chat.output": simple("读取聊天记录", "tavern"),
-  "tavern.chat.append": simple("追加聊天记录", "tavern"),
-  "tavern.chat.presentation": simple("聊天展示", "tavern"),
   "frontend.state.output": simple("读取展示记录", "presentation"),
   "frontend.state.append": simple("追加展示记录", "presentation"),
   "frontend.presentation": simple("展示输出", "presentation"),
+  "frontend.node": simple("前端节点", "presentation"),
 };
 
 export const nodeTypeKey = (type: Pick<GraphNodeType, "component_id" | "component_version">) =>
@@ -111,7 +110,7 @@ function profileFor(definition: GraphNodeType, policy?: FamilyPolicy): NodeProfi
 export function buildNodeFamilies(catalog: GraphNodeType[]): NodeFamily[] {
   const retired = new Set(["agents.delta", "context.read", "context.save", "context.window",
     "context.advance", "context.project-text", "context.plan", "context.summary-prompt",
-    "context.summary", "context.replace"]);
+    "context.summary", "context.replace", "tavern.chat.output", "tavern.chat.append", "tavern.chat.presentation"]);
   const families = new Map<string, GraphNodeType[]>();
   for (const definition of catalog) {
     if (!definition.executable || retired.has(definition.component_id)) continue;

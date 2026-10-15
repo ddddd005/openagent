@@ -108,7 +108,7 @@ async function renderResources(resources: ResourceController, reference: Current
     workflowId: computed(() => document.workflow_definition_id), document: computed(() => document),
     catalog: computed(() => []), packages: computed(() => graph.packageLock), session: computed(() => null),
     locked: computed(() => false), lifecycle: computed(() => "resource-test"),
-    attachDisplay: () => false, readArtifact: vi.fn(), configureNode,
+    readArtifact: vi.fn(), configureNode,
   };
   // SSR does not run mounted hooks or form events; the real controller is exercised separately.
   const root = defineComponent({ setup: () => () => h("main", [

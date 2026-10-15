@@ -1,6 +1,7 @@
-"""Only strict current graph identities can bind the static consumer page."""
+"""Retired page coordinates reject explicitly without selecting a new node."""
 
 from contextlib import closing
+import json
 import threading
 
 import pytest
@@ -12,7 +13,7 @@ from test_server import call, running_server
 
 WORKFLOW = "00000000-0000-4000-8000-000000000921"
 SESSION = "00000000-0000-4000-8000-000000000922"
-PAGE_PATHS = ("/", "/static/index.html")
+PAGE_PATHS = ("/", "/static/index.html", "/tavern/", "/tavern/index.html")
 
 
 def test_current_handoff_page_queries_do_not_dispatch_or_create_sessions():
@@ -24,7 +25,10 @@ def test_current_handoff_page_queries_do_not_dispatch_or_create_sessions():
                 f"?graph_workflow={WORKFLOW.replace('-', '%2D')}",
             ):
                 status, headers, body = call(port, "GET", path + query)
-                assert status == 200 and b"<!doctype html>" in body
+                assert status == 410
+                assert json.loads(body)["error"]["code"] == "legacy_frontend_entry_retired"
+                assert "Location" not in headers
+                assert b"<script" not in body
                 assert headers["Cache-Control"] == "no-store"
                 assert b"A \xe8\x8d\x89\xe7\xa8\xbf" not in body
                 assert b'src="/static/app.js"' not in body
@@ -78,7 +82,7 @@ def test_pages_static_and_health_do_not_initialize_lazy_graph_host(tmp_path, mon
             port = server.server_address[1]
             for path in PAGE_PATHS:
                 for query in ("", f"?graph_workflow={WORKFLOW}&graph_session={SESSION}"):
-                    assert call(port, "GET", path + query)[0] == 200
+                    assert call(port, "GET", path + query)[0] == 410
             for path in ("/api/health", "/static/chat-entry.js", "/static/graph-chat-core.js",
                          "/static/graph-chat.js", "/static/frontend-package-host.js",
                          "/static/frontend-package.js", "/static/style.css"):

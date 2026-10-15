@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { graphClone, graphSignature, isGraphCatalog, isGraphDocument, isGraphSession, newGraph, nodePorts, type GraphNodeType } from "./workflowGraph";
+import { defaultGraphConfigurationPolicy, graphClone, graphNodeAllowsAdjustable, graphSignature,
+  isGraphCatalog, isGraphDocument, isGraphSession, newGraph, nodePorts, type GraphNodeType } from "./workflowGraph";
+import { editableInputType } from "../testUtils/editableInputFixture";
 
 export const textType: GraphNodeType = { component_id: "workflow.text", component_version: "1", display_name: "文本",
   category: "内容", config_schema: { type: "object", properties: { text: { type: "string" } } }, default_config: { text: "" },
@@ -7,6 +9,36 @@ export const textType: GraphNodeType = { component_id: "workflow.text", componen
 export const outputType: GraphNodeType = { ...textType, component_id: "workflow.output", display_name: "输出", is_output: true,
   default_config: { mode: "text" }, inputs: [{ port_id: "input", data_type: "TEXT", required: true, multiple: false }] };
 describe("versioned workflow graph boundary", () => {
+  it("accepts explicit optional node bindings without permitting malformed metadata", () => {
+    const reference = { config_field: "input_node_id", multiple: false, allow_empty: true,
+      target_types: [{ component_id: "tools.editable-input", component_version: "1" }] };
+    expect(isGraphCatalog([{ ...textType, config_node_references: [reference] }])).toBe(true);
+    expect(isGraphCatalog([{ ...textType,
+      config_node_references: [{ ...reference, allow_empty: "true" }] }])).toBe(false);
+    expect(isGraphCatalog([{ ...textType,
+      config_node_references: [{ ...reference, target_types: [] }] }])).toBe(false);
+  });
+  it("accepts trusted configuration metadata, including member declarations and legacy catalogs without defaults", () => {
+    expect(isGraphCatalog([editableInputType, textType])).toBe(true);
+    const members = { ...textType, adjustable_configuration: { schema_version: 1, policy: "prompt",
+      fields: ["members"], member_identity_field: "id", member_fields: ["text", "presentation"] } };
+    expect(isGraphCatalog([members])).toBe(true);
+    expect(graphNodeAllowsAdjustable(editableInputType, { ...editableInputType, executable: false })).toBe(true);
+    expect(defaultGraphConfigurationPolicy({ ...textType,
+      default_configuration_policy: { schema_version: 1, prompt_mode: "adjustable" } }).prompt_mode).toBe("fixed");
+  });
+  it.each([
+    { adjustable_configuration: { schema_version: 2, policy: "input", fields: ["text"] } },
+    { adjustable_configuration: { schema_version: 1, policy: "input" } },
+    { adjustable_configuration: { schema_version: 1, policy: "input", fields: [] } },
+    { adjustable_configuration: { schema_version: 1, policy: "input", fields: ["text", "text"] } },
+    { adjustable_configuration: { schema_version: 1, policy: "input", fields: ["text"], write_allowed: true } },
+    { adjustable_configuration: { schema_version: 1, policy: "prompt", fields: ["members"], member_fields: ["text"] } },
+    { default_configuration_policy: { schema_version: 1, prompt_mode: "unsupported" } },
+    { default_configuration_policy: { schema_version: 1, prompt_mode: "adjustable" } },
+  ])("rejects malformed or unsupported configuration metadata %j", metadata => {
+    expect(isGraphCatalog([{ ...textType, ...metadata }])).toBe(false);
+  });
   it("creates blank current documents with detached exact package locks and no implicit nodes", () => {
     const lock = [{ package_id: "workflow.tavern", version: "1.2.0" }];
     const doc = newGraph("Blank", lock);

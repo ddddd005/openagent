@@ -1,5 +1,6 @@
 import type { RolePlacement } from "./promptPresentation";
 import { graphObject, graphUuid, isGraphJsonValue, type GraphDocument } from "./workflowGraph";
+import { sessionVariableType } from "./workflowVariableRegistration";
 
 export const lorebookPackage = { package_id: "workflow.tavern", version: "1.0.0" };
 export const lorebookLimits = {
@@ -94,8 +95,8 @@ export function moveLorebookEntry(entries: LorebookEntry[], index: number, offse
   return true;
 }
 export function lorebookVariableBindings(document: GraphDocument, nodeId: string) {
-  return (document.object_bindings ?? []).filter(binding => binding.type_id === "workflow.variable"
-    && binding.schema_version === 1 && binding.readers.includes(nodeId));
+  return (document.object_bindings ?? []).filter(binding => binding.type_id === sessionVariableType.type_id
+    && binding.schema_version === sessionVariableType.schema_version && binding.readers.includes(nodeId));
 }
 export function lorebookBindingErrors(document: GraphDocument, nodeId: string, objectKeys: readonly string[]): string[] {
   const allowed = new Set(lorebookVariableBindings(document, nodeId).map(binding => binding.object_key));

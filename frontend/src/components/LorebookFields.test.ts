@@ -11,7 +11,6 @@ import LorebookKeywordFields from "./LorebookKeywordFields.vue";
 import LorebookEvaluationFacts from "./LorebookEvaluationFacts.vue";
 import RolePlacementFields from "./RolePlacementFields.vue";
 import RawNumberInput from "./RawNumberInput.vue";
-import { useFormDraftsStore } from "../stores/formDrafts";
 import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 import GraphNodeConfiguration from "./GraphNodeConfiguration.vue";
 import { createWorkbenchFrontendHost } from "../application/workflowFrontendPackage";
@@ -46,7 +45,7 @@ function fixture(group = false, entries = [newLorebookEntry()]) {
     workflowId: computed(() => document.workflow_definition_id), document: computed(() => document),
     catalog: computed(() => [definition]), packages: computed(() => document.package_lock ?? []),
     session: computed(() => null), locked: computed(() => locked.value), lifecycle: computed(() => lifecycle.value),
-    attachDisplay: () => false, readArtifact: vi.fn(), configureNode,
+    readArtifact: vi.fn(), configureNode,
   };
   return { node, document, definition, sdk, configureNode, locked, lifecycle };
 }
@@ -302,7 +301,6 @@ describe("lorebook trusted workbench fields", () => {
   });
   it("applies against the current node config without draft gates and leaves it unchanged when the SDK rejects", async () => {
     const pinia = createPinia();
-    const formFlush = vi.spyOn(useFormDraftsStore(pinia), "flushAll");
     const graphFlush = vi.spyOn(useWorkbenchPersistenceStore(pinia), "flushAll");
     const f = fixture(), root = await mount(f, pinia);
     f.node.config = { ...f.node.config,
@@ -319,7 +317,6 @@ describe("lorebook trusted workbench fields", () => {
     });
     expect(f.node.config).toEqual(currentConfig);
     expect(elements(root).some(node => node.text.includes("配置依据已变化或当前不可编辑"))).toBe(true);
-    expect(formFlush).not.toHaveBeenCalled();
     expect(graphFlush).not.toHaveBeenCalled();
   });
 });

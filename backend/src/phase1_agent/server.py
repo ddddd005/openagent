@@ -26,24 +26,27 @@ MAX_GRAPH_BODY_BYTES = 4 * 1024 * 1024
 REJECT_BODY_TIMEOUT = 0.25
 REJECT_DRAIN_BYTES = 2 * MAX_BODY_BYTES
 _LOGGER = logging.getLogger(__name__)
+_RETIRED_FRONTEND_PAGES = frozenset({"/", "/static/index.html", "/tavern/", "/tavern/index.html"})
 _STATIC_FILES = {
-    "/": ("index.html", "text/html; charset=utf-8"),
-    "/static/index.html": ("index.html", "text/html; charset=utf-8"),
-    "/static/chat-entry.js": ("chat-entry.js", "text/javascript; charset=utf-8"),
-    "/static/graph-chat-core.js": ("graph-chat-core.js", "text/javascript; charset=utf-8"),
-    "/static/graph-chat.js": ("graph-chat.js", "text/javascript; charset=utf-8"),
-    "/static/frontend-package-host.js": ("frontend-package-host.js", "text/javascript; charset=utf-8"),
-    "/static/frontend-package.js": ("frontend-package.js", "text/javascript; charset=utf-8"),
-    "/static/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/static/source/index.html": ("index.html", "text/plain; charset=utf-8"),
+    **{f"/static/{name}": (name, "text/plain; charset=utf-8") for name in (
+        "chat-entry.js", "graph-chat-core.js", "graph-chat.js",
+        "frontend-package-host.js", "frontend-package.js", "style.css",
+    )},
+    **{f"/static/{name}": (name, "text/javascript; charset=utf-8") for name in (
+        "frontend-node-client.js", "frontend-node-host.js", "frontend-node-entry.js",
+    )},
+    "/static/frontend-node.css": ("frontend-node.css", "text/css; charset=utf-8"),
 }
 _TAVERN_STATIC_FILES = {
-    "/tavern/": ("index.html", "text/html; charset=utf-8"),
-    "/tavern/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/tavern/source/index.html": ("index.html", "text/plain; charset=utf-8"),
     "/tavern/legal.html": ("legal.html", "text/html; charset=utf-8"),
-    **{f"/tavern/{name}": (name, "text/javascript; charset=utf-8") for name in (
+    **{f"/tavern/{name}": (name, "text/plain; charset=utf-8") for name in (
         "entry.js", "adapter.js", "chat.js", "vendor/showdown/showdown.min.js",
-        "vendor/dompurify/purify.min.js", "vendor/lucide/lucide.min.js",
+        "vendor/dompurify/purify.min.js",
     )},
+    "/tavern/vendor/lucide/lucide.min.js": (
+        "vendor/lucide/lucide.min.js", "text/javascript; charset=utf-8"),
     "/tavern/styles/chat.css": ("styles/chat.css", "text/css; charset=utf-8"),
     **{f"/tavern/assets/{name}": (f"assets/{name}", "image/png")
        for name in ("user-default.png", "assistant.png")},
@@ -119,6 +122,8 @@ def management_request(method, path, data):
         return True
     if method == "GET" and path.startswith("/api/graph/"):
         return True
+    if re.fullmatch(r"/api/graph/(?:consumer/.*|sessions/[^/]+/consumer(?:/.*)?)", path):
+        return True
     if method == "POST" and path == "/api/graph/definitions":
         return True
     if method == "POST" and path in (
@@ -128,7 +133,7 @@ def management_request(method, path, data):
     ):
         return True
     if method == "POST" and path in (
-        "/api/graph/definitions/update", "/api/graph/sessions", "/api/graph/consumer/sessions",
+        "/api/graph/definitions/update", "/api/graph/sessions",
     ):
         return True
     if method == "POST" and (
@@ -136,8 +141,7 @@ def management_request(method, path, data):
         or re.fullmatch(
             r"/api/graph/sessions/[^/]+/(data|archive|delete|objects/read|objects/write|"
             r"objects/artifacts/read|information/read|manifests/read|"
-            r"outputs/read|outputs/history|events/bindings|events/read|"
-            r"consumer/events/bindings|consumer/events/read)", path)
+            r"outputs/read|outputs/history|events/bindings|events/read)", path)
     ):
         return True
     if method != "POST" or path not in (
@@ -156,8 +160,8 @@ def management_request(method, path, data):
     operations = COMMANDS if path.endswith("/commands") else QUERIES
     return (operation.startswith(("provider.", "credential.", "resource.", "content.metadata.", "request-evidence."))
             or operation in {
-                "consumer.draft.save", "definition.update", "definition.archive", "definition.delete",
-                "session.create", "consumer.session.create", "session.metadata.update", "session.data.update",
+                "definition.update", "definition.archive", "definition.delete",
+                "session.create", "session.metadata.update", "session.data.update",
                 "session.archive", "session.delete", "object.write", "checkpoint.fork",
             } or operation not in {item.name for item in operations})
 
@@ -181,6 +185,9 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
     management_services = [None]
     graph_owned = [False]
     graph_lock = RLock()
+    from .frontend_node_connections import FrontendNodeConnections
+    from .frontend_node_http import FrontendNodeHTTP
+    node_connections = FrontendNodeConnections()
 
     def get_graph_service():
         from .graph_service import GraphWorkflowService
@@ -195,6 +202,8 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
                 else:
                     graph_services[0] = GraphWorkflowService(service.database)
                     graph_owned[0] = True
+            if isinstance(graph_services[0], GraphWorkflowService):
+                graph_services[0]._frontend_node_connections = node_connections
             return graph_services[0]
 
     def get_management_service():
@@ -208,12 +217,28 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
                                           else WorkflowHost(service.database))
             return management_services[0]
 
+    def get_frontend_node_service(execution):
+        from .workflow_host import WorkflowHost
+        target = get_graph_service() if execution else (
+            graph_services[0] if graph_services[0] is not None else get_management_service())
+        if isinstance(target, WorkflowHost):
+            target = target.graph_management_service
+        target._frontend_node_connections = node_connections
+        return target
+
+    node_http = FrontendNodeHTTP(get_frontend_node_service, node_connections)
+
     class GraphHTTPServer(LocalHTTPServer):
         def server_close(self):
+            node_connections.close()
             super().server_close()
             if graph_owned[0] and graph_services[0] is not None:
                 graph_services[0].close()
                 graph_owned[0] = False
+
+        @property
+        def frontend_node_connections(self):
+            return node_connections
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:
@@ -359,8 +384,7 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
             if target.scheme or target.netloc or target.fragment:
                 raise _RequestError(404, "not_found", "未找到接口")
             if target.path != self.path and not (
-                self.command == "GET" and target.path in (
-                    "/", "/static/index.html", "/tavern/", "/tavern/index.html")
+                self.command == "GET" and target.path in _RETIRED_FRONTEND_PAGES
                 and _valid_user_ui_query(target.query)
             ):
                 raise _RequestError(404, "not_found", "未找到接口")
@@ -394,6 +418,39 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
                 raise _RequestError(400, "bad_request", "需要 JSON 对象")
             return data
 
+        def _frontend_node_events(self, owner) -> None:
+            connection = node_http.subscribe(owner)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("Content-Security-Policy",
+                                 "default-src 'none'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.close_connection = True
+                self.connection.settimeout(5)
+                self.wfile.write(b": connected\n\n")
+                self.wfile.flush()
+                while not connection.closed:
+                    event = connection.next(timeout=1)
+                    if connection.closed:
+                        break
+                    if event is None:
+                        body = b": keepalive\n\n"
+                    else:
+                        name, value = event
+                        payload = json.dumps(value, ensure_ascii=False, allow_nan=False)
+                        body = ("event: " + name + "\ndata: " + payload + "\n\n").encode("utf-8")
+                    self.wfile.write(body)
+                    self.wfile.flush()
+            except (OSError, TimeoutError):
+                pass
+            finally:
+                node_connections.detach(connection)
+
         def _dispatch(self, method: str) -> None:
             graph_request = False
             step = "request_validation"
@@ -401,6 +458,35 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
                 self._validate_peer(require_origin=method == "POST")
                 path = self._path()
                 graph_request = path.startswith("/api/graph/")
+                if path in _RETIRED_FRONTEND_PAGES:
+                    self._error(
+                        410, "legacy_frontend_entry_retired", "旧聊天前端入口已退役",
+                        "legacy_frontend_entry_retired")
+                    return
+                from .frontend_node_entry import frontend_node_route
+                node_route = frontend_node_route(path)
+                if node_route is not None:
+                    owner, action = node_route
+                    step = "frontend_node_" + action
+                    if method == "GET" and action == "entry":
+                        self._json(200, node_http.entry(owner, "http://" + self.headers["Host"]))
+                        return
+                    if method == "GET" and action == "events":
+                        self._frontend_node_events(owner)
+                        return
+                    if method == "POST" and action == "channel":
+                        data = self._read_json(MAX_GRAPH_BODY_BYTES)
+                        self._json(200, node_http.channel(owner, data))
+                        return
+                    raise _RequestError(404, "not_found", "未找到节点接口")
+                node_page = frontend_node_route(path, page=True)
+                if node_page is not None:
+                    if method != "GET":
+                        raise _RequestError(404, "not_found", "未找到节点页面")
+                    node_http.entry(node_page[0], "http://" + self.headers["Host"])
+                    body = resources.files("phase1_agent").joinpath("static", "frontend-node.html").read_bytes()
+                    self._send(200, body, "text/html; charset=utf-8", tavern=True)
+                    return
                 if graph_request:
                     step = "request_read"
                     data = self._read_json(MAX_GRAPH_BODY_BYTES) if method == "POST" else None

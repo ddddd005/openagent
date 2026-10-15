@@ -14,7 +14,7 @@ from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import HostContractError
 from phase1_agent.model_package import MODEL_FRONTEND_EXTENSIONS
 from phase1_agent.prompt_package import PROMPT_FRONTEND_EXTENSIONS
-from phase1_agent.tavern.package import CHAT_TAVERN_FRONTEND_EXTENSIONS
+from phase1_agent.tavern.package import CURRENT_TAVERN_FRONTEND_EXTENSIONS
 
 from test_graph_service import create
 from test_graph_package_selection import saved_selection
@@ -29,7 +29,7 @@ def loader():
 def expected_workbench_extensions(*, frontend, tavern=True):
     declarations = [*MODEL_FRONTEND_EXTENSIONS, *PROMPT_FRONTEND_EXTENSIONS]
     if tavern:
-        declarations.extend(CHAT_TAVERN_FRONTEND_EXTENSIONS)
+        declarations.extend(CURRENT_TAVERN_FRONTEND_EXTENSIONS)
     if frontend:
         declarations.extend(FRONTEND_EXTENSIONS)
     return {row["extension_id"] for row in declarations}
@@ -84,6 +84,14 @@ def test_business_package_remains_independent_without_ui_and_disable_uses_detach
     assert business.registry.get("frontend.presentation", "1") is not None
     assert empty.registry.get("frontend.presentation", "1") is None
     assert len(complete.frontend_extensions) == 4
+    node_entry = next(item for item in complete.frontend_extensions
+                      if item["extension_id"] == "workflow.frontend.node-entry-fields")
+    assert node_entry["schema_version"] == 3 and node_entry["host_protocol_version"] == 2
+    assert node_entry["entrypoint"] == "workflow.frontend.workbench.node-entry-fields"
+    assert node_entry["binding"] == {
+        "surface": "workbench", "slot": "node-fields",
+        "target": {"component_id": "frontend.node", "component_version": "1"},
+    }
     assert complete.registry.get("frontend.state.append", "1") is not None
 
 

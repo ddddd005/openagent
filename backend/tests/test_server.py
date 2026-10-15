@@ -73,7 +73,6 @@ def command(port, value, **kwargs):
 def test_current_routes_and_static_allowlist_have_security_headers():
     with running_server() as (service, port):
         for path, marker in (
-            ("/", b"<!doctype html>"), ("/static/index.html", b"<!doctype html>"),
             ("/static/chat-entry.js", b"/static/graph-chat.js"),
             ("/static/graph-chat-core.js", b"GraphChatClient"),
             ("/static/graph-chat.js", b"GraphChatClient"),
@@ -83,10 +82,16 @@ def test_current_routes_and_static_allowlist_have_security_headers():
         ):
             status, headers, body = call(port, "GET", path)
             assert status == 200 and marker in body
+            assert headers["Content-Type"] == "text/plain; charset=utf-8"
             assert headers["X-Content-Type-Options"] == "nosniff"
             assert headers["Cache-Control"] == "no-store"
             assert headers["Referrer-Policy"] == "no-referrer"
             assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
+        for path in ("/", "/static/index.html", "/tavern/", "/tavern/index.html"):
+            status, headers, body = call(port, "GET", path)
+            assert status == 410 and json.loads(body)["error"]["code"] == "legacy_frontend_entry_retired"
+            assert headers["Content-Type"] == "application/json; charset=utf-8"
+            assert "Location" not in headers
         assert json.loads(call(port, "GET", "/api/health")[2]) == {"status": "ok"}
         assert service.calls == []
         assert call(port, "GET", "/api/graph/node-types")[0] == 200

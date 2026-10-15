@@ -126,13 +126,9 @@ class SessionObjectStore:
             (sid, key, revision_id),
         )
 
-    def initialize(self, sid, document, *, inherited=None, mapping=None, history=None, source_session_id=None):
+    def initialize(self, sid, document):
         self._transaction()
         require(uuid_value(sid), "invalid_request", "Session identity is invalid")
-        inherited = inherited or {}
-        mapping = mapping or {}
-        if source_session_id:
-            mapping.setdefault("workflow_session_id", {})[source_session_id] = sid
         bindings = [ObjectBinding.from_dict(item) for item in document.get("object_bindings", [])]
         initialized_keys = {binding.object_key for binding in bindings}
         for binding in bindings:
@@ -141,22 +137,11 @@ class SessionObjectStore:
                 "SELECT 1 FROM session_object_bindings WHERE session_id=? AND object_key=?",
                 (sid, binding.object_key),
             ).fetchone() is None, "session_object_binding_exists", "Object already exists", 409)
-            old = inherited.get(binding.object_key)
-            if old is not None:
-                require((old["type_id"], old["schema_version"]) == (binding.type_id, binding.schema_version),
-                        "state_migration_required", "Object type changed; explicit migration is required", 409)
-                value = self.types.remap(binding.type_id, binding.schema_version, old["value"],
-                                         mapping, scope="session") if not old["deleted"] else None
-                if not old["deleted"]:
-                    self.types.validate(binding.type_id, binding.schema_version, value, scope="session")
-                revision_id = (old["revision_id"] if canonical_bytes(value) == canonical_bytes(old["value"])
-                               else self._put_value(binding, value, deleted=old["deleted"]))
-            else:
-                data = binding.to_dict()
-                value = (data["default_value"] if "default_value" in data
-                         else self.types.default(binding.type_id, binding.schema_version, scope="session"))
-                value = self.types.validate(binding.type_id, binding.schema_version, value, scope="session")
-                revision_id = self._put_value(binding, value)
+            data = binding.to_dict()
+            value = (data["default_value"] if "default_value" in data
+                     else self.types.default(binding.type_id, binding.schema_version, scope="session"))
+            value = self.types.validate(binding.type_id, binding.schema_version, value, scope="session")
+            revision_id = self._put_value(binding, value)
             revision = self._historical_revision(sid, binding.object_key) + 1
             require(revision <= 2**53 - 1, "session_object_revision_exhausted",
                     "Object revision exceeds its protocol limit", 409)
@@ -168,24 +153,11 @@ class SessionObjectStore:
             self._grant_revision(sid, binding.object_key, revision_id)
         for key, item in self.current(sid).items():
             if not item["deleted"]:
-                old = inherited.get(key)
-                if old and not old["deleted"] and source_session_id:
-                    for ref in self.types.references(old["type_id"], old["schema_version"],
-                                                     old["value"], scope="session"):
-                        if ref["scope"] == "session":
-                            require(ref["workflow_session_id"] == source_session_id
-                                    and self.connection.execute(
-                                        "SELECT 1 FROM session_object_revision_membership "
-                                        "WHERE session_id=? AND object_key=? AND revision_id=?",
-                                        (source_session_id, ref["object_key"], ref["revision_id"]),
-                                    ).fetchone() is not None,
-                                    "session_object_reference_denied", "Source revision is not authorized", 403)
-                            self._grant_revision(sid, ref["object_key"], ref["revision_id"])
-                self._check_references(sid, ObjectBinding.from_dict(item["binding"]), item["value"], history=history)
-                if old is None and key in initialized_keys:
+                self._check_references(sid, ObjectBinding.from_dict(item["binding"]), item["value"])
+                if key in initialized_keys:
                     self.types.validate_write(
                         item["type_id"], item["schema_version"], item["value"],
-                        self._write_context(sid, key, None, "initialize", history=history),
+                        self._write_context(sid, key, None, "initialize"),
                     )
 
     def _checkpoint_current_value(self, sid, key, expected_binding):
@@ -358,7 +330,7 @@ class SessionObjectStore:
         commit = repo.get("workflow_commit", commit_id=head["head_commit_id"])
         return repo.get("state_snapshot", state_snapshot_id=commit["state_snapshot_id"])["history_refs"]
 
-    def _resolve_write_artifact(self, sid, reference, *, history=None):
+    def _resolve_write_artifact(self, sid, reference, *, history=None, include_chat_context=False):
         reference = validate_reference(reference)
         require(reference["scope"] == "artifact", "session_object_reference_invalid",
                 "Write validators can resolve only immutable artifact references")
@@ -384,17 +356,30 @@ class SessionObjectStore:
         node = next((node for node in document["nodes"]
                      if node["node_binding_id"] == output["node_binding_id"]), None)
         require(node is not None, "storage_contract_violation", "Artifact producer declaration is missing", 500)
-        return {"value": deepcopy(output["payload"]), "component_id": node["component_id"],
+        from .workflow_chat_runtime import read_chat_invocations
+        chat_context = None
+        if include_chat_context and (node["component_id"], node["component_version"]) == ("frontend.node", "2"):
+            chat_context = read_chat_invocations(repo, output["workflow_session_id"],
+                                                output["chain_run_id"]).get(producer["config"]["object_key"])
+        result = {"value": deepcopy(output["payload"]), "component_id": node["component_id"],
                 "component_version": node["component_version"], "config": deepcopy(node["config"]),
+                "consumed_config": deepcopy(producer["config"]), "reads": deepcopy(producer["reads"]),
                 "producer": {"workflow_session_id": output["workflow_session_id"],
                              "chain_run_id": output["chain_run_id"],
                              "node_binding_id": output["node_binding_id"], "node_run_id": output["run_id"]},
                 "input_refs": deepcopy(producer["input_refs"])}
+        if include_chat_context and (node["component_id"], node["component_version"]) == ("frontend.node", "2"):
+            result["chat_append_context"] = chat_context
+        return result
 
-    def _write_context(self, sid, key, current_record, operation, *, history=None):
+    def _write_context(self, sid, key, current_record, operation, *, history=None, writer_node_id=None,
+                       write_evidence=None):
         return {"workflow_session_id": sid, "object_key": key,
                 "current_record": deepcopy(current_record), "operation": operation,
-                "resolve_artifact": lambda reference: self._resolve_write_artifact(sid, reference, history=history)}
+                "writer_node_id": writer_node_id,
+                "write_evidence": deepcopy(write_evidence),
+                "resolve_artifact": lambda reference: self._resolve_write_artifact(
+                    sid, reference, history=history, include_chat_context=True)}
 
     def _check_references(self, sid, binding, value, *, history=None):
         for ref in self.types.references(binding.type_id, binding.schema_version, value, scope="session"):
@@ -431,19 +416,24 @@ class SessionObjectStore:
                 from .host_sdk import ResourceIdentity
                 ResourceIdentity.from_dict(ref)
 
-    def apply(self, sid, *, node_id, writes: list[dict]) -> list[dict]:
+    def apply(self, sid, *, node_id, writes: list[dict], write_evidence=None) -> list[dict]:
         """CAS and receipts are scoped to the owning session, including tombstones."""
         self._transaction()
         require(type(writes) is list and len(writes) <= 256, "invalid_request", "Write set is invalid")
         intents = [WriteIntent.from_dict(item) for item in writes]
         require(len({item.object_key for item in intents}) == len(intents),
                 "session_object_duplicate_write", "Write set repeats an object")
+        evidence = {} if write_evidence is None else write_evidence
+        require(type(evidence) is dict and set(evidence) <= {item.object_key for item in intents},
+                "session_object_write_evidence_invalid", "Write evidence must belong to this exact write set")
         results = []
         for intent in intents:
             row, binding = self._binding(sid, intent.object_key)
             self.authorize(binding, node_id, write=True)
             self._check_type(binding)
             request = {"node_id": node_id, "intent": intent.to_dict()}
+            if intent.object_key in evidence:
+                request["write_evidence"] = deepcopy(evidence[intent.object_key])
             digest = content_digest(request)
             prior = self.connection.execute(
                 "SELECT digest,result FROM session_object_receipts WHERE session_id=? AND operation_key=?",
@@ -463,7 +453,9 @@ class SessionObjectStore:
             current_record = {**self._value(row["revision_id"]), "revision": row["revision"],
                               "binding": binding.to_dict()}
             self.types.validate_write(binding.type_id, binding.schema_version, value,
-                                      self._write_context(sid, intent.object_key, current_record, intent.operation))
+                                      self._write_context(sid, intent.object_key, current_record, intent.operation,
+                                                          writer_node_id=node_id,
+                                                          write_evidence=evidence.get(intent.object_key)))
             revision_id = self._put_value(binding, value, deleted=deleted)
             self._grant_revision(sid, intent.object_key, revision_id)
             revision = row["revision"] + 1
@@ -481,6 +473,51 @@ class SessionObjectStore:
             )
             results.append(result)
         return results
+
+    def _write_chat_operation_values(self, sid, document, values, expected_cas, *, registry):
+        """Trusted chat operations update only admitted inline state, using exact current CAS."""
+        self._transaction()
+        from .checkpoint_collection import (
+            checkpoint_chat_bindings, checkpoint_context_bindings, checkpoint_variable_bindings,
+        )
+        from .graph_store import GraphRecordStore
+        repo = GraphRecordStore(self.store)
+        session = repo.get("workflow_session", workflow_session_id=sid)
+        fixed = repo.get("workflow_definition_revision",
+                         workflow_definition_id=session["workflow_definition_id"],
+                         revision=session["definition_revision"])["document"]
+        require(repo.equal(document, fixed), "chat_definition_mismatch",
+                "Chat operations require the session's exact fixed definition", 409)
+        bindings = {}
+        for selector in (checkpoint_chat_bindings, checkpoint_context_bindings, checkpoint_variable_bindings):
+            bindings.update(selector(document, types=self.types, registry=registry))
+        require(type(values) is dict and type(expected_cas) is dict
+                and set(values) == set(expected_cas) and set(values) <= set(bindings),
+                "chat_operation_values_invalid", "Chat operations require exact admitted values and CAS", 409)
+        prepared = []
+        for key, value in values.items():
+            binding = bindings[key]
+            current = self._checkpoint_current_value(sid, key, binding)
+            require(current is not None and expected_cas[key] == {
+                "revision": current["revision"], "revision_id": current["revision_id"]},
+                "stale_object_revision", "Chat operation state changed", 409, object_key=key)
+            self._check_type(binding)
+            checked = self.types.validate(binding.type_id, binding.schema_version, value, scope="session")
+            require(not self.types.references(binding.type_id, binding.schema_version, checked, scope="session"),
+                    "chat_operation_reference_denied", "Chat operations only replace inline logical values", 409)
+            require(current["revision"] < 2**53 - 1, "session_object_revision_exhausted",
+                    "Object revision exceeds its protocol limit", 409)
+            prepared.append((key, binding, current, checked))
+        for key, binding, current, value in prepared:
+            revision_id = self._put_value(binding, value)
+            updated = self.connection.execute(
+                "UPDATE session_object_bindings SET revision=?,revision_id=? "
+                "WHERE session_id=? AND object_key=? AND revision=? AND revision_id=?",
+                (current["revision"] + 1, revision_id, sid, key,
+                 current["revision"], current["revision_id"]))
+            require(updated.rowcount == 1, "stale_object_revision",
+                    "Object changed during chat operation", 409, object_key=key)
+            self._grant_revision(sid, key, revision_id)
 
     def references(self, sid) -> dict:
         return {key: {field: value[field] for field in (
@@ -512,201 +549,6 @@ class SessionObjectStore:
             if result["object_key"] == key:
                 revisions.append(result["revision"])
         return max(revisions)
-
-    def restore(self, sid, document, references: dict, *, source_session_id=None, history=None, node_mapping=None,
-                restore_bindings=False):
-        """Restore values without rewinding CAS counters or borrowing parent heads."""
-        self._transaction()
-        values = self.at_manifest(references)
-        bindings = {item["object_key"]: ObjectBinding.from_dict(item)
-                    for item in document.get("object_bindings", [])}
-        require(set(values) == set(bindings), "state_migration_required",
-                "Object bindings differ from this checkpoint", 409)
-        if restore_bindings:
-            for key in self.current(sid).keys() - bindings.keys():
-                self.connection.execute(
-                    "DELETE FROM session_object_bindings WHERE session_id=? AND object_key=?", (sid, key))
-        for key, binding in bindings.items():
-            value = values[key]
-            binding_changed = False
-            if restore_bindings:
-                require(value["binding"] == binding.to_dict(),
-                        "storage_contract_violation", "Historical object binding differs from its definition", 500)
-                row = self.connection.execute(
-                    "SELECT * FROM session_object_bindings WHERE session_id=? AND object_key=?", (sid, key),
-                ).fetchone()
-                if row is None:
-                    revision = self._historical_revision(sid, key) + 1
-                    require(revision <= 2**53 - 1, "session_object_revision_exhausted",
-                            "Object revision exceeds its protocol limit", 409)
-                    self.connection.execute(
-                        "INSERT INTO session_object_bindings VALUES(?,?,?,?,?)",
-                        (sid, key, canonical_bytes(binding.to_dict()).decode("utf-8"), revision, value["revision_id"]),
-                    )
-                    self._grant_revision(sid, key, value["revision_id"])
-                elif loads_strict(row["binding"]) != binding.to_dict():
-                    binding_changed = True
-                    self.connection.execute(
-                        "UPDATE session_object_bindings SET binding=? WHERE session_id=? AND object_key=?",
-                        (canonical_bytes(binding.to_dict()).decode("utf-8"), sid, key),
-                    )
-            row, current_binding = self._binding(sid, key)
-            require((value["type_id"], value["schema_version"]) == (binding.type_id, binding.schema_version)
-                    and binding.to_dict() == current_binding.to_dict(),
-                    "state_migration_required", "Object binding requires migration", 409)
-            self._check_type(binding)
-            revision_id = value["revision_id"]
-            if source_session_id and source_session_id != sid and not value["deleted"]:
-                mapping = {"workflow_session_id": {source_session_id: sid},
-                           "node_binding_id": node_mapping or {}}
-                remapped = self.types.remap(binding.type_id, binding.schema_version,
-                                            value["value"], mapping, scope="session")
-                for ref in self.types.references(binding.type_id, binding.schema_version,
-                                                  value["value"], scope="session"):
-                    if ref["scope"] == "session":
-                        require(ref["workflow_session_id"] == source_session_id
-                                and self.connection.execute(
-                                    "SELECT 1 FROM session_object_revision_membership "
-                                    "WHERE session_id=? AND object_key=? AND revision_id=?",
-                                    (source_session_id, ref["object_key"], ref["revision_id"]),
-                                ).fetchone() is not None,
-                                "session_object_reference_denied", "Source reference is not authorized", 403)
-                        self._grant_revision(sid, ref["object_key"], ref["revision_id"])
-                if canonical_bytes(remapped) != canonical_bytes(value["value"]):
-                    revision_id = self._put_value(binding, remapped)
-            if row["revision_id"] != revision_id or binding_changed:
-                require(row["revision"] < 2**53 - 1, "session_object_revision_exhausted",
-                        "Object revision exceeds its protocol limit", 409)
-                self.connection.execute(
-                    "UPDATE session_object_bindings SET revision=?,revision_id=? WHERE session_id=? AND object_key=?",
-                    (row["revision"] + 1, revision_id, sid, key),
-                )
-                self._grant_revision(sid, key, revision_id)
-        for item in self.current(sid).values():
-            if not item["deleted"]:
-                self._check_references(sid, ObjectBinding.from_dict(item["binding"]), item["value"], history=history)
-
-    def restore_logical(self, sid, document, logical_objects, *, object_keys, history_authority):
-        """Restore a proven checkpoint projection, retaining fixed bindings and live CAS."""
-        from .historical_artifact_reader import HistoryArtifactAuthority
-        from .host_sdk import bounded_name
-
-        self._transaction()
-        require(uuid_value(sid) and type(document) is dict and type(logical_objects) is dict
-                and type(object_keys) in (list, tuple) and len(object_keys) <= 2048
-                and all(bounded_name(key) for key in object_keys)
-                and len(set(object_keys)) == len(object_keys),
-                "session_object_restore_invalid", "Logical object restore fields are invalid")
-        require(isinstance(history_authority, HistoryArtifactAuthority)
-                and history_authority.connection is self.connection,
-                "session_object_reference_denied",
-                "Logical restoration requires the transaction's trusted checkpoint authority", 403)
-        entries = deepcopy(logical_objects)
-        keys = tuple(object_keys)
-        declarations = document.get("object_bindings", [])
-        require(type(declarations) is list, "session_object_restore_invalid",
-                "Object declarations must be explicit")
-        declared = [ObjectBinding.from_dict(item) for item in declarations]
-        bindings = {binding.object_key: binding for binding in declared}
-        require(len(bindings) == len(declared) and set(keys) <= bindings.keys(),
-                "state_migration_required", "Restore keys differ from the fixed object declarations", 409)
-        history_authority.validate_object_restore(sid, document, entries, keys)
-
-        def checked_value(revision_id):
-            require(uuid_value(revision_id), "storage_contract_violation",
-                    "Object revision identity is invalid", 500)
-            raw = self.connection.execute(
-                "SELECT deleted FROM session_object_values WHERE revision_id=?", (revision_id,),
-            ).fetchone()
-            require(raw is not None and type(raw["deleted"]) is int and raw["deleted"] in (0, 1),
-                    "storage_contract_violation", "Stored object tombstone is invalid", 500)
-            checked = self._value(revision_id)
-            require(not checked["deleted"] or checked["value"] is None,
-                    "storage_contract_violation", "Stored object tombstone must have a null body", 500)
-            if not checked["deleted"]:
-                self.types.validate(checked["type_id"], checked["schema_version"], checked["value"], scope="session")
-            return checked
-
-        prepared = []
-        for key in keys:
-            row, binding = self._binding(sid, key)
-            expected = bindings[key]
-            require(binding.to_dict() == expected.to_dict(),
-                    "state_migration_required", "Logical restore cannot change an object binding", 409)
-            self._check_type(binding)
-            entry = entries.get(key, {"type_id": binding.type_id, "schema_version": binding.schema_version,
-                                      "deleted": True, "value": None})
-            require(type(entry) is dict and set(entry) == {"type_id", "schema_version", "deleted", "value"}
-                    and type(entry["schema_version"]) is int and type(entry["deleted"]) is bool
-                    and (not entry["deleted"] or entry["value"] is None),
-                    "session_object_restore_invalid", "Logical state cannot contain storage revision envelopes")
-            require((entry["type_id"], entry["schema_version"]) == (binding.type_id, binding.schema_version),
-                    "state_migration_required", "Logical object type differs from its fixed binding", 409)
-            deleted = entry["deleted"]
-            value = None if deleted else self.types.validate(
-                binding.type_id, binding.schema_version, entry["value"], scope="session")
-            if not deleted:
-                for reference in self.types.references(binding.type_id, binding.schema_version, value, scope="session"):
-                    reference = validate_reference(reference)
-                    if reference["scope"] == "artifact":
-                        history_authority.resolve_artifact(reference)
-                    elif reference["scope"] == "session":
-                        require(reference["workflow_session_id"] == sid,
-                                "session_object_reference_denied", "Reference escapes the target session", 403)
-                        target, target_binding = self._binding(sid, reference["object_key"])
-                        require(reference["object_key"] in bindings
-                                and target_binding.to_dict() == bindings[reference["object_key"]].to_dict()
-                                and set(binding.readers) <= set(target_binding.readers),
-                                "session_object_reference_denied", "Reference exceeds fixed object permissions", 403)
-                        require(self.connection.execute(
-                            "SELECT 1 FROM session_object_revision_membership "
-                            "WHERE session_id=? AND object_key=? AND revision_id=?",
-                            (sid, reference["object_key"], reference["revision_id"]),
-                        ).fetchone() is not None, "session_object_reference_denied",
-                            "Revision is outside the target object's authorized history", 403)
-                        known = checked_value(reference["revision_id"])
-                        require((known["type_id"], known["schema_version"])
-                                == (target_binding.type_id, target_binding.schema_version),
-                                "session_object_reference_invalid", "Reference target type differs")
-            require(self.connection.execute(
-                "SELECT 1 FROM session_object_revision_membership "
-                "WHERE session_id=? AND object_key=? AND revision_id=?",
-                (sid, key, row["revision_id"]),
-            ).fetchone() is not None, "storage_contract_violation",
-                "Current object head is outside its own revision membership", 500)
-            current = checked_value(row["revision_id"])
-            require((current["type_id"], current["schema_version"]) == (binding.type_id, binding.schema_version)
-                    and type(row["revision"]) is int and 1 <= row["revision"] <= 2**53 - 1,
-                    "storage_contract_violation", "Current object head is invalid", 500)
-            changed = current["deleted"] != deleted or canonical_bytes(current["value"]) != canonical_bytes(value)
-            require(not changed or row["revision"] < 2**53 - 1, "session_object_revision_exhausted",
-                    "Object revision exceeds its protocol limit", 409)
-            prepared.append((key, row, binding, value, deleted, changed))
-        results = []
-        for key, row, binding, value, deleted, changed in prepared:
-            revision, revision_id = row["revision"], row["revision_id"]
-            if changed:
-                revision_id = self._put_value(binding, value, deleted=deleted)
-                revision += 1
-                updated = self.connection.execute(
-                    "UPDATE session_object_bindings SET revision=?,revision_id=? "
-                    "WHERE session_id=? AND object_key=? AND revision=? AND revision_id=? AND binding=?",
-                    (revision, revision_id, sid, key, row["revision"], row["revision_id"], row["binding"]),
-                )
-                require(updated.rowcount == 1, "stale_object_revision", "Object changed during logical restoration", 409)
-                self._grant_revision(sid, key, revision_id)
-            results.append({"object_key": key, "revision": revision, "revision_id": revision_id, "deleted": deleted})
-        return results
-
-    def rebind(self, sid, document):
-        """Compatible declarations retain values; unbinding retains immutable history."""
-        self._transaction()
-        current = self.current(sid)
-        target = {item["object_key"]: item for item in document.get("object_bindings", [])}
-        require(all(key in target and target[key] == value["binding"] for key, value in current.items()),
-                "state_migration_required", "Object declaration changed; migration must be explicit", 409)
-        added = {**document, "object_bindings": [value for key, value in target.items() if key not in current]}
-        self.initialize(sid, added)
 
 
 class StateManifestStore:

@@ -8,7 +8,9 @@ import sqlite3
 from .contract_errors import require, uuid_value
 from .contract_json import canonical_bytes, loads_strict
 from .graph_records import validate_graph_record
-from .runtime_checkpoints import materialize as materialize_state, validate_checkpoint
+from .runtime_checkpoints import (
+    CHECKPOINT_SCHEMA_VERSION, materialize as materialize_state, validate_checkpoint,
+)
 
 
 _CHECKPOINT_COLUMNS = (
@@ -40,7 +42,7 @@ def initialize_checkpoint_tables(connection):
     _transaction(connection)
     connection.execute(
         "CREATE TABLE IF NOT EXISTS workflow_checkpoints ("
-        "schema_version INTEGER NOT NULL CHECK(schema_version=2),"
+        f"schema_version INTEGER NOT NULL CHECK(schema_version={CHECKPOINT_SCHEMA_VERSION}),"
         "checkpoint_id TEXT PRIMARY KEY NOT NULL,"
         "workflow_definition_id TEXT NOT NULL,"
         "workflow_session_id TEXT NOT NULL,"

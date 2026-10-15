@@ -49,22 +49,33 @@ def validate_evidence_owner(owner_kind, owner_id):
             "invalid_request", "Request evidence owner is invalid")
 
 
-def validate_evidence_request(operation, idempotency_key, request):
-    from .graph_application_contracts import COMMANDS, validate_parameters
-    spec = next((item for item in COMMANDS if item.name == operation), None)
-    require(spec is not None and not operation.startswith("request-evidence.")
-            and "idempotency_key" in spec.required,
-            "invalid_request", "Evidence requires an existing business command")
-    if operation == "provider.credential.save":
+def validate_evidence_request(operation, idempotency_key, request, *, stored=False):
+    from .graph_application_contracts import COMMANDS, RETIRED_RECEIPT_COMMANDS, validate_parameters
+    from .frontend_node_evidence import (
+        FRONTEND_NODE_EVIDENCE_OPERATIONS, validate_frontend_node_evidence_request,
+    )
+    # Old records retain their exact contract without reopening evidence writes.
+    declarations = (*COMMANDS, *RETIRED_RECEIPT_COMMANDS) if stored else COMMANDS
+    spec = next((item for item in declarations if item.name == operation), None)
+    private = operation in FRONTEND_NODE_EVIDENCE_OPERATIONS.values()
+    require(private or spec is not None and not operation.startswith("request-evidence.")
+            and "idempotency_key" in spec.required, "invalid_request",
+            "Evidence requires an existing business command or exact frontend node operation")
+    if private:
+        validate_frontend_node_evidence_request(operation, idempotency_key, request)
+        request_key = request["parameters"]["idempotency_key"]
+    elif operation == "provider.credential.save":
         # This operation's public receipt identifies the original secret-free request.
         from .graph_provider_host import validate_provider_key_request
         validate_provider_key_request(request)
         require(request["provider_seed"] is not None, "invalid_request",
                 "Provider save evidence requires its complete configuration")
+        request_key = request["idempotency_key"]
     else:
         validate_parameters(spec, request)
+        request_key = request["idempotency_key"]
     validate_json_value(request)
-    require(request["idempotency_key"] == idempotency_key,
+    require(request_key == idempotency_key,
             "request_evidence_conflict", "Evidence identity differs from the original request", 409)
     require(len(canonical_bytes(request)) <= 3_900_000,
             "request_evidence_capacity_exceeded", "Request evidence exceeds its limit", 413)
@@ -89,10 +100,19 @@ def validate_evidence_record(record):
             and record["resolution"] in ("pending", "verified", "archived"),
             "storage_contract_violation", "Request evidence record is invalid", 500)
     validate_evidence_owner(record["owner_kind"], record["owner_id"])
-    digest = validate_evidence_request(record["operation"], record["idempotency_key"], record["request"])
+    digest = validate_evidence_request(
+        record["operation"], record["idempotency_key"], record["request"], stored=True)
+    _validate_private_owner(record["operation"], record["owner_kind"], record["owner_id"], record["request"])
     require(record["request_digest"] == digest,
             "storage_contract_violation", "Request evidence digest differs", 500)
     return deepcopy(record)
+
+
+def _validate_private_owner(operation, owner_kind, owner_id, request):
+    from .frontend_node_evidence import FRONTEND_NODE_EVIDENCE_OPERATIONS, frontend_node_evidence_owner
+    if operation in FRONTEND_NODE_EVIDENCE_OPERATIONS.values():
+        require((owner_kind, owner_id) == frontend_node_evidence_owner(operation, request),
+                "request_evidence_conflict", "Frontend evidence owner must match its exact node operation", 409)
 
 
 class RequestEvidenceService:
@@ -155,6 +175,7 @@ class RequestEvidenceService:
     def write_evidence(self, operation, idempotency_key, owner_kind, owner_id, request):
         validate_evidence_owner(owner_kind, owner_id)
         request_digest = validate_evidence_request(operation, idempotency_key, request)
+        _validate_private_owner(operation, owner_kind, owner_id, request)
         record = {
             "schema_version": 1, "kind": "workflow.request-evidence", "operation": operation,
             "idempotency_key": idempotency_key, "owner_kind": owner_kind, "owner_id": owner_id,

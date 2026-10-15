@@ -4,6 +4,8 @@
 
 本文描述 2026-10-09 现行主干的工程边界。入口见 [文档索引](README.md)，操作见 [使用手册](USER-GUIDE.md)；历史记录不作为当前节点目录、部署状态或 API 的替代说明。
 
+2026-10-15唯一施工worktree的E5接续见[49号回执](中期检查2/49-阶段E旧入口退役与测试工作流清理实施回执-2026-10-15.md)：普通创建和节点所属前端保留，旧GraphChat/Tavern业务、预设和自动接线退出，Lorebook及原请求证据继续有效。该施工未晋升main、重启产品服务或进行真实模型验收；下文主干历史不作为恢复退役业务的要求。
+
 本次前端用户化 P1-P6 已本地提交并快进合入 `main`，功能提交为 `0c15587`；本批未推送。两个 BAT 均未改，正式入口仍选 `main`，现在已包含这些功能。合并后重新构建并通过 `-CheckOnly`，未启动产品服务、打开产品库或调用模型。范围见 [P1/P2](FRONTEND-P1-P2-2026-10-09.md)、[P3/P4](FRONTEND-P3-P4-2026-10-09.md)和 [P5/P6 记录](FRONTEND-P5-P6-2026-10-09.md)。
 
 2026-10-11 首批职责整改仅在 `develop` 未提交工作树；下表管理、内容读取、生命周期及清理入口按本批订正。定义派生/自动保存和模型实时契约仍未完成，D/E、节点及调度改动仍需人工确认，精确范围见 [首批实施记录](中期检查/11-首批整改实施与离线验证-2026-10-11.md)。
@@ -79,7 +81,7 @@ git ls-remote --heads origin main
 | 二级节点目录与协议选择 | `domain/nodeCatalog.ts`、`domain/nodeSelection.ts`、`components/NodeProfileDialog.vue` |
 | 连线检查与反馈 | `domain/graphConnections.ts`；画布与 store 共用动态端口、schema、基数和组合环检查 |
 | 图、会话与工作区状态 | `stores/workflowGraph.ts`、`stores/workspace.ts` |
-| 本机草稿、原始表单及请求证据 | `adapters/localDraftsApi.ts`、`stores/workbenchPersistence.ts`、`stores/formDrafts.ts`、`composables/useBoundFormDraft.ts`；整包旧浏览器工作台读取/导入已退出 |
+| 内存表单、旧本机证据及原请求 | `composables/useVolatileFormState.ts`、`adapters/requestEvidenceApi.ts`；`adapters/localDraftsApi.ts`和`stores/workbenchPersistence.ts`保留混合用途证据读取。旧表单持久化壳已删除，见[38号回执](中期检查2/38-阶段D后旧架构代码整理实施回执-2026-10-15.md) |
 | 应用命令、编辑及信息读取 | `application/workflowCommands.ts`、`application/workflowEditing.ts`、`application/workflowInformation.ts` |
 | HTTP 适配 | `adapters/workflowApplicationApi.ts`、`adapters/workflowGraphApi.ts`、`adapters/workflowResourcesApi.ts` |
 | 供应商与全局模型配置编辑 | `components/CurrentProviderPanel.vue`、`components/CurrentModelProfilesPanel.vue`、`application/modelProfiles.ts`、`adapters/workflowModelProfilesApi.ts` |

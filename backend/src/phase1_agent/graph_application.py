@@ -10,7 +10,7 @@ from .graph_records import require
 
 
 _MANAGEMENT_COMMANDS = {
-    "consumer.draft.save", "definition.update", "session.create", "consumer.session.create",
+    "definition.update", "session.create",
     "object.write",
     "session.metadata.update", "session.data.update", "checkpoint.fork",
 }
@@ -22,7 +22,7 @@ _LIFECYCLE_COMMANDS = {
 class GraphApplication:
     """Bound trusted-local scope; owns neither runtime state nor durable records.
 
-    Consumer scope restricts dispatch to existing consumer projections and actions.
+    Consumer scope retains only read-only original receipts and stored drafts.
     It is not remote caller authentication, and node_id remains a trusted management
     input whose graph permissions are checked by the underlying object service.
     """
@@ -51,7 +51,7 @@ class GraphApplication:
     def describe(self):
         return {"schema_version": 1, "kind": "workflow.application", "scope": self.scope,
                 "boundary": {"caller": "trusted_local", "remote_plugin_authentication": False,
-                             "consumer_policy": "declared_public_outputs_and_session_history",
+                             "consumer_policy": "original_receipts_and_stored_drafts_readonly",
                              "object_node_identity": "trusted_management_input",
                              "execution_authority": "graph_workflow_service",
                              "receipt_authority": "existing_service_transactions"},
@@ -76,7 +76,7 @@ class GraphApplication:
             target = self._service.provider_configuration if spec.name.startswith((
             "credential.", "provider.",
             )) else self if spec.method in (
-                "_management_actions", "_consumer_actions", "_registration_list", "_information_read",
+                "_management_actions", "_registration_list", "_information_read",
                 "_receipt_read", "_editor_inputs",
             ) else self._invocation_service(spec)
         callback = getattr(target, spec.method)
@@ -135,24 +135,17 @@ class GraphApplication:
         from .graph_input_declarations import editor_input_declarations
         return editor_input_declarations(self._management_service().registry, document)
 
-    def _actions(self, session_id, *, consumer):
+    def _management_actions(self, session_id):
         service = self._management_service()
-        view = service.get_consumer(session_id) if consumer else service.get_session(session_id)
+        view = service.get_session(session_id)
         return {"schema_version": 1, "kind": "workflow.application-actions",
-                "scope": "consumer" if consumer else "management",
+                "scope": "management",
                 "workflow_definition_id": view["workflow_definition_id"],
                 "definition_revision": view["definition_revision"], "workflow_session_id": session_id,
-                "session_revision": view["session_revision"] if consumer else view["revision"],
+                "session_revision": view["revision"],
                 "status": view["status"], "can_submit": view["can_submit"],
                 "available_actions": deepcopy(view["available_actions"]),
-                "start_operation": "consumer.run.start" if consumer else "run.start",
-                "control_operation": "consumer.run.control" if consumer else "run.control"}
-
-    def _management_actions(self, session_id):
-        return self._actions(session_id, consumer=False)
-
-    def _consumer_actions(self, session_id):
-        return self._actions(session_id, consumer=True)
+                "start_operation": "run.start", "control_operation": "run.control"}
 
     def _registration_list(self, **parameters):
         return self._management_service().list_registrations(audience=self.scope, **parameters)

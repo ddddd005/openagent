@@ -42,7 +42,7 @@ function fixture(provider: CurrentProvider | null = newProvider()) {
     workflowId: computed(() => workflowId), document: computed(() => document), catalog: computed(() => [definition]),
     packages: computed(() => [{ package_id: "workflow.models", version: "1.0.0" }]), session: computed(() => null),
     locked: computed(() => false), lifecycle: computed(() => "fixed"),
-    attachDisplay: () => false, readArtifact: vi.fn(),
+    readArtifact: vi.fn(),
     configureNode: vi.fn(async () => ({ workflowId, nodeId: node.node_binding_id, outcome: "saved" as const })),
   };
   const host = createWorkbenchFrontendHost(() => modelFrontendExtensions, () => sdk.packages.value);

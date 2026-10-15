@@ -18,6 +18,7 @@ from .host_sdk import (
     ObjectBinding, TypeRegistry, bounded_name,
 )
 from .runtime_executor_contracts import ExecutorReference, ExecutorRegistry
+from .variable_contract import VARIABLE_SCHEMA_VERSION, VARIABLE_TYPE, empty_variable_value
 
 
 MAX_GRAPH_NODES = 512
@@ -375,6 +376,8 @@ class NodeDefinition:
         return self.inputs, self.outputs
 
     def to_dict(self, *, executable: bool = True) -> dict:
+        from .workflow_configuration import default_configuration_policy
+
         value = {key: copy.deepcopy(getattr(self, key)) for key in (
             "component_id", "component_version", "display_name", "category", "default_config",
             "config_schema", "is_output", "private_state_schema", "private_state_default",
@@ -384,6 +387,8 @@ class NodeDefinition:
                       "outputs": [port.to_dict() for port in self.outputs],
                       "capabilities": list(self.capabilities), "executable": executable})
         value["checkpoint_save"] = normalize_checkpoint_save(self.config_schema, self.checkpoint_save)
+        value["default_configuration_policy"] = default_configuration_policy(
+            self.component_id, self.component_version, self.adjustable_configuration)
         if self.port_modes:
             value["port_modes"] = {
                 mode: {"inputs": [port.to_dict() for port in ports[0]],
@@ -506,8 +511,11 @@ class NodeRegistry:
                 "Failed retry validator must be callable")
         declared_fields = set()
         for reference in definition.config_node_references:
-            require(type(reference) is dict and set(reference) == {"config_field", "multiple", "target_types"}
+            require(type(reference) is dict
+                    and {"config_field", "multiple", "target_types"} <= set(reference)
+                    and set(reference) <= {"config_field", "multiple", "target_types", "allow_empty"}
                     and bounded_name(reference["config_field"]) and type(reference["multiple"]) is bool
+                    and ("allow_empty" not in reference or type(reference["allow_empty"]) is bool)
                     and reference["config_field"] not in declared_fields
                     and type(reference["target_types"]) is list and 0 < len(reference["target_types"]) <= 256
                     and all(type(target) is dict and set(target) == {"component_id", "component_version"}
@@ -700,6 +708,15 @@ def validate_session_item_registrations(document: dict, registry: NodeRegistry) 
                 "Registered object type is not declared by its registrar node", node_id=registrar)
         require(identity not in registered, "session_object_registration_duplicate",
                 "Registrar instance already provides this exact session item type", node_id=registrar)
+        if (definition.component_id, definition.component_version) == ("tools.variable-register", "2"):
+            require((binding.type_id, binding.schema_version) == (VARIABLE_TYPE, VARIABLE_SCHEMA_VERSION)
+                    and node["config"].get("object_key") == binding.object_key,
+                    "variable_registration_target_mismatch",
+                    "Variable registration must target its own provided item", node_id=registrar)
+            require(not binding.has_default or binding.default_value == empty_variable_value(),
+                    "variable_registration_default_invalid",
+                    "Variable item configuration may only initialize an unregistered shell",
+                    node_id=registrar)
         registered.add(identity)
 
     for identity in expected:
@@ -830,6 +847,8 @@ class GraphCompiler:
                 self.registry.validate_config(entry, node["config"])
                 for reference in entry.definition.config_node_references:
                     value = node["config"].get(reference["config_field"])
+                    if reference.get("allow_empty", False) and value == "":
+                        continue
                     identities = value if reference["multiple"] else [value]
                     require(type(identities) is list and bool(identities),
                             "graph_invalid_config_reference", "Node binding must name explicit node identities")

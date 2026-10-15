@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>前端节点 · OpenAgent</title>
+  <link rel="stylesheet" href="/static/frontend-node.css">
+  <script src="/tavern/vendor/lucide/lucide.min.js" defer></script>
+  <script src="/static/frontend-node-client.js" defer></script>
+  <script src="/static/frontend-node-host.js" defer></script>
+  <script src="/static/frontend-node-entry.js" defer></script>
+</head>
+<body>
+  <main class="node-page">
+    <header class="node-header">
+      <div class="brand"><img src="/tavern/assets/assistant.png" alt=""><h1>前端节点</h1></div>
+      <div class="header-actions">
+        <span id="connection-status" class="connection" role="status">正在连接</span>
+        <button id="refresh" class="icon-button" type="button" title="刷新并重新连接" aria-label="刷新并重新连接">
+          <i data-lucide="refresh-cw" aria-hidden="true"></i>
+        </button>
+      </div>
+    </header>
+    <section class="binding-bar" aria-label="当前绑定">
+      <span id="workflow-identity"></span><span id="node-identity"></span><span id="session-identity"></span>
+    </section>
+    <section class="run-bar" aria-label="运行状态">
+      <span id="run-status" role="status">尚未读取</span>
+      <div class="run-actions">
+        <button id="resume" class="icon-button" type="button" title="继续本轮" aria-label="继续本轮" disabled>
+          <i data-lucide="play" aria-hidden="true"></i>
+        </button>
+        <button id="pause" class="icon-button" type="button" title="请求暂停" aria-label="请求暂停" disabled>
+          <i data-lucide="pause" aria-hidden="true"></i>
+        </button>
+        <button id="close-run" class="icon-button" type="button" title="结束本轮" aria-label="结束本轮" disabled>
+          <i data-lucide="square" aria-hidden="true"></i>
+        </button>
+        <button id="checkpoints-open" class="icon-button" type="button" title="查看检查点" aria-label="查看检查点" disabled>
+          <i data-lucide="history" aria-hidden="true"></i>
+        </button>
+      </div>
+    </section>
+    <section id="checkpoints-panel" class="checkpoint-panel" aria-label="检查点" hidden>
+      <div class="checkpoint-toolbar">
+        <label for="checkpoint-select">检查点</label>
+        <select id="checkpoint-select" disabled><option value="">暂无检查点</option></select>
+        <button id="checkpoints-refresh" class="icon-button" type="button" title="刷新检查点" aria-label="刷新检查点">
+          <i data-lucide="refresh-cw" aria-hidden="true"></i>
+        </button>
+        <button id="checkpoint-fork" class="icon-button" type="button" title="从此点创建新会话" aria-label="从此点创建新会话" disabled>
+          <i data-lucide="git-branch" aria-hidden="true"></i>
+        </button>
+      </div>
+      <p id="checkpoint-detail"></p>
+    </section>
+    <div id="error" class="notice error" role="alert" hidden></div>
+    <div id="notice" class="notice" role="status" hidden></div>
+    <section id="binding-next" class="decision" aria-label="接续绑定" hidden>
+      <div><strong id="next-title">有新的准确绑定</strong><p id="next-identity"></p></div>
+      <button id="continue-binding" type="button"><i data-lucide="arrow-right" aria-hidden="true"></i><span>接续此绑定</span></button>
+    </section>
+    <section id="confirmation" class="decision" aria-label="固定修改确认" hidden>
+      <div><strong>固定输入修改需要派生工作流</strong><pre id="confirmation-text"></pre></div>
+      <div class="decision-actions">
+        <button id="decline" type="button"><i data-lucide="x" aria-hidden="true"></i><span>取消</span></button>
+        <button id="confirm" type="button"><i data-lucide="check" aria-hidden="true"></i><span>确认派生</span></button>
+      </div>
+    </section>
+    <section id="pending" class="pending-list" aria-label="待核实的原请求" hidden></section>
+    <section id="messages" class="messages" aria-label="聊天记录" aria-live="polite" aria-relevant="additions">
+      <div class="empty"><i data-lucide="messages-square" aria-hidden="true"></i><p>暂无消息</p></div>
+    </section>
+    <form id="composer" class="composer">
+      <label for="message">输入</label>
+      <textarea id="message" rows="3" maxlength="1000000" placeholder="输入消息" autocomplete="off" disabled></textarea>
+      <div class="composer-footer">
+        <span id="input-status" role="status">尚未读取输入</span>
+        <div class="composer-actions">
+          <button id="save" class="icon-button" type="button" title="立即保存输入" aria-label="立即保存输入" disabled>
+            <i data-lucide="save" aria-hidden="true"></i>
+          </button>
+          <button id="send" class="icon-button send-button" type="submit" title="保存并启动本轮" aria-label="保存并启动本轮" disabled>
+            <i data-lucide="send" aria-hidden="true"></i>
+          </button>
+        </div>
+      </div>
+    </form>
+    <footer class="page-footer"><span id="snapshot-status"></span><span id="input-policy"></span></footer>
+  </main>
+</body>
+</html>

@@ -22,7 +22,6 @@ export function useWorkbenchFrontendHost() {
     packages: computed(() => graph.packageLock), session: computed(() => graph.session),
     locked: computed(() => graph.editorLocked),
     lifecycle,
-    attachDisplay: request => !!graph.attachFrontendDisplay(request),
     readArtifact: readFrontendArtifact,
     configureNode: createNodeConfigurationAccess({
       workflowId: () => workspace.activeWorkflowId, lifecycle: () => lifecycle.value,

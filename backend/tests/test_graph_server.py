@@ -138,9 +138,8 @@ def test_structured_diagnostics_strict_fields_and_origins(tmp_path):
             "workflow_definition_id": doc["workflow_definition_id"], "definition_revision": 1, "idempotency_key": "session"})
         path = "/api/graph/sessions/" + session["workflow_session_id"] + "/runs"
         status, error = request(port, "POST", path, {"expected_revision": 1, "idempotency_key": "run"})
-        assert status == 400 and error["error"]["reason_code"] == "graph_required_input_missing"
-        assert error["error"]["diagnostics"][0]["node_id"] == doc["nodes"][-1]["node_binding_id"]
-        assert error["error"]["diagnostics"][0]["port_id"] == "input"
+        assert status == 400 and error["error"]["reason_code"] == "graph_no_outputs"
+        assert error["error"]["diagnostics"][0]["code"] == "graph_no_outputs"
         status, error = request(port, "POST", path, {"expected_revision": True, "idempotency_key": "bad"})
         assert status == 400 and error["error"]["reason_code"] == "invalid_request"
         assert request(port, "POST", path, {"expected_revision": 1, "idempotency_key": "bad", "rogue": 1})[0] == 400

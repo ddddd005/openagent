@@ -38,12 +38,8 @@ class GraphEvents:
         return self._event_bindings(sid, workflow_definition_id=workflow_definition_id,
                                     definition_revision=definition_revision)
 
-    def list_consumer_event_bindings(self, sid, *, workflow_definition_id, definition_revision):
-        return self._event_bindings(sid, workflow_definition_id=workflow_definition_id,
-                                    definition_revision=definition_revision, consumer=True)
-
     def _submit_event(self, sid, *, workflow_definition_id, definition_revision, event_id,
-                      event_schema_version, payload, expected_revision, idempotency_key, consumer=False):
+                      event_schema_version, payload, expected_revision, idempotency_key):
         request = {"session": sid, "workflow_definition_id": workflow_definition_id,
                    "definition_revision": definition_revision, "event_id": event_id,
                    "event_schema_version": event_schema_version, "payload": payload,
@@ -54,30 +50,22 @@ class GraphEvents:
                 self._check_open()
                 _, document = self._event_scope(GraphRecordStore(store), sid,
                                                 workflow_definition_id, definition_revision)
-                self._event_binding(document, event_id, event_schema_version, consumer=consumer)
+                self._event_binding(document, event_id, event_schema_version)
 
             def change(repo):
                 _, document = self._event_scope(repo, sid, workflow_definition_id, definition_revision)
-                binding = self._event_binding(document, event_id, event_schema_version, consumer=consumer)
+                binding = self._event_binding(document, event_id, event_schema_version)
                 event = {"event_id": event_id, "schema_version": event_schema_version,
                          "audience": binding["audience"], "idempotency_key": idempotency_key}
                 return self._prepare_run(repo, sid, expected_revision, payload, event=event)
 
-            result = self._start_run(sid, idempotency_key, request, change,
-                                     operation="graph.consumer.event.submit" if consumer else "graph.event.submit")
-            return self._consumer_receipt(result, "event", idempotency_key) if consumer else result
+            return self._start_run(sid, idempotency_key, request, change, operation="graph.event.submit")
 
     def submit_event(self, sid, *, workflow_definition_id, definition_revision, event_id,
                      event_schema_version, payload, expected_revision, idempotency_key):
         return self._submit_event(sid, workflow_definition_id=workflow_definition_id,
             definition_revision=definition_revision, event_id=event_id, event_schema_version=event_schema_version,
             payload=payload, expected_revision=expected_revision, idempotency_key=idempotency_key)
-
-    def submit_consumer_event(self, sid, *, workflow_definition_id, definition_revision, event_id,
-                              event_schema_version, payload, expected_revision, idempotency_key):
-        return self._submit_event(sid, workflow_definition_id=workflow_definition_id,
-            definition_revision=definition_revision, event_id=event_id, event_schema_version=event_schema_version,
-            payload=payload, expected_revision=expected_revision, idempotency_key=idempotency_key, consumer=True)
 
     def _read_event(self, sid, *, chain_id, consumer=False):
         with self._lock, closing(self._store()) as store:
@@ -107,6 +95,3 @@ class GraphEvents:
 
     def read_event(self, sid, *, chain_id):
         return self._read_event(sid, chain_id=chain_id)
-
-    def read_consumer_event(self, sid, *, chain_id):
-        return self._read_event(sid, chain_id=chain_id, consumer=True)

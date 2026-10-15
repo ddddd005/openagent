@@ -2,6 +2,13 @@ export interface GraphConfigurationPolicy {
   schema_version: 1;
   prompt_mode: "fixed" | "adjustable";
 }
+export interface GraphAdjustableConfiguration {
+  schema_version: 1;
+  policy: string;
+  fields: string[];
+  member_identity_field?: string;
+  member_fields?: string[];
+}
 export interface GraphNode {
   node_binding_id: string;
   component_id: string;
@@ -90,6 +97,8 @@ export interface GraphNodeType {
   category: string;
   config_schema: Record<string, unknown>;
   default_config: Record<string, unknown>;
+  adjustable_configuration?: GraphAdjustableConfiguration;
+  default_configuration_policy?: GraphConfigurationPolicy;
   inputs: GraphPort[];
   outputs: GraphPort[];
   is_output: boolean;
@@ -107,6 +116,7 @@ export interface GraphNodeType {
   config_node_references?: {
     config_field: string;
     multiple: boolean;
+    allow_empty?: boolean;
     target_types: { component_id: string; component_version: string }[];
   }[];
   [key: string]: unknown;
@@ -394,6 +404,27 @@ export function isGraphConfigurationPolicy(value: unknown): value is GraphConfig
     && graphExactKeys(value, ["schema_version", "prompt_mode"])
     && value.schema_version === 1 && (value.prompt_mode === "fixed" || value.prompt_mode === "adjustable");
 }
+export function isGraphAdjustableConfiguration(value: unknown): value is GraphAdjustableConfiguration {
+  const fields = (items: unknown): items is string[] => Array.isArray(items) && items.length > 0
+    && items.every(boundedName) && new Set(items).size === items.length;
+  return graphObject(value)
+    && graphExactKeys(value, ["schema_version", "policy", "fields"], ["member_identity_field", "member_fields"])
+    && value.schema_version === 1 && boundedName(value.policy) && fields(value.fields)
+    && (value.member_identity_field === undefined && value.member_fields === undefined
+      || boundedName(value.member_identity_field) && fields(value.member_fields));
+}
+export function graphNodeAllowsAdjustable(node: Pick<GraphNode, "component_id" | "component_version">,
+  definition: GraphNodeType | undefined): boolean {
+  return !!definition && definition.component_id === node.component_id
+    && definition.component_version === node.component_version
+    && isGraphAdjustableConfiguration(definition.adjustable_configuration);
+}
+export function defaultGraphConfigurationPolicy(definition: GraphNodeType): GraphConfigurationPolicy {
+  const policy = definition.default_configuration_policy;
+  return isGraphConfigurationPolicy(policy)
+    && (policy.prompt_mode === "fixed" || graphNodeAllowsAdjustable(definition, definition))
+    ? graphClone(policy) : { schema_version: 1, prompt_mode: "fixed" };
+}
 function isGraphSchema3Document(value: Record<string, unknown>): boolean {
   if (!isGraphJsonValue(value) || !graphStorageStrings(value)
     || !graphExactKeys(value, ["schema_version", "workflow_definition_id", "revision", "name", "nodes", "edges", "object_bindings"],
@@ -517,9 +548,14 @@ export function isGraphCatalog(value: unknown): value is GraphNodeType[] {
     && (type.input_storage === undefined || ["inline", "references"].includes(String(type.input_storage)))
     && providedTypes(type.provided_session_item_types)
     && objectAccesses(type.object_accesses)
+    && (type.adjustable_configuration === undefined || isGraphAdjustableConfiguration(type.adjustable_configuration))
+    && (type.default_configuration_policy === undefined || isGraphConfigurationPolicy(type.default_configuration_policy)
+      && (type.default_configuration_policy.prompt_mode === "fixed"
+        || isGraphAdjustableConfiguration(type.adjustable_configuration)))
     && (type.config_node_references === undefined || Array.isArray(type.config_node_references)
       && type.config_node_references.every(reference => graphObject(reference)
         && typeof reference.config_field === "string" && reference.config_field.length > 0
+        && (reference.allow_empty === undefined || typeof reference.allow_empty === "boolean")
         && typeof reference.multiple === "boolean" && Array.isArray(reference.target_types)
         && reference.target_types.length > 0 && reference.target_types.every(target => graphObject(target)
           && typeof target.component_id === "string" && target.component_id.length > 0

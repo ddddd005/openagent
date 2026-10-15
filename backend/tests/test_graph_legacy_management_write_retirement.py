@@ -85,7 +85,7 @@ def test_definition_save_is_not_discoverable_or_dispatchable_but_old_receipts_re
         assert store.read_receipt("graph.definition.save", request["idempotency_key"]) == before
 
 
-def test_definition_update_and_session_copy_keep_internal_revision_creation(service):
+def test_definition_update_keeps_internal_revision_creation(service):
     app = GraphApplication(service)
     doc = _schema3_fixed(text_graph(service.registry))
     created = app.command("definition.update", {
@@ -100,19 +100,6 @@ def test_definition_update_and_session_copy_keep_internal_revision_creation(serv
         "expected_edit_sequence": 1, "idempotency_key": str(uuid4()),
     })["result"]
     assert updated["outcome"] == "saved" and updated["definition_revision"] == 2
-
-    source_doc, _, _ = _legacy_definition_receipt(service)
-    source = service.create_session(
-        source_doc["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
-    target_doc = deepcopy(source_doc)
-    target_doc["workflow_definition_id"] = str(uuid4())
-    copied = service.copy_session(
-        source["workflow_session_id"], document=target_doc,
-        expected_session_revision=source["revision"], expected_data_revision=source["data_revision"],
-        expected_definition_revision=source["definition_revision"],
-        expected_head_revision=source["head_revision"], idempotency_key=str(uuid4()))
-    assert copied["workflow_definition_id"] == target_doc["workflow_definition_id"]
-    assert service.get_definition(target_doc["workflow_definition_id"]) == target_doc
 
 
 def test_management_draft_writer_retires_but_evidence_readers_and_receipts_remain(service):

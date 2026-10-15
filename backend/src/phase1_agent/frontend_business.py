@@ -116,6 +116,8 @@ def register_frontend_business(host):
         {}, object_schema({}), inputs=(NodePort("view", FRONTEND_VIEW_TYPE),),
         outputs=(NodePort("display", FRONTEND_DISPLAY_TYPE),),
         capabilities=("artifacts:read",), input_storage="references"), _present)
+    from .frontend_node import register_frontend_node
+    register_frontend_node(host)
 
 
 def create_frontend_business_package():

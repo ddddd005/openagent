@@ -10,12 +10,13 @@ from phase1_agent.capability_packages import CapabilityPackageLoader
 from phase1_agent.content_contracts import create_content_package, object_schema, text_content
 from phase1_agent.context_package import create_context_package
 from phase1_agent.context_prompt_v6 import assemble_native_context_prompt
-from phase1_agent.context_v4 import validate_native_context_view
+from phase1_agent.context_v4 import read_native_context_v5
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.graph_contracts import GraphCompiler, NodeDefinition, NodePort
 from phase1_agent.graph_execution import NodeExecutionContext
 from phase1_agent.host_sdk import DataTypeDefinition, ObjectBinding
 from phase1_agent.lorebook_engine import default_lorebook_entry
+from phase1_agent.model_package import create_model_package
 from phase1_agent.prompt_package import create_prompt_package
 from phase1_agent.tavern_package import (
     TAVERN_COMPONENTS, TAVERN_FRONTEND_EXTENSIONS, create_tavern_package,
@@ -40,14 +41,11 @@ def entry(number=11, **changes):
 
 
 def scan_prompt(text="match"):
-    view = validate_native_context_view({
-        "schema_version": 4, "kind": "workflow.context-view",
-        "owner": {"workflow_session_id": uid(800), "object_key": "context", "agent_node_id": uid(801)},
-        "basis": {"revision_id": uid(802), "head_revision": 1},
-        "messages": [], "layout": [], "accepted_delta_ids": [], "applied_delta_ids": [],
-        "generation": 0,
-        "derivation": {"operation": "read", "input_view_ref": None, "update_ref": None},
-    })
+    view = read_native_context_v5({
+        "type_id": "workflow.effective-context", "schema_version": 4, "deleted": False,
+        "revision": 1, "revision_id": uid(802),
+        "value": {"messages": [], "layout": [], "accepted_delta_ids": [], "generation": 0},
+    }, uid(800), "context")
     return assemble_native_context_prompt(
         [], view, text_content(text), context_ref=ref(900), current_input_ref=ref(901))
 
@@ -56,7 +54,7 @@ def scan_prompt(text="match"):
 def capabilities():
     return CapabilityPackageLoader((
         create_content_package(), create_prompt_package(), create_context_package(),
-        create_tool_package(), create_tavern_package(),
+        create_tool_package(), create_model_package(), create_tavern_package(),
     )).load({"workflow.tavern": "1.0.0"})
 
 
@@ -112,12 +110,13 @@ def invoke(registry, *, grouped=False, entries=None, objects=None, object_keys=N
     return outputs["output"], context, calls
 
 
-def test_independent_tavern_package_loads_without_agent_model_or_network_packages(capabilities):
+def test_independent_tavern_package_loads_current_dependencies_without_agent_execution(capabilities):
     assert capabilities.package_lock == tuple(
         {"package_id": identity, "version": "1.0.0"} for identity in (
-            "workflow.content", "workflow.context", "workflow.prompts", "workflow.tavern", "workflow.tools"))
+            "workflow.content", "workflow.context", "workflow.models",
+            "workflow.prompts", "workflow.tavern", "workflow.tools"))
     assert capabilities.registry.get("agents.execute", "4") is None
-    assert capabilities.registry.get("models.source", "1") is None
+    assert capabilities.registry.get("models.source", "7") is not None
     assert create_tavern_package().manifest.to_dict()["exports"]["nodes"] == [
         {"component_id": identity, "component_version": "1"} for identity in TAVERN_COMPONENTS]
 
@@ -125,7 +124,7 @@ def test_independent_tavern_package_loads_without_agent_model_or_network_package
 def test_exact_frontend_extensions_match_manifest_and_component_targets(capabilities):
     extensions = [row for row in capabilities.frontend_extensions if row["package_id"] == "workflow.tavern"]
     assert extensions == sorted([{
-        **deepcopy(row), "schema_version": 2, "host_protocol_version": 1,
+        **deepcopy(row), "schema_version": 3, "host_protocol_version": 2,
         "package_id": "workflow.tavern", "package_version": "1.0.0",
     } for row in TAVERN_FRONTEND_EXTENSIONS], key=lambda row: row["extension_id"])
     for row in extensions:

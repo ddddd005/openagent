@@ -2,26 +2,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { graphClone } from "../domain/workflowGraph";
 import { workflowFrontendExtensions } from "../plugins/workflowFrontendManifest";
-import { frontendCatalog, frontendExecutionLock, frontendProjectLock, frontendSession } from "../testUtils/frontendFixture";
+import { explicitFrontendGraph, frontendCatalog, frontendExecutionLock, frontendProjectLock, frontendSession } from "../testUtils/frontendFixture";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkspaceStore } from "./workspace";
 
 beforeEach(() => setActivePinia(createPinia()));
 afterEach(() => { useWorkflowGraphStore().$dispose(); useWorkspaceStore().$dispose(); vi.unstubAllGlobals(); });
 describe("frontend catalog fail-closed lifecycle", () => {
-  it("locks only execution packages in explicit graph wiring and retains the graph when UI is disabled", async () => {
+  it("retains an existing explicit graph with only execution locks when UI is disabled", async () => {
     const graph = useWorkflowGraphStore(); graph.setPersistenceGuard(() => true);
     const packet = { schema_version: 2, node_types: frontendCatalog, data_types: [],
       package_lock: frontendProjectLock, execution_package_lock: frontendExecutionLock,
       frontend_extensions: workflowFrontendExtensions };
     const fetcher = vi.fn(async () => new Response(JSON.stringify(packet)));
     vi.stubGlobal("fetch", fetcher);
-    await graph.loadCatalog(); graph.createWorkflow();
-    const input = graph.addNode("tools.current-input@1", { x: 0, y: 0 })!;
-    const registrar = graph.addNode("tools.output@2", { x: 300, y: 0 })!;
-    const objectKey = graph.document!.object_bindings!.find(binding =>
-      binding.registrar_node_id === registrar)!.object_key;
-    expect(graph.attachFrontendDisplay({ sourceNodeId: input, sourcePortId: "output", objectKey, role: "user" })).toBeTruthy();
+    await graph.loadCatalog();
+    const id = graph.createWorkflow();
+    graph.entries[id].document = explicitFrontendGraph(id).document;
     expect(graph.packageLock).toEqual(frontendProjectLock);
     expect(graph.document!.package_lock).toEqual(frontendExecutionLock);
     expect(graph.document!.package_lock!.some(pkg => pkg.package_id === "workflow.frontend")).toBe(false);

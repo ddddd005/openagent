@@ -4,7 +4,7 @@ import { graphEnumLabel, graphObject } from "../domain/workflowGraph";
 import RolePlacementFields from "./RolePlacementFields.vue";
 import type { RolePlacement } from "../domain/promptPresentation";
 const props = defineProps<{ schema: Record<string, unknown>; value: Record<string, unknown>; disabled?: boolean;
-  identity?: string }>();
+  identity?: string; errors?: Record<string, string> }>();
 const emit = defineEmits<{ change: [value: Record<string, unknown>] }>();
 const raw = ref<Record<string, string>>({});
 watch(() => [props.identity, JSON.stringify(props.schema), JSON.stringify(props.value)],
@@ -77,6 +77,7 @@ function presentation(value: unknown): value is RolePlacement {
         <input v-else-if="['number', 'integer'].includes(String(field.definition.type))" type="text" inputmode="decimal" :value="text(field.key)" :disabled="disabled" @input="remember(field.key, $event)" @change="numeric(field.key, $event)" />
         <textarea v-else-if="field.definition.type === 'string'" :value="text(field.key)" rows="3" :disabled="disabled" @input="remember(field.key, $event)" @change="patch(field.key, ($event.target as HTMLTextAreaElement).value)" />
         <textarea v-else :value="text(field.key, true)" rows="4" :disabled="disabled" @input="remember(field.key, $event)" @change="json(field.key, $event)" />
+        <small v-if="errors?.[field.key]" role="alert">{{ errors[field.key] }}</small>
       </label>
     </template>
   </div>
@@ -92,4 +93,5 @@ fieldset { min-width:0; margin:0; padding:10px; border:1px solid #44444b; }
 legend { font-size:12px; padding:0 4px; }
 :disabled { opacity:.55; }
 details { min-width:0; font-size:12px; } summary { color:#b4beb9; cursor:pointer; margin-bottom:5px; overflow-wrap:anywhere; }
+small[role=alert] { color:#e4a0a0; overflow-wrap:anywhere; }
 </style>

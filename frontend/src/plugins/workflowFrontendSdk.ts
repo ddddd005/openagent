@@ -1,6 +1,5 @@
 import { inject, type ComputedRef, type InjectionKey } from "vue";
 import type { GraphDocument, GraphNodeType, GraphSession } from "../domain/workflowGraph";
-import type { FrontendWiringRequest } from "../domain/frontendWiring";
 import type { FrontendArtifact, FrontendArtifactReference, FrontendReadScope } from "../domain/frontendDisplay";
 
 export interface WorkflowNodeConfigurationRequest {
@@ -21,7 +20,6 @@ export interface WorkflowFrontendSdk {
   session: ComputedRef<GraphSession | null>;
   locked: ComputedRef<boolean>;
   lifecycle: ComputedRef<string>;
-  attachDisplay(request: FrontendWiringRequest): boolean;
   readArtifact(scope: FrontendReadScope, reference: FrontendArtifactReference): Promise<FrontendArtifact>;
   configureNode(request: WorkflowNodeConfigurationRequest): Promise<WorkflowNodeConfigurationResult | null>;
 }

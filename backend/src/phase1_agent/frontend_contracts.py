@@ -229,11 +229,20 @@ def validate_frontend_state_write(value, context):
     require(current is not None and not current["deleted"], "frontend_invalid_write",
             "Frontend adoption requires a live object")
     if value == current["value"]:
+        if value["view_ref"] is not None:
+            source = context["resolve_artifact"](value["view_ref"])
+            if (source["component_id"], source["component_version"]) == ("frontend.node", "1"):
+                from .frontend_node_contracts import validate_frontend_node_state_write
+                validate_frontend_node_state_write(value, context, source)
         return
     require(value["view_ref"] is not None, "frontend_unproven_write",
             "Frontend writes require their exact accepted settlement view")
     resolve = context["resolve_artifact"]
     source = resolve(value["view_ref"])
+    if (source["component_id"], source["component_version"]) == ("frontend.node", "1"):
+        from .frontend_node_contracts import validate_frontend_node_state_write
+        validate_frontend_node_state_write(value, context, source)
+        return
     require((source["component_id"], source["component_version"]) == ("frontend.state.append", "1"),
             "frontend_unproven_write", "Only the registered append node may advance frontend state")
     view = validate_frontend_view(source["value"])

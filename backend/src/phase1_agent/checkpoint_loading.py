@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from .checkpoint_collection import checkpoint_context_bindings
+from .checkpoint_collection import (
+    checkpoint_chat_bindings, checkpoint_context_bindings, checkpoint_variable_bindings,
+)
 from .contract_json import canonical_bytes
 from .graph_contracts import NodeRegistry
 from .graph_records import require, uuid_value
@@ -191,20 +193,46 @@ def load_checkpoint_state_in_transaction(
     require(set(agent_contexts) <= target_bindings.keys(),
             "checkpoint_target_context_binding_mismatch",
             "Checkpoint state names an item outside the registered whitelist", 409)
+    variables = state["variables"]
+    variable_bindings = checkpoint_variable_bindings(document, types=types, registry=registry)
+    require(set(variables) == variable_bindings.keys(),
+            "checkpoint_target_variable_binding_mismatch",
+            "Checkpoint variables must match all admitted fixed target items", 409)
+    for key, entry in variables.items():
+        binding = variable_bindings[key]
+        require((entry["type_id"], entry["schema_version"])
+                == (binding.type_id, binding.schema_version),
+                "checkpoint_target_variable_binding_mismatch",
+                "Checkpoint variable has another exact target type", 409, object_key=key)
+    chat_contexts = state["chat_contexts"]
+    chat_bindings = checkpoint_chat_bindings(document, types=types, registry=registry)
+    require(set(chat_contexts) == chat_bindings.keys(),
+            "checkpoint_target_chat_binding_mismatch",
+            "Checkpoint chats must match all admitted fixed target items", 409)
+    for key, entry in chat_contexts.items():
+        binding = chat_bindings[key]
+        require((entry["type_id"], entry["schema_version"])
+                == (binding.type_id, binding.schema_version),
+                "checkpoint_target_chat_binding_mismatch",
+                "Checkpoint chat has another exact target type", 409, object_key=key)
+    values = {
+        key: entry["value"]
+        for section in (agent_contexts, variables, chat_contexts) for key, entry in section.items()
+    }
     require(type(target_current_cas) is dict
-            and set(target_current_cas) == set(agent_contexts)
+            and set(target_current_cas) == set(values)
             and all(type(head) is dict and set(head) == {"revision", "revision_id"}
                     and type(head["revision"]) is int and head["revision"] == 1
                     and uuid_value(head["revision_id"])
                     for head in target_current_cas.values()),
             "checkpoint_target_cas_invalid",
             "Target CAS map must contain the exact initialized checkpoint heads", 409)
-    if not agent_contexts:
+    if not values:
         return {}
 
     objects = SessionObjectStore(repo.store, types)
     return objects._initialize_checkpoint_values(
         owner[1], document,
-        {key: entry["value"] for key, entry in agent_contexts.items()},
+        values,
         target_current_cas,
     )

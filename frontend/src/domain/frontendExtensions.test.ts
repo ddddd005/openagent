@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { graphClone } from "./workflowGraph";
-import { createFrontendImplementationRegistry, isFrontendExtension, resolveFrontendExtensions } from "./frontendExtensions";
+import { createFrontendImplementationRegistry, isFrontendExtension, resolveFrontendExtensions, type FrontendExtension } from "./frontendExtensions";
 import { workflowFrontendExtensions } from "../plugins/workflowFrontendManifest";
 
 const packages = [{ package_id: "workflow.frontend", version: "1.0.0" }];
+const panel: FrontendExtension = { schema_version: 2, host_protocol_version: 1,
+  extension_id: "local.panel", kind: "workbench-panel", entrypoint: "local.panel",
+  component_id: null, component_version: null, package_id: "workflow.frontend", package_version: "1.0.0",
+  binding: { surface: "workbench", slot: "panel", target: {} } };
+const renderer = workflowFrontendExtensions[0], fields = workflowFrontendExtensions[1];
 describe("trusted frontend host protocol", () => {
   it("accepts all four exact full-package declarations", () => {
     expect(workflowFrontendExtensions.every(isFrontendExtension)).toBe(true);
@@ -11,7 +16,7 @@ describe("trusted frontend host protocol", () => {
   });
   it.each(["schema_version", "host_protocol_version", "binding", "component_id"] as const)(
     "rejects incompatible %s without interpreting legacy UI", key => {
-      const row = graphClone(workflowFrontendExtensions[0]) as unknown as Record<string, unknown>;
+      const row = graphClone(panel) as unknown as Record<string, unknown>;
       row[key] = key === "binding" ? { surface: "workbench", slot: "panel", target: { type_id: "guessed" } } : 99;
       expect(isFrontendExtension(row)).toBe(false);
     });
@@ -25,13 +30,13 @@ describe("trusted frontend host protocol", () => {
     expect(resolveFrontendExtensions([row], packages, workflowFrontendExtensions).available).toEqual([]);
   });
   it("rejects every conflicting declaration rather than choosing first or last", () => {
-    const first = graphClone(workflowFrontendExtensions[1]), second = { ...first, extension_id: "other.renderer" };
+    const first = graphClone(renderer), second = { ...first, extension_id: "other.renderer" };
     expect(resolveFrontendExtensions([first, second], packages, workflowFrontendExtensions).available).toEqual([]);
     expect(resolveFrontendExtensions([first, first], packages, workflowFrontendExtensions).available).toEqual([]);
   });
   it("allows independent panel declarations to coexist and reports unavailable local implementations", () => {
-    const first = graphClone(workflowFrontendExtensions[0]), second = { ...first, extension_id: "other.panel" };
-    const result = resolveFrontendExtensions([first, second], packages, workflowFrontendExtensions);
+    const first = graphClone(panel), second = { ...first, extension_id: "other.panel" };
+    const result = resolveFrontendExtensions([first, second], packages, [panel]);
     expect(result.available).toEqual([first]);
     expect(result.issues).toHaveLength(1); expect(result.issues[0]).toContain("可信本地");
     expect(result.issues[0]).not.toContain("冲突");
@@ -50,14 +55,12 @@ describe("trusted frontend host protocol", () => {
     expect(isFrontendExtension({ ...workflowFrontendExtensions[0], entrypoint: "x".repeat(512) })).toBe(true);
   });
   it.each(["component_id", "component_version"] as const)("rejects empty or unbounded node identity %s", key => {
-    const fields = workflowFrontendExtensions[2];
     for (const value of ["", " node", "node ", "x".repeat(129)]) {
       expect(isFrontendExtension({ ...fields, [key]: value,
         binding: { ...fields.binding, target: { ...fields.binding.target, [key]: value } } })).toBe(false);
     }
   });
   it("requires a bounded nonempty object type target", () => {
-    const renderer = workflowFrontendExtensions[1];
     for (const type_id of ["", " object", "x".repeat(129)]) {
       expect(isFrontendExtension({ ...renderer,
         binding: { ...renderer.binding, target: { ...renderer.binding.target, type_id } } })).toBe(false);
@@ -65,13 +68,13 @@ describe("trusted frontend host protocol", () => {
   });
   it("registers only explicit local declarations, freezes them and rejects partial duplicate registration", () => {
     const registry = createFrontendImplementationRegistry<string>();
-    const declaration = graphClone(workflowFrontendExtensions[0]);
+    const declaration = graphClone(panel);
     registry.register(declaration, "panel");
     declaration.extension_id = "mutated";
-    expect(registry.entries()[0].declaration.extension_id).toBe("workflow.frontend.workbench-panel");
+    expect(registry.entries()[0].declaration.extension_id).toBe("local.panel");
     expect(() => registry.registerAll([
-      { declaration: workflowFrontendExtensions[1], implementation: "renderer" },
-      { declaration: workflowFrontendExtensions[0], implementation: "duplicate" },
+      { declaration: renderer, implementation: "renderer" },
+      { declaration: panel, implementation: "duplicate" },
     ])).toThrow("重复登记");
     expect(registry.entries()).toHaveLength(1);
     expect(resolveFrontendExtensions(workflowFrontendExtensions, packages, []).available).toEqual([]);

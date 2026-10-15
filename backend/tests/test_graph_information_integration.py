@@ -16,6 +16,7 @@ from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import InformationSourceDefinition, InformationSourceReference
 
 from test_graph_service import create
+from test_candidate_mutation_retirement import _test_only_consumer_child
 from test_runtime_hosting_integration import COMPONENT, OBJECT_KEY, graph, hosted_package, pause, resume, start
 
 
@@ -103,6 +104,13 @@ def read(app, session, binding, *, reference=None, generation=None, **parameters
     })
 
 
+def public_service_read(service, session, binding):
+    return service.read_information(
+        session["workflow_session_id"], reference=binding["registration_ref"],
+        owner=deepcopy(binding["owner"]), generation=binding["generation"], limit=8,
+        audience="consumer")
+
+
 def assert_error(code, callback):
     with pytest.raises(ContractValidationError) as caught:
         callback()
@@ -127,7 +135,8 @@ def test_application_directory_is_metadata_only_and_ordinary_nodes_need_no_reade
     assert provider.factories == provider.reads == provider.handles == []
     assert service.get_session(initial["workflow_session_id"]) == initial
     consumer = app.for_consumer()
-    public_page = consumer.query("registration.list", {"limit": 1000})
+    assert_error("application_scope_denied", lambda: consumer.query("registration.list", {"limit": 1000}))
+    public_page = service.list_registrations(audience="consumer", limit=1000)
     assert all(item["registration_ref"].get("source_id") != PRIVATE.source_id
                for item in public_page["items"])
     work_node = next(item for item in public_page["items"] if item["kind"] == "node"
@@ -147,7 +156,8 @@ def test_non_agent_live_read_and_discovery_never_advance_work_or_publish_state(i
         route = next(item for item in routes if item["registration_ref"] == PUBLIC.to_dict())
         assert route["availability"] == "live"
         assert provider.reads == []
-        result = read(app.for_consumer(), initial, route)
+        assert_error("application_scope_denied", lambda: read(app.for_consumer(), initial, route))
+        result = public_service_read(service, initial, route)
         assert result["items"] == [{"dispatched": 1}]
         assert result["owner"] == route["owner"]
         result["items"][0]["dispatched"] = 999
@@ -158,9 +168,11 @@ def test_non_agent_live_read_and_discovery_never_advance_work_or_publish_state(i
         assert provider.handles[0].dispatched == 1
         private = next(item for item in routes if item["registration_ref"] == PRIVATE.to_dict())
         discover = next(item for item in routes if item["registration_ref"] == DISCOVER_ONLY.to_dict())
-        assert_error("information_read_denied", lambda: read(app.for_consumer(), initial, private))
-        assert_error("information_read_denied", lambda: read(app.for_consumer(), initial, discover))
-        consumer_routes = bindings(app.for_consumer(), initial, chain=chain_id)
+        assert_error("information_read_denied", lambda: public_service_read(service, initial, private))
+        assert_error("information_read_denied", lambda: public_service_read(service, initial, discover))
+        consumer_routes = service.list_registrations(
+            audience="consumer", session_id=initial["workflow_session_id"], chain_id=chain_id,
+            kind="information_binding", limit=100)["items"]
         assert all(item["registration_ref"] != PRIVATE.to_dict() for item in consumer_routes)
         assert any(item["registration_ref"] == DISCOVER_ONLY.to_dict() for item in consumer_routes)
         assert_error("information_invalid_limit", lambda: read(app, initial, route, limit=9))
@@ -246,11 +258,8 @@ def test_fork_and_reopen_read_original_history_without_latest_run_fallback(infor
     route = next(item for item in bindings(app, first, chain=first_chain)
                  if item["registration_ref"] == PUBLIC.to_dict())
     candidate = service.list_graph_candidates(first["workflow_session_id"])["candidates"][0]
-    child = service.fork_graph_candidate(
-        first["workflow_session_id"], candidate_id=candidate["candidate_id"],
-        expected_revision=first["revision"], expected_data_revision=first["data_revision"],
-        expected_head_revision=first["head_revision"], idempotency_key=str(uuid4()),
-    )
+    child, _ = _test_only_consumer_child(
+        service, service.get_definition(first["workflow_definition_id"]), first, candidate)
     original = read(app, child, route, source_scope="history")
     assert original["owner"]["workflow_session_id"] == first["workflow_session_id"]
     second_chain = start(service, first)

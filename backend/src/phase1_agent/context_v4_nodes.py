@@ -230,7 +230,7 @@ def register_native_context(host):
         {"messages": [], "layout": [], "accepted_delta_ids": [], "generation": 0},
         validator=validate_effective_context,
         references=effective_context_references, reference_mapper=preserve_artifact_references,
-        write_validator=validate_native_context_write))
+        write_validator=validate_native_context_write, checkpoint_admission=True))
     for identity, version, validator, refs in (
         ("CONTEXT_VIEW", 4, validate_native_context_view, native_context_references),
         ("CONTEXT_VIEW", 5, validate_native_context_view_v5, native_context_references_v5),

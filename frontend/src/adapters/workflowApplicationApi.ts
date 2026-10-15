@@ -33,10 +33,14 @@ function graphRequestOperation(path: string, body: Record<string, unknown>, rece
   if (definition && graphUuid(definition[1]))
     return { operation: `definition.${definition[2]}`, parameters: { ...graphClone(body), identity: definition[1] } };
   const session = /^\/api\/graph\/sessions\/([0-9a-fA-F-]+)\/(runs|control|copy|rebind|archive|delete|data|events\/submit|candidates\/select|candidates\/fork)$/.exec(path);
-  if (session && !receiptOnly && ["rebind", "candidates/select", "candidates/fork"].includes(session[2]))
-    throw new WorkbenchApiError("rejected", session[2] === "rebind"
-      ? "会话修订重绑入口已退役；请新建会话"
-      : "候选历史恢复与分叉入口已退役；未提交新请求");
+  if (session && !receiptOnly && ["copy", "rebind", "candidates/select", "candidates/fork"].includes(session[2])) {
+    const messages: Record<string, string> = {
+      copy: "跨工作流会话数据复制入口已退役；新工作流不继承运行数据",
+      rebind: "会话修订重绑入口已退役；请新建会话",
+    };
+    throw new WorkbenchApiError("rejected",
+      messages[session[2]] ?? "候选历史恢复与分叉入口已退役；未提交新请求");
+  }
   const operations: Record<string, string> = {
     runs: "run.start", control: "run.control", copy: "session.copy", rebind: "session.rebind",
     data: "session.data.update", "candidates/select": "candidate.select", "candidates/fork": "candidate.fork",

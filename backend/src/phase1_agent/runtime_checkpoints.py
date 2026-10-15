@@ -5,9 +5,14 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Callable
 
+from .chat_contracts import (
+    CHAT_CONTEXT_TYPE, CHAT_CONTEXT_SCHEMA_VERSION,
+    remap_chat_context_checkpoints, validate_chat_context,
+)
 from .context_contract import validate_agent_checkpoint_value
 from .contract_errors import require, uuid_value
 from .contract_json import canonical_bytes, validate_json_value
+from .variable_contract import VARIABLE_TYPE, VARIABLE_SCHEMA_VERSION, validate_variable
 
 
 _CHECKPOINT_FIELDS = {
@@ -15,6 +20,8 @@ _CHECKPOINT_FIELDS = {
     "fixed_definition_revision", "parent_checkpoint_id", "state_storage",
 }
 _MAX_INTEGER = 2**53 - 1
+CHECKPOINT_SCHEMA_VERSION = 4
+_ITEM_SECTIONS = ("agent_contexts", "variables", "chat_contexts")
 
 
 def _fields(value: Any, required: set[str], *, optional: set[str] | None = None) -> None:
@@ -57,28 +64,71 @@ def _validate_agent_contexts(agent_contexts: Any) -> dict:
     return agent_contexts
 
 
+def _validate_variables(variables: Any) -> dict:
+    require(type(variables) is dict, "runtime_checkpoint_invalid",
+            "Checkpoint variables must be a mapping")
+    for object_key, entry in variables.items():
+        require(_name(object_key), "runtime_checkpoint_invalid", "Variable object key is invalid")
+        _fields(entry, {"type_id", "schema_version", "value"})
+        require(entry["type_id"] == VARIABLE_TYPE
+                and type(entry["schema_version"]) is int
+                and entry["schema_version"] == VARIABLE_SCHEMA_VERSION,
+                "runtime_checkpoint_invalid", "Checkpoint variable exact type is invalid")
+        validate_variable(entry["value"])
+    return variables
+
+
+def _validate_chat_contexts(contexts: Any) -> dict:
+    require(type(contexts) is dict, "runtime_checkpoint_invalid",
+            "Checkpoint chat contexts must be a mapping")
+    for object_key, entry in contexts.items():
+        require(_name(object_key), "runtime_checkpoint_invalid", "Chat object key is invalid")
+        _fields(entry, {"type_id", "schema_version", "value"})
+        require(entry["type_id"] == CHAT_CONTEXT_TYPE
+                and type(entry["schema_version"]) is int
+                and entry["schema_version"] == CHAT_CONTEXT_SCHEMA_VERSION,
+                "runtime_checkpoint_invalid", "Checkpoint chat exact type is invalid")
+        validate_chat_context(entry["value"])
+    return contexts
+
+
+def _require_unique_item_keys(partitions: dict) -> None:
+    seen = set()
+    for section in _ITEM_SECTIONS:
+        require(not seen & partitions[section].keys(),
+                "runtime_checkpoint_invalid", "Checkpoint item keys must have one exact type")
+        seen.update(partitions[section])
+
+
 def validate_checkpoint_state(state: Any) -> dict:
-    """Return the exact detached schema-2 logical state."""
+    """Return the exact detached schema-4 logical state."""
     validate_json_value(state)
-    _fields(state, {"configuration", "agent_contexts"})
-    configuration = _validate_configuration(state["configuration"])
+    _fields(state, {"configuration", *_ITEM_SECTIONS})
+    _validate_configuration(state["configuration"])
     _validate_agent_contexts(state["agent_contexts"])
+    _validate_variables(state["variables"])
+    _validate_chat_contexts(state["chat_contexts"])
+    _require_unique_item_keys(state)
     return deepcopy(state)
 
 
 def _validate_changes(changes: Any) -> dict:
     _fields(changes, {"upsert", "delete"})
-    _fields(changes["upsert"], {"agent_contexts"}, optional={"configuration"})
-    _fields(changes["delete"], {"agent_contexts"})
+    _fields(changes["upsert"], set(_ITEM_SECTIONS), optional={"configuration"})
+    _fields(changes["delete"], set(_ITEM_SECTIONS))
     upsert, deleted = changes["upsert"], changes["delete"]
     if "configuration" in upsert:
         _validate_configuration(upsert["configuration"])
     _validate_agent_contexts(upsert["agent_contexts"])
-    keys = deleted["agent_contexts"]
-    require(type(keys) is list and all(_name(key) for key in keys)
-            and keys == sorted(set(keys))
-            and not set(keys) & upsert["agent_contexts"].keys(),
-            "runtime_checkpoint_invalid", "Agent context deletes are invalid")
+    _validate_variables(upsert["variables"])
+    _validate_chat_contexts(upsert["chat_contexts"])
+    _require_unique_item_keys(upsert)
+    for section in _ITEM_SECTIONS:
+        keys = deleted[section]
+        require(type(keys) is list and all(_name(key) for key in keys)
+                and keys == sorted(set(keys))
+                and not set(keys) & upsert[section].keys(),
+                "runtime_checkpoint_invalid", "Checkpoint item deletes are invalid")
     return changes
 
 
@@ -108,7 +158,8 @@ def validate_checkpoint(checkpoint: Any) -> dict:
     """Validate one immutable record without requiring execution or message identities."""
     validate_json_value(checkpoint)
     _fields(checkpoint, _CHECKPOINT_FIELDS)
-    require(type(checkpoint["schema_version"]) is int and checkpoint["schema_version"] == 2
+    require(type(checkpoint["schema_version"]) is int
+            and checkpoint["schema_version"] == CHECKPOINT_SCHEMA_VERSION
             and all(uuid_value(checkpoint[field]) for field in (
                 "checkpoint_id", "workflow_definition_id", "workflow_session_id"))
             and _revision(checkpoint["fixed_definition_revision"]),
@@ -130,24 +181,25 @@ def validate_checkpoint(checkpoint: Any) -> dict:
 
 
 def make_diff(parent_state: Any, state: Any) -> dict:
-    """Return canonical configuration replacement and Agent-context key changes."""
+    """Return canonical configuration replacement and independent item changes."""
     parent = validate_checkpoint_state(parent_state)
     current = validate_checkpoint_state(state)
     upsert = {
-        "agent_contexts": {
-            key: deepcopy(current["agent_contexts"][key])
-            for key in sorted(current["agent_contexts"])
-            if key not in parent["agent_contexts"]
-            or canonical_bytes(parent["agent_contexts"][key])
-            != canonical_bytes(current["agent_contexts"][key])
-        },
+        section: {
+            key: deepcopy(current[section][key])
+            for key in sorted(current[section])
+            if key not in parent[section]
+            or canonical_bytes(parent[section][key]) != canonical_bytes(current[section][key])
+        }
+        for section in _ITEM_SECTIONS
     }
     if canonical_bytes(parent["configuration"]) != canonical_bytes(current["configuration"]):
         upsert["configuration"] = deepcopy(current["configuration"])
     return {
         "upsert": upsert,
         "delete": {
-            "agent_contexts": sorted(parent["agent_contexts"].keys() - current["agent_contexts"].keys()),
+            section: sorted(parent[section].keys() - current[section].keys())
+            for section in _ITEM_SECTIONS
         },
     }
 
@@ -186,11 +238,31 @@ def materialize(checkpoint_id: str, load_checkpoint: Callable[[str], Any]) -> di
                 "Diff baseline is outside its parent chain")
         if "configuration" in storage["upsert"]:
             state["configuration"] = deepcopy(storage["upsert"]["configuration"])
-        contexts = state["agent_contexts"]
-        for object_key in storage["delete"]["agent_contexts"]:
-            require(object_key in contexts, "runtime_checkpoint_lineage_invalid",
-                    "Diff deletes an Agent context absent from its parent state")
-            del contexts[object_key]
-        contexts.update(deepcopy(storage["upsert"]["agent_contexts"]))
+        for section in _ITEM_SECTIONS:
+            entries = state[section]
+            for object_key in storage["delete"][section]:
+                require(object_key in entries, "runtime_checkpoint_lineage_invalid",
+                        "Diff deletes a checkpoint item absent from its parent state")
+                del entries[object_key]
+            entries.update(deepcopy(storage["upsert"][section]))
         state = validate_checkpoint_state(state)
     return state
+
+
+def remap_checkpoint_state_chat(state, checkpoint_id_map) -> dict:
+    """Construct a target copy with only typed chat checkpoint associations remapped."""
+    result = validate_checkpoint_state(state)
+    for entry in result["chat_contexts"].values():
+        entry["value"] = remap_chat_context_checkpoints(entry["value"], checkpoint_id_map)
+    return validate_checkpoint_state(result)
+
+
+def remap_checkpoint_storage_chat(storage, checkpoint_id_map) -> dict:
+    """Remap full or diff chat values without interpreting message text as references."""
+    result = validate_state_storage(storage)
+    if result["mode"] == "full":
+        result["state"] = remap_checkpoint_state_chat(result["state"], checkpoint_id_map)
+    else:
+        for entry in result["upsert"]["chat_contexts"].values():
+            entry["value"] = remap_chat_context_checkpoints(entry["value"], checkpoint_id_map)
+    return validate_state_storage(result)

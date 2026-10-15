@@ -45,12 +45,14 @@ def state(owner):
             "nodes": {},
         },
         "agent_contexts": {},
+        "variables": {},
+        "chat_contexts": {},
     }
 
 
 def root(owner):
     return {
-        "schema_version": 2,
+        "schema_version": 4,
         "checkpoint_id": identity(),
         **owner,
         "parent_checkpoint_id": None,
@@ -66,7 +68,7 @@ def child(repository, parent, value):
     }
     baseline = repository.prefix(parent["checkpoint_id"])[0]
     return {
-        "schema_version": 2,
+        "schema_version": 4,
         "checkpoint_id": identity(),
         **repository.owner,
         "parent_checkpoint_id": parent["checkpoint_id"],
@@ -87,7 +89,7 @@ def connection(tmp_path):
     table_sql = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='workflow_checkpoints'",
     ).fetchone()["sql"]
-    assert "CHECK(schema_version=2)" in table_sql
+    assert "CHECK(schema_version=4)" in table_sql
     try:
         yield connection
     finally:

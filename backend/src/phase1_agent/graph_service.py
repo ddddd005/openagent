@@ -24,6 +24,7 @@ from .graph_public import GraphPublic
 from .graph_candidates import GraphCandidateHost
 from .graph_platform import GraphPlatform
 from .graph_runtime_host import GraphRuntimeHost
+from .frontend_node_snapshots import GraphFrontendNodes
 from .graph_resource_host import GraphResourceHost
 from .graph_information import GraphInformation
 from .graph_events import GraphEvents
@@ -33,6 +34,7 @@ from .graph_provider_host import ProviderConfigurationService
 from .content_configuration import ContentConfigurationService
 from .workflow_lifecycle import WorkflowLifecycle
 from .workflow_configuration import WorkflowConfiguration
+from .workflow_chat_service import WorkflowChatService
 
 
 def _uid() -> str:
@@ -73,7 +75,7 @@ class _GraphLease:
         self.file.close()
 
 
-class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditingHost, GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost, GraphResourceHost, GraphPlatform, GraphPublic, GraphCandidateHost):
+class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowLifecycle, GraphEditingHost, GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost, GraphFrontendNodes, GraphResourceHost, GraphPlatform, GraphPublic, GraphCandidateHost):
     def __init__(self, database_path: str | Path, *, registry=None, fault_injector=None,
                  capability_packages=(), enabled_packages=None, trusted_package_entrypoints=(),
                  public_model_factory=None, credential_protector=None, provider_discovery_client_factory=None):
@@ -175,6 +177,8 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
         self._failed_retry_candidates = {}
         self._service_runs = {}
         self._service_options = {}
+        self._frontend_node_snapshots = {}
+        self._frontend_node_connections = None
         self._execution_errors = {}
         self._closed = False
         if execution_owner:
@@ -376,36 +380,22 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
         self._save_manifest(repo, "state_snapshot", snapshot["state_snapshot_id"], session,
                             history=snapshot["history_refs"])
 
-    def _initialize_session(self, repo, document, *, state=None, private=None, source=None, history=None,
-                            objects=None):
+    def _initialize_session(self, repo, document):
         self._require_definition_active(repo, document["workflow_definition_id"])
         require(not self._package_diagnostics, "package_missing_dependency",
                 "Restore the saved packages before initializing session data", 409)
         sid = _uid()
         session = graph_record("workflow_session", workflow_session_id=sid,
             workflow_definition_id=document["workflow_definition_id"], definition_revision=document["revision"],
-            revision=1, source=source or {"kind": "new"}, active_chain_run_id=None)
+            revision=1, source={"kind": "new"}, active_chain_run_id=None)
         repo.put("workflow_session", session)
-        if state is not None and (state["values"] or state.get("data")):
-            ProgramVariableStore(repo.store).write_in_transaction(sid, state, expected_revision=0,
-                key="graph-seed:" + sid, request={"kind": "graph-session-seed", "session_id": sid, "source": source})
-        self._save_private(repo, sid, document, private if private is not None else self._defaults(document))
-        mapping = {"workflow_session_id": {source["workflow_session_id"]: sid}
-                   if source and source.get("workflow_session_id") else {},
-                   "node_binding_id": {item["source_node_id"]: item["target_node_id"]
-                                       for item in (source or {}).get("state_mappings", [])
-                                       if item.get("action") == "copy" and "source_node_id" in item}}
-        self._objects(repo).initialize(sid, document, inherited=objects, mapping=mapping,
-                                      history=history or [],
-                                      source_session_id=(source or {}).get("object_source_session_id",
-                                                                          (source or {}).get("workflow_session_id")))
+        self._save_private(repo, sid, document, self._defaults(document))
+        self._objects(repo).initialize(sid, document)
         return session
 
-    def _new_session(self, repo, document, *, state=None, private=None, source=None, history=None,
-                     objects=None):
-        session = self._initialize_session(
-            repo, document, state=state, private=private, source=source, history=history, objects=objects)
-        self._commit(repo, session, source={"kind": "session_seed", "source": source}, history=history or [])
+    def _new_session(self, repo, document):
+        session = self._initialize_session(repo, document)
+        self._commit(repo, session, source={"kind": "session_seed", "source": None}, history=[])
         return self._view(repo, session["workflow_session_id"])
 
     def create_session(self, workflow_definition_id, definition_revision, *, idempotency_key):
@@ -431,89 +421,11 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
         }
 
         def change(repo):
-            from .checkpoint_loading import validate_checkpoint_configuration_target
-            from .checkpoint_repository import CheckpointRepository
-
             _revision(expected_data_revision, zero=True)
             _revision(expected_head_revision)
             source = self._stable(
                 repo, sid, expected_session_revision, expected_data_revision, expected_head_revision)
-            workflow_id = source["workflow_definition_id"]
-            fixed_revision = source["definition_revision"]
-            document = self._document(repo, workflow_id, fixed_revision)
-            source_checkpoints = CheckpointRepository(
-                repo.store._connection,
-                workflow_definition_id=workflow_id,
-                workflow_session_id=sid,
-                fixed_definition_revision=fixed_revision,
-            )
-            prefix = source_checkpoints.prefix(checkpoint_id)
-            require(bool(prefix) and prefix[-1]["checkpoint_id"] == checkpoint_id,
-                    "runtime_checkpoint_lineage_invalid",
-                    "Selected checkpoint is not the end of its materialized prefix", 409)
-            logical_state = source_checkpoints.materialize(checkpoint_id)
-            validate_checkpoint_configuration_target(
-                logical_state["configuration"], document, registry=self.registry)
-
-            target_session = self._initialize_session(repo, document)
-            target_session_id = target_session["workflow_session_id"]
-            target_checkpoint_ids = {point["checkpoint_id"]: _uid() for point in prefix}
-            target_checkpoints = CheckpointRepository(
-                repo.store._connection,
-                workflow_definition_id=workflow_id,
-                workflow_session_id=target_session_id,
-                fixed_definition_revision=fixed_revision,
-            )
-            for point in prefix:
-                storage = deepcopy(point["state_storage"])
-                parent_id = point["parent_checkpoint_id"]
-                if parent_id is not None:
-                    require(parent_id in target_checkpoint_ids,
-                            "runtime_checkpoint_lineage_invalid",
-                            "Selected checkpoint prefix omits a parent", 409)
-                    parent_id = target_checkpoint_ids[parent_id]
-                    require(storage["mode"] == "diff"
-                            and storage["base_checkpoint_id"] in target_checkpoint_ids,
-                            "runtime_checkpoint_lineage_invalid",
-                            "Selected checkpoint diff baseline is outside its prefix", 409)
-                    storage["base_checkpoint_id"] = target_checkpoint_ids[storage["base_checkpoint_id"]]
-                target_checkpoints.insert({
-                    "schema_version": point["schema_version"],
-                    "checkpoint_id": target_checkpoint_ids[point["checkpoint_id"]],
-                    "workflow_definition_id": workflow_id,
-                    "workflow_session_id": target_session_id,
-                    "fixed_definition_revision": fixed_revision,
-                    "parent_checkpoint_id": parent_id,
-                    "state_storage": storage,
-                })
-
-            target_objects = self._objects(repo).current(target_session_id)
-            target_current_cas = {}
-            for object_key in logical_state["agent_contexts"]:
-                target_object = target_objects.get(object_key)
-                require(target_object is not None,
-                        "checkpoint_context_binding_mismatch",
-                        "Selected checkpoint item has no initialized target object", 409,
-                        object_key=object_key)
-                target_current_cas[object_key] = {
-                    "revision": target_object["revision"],
-                    "revision_id": target_object["revision_id"],
-                }
-            from .checkpoint_loading import load_checkpoint_state_in_transaction
-            load_checkpoint_state_in_transaction(
-                repo, target_session, logical_state, target_current_cas,
-                types=self.registry.data_types, registry=self.registry,
-            )
-
-            self._commit(
-                repo, target_session, source={"kind": "session_seed", "source": None}, history=[])
-            target_ref = self._head(repo, target_session_id)
-            return {
-                "target_session_id": target_session_id,
-                "target_checkpoint_id": target_checkpoint_ids[checkpoint_id],
-                "target_commit_id": target_ref["head_commit_id"],
-                "target_workflow_ref_id": target_ref["workflow_ref_id"],
-            }
+            return self._fork_checkpoint_state(repo, source, checkpoint_id)
 
         return self._change("graph.checkpoint.fork", idempotency_key, request, change)
 
@@ -673,85 +585,6 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
             require(self._head(repo, sid)["revision"] == _revision(expected_head_revision), "stale_head_revision", "Session Head changed", 409)
         return session
 
-    def _map_state(self, repo, source, target, mappings, *, private=None):
-        require(type(mappings) is list, "invalid_request", "State mappings must be an array")
-        source_doc = self._document(repo, source["workflow_definition_id"], source["definition_revision"])
-        old_nodes = {node["node_binding_id"]: node for node in source_doc["nodes"]}
-        explicit = {}
-        for mapping in mappings:
-            require(type(mapping) is dict and set(mapping) <= {"source_node_id", "target_node_id", "action"}
-                    and {"target_node_id", "action"} <= set(mapping)
-                    and mapping["action"] in ("copy", "reset"), "invalid_state_mapping", "Invalid state mapping", 409)
-            require(mapping["target_node_id"] not in explicit, "invalid_state_mapping", "Repeated target mapping", 409)
-            explicit[mapping["target_node_id"]] = mapping
-        old_private = self._private(repo, source["workflow_session_id"]) if private is None else deepcopy(private)
-        result = {}
-        target_ids = {node["node_binding_id"] for node in target["nodes"]}
-        require(set(explicit) <= target_ids, "invalid_state_mapping", "Mapping target is absent", 409)
-        for node in target["nodes"]:
-            node_id = node["node_binding_id"]
-            mapping = explicit.get(node_id, {"source_node_id": node_id, "target_node_id": node_id, "action": "copy"})
-            old_id = mapping.get("source_node_id", node_id)
-            previous = old_nodes.get(old_id)
-            require(node_id not in explicit or mapping["action"] == "reset" or "source_node_id" not in mapping or previous is not None,
-                    "invalid_state_mapping", "Mapping source is absent", 409, node_id=node_id)
-            definition = self._definition(node)
-            old_definition = self._definition(previous) if previous else None
-            if mapping["action"] == "reset" or previous is None:
-                if definition is not None and definition.private_state_schema is not None:
-                    result[node_id] = deepcopy(definition.private_state_default)
-                continue
-            compatible_type = (node["component_id"], node["component_version"]) == (
-                previous["component_id"], previous["component_version"])
-            if old_id not in old_private:
-                require(compatible_type or old_definition is not None and old_definition.private_state_schema is None
-                        and (definition is None or definition.private_state_schema is None),
-                        "state_migration_required", "Type replacement needs explicit mapping", 409, node_id=node_id)
-                continue
-            value = old_private[old_id]
-            require(definition is not None and old_definition is not None,
-                    "state_migration_required", "Private state owner implementation is unavailable", 409, node_id=node_id)
-            try:
-                result[node_id] = self.registry.migrate_private_state(value, old_definition, definition)
-            except Exception as exc:
-                raise graph_error("state_migration_required", "Private state requires a declared migration or explicit reset", 409,
-                                  node_id=node_id) from exc
-        return result
-
-    def _copied_data(self, repo, source, *, state=None):
-        """Copy the current shared state independently of retired node declarations."""
-        state = ProgramVariableStore(repo.store).current(source["workflow_session_id"]) if state is None else deepcopy(state)
-        return validate_program_state(state)
-
-    def copy_session(self, sid, *, document, expected_session_revision, expected_data_revision,
-                     expected_definition_revision, expected_head_revision, idempotency_key, mappings=None):
-        request = {"source": sid, "document": document, "expected_session_revision": expected_session_revision,
-                   "expected_data_revision": expected_data_revision, "expected_definition_revision": expected_definition_revision,
-                   "expected_head_revision": expected_head_revision, "mappings": mappings if mappings is not None else []}
-        def change(repo):
-            from .graph_contracts import validate_graph_document
-            target_document = validate_graph_document(document)
-            require(target_document["schema_version"] in (1, 2)
-                    and repo.current_configuration(target_document["workflow_definition_id"]) is None,
-                    "graph_configuration_update_required", "Schema 3 configuration cannot use legacy session copying", 409)
-            source = self._stable(repo, sid, expected_session_revision, expected_data_revision, expected_head_revision)
-            require(repo.current_configuration(source["workflow_definition_id"]) is None,
-                    "graph_configuration_update_required", "Schema 3 configuration cannot use legacy session copying", 409)
-            require(source["definition_revision"] == _revision(expected_definition_revision), "stale_definition_revision", "Source definition changed", 409)
-            require(target_document["workflow_definition_id"] != source["workflow_definition_id"], "invalid_request", "Copy needs a new workflow identity")
-            target = self._save_definition(repo, target_document, 0)
-            private = self._map_state(repo, source, target, request["mappings"])
-            state = self._copied_data(repo, source)
-            return self._new_session(repo, target, state=state, private=private,
-                objects=self._objects(repo).current(sid),
-                source={"kind": "copy_current", "workflow_session_id": sid,
-                        "workflow_definition_id": source["workflow_definition_id"],
-                        "definition_revision": source["definition_revision"],
-                        "head_commit_id": self._head(repo, sid)["head_commit_id"], "data_revision": state["revision"],
-                        "state_mappings": request["mappings"]},
-                history=self._history(repo, sid))
-        return self._change("graph.session.copy", idempotency_key, request, change)
-
     def update_data(self, sid, *, expected_revision, expected_data_revision, idempotency_key,
                     variables=None, shared=None):
         request = {"session": sid, "expected_revision": expected_revision, "expected_data_revision": expected_data_revision,
@@ -791,7 +624,8 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
         return self._start_run(sid, idempotency_key, request,
                                lambda repo: self._prepare_run(repo, sid, expected_revision, request["inputs"]))
 
-    def _prepare_run(self, repo, sid, expected_revision, inputs, *, event=None):
+    def _prepare_run(self, repo, sid, expected_revision, inputs, *, event=None,
+                     input_overrides=None, chat_request=None):
         session = self._stable(repo, sid, expected_revision)
         require(not self._package_diagnostics, "package_missing_dependency",
                 "Restore the saved packages before running workflows", 409)
@@ -800,9 +634,11 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
         if (current_configuration is not None
                 and current_configuration["fixed_definition_revision"] == session["definition_revision"]):
             document = self._configuration_document(repo, session["workflow_definition_id"])
+        self._chat_input_overrides(document, {} if input_overrides is None else input_overrides)
         input_error = "graph_event_payload_invalid" if event else "invalid_request"
         require(type(inputs) is dict, input_error, "External inputs must be named")
-        require("_workflow_frozen_resources" not in inputs, input_error, "Reserved resource inputs cannot be supplied")
+        require(not {"_workflow_frozen_resources", "_workflow_chat"} & set(inputs),
+                input_error, "Reserved runtime inputs cannot be supplied")
         if not event:
             validate_json_value(inputs)
         from .graph_contracts import GraphCompiler
@@ -823,6 +659,9 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
         self._prepare_public_capabilities(sid, chain_id, plan, runtime_resources)
         self._execution_registries[chain_id] = run_registry
         nodes = {node["node_binding_id"]: node for node in document["nodes"]}
+        if not event:
+            self._prepare_chat_run(
+                repo, session, document, plan, chain_id, inputs, chat_request=chat_request)
         run_ids = [_uid() for _ in plan.ordered_node_ids]
         for node_id, run_id in zip(plan.ordered_node_ids, run_ids):
             repo.put("node_run", graph_record("node_run", profile="node", run_id=run_id,
@@ -894,7 +733,8 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
             event["state"] = current
         self._save_private(repo, sid, document, event["private_states"])
         return self._objects(repo).apply(sid, node_id=event["node_binding_id"],
-                                        writes=event.get("object_writes", []))
+                                        writes=event.get("object_writes", []),
+                                        write_evidence=event.get("write_evidence"))
 
     def _settle_node_result(self, repo, sid, chain_id, document, event, run):
         """Stage exact artifacts, writes and receipt-derived outputs in one transaction."""
@@ -912,11 +752,13 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
         finalize = None
         if entry.settlement_builder is not None:
             prepared = entry.settlement_builder(event["settlement_context"], deepcopy(outputs), deepcopy(refs))
-            require(type(prepared) is dict and set(prepared) == {"outputs", "object_writes", "finalize"}
+            require(type(prepared) is dict and {"outputs", "object_writes", "finalize"} <= set(prepared)
+                    <= {"outputs", "object_writes", "finalize", "write_evidence"}
                     and (prepared["finalize"] is None or callable(prepared["finalize"])),
                     "graph_invalid_settlement", "Settlement builder returned an invalid result")
             outputs, finalize = prepared["outputs"], prepared["finalize"]
             event["object_writes"] = prepared["object_writes"]
+            event["write_evidence"] = prepared.get("write_evidence")
             run["reads"] = deepcopy(event["settlement_context"].reads)
         require(type(outputs) is dict and set(outputs) <= set(ports),
                 "graph_invalid_output", "Settlement contains unknown output ports")
@@ -1038,6 +880,7 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
             event["settlement_committed"] = True
             self._acceptance_candidates.get(chain_id, {}).pop(event["node_run_id"], None)
         try:
+            self._accept_frontend_node_output(sid, chain_id, event)
             self._accept_public_outputs(sid, chain_id, event)
         except Exception:
             raise graph_error("result_committed_notification_failed",
@@ -1088,10 +931,10 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
                     "state": ProgramVariableStore(repo.store).current(sid),
                     "private": self._private(repo, sid), "objects": self._objects(repo).current(sid)})
 
-    def _append_success_checkpoint(self, repo, session, registry):
+    def _append_success_checkpoint(self, repo, session, registry, *, checkpoint_id=None):
         from .checkpoint_collection import collect_checkpoint_state
         from .checkpoint_repository import CheckpointRepository
-        from .runtime_checkpoints import make_diff
+        from .runtime_checkpoints import CHECKPOINT_SCHEMA_VERSION, make_diff
 
         workflow_id = session["workflow_definition_id"]
         session_id = session["workflow_session_id"]
@@ -1120,8 +963,8 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
                 **make_diff(parent_state, state),
             }
         checkpoints.insert({
-            "schema_version": 2,
-            "checkpoint_id": _uid(),
+            "schema_version": CHECKPOINT_SCHEMA_VERSION,
+            "checkpoint_id": checkpoint_id or _uid(),
             "workflow_definition_id": workflow_id,
             "workflow_session_id": session_id,
             "fixed_definition_revision": definition_revision,
@@ -1149,6 +992,7 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
             with self._lock:
                 self._resuming.discard(chain_id)
             with self._lock, closing(self._store()) as store:
+                store._connection.execute("BEGIN")
                 repo = GraphRecordStore(store)
                 document = self._document(repo, chain["workflow_definition_id"], chain["definition_revision"])
                 planned_runs = dict(zip(chain["ordered_nodes"], chain["node_run_ids"]))
@@ -1165,6 +1009,7 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
                 completed_events = [{"event": "succeeded", "node_binding_id": node_id,
                                      "node_run_id": planned_runs[node_id]}
                                     for node_id in chain["completed_nodes"]]
+                chat_contexts = self._chat_execution_contexts(repo, sid, chain_id, document)
             registry = self._execution_registries.get(chain_id, self.registry)
             run_ids = dict(zip(chain["ordered_nodes"], chain["node_run_ids"]))
             retained = self._acceptance_candidates.setdefault(chain_id, {}).get("completed_execution")
@@ -1189,7 +1034,8 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
                     validate_output_references=self._validate_runtime_references,
                     runtime_host=self._host_for_chain(chain_id, registry),
                     acceptance_cache=self._acceptance_candidates[chain_id],
-                    result_recovery=self._retained_result_recovery)
+                    result_recovery=self._retained_result_recovery,
+                    chat_append_contexts=chat_contexts)
                 if result.status == "succeeded":
                     with self._lock, closing(self._store()) as store:
                         repo = GraphRecordStore(store)
@@ -1225,14 +1071,19 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
                     session["active_chain_run_id"] = None
                 repo.put("workflow_session", session)
                 if result.status == "succeeded" and current.get("execution_kind", "round") == "round":
+                    checkpoint_id = _uid()
+                    self._bind_chat_success(repo, session, chain_id, checkpoint_id)
                     self._commit(repo, session, source={"kind": "completed_execution", "chain_run_id": chain_id})
-                    self._append_success_checkpoint(repo, session, registry)
+                    self._append_success_checkpoint(repo, session, registry, checkpoint_id=checkpoint_id)
                 self._save_manifest(repo, "chain_end", chain_id, session,
                                     status=result.status)
                 return {"status": result.status}
             self._change("graph.run.finish", retained["finish_key"] if retained is not None
                          else chain_id + ":finish:" + str(chain["revision"]),
                          {"chain": chain_id, "result": result.status}, finish)
+            if result.status == "succeeded":
+                self._refresh_chat_snapshots(sid)
+            self._frontend_node_state_changed(sid)
             if result.status == "succeeded" or result.status == "failed" and chain_id not in self._failed_retry_candidates:
                 with self._lock:
                     self._release_public_capabilities(sid, chain_id)
@@ -1290,6 +1141,7 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
                     failed_revision = GraphRecordStore(store).get("chain_run", chain_run_id=chain_id)["revision"]
                 recovery = self._change("graph.run.unconfirmed", chain_id + ":unknown:" + str(failed_revision),
                                         {"chain": chain_id, "revision": failed_revision}, fail)
+                self._frontend_node_state_changed(sid)
                 archive_retry = bool(recovery and recovery["archive_retry"])
             except BaseException:
                 pass
@@ -1421,6 +1273,7 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
                 self._execution_registries.pop(controlled_chain_id, None)
                 self._acceptance_candidates.pop(controlled_chain_id, None)
                 self._failed_retry_candidates.pop(controlled_chain_id, None)
+        self._frontend_node_state_changed(sid)
         if action == "pause" and chain_id is not None:
             self._control_hosted_invocation(chain_id, action, idempotency_key)
         if schedule_resume:
@@ -1453,6 +1306,9 @@ class GraphWorkflowService(WorkflowConfiguration, WorkflowLifecycle, GraphEditin
             self._acceptance_candidates.clear()
             self._failed_retry_candidates.clear()
             self._service_runs.clear()
+            self._frontend_node_snapshots.clear()
+            if self._frontend_node_connections is not None:
+                self._frontend_node_connections.close()
             if self._lease is not None:
                 self._lease.close()
 

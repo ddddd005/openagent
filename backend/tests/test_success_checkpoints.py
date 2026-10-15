@@ -114,6 +114,8 @@ def test_schema_two_without_agent_saves_empty_and_declared_configuration(tmp_pat
                 "nodes": {},
             },
             "agent_contexts": {},
+            "variables": {},
+            "chat_contexts": {},
         }
 
         service.registry.register(NodeDefinition(

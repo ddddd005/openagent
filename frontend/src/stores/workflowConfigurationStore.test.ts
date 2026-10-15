@@ -47,6 +47,8 @@ const promptType: GraphNodeType = {
   default_config: { id: crypto.randomUUID(), text: "before" },
   config_schema: { type: "object", properties: { id: { type: "string" }, text: { type: "string" } } },
   inputs: [], outputs: [], executable: true, is_output: false,
+  adjustable_configuration: { schema_version: 1, policy: "prompt",
+    fields: ["text", "presentation", "metadata", "lifecycle", "compaction"] },
 };
 function configurationResult(request: GraphConfigurationUpdateRequest, options: {
   outcome: GraphConfigurationResult["outcome"];

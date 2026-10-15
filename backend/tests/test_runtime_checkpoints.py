@@ -45,13 +45,15 @@ def state():
             },
         },
         "agent_contexts": {OBJECT: agent_entry()},
+        "variables": {},
+        "chat_contexts": {},
     }
 
 
 def root(value=None, owner=None):
     owner = OWNER if owner is None else owner
     return {
-        "schema_version": 2,
+        "schema_version": 4,
         "checkpoint_id": identity(),
         **owner,
         "parent_checkpoint_id": None,
@@ -62,7 +64,7 @@ def root(value=None, owner=None):
 def child(root_point, parent, before, after, owner=None):
     owner = OWNER if owner is None else owner
     return {
-        "schema_version": 2,
+        "schema_version": 4,
         "checkpoint_id": identity(),
         **owner,
         "parent_checkpoint_id": parent["checkpoint_id"],
@@ -87,6 +89,8 @@ def test_checkpoint_state_accepts_empty_branches_and_returns_a_detached_value():
             "nodes": {},
         },
         "agent_contexts": {},
+        "variables": {},
+        "chat_contexts": {},
     }
     checked = validate_checkpoint_state(original)
     assert checked == original and checked is not original
@@ -96,9 +100,10 @@ def test_checkpoint_state_accepts_empty_branches_and_returns_a_detached_value():
     assert original["configuration"]["nodes"] == {}
 
 
-def test_checkpoint_record_requires_schema_two():
+@pytest.mark.parametrize("obsolete_schema", [1, 2, 3])
+def test_checkpoint_record_requires_schema_four(obsolete_schema):
     value = root()
-    value["schema_version"] = 1
+    value["schema_version"] = obsolete_schema
     with pytest.raises(ContractValidationError):
         validate_checkpoint(value)
 
@@ -166,14 +171,16 @@ def test_diff_is_empty_for_equivalent_mapping_order():
     before = state()
     reordered = {
         "agent_contexts": dict(reversed(list(before["agent_contexts"].items()))),
+        "variables": {},
+        "chat_contexts": {},
         "configuration": {
             **before["configuration"],
             "nodes": dict(reversed(list(before["configuration"]["nodes"].items()))),
         },
     }
     assert make_diff(before, reordered) == {
-        "upsert": {"agent_contexts": {}},
-        "delete": {"agent_contexts": []},
+        "upsert": {"agent_contexts": {}, "variables": {}, "chat_contexts": {}},
+        "delete": {"agent_contexts": [], "variables": [], "chat_contexts": []},
     }
 
 

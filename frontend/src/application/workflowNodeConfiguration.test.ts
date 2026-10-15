@@ -5,7 +5,7 @@ import type { WorkflowNodeConfigurationRequest } from "../plugins/workflowFronte
 import { modelProfileIdentity, newModelProfile, newProvider } from "../domain/workflowModelResources";
 
 const request = (): WorkflowNodeConfigurationRequest => ({
-  workflowId: crypto.randomUUID(), nodeId: crypto.randomUUID(), componentId: "models.source", componentVersion: "5",
+  workflowId: crypto.randomUUID(), nodeId: crypto.randomUUID(), componentId: "models.source", componentVersion: "7",
   expectedConfig: {}, patch: { reference: modelProfileIdentity(newModelProfile(newProvider())) },
   extensionId: "workflow.models.node-fields-v7", lifecycle: "origin",
 });
@@ -37,11 +37,12 @@ describe("trusted package configuration access", () => {
       trustedExtensions: () => modelFrontendExtensions, patch });
     return Promise.all([
       configure({ ...original, extensionId: "workflow.models.workbench-panel" }),
+      configure({ ...original, componentVersion: "5" }),
       configure({ ...original, componentVersion: "4" }),
       configure({ ...original, componentId: "agents.execute" }),
       configure({ ...original, extensionId: "arbitrary" }),
     ]).then(results => {
-      expect(results).toEqual([null, null, null, null]);
+      expect(results).toEqual([null, null, null, null, null]);
       expect(patch).not.toHaveBeenCalled();
     });
   });
