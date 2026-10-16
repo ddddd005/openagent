@@ -170,21 +170,25 @@ def register_callable(
     return _registered_tool(name, description, deepcopy(schema), implementation)
 
 
-def final_answer_tool() -> RegisteredTool:
-    """Create the control tool; output-spec validation remains a kernel concern."""
+def final_answer_tool(*, output_schema: dict[str, Any] | None = None) -> RegisteredTool:
+    """Declare the final result's parameters; the kernel still owns completion."""
+    answer_schema = {
+        "type": "object",
+        "description": "The final JSON object, validated separately against output_spec.",
+    } if output_schema is None else deepcopy(output_schema)
     schema: dict[str, Any] = {
         "type": "object",
-        "properties": {
-            "answer": {
-                "type": "object",
-                "description": "The final JSON object, validated separately against output_spec.",
-            }
-        },
+        "properties": {"answer": answer_schema},
         "required": ["answer"],
         "additionalProperties": False,
     }
+    description = "Return the final JSON answer." if output_schema is None else (
+        "Finish the task by calling this tool with the complete user-facing result in answer, "
+        "following its parameter schema. Do not finish with a plain-text response. "
+        "Call this tool alone, without other tool calls. A valid call ends the Agent turn."
+    )
     return _registered_tool(
         "final_answer",
-        "Return the final JSON answer.",
+        description,
         schema,
     )

@@ -18,12 +18,22 @@ from .graph_contracts import require, uuid4_string
 from .model_contract import validate_public_model_binding
 from .provider_metadata import canonical_message_metadata
 from .runtime import KernelCheckpoint, KernelPaused, SnapshotKernel
+from .tools import final_answer_tool
 from .workflow_tool_catalog import builtin_workflow_tools
 
 
 AGENT_COMPONENT_ID = "9c5a4e10-c67c-4d3d-9df8-2c43cf9e19c4"
 AGENT_OUTPUT_SCHEMA = {"type": "object", "properties": {"text": {"type": "string", "minLength": 1}},
                        "required": ["text"], "additionalProperties": False}
+
+
+def _agent_tools(tools):
+    """Freeze usage guidance and parameters together for this Agent's built-ins."""
+    registered = builtin_workflow_tools() if tools is None else tuple(tools)
+    final = final_answer_tool(output_schema=AGENT_OUTPUT_SCHEMA)
+    if not any(tool.name == final.name for tool in registered):
+        return (*registered, final)
+    return tuple(final if tool.name == final.name else tool for tool in registered)
 
 
 def exact_input(context, port: str) -> dict:
@@ -145,7 +155,7 @@ class PublicAgentExecutor:
             policy = validate_compaction_policy(inputs["compaction_policy"])
             policy_ref = exact_input(context, "compaction_policy")
             resolve_input(context, "compaction_policy", policy)
-        self.tools = builtin_workflow_tools() if tools is None else tuple(tools)
+        self.tools = _agent_tools(tools)
         self.snapshot = make_public_agent_snapshot(
             context, config, self.prompt, self.binding, self.tools, policy=policy, policy_ref=policy_ref,
             schema_version=schema_version)
