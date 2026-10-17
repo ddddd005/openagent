@@ -6,7 +6,9 @@ import sqlite3
 
 import pytest
 
+from phase1_agent.runtime_checkpoints import CHECKPOINT_SCHEMA_VERSION
 from phase1_agent.storage import SqliteStore
+from phase1_agent.workflow_chat_runtime import initialize_chat_tables
 
 
 spec = importlib.util.spec_from_file_location(
@@ -52,7 +54,8 @@ def test_reset_clears_all_product_data_preserves_evidence_vault_and_new_content(
         connection.execute("INSERT INTO workflow_current_configuration VALUES(?,?,?,?,?,?)",
                            ("old-workflow", 3, 1, "Old configuration", "{}", "{}"))
         connection.execute("INSERT INTO workflow_checkpoints VALUES(?,?,?,?,?,?,?)",
-                           (1, "old-checkpoint", "old-workflow", "old-session", 1, None, "{}"))
+                           (CHECKPOINT_SCHEMA_VERSION, "old-checkpoint", "old-workflow",
+                            "old-session", 1, None, "{}"))
     result = reset.reset_development_database(tmp_path)
     assert result["private_vault_touched"] is False
     assert result["before"]["records"] == 1
@@ -201,6 +204,23 @@ def test_inspect_reports_counts_without_reset_or_evidence(tmp_path):
     assert not (tmp_path / ".local" / "request-evidence").exists()
     with sqlite3.connect(path) as current:
         assert current.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 1
+
+
+def test_chat_side_records_are_classified_and_cleared(tmp_path):
+    path = database(tmp_path)
+    with sqlite3.connect(path) as connection:
+        initialize_chat_tables(connection)
+        connection.execute("INSERT INTO workflow_chat_round_inputs VALUES(?,?,?,?)",
+                           ("old-session", "item", "round", "{}"))
+        connection.execute("INSERT INTO workflow_chat_invocations VALUES(?,?,?,?)",
+                           ("old-session", "chain", "item", "{}"))
+    result = reset.reset_development_database(tmp_path)
+    assert result["before"]["workflow_chat_round_inputs"] == 1
+    assert result["before"]["workflow_chat_invocations"] == 1
+    assert result["after"]["workflow_chat_round_inputs"] == 0
+    assert result["after"]["workflow_chat_invocations"] == 0
+    assert evidence_rows(result, "workflow_chat_round_inputs") == []
+    assert evidence_rows(result, "workflow_chat_invocations") == []
 
 
 def test_unclassified_table_stops_reset_without_deleting_it(tmp_path):
