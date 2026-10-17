@@ -213,7 +213,6 @@ def test_service_persists_and_executes_creation_stable_plan_across_pause_resume(
         [consumer_node, independent_node, source_node, output_node],
         [edge(source_node, consumer_node, 70), edge(consumer_node, output_node, 71)],
     )
-    value["execution_roots"] = [independent_node["node_binding_id"]]
     value["control_edges"] = [{
         "edge_id": uid(1072), "source_node_id": independent_node["node_binding_id"],
         "target_node_id": output_node["node_binding_id"],

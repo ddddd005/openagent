@@ -24,7 +24,7 @@ function fixture(provider: CurrentProvider | null = newProvider()) {
   const node: GraphNode = { node_binding_id: crypto.randomUUID(), component_id: "models.source", component_version: "7",
     title: "Model source", position: { x: 0, y: 0 }, config: { reference: modelProfileIdentity(profile) } };
   const document: GraphDocument = { schema_version: 2, workflow_definition_id: workflowId, revision: 1, name: "config",
-    nodes: [node], edges: [], object_bindings: [], execution_roots: [node.node_binding_id], control_edges: [],
+    nodes: [node], edges: [], object_bindings: [], control_edges: [],
     package_lock: [{ package_id: "workflow.content", version: "1.0.0" }, { package_id: "workflow.models", version: "1.0.0" }] };
   const definition: GraphNodeType = { component_id: "models.source", component_version: "7", display_name: "Model source",
     category: "Models", default_config: node.config, inputs: [],

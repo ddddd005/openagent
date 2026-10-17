@@ -176,7 +176,7 @@ def _adopted_object(source, parameters, key, expected_value):
 
 
 def _configuration_result(parameters, result):
-    from .graph_contracts import validate_graph_document
+    from .graph_contracts import drop_retired_document_fields, validate_graph_document
 
     _check(set(result) == {
         "schema_version", "kind", "outcome", "source_workflow_definition_id",
@@ -197,8 +197,8 @@ def _configuration_result(parameters, result):
         category for category in ("display", "adjustable", "fixed") if category in categories
     ])
     confirmed = parameters.get("confirm_derivation") is True
-    document = validate_graph_document(result["document"])
-    submitted = validate_graph_document(parameters["document"])
+    document = validate_graph_document(drop_retired_document_fields(result["document"]))
+    submitted = validate_graph_document(drop_retired_document_fields(parameters["document"]))
     _check(submitted["workflow_definition_id"] == source
            and document["workflow_definition_id"] == target
            and document["revision"] == result["definition_revision"]

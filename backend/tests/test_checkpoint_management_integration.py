@@ -38,7 +38,6 @@ def _save_empty_definition(application):
         "edges": [],
         "object_bindings": [],
         "package_lock": deepcopy(platform["execution_package_lock"]),
-        "execution_roots": [],
         "control_edges": [],
         "event_bindings": [],
     }

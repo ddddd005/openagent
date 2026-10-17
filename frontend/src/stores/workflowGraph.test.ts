@@ -144,7 +144,7 @@ describe("generic workbench execution and document transactions", () => {
     await configuration.settled(id);
     saved = graphClone(graph.document!);
     await graph.submitPrimary();
-    expect(saved).toMatchObject({ schema_version: 3, package_lock: [], execution_roots: [], control_edges: [] });
+    expect(saved).toMatchObject({ schema_version: 3, package_lock: [], control_edges: [] });
     expect(saved!.nodes).toHaveLength(2); expect(saved!.edges).toHaveLength(1);
     expect(isGraphDocument(saved)).toBe(true); expect(graph.session!.status).toBe("succeeded");
   });

@@ -59,7 +59,6 @@ def _document(service):
         "name": "Explicit variable HTTP acceptance", "nodes": nodes,
         "edges": [_edge(after, count_output), _edge(flag, flag_output)],
         "control_edges": [_control(before, assign), _control(assign, after)],
-        "execution_roots": [count_output["node_binding_id"], flag_output["node_binding_id"]],
         "object_bindings": bindings, "event_bindings": [_event(first), _event(second)],
         "package_lock": deepcopy(list(service.registry.execution_package_lock)),
     }, {"first": first, "second": second, "before": before, "after": after, "flag": flag,

@@ -135,7 +135,6 @@ def _run_current_scenario(database):
             "schema_version": 2, "workflow_definition_id": str(uuid4()), "revision": 1,
             "name": "Current runtime isolation", "nodes": nodes, "edges": edges,
             "package_lock": list(service.registry.package_lock),
-            "execution_roots": [merge["node_binding_id"]],
             "control_edges": [{
                 "edge_id": str(uuid4()), "source_node_id": merge["node_binding_id"],
                 "target_node_id": output["node_binding_id"],

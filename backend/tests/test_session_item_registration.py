@@ -53,7 +53,7 @@ def document(*, providers=1, registrations=True, provider_type=SESSION_TYPE):
                  for index, node in enumerate(nodes[:-1])] if registrations else [])
     return {"schema_version": 2, "workflow_definition_id": str(uuid4()), "revision": 1,
             "name": "Registration", "nodes": nodes, "edges": edges,
-            "object_bindings": bindings, "package_lock": [], "execution_roots": [], "control_edges": []}
+            "object_bindings": bindings, "package_lock": [], "control_edges": []}
 
 
 def config_document(registrar_id, *, registered=True):
@@ -65,7 +65,7 @@ def config_document(registrar_id, *, registered=True):
     return {"schema_version": 3, "workflow_definition_id": str(uuid4()), "revision": 1,
             "name": "Registration config", "nodes": [node], "edges": [],
             "object_bindings": [binding("item/formal", registrar_id)] if registered else [],
-            "package_lock": [], "execution_roots": [], "control_edges": []}
+            "package_lock": [], "control_edges": []}
 
 
 def configuration_registry():

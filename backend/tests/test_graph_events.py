@@ -106,7 +106,7 @@ def event_document(service, *, audience="management", fail=False, allow=True):
         edge(ordinary, output, 14101), edge(source, apply, 14102), edge(apply, event_output, 14103),
     ])
     doc.update(schema_version=2, package_lock=deepcopy(list(service.registry.execution_package_lock)),
-        execution_roots=[], object_bindings=[
+        object_bindings=[
             ObjectBinding("main", "event.counter", 1, "shared", readers=(apply["node_binding_id"],),
                           writers=(apply["node_binding_id"],) if allow else ()).to_dict(),
         ], event_bindings=[{

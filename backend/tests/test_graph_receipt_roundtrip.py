@@ -98,7 +98,6 @@ def event_document(service):
     doc = document([source, output], [edge(source, output, 1)])
     doc.update(
         package_lock=deepcopy(list(service.registry.execution_package_lock)),
-        execution_roots=[],
         event_bindings=[{
             "event_id": "frontend.append", "schema_version": 1, "display_name": "Append",
             "audience": "consumer", "target_node_ids": [output["node_binding_id"]],

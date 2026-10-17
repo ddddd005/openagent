@@ -622,7 +622,6 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     const knownPackages = new Set(document.package_lock.map(item => item.package_id));
     document.package_lock.push(...graphClone(
       executionPackageLock.value.filter(item => !knownPackages.has(item.package_id))));
-    document.execution_roots ??= [];
     document.control_edges ??= [];
     return document;
   }
@@ -681,7 +680,6 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       doc.nodes = doc.nodes.filter(n => !ids.has(n.node_binding_id));
       doc.edges = doc.edges.filter(e => !ids.has(e.source_node_id) && !ids.has(e.target_node_id) && e.edge_id !== selectedEdgeId.value);
       if (doc.schema_version >= 2) {
-        doc.execution_roots = (doc.execution_roots ?? []).filter(id => !ids.has(id));
         doc.control_edges = (doc.control_edges ?? []).filter(edge => !ids.has(edge.source_node_id)
           && !ids.has(edge.target_node_id) && edge.edge_id !== selectedEdgeId.value);
         if (doc.event_bindings) doc.event_bindings = doc.event_bindings.map(binding => ({ ...binding,
@@ -798,8 +796,6 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       const edges = doc.edges.filter(e => mapping.has(e.source_node_id) && mapping.has(e.target_node_id))
         .map(e => ({ ...e, edge_id: crypto.randomUUID(), source_node_id: mapping.get(e.source_node_id)!, target_node_id: mapping.get(e.target_node_id)! }));
       if (doc.schema_version >= 2) {
-        doc.execution_roots = [...(doc.execution_roots ?? []), ...(doc.execution_roots ?? [])
-          .filter(id => mapping.has(id)).map(id => mapping.get(id)!)];
         doc.control_edges = [...(doc.control_edges ?? []), ...(doc.control_edges ?? [])
           .filter(edge => mapping.has(edge.source_node_id) && mapping.has(edge.target_node_id))
           .map(edge => ({ ...edge, edge_id: crypto.randomUUID(), source_node_id: mapping.get(edge.source_node_id)!,

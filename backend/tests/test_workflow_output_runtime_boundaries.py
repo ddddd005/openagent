@@ -229,9 +229,6 @@ def test_read_only_agent_round_without_context_merge_preserves_context_value_and
         value["edges"] = [item for item in value["edges"]
                           if merge["node_binding_id"] not in (
                               item["source_node_id"], item["target_node_id"])]
-        value["execution_roots"] = [
-            identity for identity in value["execution_roots"]
-            if identity != merge["node_binding_id"]]
         binding = value["object_bindings"][0]
         binding["readers"] = [read["node_binding_id"]]
         binding["writers"] = []

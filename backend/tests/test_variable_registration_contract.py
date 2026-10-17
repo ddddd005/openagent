@@ -254,7 +254,6 @@ def graph(registry):
             {"edge_id": uid(361), "source_node_id": uid(357), "target_node_id": ACTOR},
             {"edge_id": uid(362), "source_node_id": ACTOR, "target_node_id": uid(358)},
         ],
-        "execution_roots": [],
         "event_bindings": [{"event_id": event_id, "schema_version": 1,
             "display_name": "Register variable", "audience": "management",
             "target_node_ids": [PROVIDERS[0]],

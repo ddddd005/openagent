@@ -59,7 +59,6 @@ def test_schema3_context_agent_and_output_save_without_session_or_execution(
                 registrar_node_id=agent["node_binding_id"],
             ).to_dict()],
             "package_lock": list(manager.registry.execution_package_lock),
-            "execution_roots": [],
             "control_edges": [],
         }
         saved = app.command("definition.update", {
@@ -84,7 +83,6 @@ def test_schema3_context_agent_and_output_save_without_session_or_execution(
             readers=(read["node_binding_id"],),
             registrar_node_id=agent["node_binding_id"],
         ).to_dict()]
-        configured["execution_roots"] = [output["node_binding_id"]]
         configured["control_edges"] = [{
             "edge_id": str(uuid4()),
             "source_node_id": agent["node_binding_id"],
@@ -108,7 +106,7 @@ def test_schema3_context_agent_and_output_save_without_session_or_execution(
         assert updated["outcome"] == "saved"
         assert updated["session_id"] is None
         assert updated["document"]["schema_version"] == 3
-        for field in ("object_bindings", "execution_roots", "control_edges", "event_bindings"):
+        for field in ("object_bindings", "control_edges", "event_bindings"):
             assert updated["document"][field] == configured[field]
         assert app.query("definition.read", {
             "identity": document["workflow_definition_id"],

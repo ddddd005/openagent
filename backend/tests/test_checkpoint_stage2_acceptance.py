@@ -145,9 +145,6 @@ def _install_noncheckpoint_runtime_state(service, document):
         readers=(external_writer["node_binding_id"],),
         writers=(external_writer["node_binding_id"],),
     ).to_dict())
-    document.setdefault("execution_roots", []).extend((
-        fixed_id, runtime_id, external_writer["node_binding_id"],
-    ))
     merge = next(node for node in document["nodes"] if node["component_id"] == "context.merge")
     document.setdefault("control_edges", []).append({
         "edge_id": str(uuid4()),

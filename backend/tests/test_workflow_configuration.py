@@ -150,7 +150,11 @@ def test_fixed_changes_ask_first_and_only_confirmed_consent_derives(service, cha
     elif change == "item_id":
         node["config"]["id"] = str(uuid4())
     elif change == "structure":
-        changed["execution_roots"] = [node["node_binding_id"]]
+        changed["event_bindings"] = [{
+            "event_id": "test.structure", "schema_version": 1, "display_name": "Structure change",
+            "audience": "management", "target_node_ids": [node["node_binding_id"]],
+            "payload_schema": {"type": "object"},
+        }]
     elif change == "binding":
         node["config"]["reference"] = {"resource_id": str(uuid4())}
     else:
@@ -282,7 +286,6 @@ def test_deleted_sessions_do_not_count(service):
 def test_missing_package_fixed_document_saves_then_execution_reports_missing_package(service):
     value = document(mode="fixed")
     value["package_lock"] = [{"package_id": "missing.package", "version": "9.0.0"}]
-    value["execution_roots"] = [value["nodes"][0]["node_binding_id"]]
     saved = update(service, value)
     assert service.get_definition(value["workflow_definition_id"]) == saved["document"]
     session = create_session(service, saved)
@@ -335,7 +338,6 @@ def test_executor_unavailability_does_not_prevent_legal_configuration_storage(tm
 
 def test_incomplete_business_configuration_is_saved_without_compilation(service):
     value = document(config={})
-    value["execution_roots"] = [value["nodes"][0]["node_binding_id"]]
     saved = update(service, value)
     assert saved["document"]["nodes"][0]["config"] == {}
     session = create_session(service, saved)

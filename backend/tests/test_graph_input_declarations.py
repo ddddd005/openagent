@@ -29,7 +29,6 @@ def test_disconnected_inputs_are_editable_but_not_required_for_current_targets(s
     unused = node(service.registry, "current-input", 3, input_name="unused")
     output = node(service.registry, "output", 2)
     doc = document([source, unused, output], [edge(source, output, 1)])
-    doc["execution_roots"] = [output["node_binding_id"]]
     result = GraphApplication(service).query("definition.inputs", {"document": doc})
     assert {value["name"] for value in result["inputs"]} == {"message", "unused"}
     assert result["required_for_run"] == ["message"]

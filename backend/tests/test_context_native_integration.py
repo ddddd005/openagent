@@ -66,7 +66,7 @@ def versioned_node(service, component, version, number):
 
 
 def native_graph(service, *, policy=True, once=True, dual=False):
-    entries, edges, bindings, roots = {}, [], [], []
+    entries, edges, bindings = {}, [], []
     current = versioned_node(service, "tools.current-input", "1", 4100)
     model = versioned_node(service, "models.source", "7", 4101)
     model["config"] = source_config()
@@ -119,9 +119,8 @@ def native_graph(service, *, policy=True, once=True, dual=False):
                                       readers=(read["node_binding_id"], merge["node_binding_id"]),
                                       writers=(merge["node_binding_id"],),
                                       registrar_node_id=agent["node_binding_id"]).to_dict())
-        roots.extend((merge["node_binding_id"], output["node_binding_id"]))
     doc = document(shared, edges)
-    doc.update(package_lock=list(service.registry.package_lock), object_bindings=bindings, execution_roots=roots)
+    doc.update(package_lock=list(service.registry.package_lock), object_bindings=bindings)
     return doc, entries
 
 

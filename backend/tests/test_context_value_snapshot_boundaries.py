@@ -33,8 +33,6 @@ def test_agent_success_without_context_merge_does_not_write_object(tmp_path):
         document["edges"] = [edge for edge in document["edges"]
                              if merge["node_binding_id"] not in (
                                  edge["source_node_id"], edge["target_node_id"])]
-        document["execution_roots"] = [
-            identity for identity in document["execution_roots"] if identity != merge["node_binding_id"]]
         binding = document["object_bindings"][0]
         binding["readers"] = [read["node_binding_id"]]
         binding["writers"] = []

@@ -10,7 +10,6 @@ function fixture() {
     position: { x: 100 * index, y: 0 }, config: {} }));
   upgradeGraph(document, [{ package_id: "plugin", version: "1.0.0" }]);
   const [source, target] = document.nodes.map(node => node.node_binding_id);
-  document.execution_roots = [source];
   document.control_edges = [{ edge_id: crypto.randomUUID(), source_node_id: source, target_node_id: target }];
   document.object_bindings = [{ object_key: "shared/main", type_id: "plugin.scalar", schema_version: 1,
     scope: "shared", owner_node_id: null, readers: [source, target], writers: [source] }];
@@ -36,10 +35,8 @@ describe("v2 workflow document and registered object boundaries", () => {
     const noBindings = graphClone(document); delete noBindings.object_bindings;
     expect(isGraphDocument(noBindings)).toBe(false);
   });
-  it("validates root membership and unique data/control edge identities without inventing cycle policy", () => {
+  it("validates unique data and control edge identities without inventing cycle policy", () => {
     const { document, source, target } = fixture();
-    expect(isGraphDocument({ ...document, execution_roots: [source, source] })).toBe(false);
-    expect(isGraphDocument({ ...document, execution_roots: [crypto.randomUUID()] })).toBe(false);
     const malformed = graphClone(document);
     malformed.control_edges![0].source_node_id = crypto.randomUUID();
     expect(isGraphDocument(malformed)).toBe(false);

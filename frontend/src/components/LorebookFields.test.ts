@@ -28,7 +28,7 @@ function fixture(group = false, entries = [newLorebookEntry()]) {
   });
   const document = reactive<GraphDocument>({ schema_version: 2, workflow_definition_id: crypto.randomUUID(),
     revision: 1, name: "Lorebook", nodes: [node], edges: [], object_bindings: [],
-    package_lock: [lorebookPackage], execution_roots: [], control_edges: [] });
+    package_lock: [lorebookPackage], control_edges: [] });
   const locked = ref(false), lifecycle = ref("original");
   const configureNode = vi.fn(async (_request: WorkflowNodeConfigurationRequest) =>
     ({ workflowId: document.workflow_definition_id, nodeId: node.node_binding_id, outcome: "saved" as const }));

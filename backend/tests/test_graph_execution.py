@@ -216,9 +216,6 @@ def test_ready_nodes_follow_creation_order_but_dependencies_run_first():
         [controlled_node, consumer_node, independent_node, source_node, output_node],
         [edge(100, 80, 90), edge(101, 90, 2)],
     )
-    value["execution_roots"] = [
-        independent_node["node_binding_id"], controlled_node["node_binding_id"],
-    ]
     value["control_edges"] = [{
         "edge_id": identity(102), "source_node_id": source_node["node_binding_id"],
         "target_node_id": controlled_node["node_binding_id"],

@@ -40,7 +40,7 @@ function seedSavedWorkflow(name: string) {
   const document: GraphDocument = {
     schema_version: 3, workflow_definition_id: id, revision: 4, edit_sequence: 8,
     name, nodes: [], edges: [], object_bindings: [], package_lock: [],
-    execution_roots: [], control_edges: [],
+    control_edges: [],
   };
   expect(isGraphDocument(document)).toBe(true);
   graph.entries[id] = { document: graphClone(document), saved_document: graphClone(document),

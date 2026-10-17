@@ -162,12 +162,14 @@ def validate_graph_record(record_type: str, value: Any) -> dict:
                             and item["target_port_id"] == diagnostic.get("port_id") for item in unresolved),
                     "storage_contract_violation", "Missing input diagnostic differs from unresolved sources", 500)
     if record_type == "workflow_definition_revision":
-        from .graph_contracts import validate_graph_document
-        doc = validate_graph_document(value["document"])
+        from .graph_contracts import drop_retired_document_fields, validate_graph_document
+        document = drop_retired_document_fields(value["document"])
+        doc = validate_graph_document(document)
         require(doc["workflow_definition_id"] == value["workflow_definition_id"]
                 and doc["revision"] == value["revision"]
                 and value["bindings"] == [n["node_binding_id"] for n in doc["nodes"]]
                 and value["edges"] == doc["edges"], "storage_contract_violation", "Definition projection differs", 500)
+        value = {**value, "document": document}
     if record_type == "chain_run":
         if value["schema_version"] == 5:
             attempts = value["node_run_attempts"]

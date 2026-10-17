@@ -26,7 +26,6 @@ def test_connected_terminal_writer_runs_and_isolated_working_roots_do_not():
         node(1, registry=registry),
         node(2, "tools.output", registry=registry),
     ], [edge(10, 1, 2), edge(11, 1, 4)])
-    value["execution_roots"] = [identity(8)]
 
     plan = GraphCompiler(registry).compile(value)
     assert plan.ordered_node_ids == (identity(1), identity(4), identity(2))
@@ -85,7 +84,6 @@ def test_event_can_explicitly_target_isolated_non_working_node_without_ordinary_
         execution_class="non_working",
     ), lambda config, inputs, context: {})
     value = document([node(1, "test.event-only", registry=registry)])
-    value["execution_roots"] = []
     value["event_bindings"] = [{
         "event_id": "test.activate", "schema_version": 1, "display_name": "Activate", "audience": "management",
         "target_node_ids": [identity(1)], "payload_schema": {"type": "object"},
@@ -103,7 +101,6 @@ def test_event_declaration_does_not_disable_normal_connected_output_and_frozen_p
         node(1, registry=registry), node(2, "tools.output", registry=registry),
         node(3, "test.selection-writer", registry=registry),
     ], [edge(10, 1, 2), edge(11, 1, 3)])
-    value["execution_roots"] = []
     value["event_bindings"] = [{
         "event_id": "test.activate", "schema_version": 1, "display_name": "Activate", "audience": "management",
         "target_node_ids": [identity(3)], "payload_schema": {"type": "object"},

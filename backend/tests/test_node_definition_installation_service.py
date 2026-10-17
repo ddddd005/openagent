@@ -226,7 +226,6 @@ def test_explicit_event_executes_only_its_non_working_target_and_keeps_payload_a
         target = node(service.registry, "test.explicit-manual", 1)
         unrelated = node(service.registry, "test.unrelated-manual", 2)
         value = document([target, unrelated], [])
-        value["execution_roots"] = []
         value["event_bindings"] = [{
             "event_id": "test.manual", "schema_version": 1, "display_name": "Manual",
             "audience": "management", "target_node_ids": [target["node_binding_id"]],

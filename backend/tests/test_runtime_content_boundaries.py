@@ -86,10 +86,10 @@ def control(number, source, target):
             "target_node_id": target["node_binding_id"]}
 
 
-def document(nodes, edges=(), *, bindings=(), roots=(), controls=()):
+def document(nodes, edges=(), *, bindings=(), controls=()):
     return {"schema_version": 2, "workflow_definition_id": str(uuid4()), "revision": 1,
             "name": "Runtime boundaries", "nodes": list(nodes), "edges": list(edges),
-            "object_bindings": list(bindings), "execution_roots": list(roots),
+            "object_bindings": list(bindings),
             "control_edges": list(controls)}
 
 
@@ -205,7 +205,7 @@ def test_multi_identity_source_cannot_expand_downstream_authority_or_commit_earl
     doc = document([writer, source, resolve, assembly, output], [
         edge(100, source, resolve, source_port="a"),
         edge(101, resolve, assembly), edge(102, assembly, output),
-    ], bindings=[counter_binding(writer)], roots=[writer["node_binding_id"]])
+    ], bindings=[counter_binding(writer)])
     with closing(GraphWorkflowService(tmp_path / "resource.sqlite", registry=registry)) as service:
         for reference in references:
             prompt_resource(service, reference)
@@ -254,7 +254,6 @@ def test_shared_object_access_without_graph_dependency_is_not_rejected(reverse_i
     ).to_dict()
     doc = document(
         [reader, writer, terminal], bindings=[binding],
-        roots=[reader["node_binding_id"], writer["node_binding_id"]],
     )
     doc["control_edges"] = [{
         "edge_id": str(uuid4()), "source_node_id": source["node_binding_id"],

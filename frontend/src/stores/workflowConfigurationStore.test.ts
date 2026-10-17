@@ -296,10 +296,8 @@ describe("workflow configuration store wiring", () => {
 
     const contextBinding = { object_key: "context", type_id: "workflow.effective-context", schema_version: 4,
       scope: "shared" as const, owner_node_id: null, readers: [contextId], writers: [] };
-    graph.document!.execution_roots = [outputId];
     expect(graph.setControlDependencies(outputId, [agentId])).toBe(workflowId);
     await waitForUpdate(8);
-    expect(requests[7]!.document.execution_roots).toEqual([outputId]);
     expect(requests[7]!.document.control_edges).toMatchObject([
       { source_node_id: agentId, target_node_id: outputId },
     ]);

@@ -78,7 +78,7 @@ describe("package configuration edits and ordinary workflow creation", () => {
     expect(next).not.toBe(id); expect(graph.entries[id]).toEqual(before);
     expect(graph.document!.nodes).toEqual([]); expect(graph.document!.edges).toEqual([]);
     expect(graph.document!.object_bindings).toEqual([]);
-    expect(graph.document!.execution_roots).toEqual([]); expect(graph.document!.control_edges).toEqual([]);
+    expect(graph.document!.control_edges).toEqual([]);
     expect(fetcher).not.toHaveBeenCalled();
   });
   it("preserves a lost failed-node retry request and only reconciles its original key", async () => {

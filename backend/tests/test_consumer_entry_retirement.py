@@ -134,7 +134,6 @@ def _seed_legacy_evidence(database, operation, original):
 
 def _seed_legacy_request(service, operation):
     graph, _, frontends = _graph(service, bound=True)
-    graph["execution_roots"] = [frontends[0]["node_binding_id"]]
     graph["event_bindings"] = [{
         "event_id": "legacy.append", "schema_version": 1, "display_name": "Legacy append",
         "audience": "consumer", "target_node_ids": [frontends[0]["node_binding_id"]],
@@ -273,7 +272,6 @@ def test_ordinary_management_http_keeps_execution_events_objects_and_public_read
         graph, messages, frontends = _graph(service, bound=True)
         frontend = frontends[0]
         frontend["public_outputs"] = ["commit"]
-        graph["execution_roots"] = [frontend["node_binding_id"]]
         graph["event_bindings"] = [{
             "event_id": "input.read", "schema_version": 1, "display_name": "Read input",
             "audience": "management", "target_node_ids": [messages[0]["node_binding_id"]],

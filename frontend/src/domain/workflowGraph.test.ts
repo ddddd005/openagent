@@ -43,7 +43,7 @@ describe("versioned workflow graph boundary", () => {
     const lock = [{ package_id: "workflow.tavern", version: "1.2.0" }];
     const doc = newGraph("Blank", lock);
     expect(doc).toMatchObject({ schema_version: 2, revision: 1, name: "Blank", nodes: [], edges: [],
-      object_bindings: [], execution_roots: [], control_edges: [], package_lock: lock });
+      object_bindings: [], control_edges: [], package_lock: lock });
     expect(isGraphDocument(doc)).toBe(true);
     lock[0].version = "2.0.0";
     expect(doc.package_lock).toEqual([{ package_id: "workflow.tavern", version: "1.2.0" }]);

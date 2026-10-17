@@ -52,7 +52,7 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
     expect(graph.document?.schema_version).toBe(2);
     expect(graph.document?.package_lock).toEqual(lock);
     expect(graph.document?.object_bindings).toEqual([]);
-    expect(graph.document?.execution_roots).toEqual([]); expect(graph.document?.control_edges).toEqual([]);
+    expect(graph.document?.control_edges).toEqual([]);
     const writerId = graph.addNode("plugin.writer@1", { x: 0, y: 0 });
     expect(writerId).not.toBeNull();
     expect(graph.document?.nodes).toEqual([expect.objectContaining({
@@ -65,17 +65,14 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
     expect(graph.catalog[0].outputs).toEqual([]);
     expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(false);
   });
-  it("preserves stored execution roots while control predecessor edits remain undoable", async () => {
+  it("keeps control predecessor edits undoable with stable identities", async () => {
     const { graph, write, read } = await fixture();
-    graph.document!.execution_roots = [write];
     graph.setControlDependencies(read, [write]);
     const controlId = graph.document!.control_edges![0].edge_id;
-    expect(graph.document?.execution_roots).toEqual([write]);
     graph.setControlDependencies(read, [write]);
     expect(graph.document!.control_edges![0].edge_id).toBe(controlId);
     graph.undo();
     expect(graph.document?.control_edges).toEqual([]);
-    expect(graph.document?.execution_roots).toEqual([write]);
     graph.undo(true);
     expect(graph.document!.control_edges![0].edge_id).toBe(controlId);
     expect(graph.setControlDependencies(read, [crypto.randomUUID()])).toBeNull();
@@ -90,17 +87,15 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
     expect(graph.document).toEqual(before);
     expect(graph.setObjectBindings([binding([write], [write]), binding([write], [write])])).toBeNull();
   });
-  it("duplicates controls, roots and shared permissions while initializing a separate private binding", async () => {
+  it("duplicates controls and shared permissions while initializing a separate private binding", async () => {
     const { graph, write, read } = await fixture();
     const owned = { ...binding([write], [write]), object_key: "private/main",
       scope: "private" as const, owner_node_id: write, default_value: { count: 0 } };
     graph.patchNode(write, { config: { object_key: owned.object_key, object_keys: ["shared/main", owned.object_key] } });
     graph.setObjectBindings([binding([write, read], [write]), owned]);
-    graph.document!.execution_roots = [write];
     graph.setControlDependencies(read, [write]);
     graph.selectedNodeIds = [write, read]; graph.duplicateSelection();
     const [copiedWriter, copiedReader] = graph.selectedNodeIds;
-    expect(graph.document?.execution_roots).toEqual([write, copiedWriter]);
     expect(graph.document?.control_edges?.find(edge => edge.target_node_id === copiedReader)?.source_node_id).toBe(copiedWriter);
     const shared = graph.document!.object_bindings!.find(item => item.scope === "shared")!;
     expect(shared.readers).toEqual([write, read, copiedWriter, copiedReader]);
@@ -115,14 +110,12 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
     graph.undo();
     expect(graph.document?.object_bindings).toEqual([binding([write, read], [write]), owned]);
   });
-  it("removes roots, control dependencies and deleted-node permissions without leaving an ownerless private binding", async () => {
+  it("removes control dependencies and deleted-node permissions without leaving an ownerless private binding", async () => {
     const { graph, write, read } = await fixture();
     graph.setObjectBindings([binding([write, read], [write]),
       { ...binding([write], [write]), object_key: "private/main", scope: "private", owner_node_id: write }]);
-    graph.document!.execution_roots = [write];
     graph.setControlDependencies(read, [write]);
     graph.selectedNodeIds = [write]; graph.removeSelection();
-    expect(graph.document?.execution_roots).toEqual([]);
     expect(graph.document?.control_edges).toEqual([]);
     expect(graph.document?.object_bindings).toEqual([binding([read], [])]);
     expect(isGraphDocument(graph.document)).toBe(true);
@@ -153,7 +146,6 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
     stubGraphApplicationFetch( fetcher);
     await graph.loadCatalog();
     expect(graph.dataTypes[0].type_id).toBe("plugin.object");
-    graph.document!.execution_roots = [write];
     graph.setControlDependencies(read, [write]);
     graph.setObjectBindings([binding([write, read], [write])]);
     const configuration = installDebtCleanupConfiguration(graph, installDebtCleanupEvidence());
@@ -163,7 +155,6 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
     saved = graphClone(graph.document!);
     await graph.submitPrimary();
     expect(saved?.schema_version).toBe(3);
-    expect(saved?.execution_roots).toEqual([write]);
     expect(saved?.control_edges?.[0].source_node_id).toBe(write);
     expect(saved?.object_bindings?.[0].object_key).toBe("shared/main");
     expect(configuration.update.mock.calls[0]?.[0].document.control_edges).toEqual(saved.control_edges);
@@ -174,7 +165,6 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
   it("keeps the workflow identity, controls and object declarations when editing a saved graph", async () => {
     const { graph, id, write, read } = await fixture();
     graph.setObjectBindings([binding([write, read], [write])]);
-    graph.document!.execution_roots = [write];
     graph.setControlDependencies(read, [write]);
     const before = graphClone(graph.document!);
     graph.entries[id].saved_document = graphClone(before); graph.entries[id].saved_revision = 1;
@@ -182,7 +172,6 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
     graph.patchNode(write, { title: "copied edit" });
     expect(useWorkspaceStore().activeWorkflowId).toBe(id);
     expect(graph.document?.control_edges).toEqual(before.control_edges);
-    expect(graph.document?.execution_roots).toEqual(before.execution_roots);
     expect(graph.document?.object_bindings).toEqual(before.object_bindings);
     expect(graph.entries[id].saved_document).toEqual(before);
   });

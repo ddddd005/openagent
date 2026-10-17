@@ -37,7 +37,6 @@ export interface GraphDocument {
   edges: GraphEdge[];
   object_bindings?: GraphObjectBinding[];
   package_lock?: { package_id: string; version: string }[];
-  execution_roots?: string[];
   control_edges?: GraphControlEdge[];
   event_bindings?: GraphEventBinding[];
 }
@@ -407,7 +406,7 @@ export function defaultGraphConfigurationPolicy(definition: GraphNodeType): Grap
 function isGraphSchema3Document(value: Record<string, unknown>): boolean {
   if (!isGraphJsonValue(value) || !graphStorageStrings(value)
     || !graphExactKeys(value, ["schema_version", "workflow_definition_id", "revision", "name", "nodes", "edges", "object_bindings"],
-      ["edit_sequence", "package_lock", "execution_roots", "control_edges", "event_bindings"])
+      ["edit_sequence", "package_lock", "control_edges", "event_bindings"])
     || !canonicalGraphUuid(value.workflow_definition_id) || !positive(value.revision)
     || Object.hasOwn(value, "edit_sequence") && !nonnegative(value.edit_sequence)
     || typeof value.name !== "string" || !graphStorageText(value.name.trim())
@@ -443,11 +442,7 @@ function isGraphSchema3Document(value: Record<string, unknown>): boolean {
     || !value.package_lock.every(item => graphObject(item) && graphExactKeys(item, ["package_id", "version"])
       && graphStorageName(item.package_id) && graphStorageName(item.version))
     || new Set(value.package_lock.map(item => item.package_id)).size !== value.package_lock.length)) return false;
-  if (Object.hasOwn(value, "event_bindings") && (!graphStorageEventBindings(value.event_bindings, ids)
-    || value.event_bindings.length > 0 && !Object.hasOwn(value, "execution_roots"))) return false;
-  const roots = Object.hasOwn(value, "execution_roots") ? value.execution_roots : [];
-  if (!Array.isArray(roots) || roots.length > 512 || !roots.every(id => canonicalGraphUuid(id) && ids.has(id))
-    || new Set(roots).size !== roots.length) return false;
+  if (Object.hasOwn(value, "event_bindings") && !graphStorageEventBindings(value.event_bindings, ids)) return false;
   const controls = Object.hasOwn(value, "control_edges") ? value.control_edges : [];
   if (!Array.isArray(controls) || controls.length > 4096 || !controls.every(control => {
     if (!graphObject(control) || !graphExactKeys(control, ["edge_id", "source_node_id", "target_node_id"])
@@ -487,11 +482,7 @@ export function isGraphDocument(value: unknown): value is GraphDocument {
     .some(key => value[key] !== undefined);
   if (!isGraphObjectBindings(value.object_bindings, value.nodes as GraphNode[])
     || value.package_lock !== undefined && !isGraphPackageLock(value.package_lock)) return false;
-  if (value.event_bindings !== undefined && (!isGraphEventBindings(value.event_bindings, value.nodes as GraphNode[])
-    || value.event_bindings.length > 0 && !Object.hasOwn(value, "execution_roots"))) return false;
-  const roots = value.execution_roots ?? [];
-  if (!Array.isArray(roots) || roots.length > 1024 || !roots.every(id => graphUuid(id) && ids.has(id))
-    || new Set(roots).size !== roots.length) return false;
+  if (value.event_bindings !== undefined && !isGraphEventBindings(value.event_bindings, value.nodes as GraphNode[])) return false;
   const controls = value.control_edges ?? [];
   return Array.isArray(controls) && controls.length <= 8192 && controls.every(control => {
     if (!graphObject(control) || !graphUuid(control.edge_id) || edges.has(control.edge_id)
@@ -596,7 +587,7 @@ export function graphSignature(document: GraphDocument) {
 }
 export function newGraph(name: string, packageLock: NonNullable<GraphDocument["package_lock"]> = []): GraphDocument {
   return { schema_version: 2, workflow_definition_id: crypto.randomUUID(), revision: 1, name, nodes: [], edges: [],
-    object_bindings: [], package_lock: graphClone(packageLock), execution_roots: [], control_edges: [] };
+    object_bindings: [], package_lock: graphClone(packageLock), control_edges: [] };
 }
 export function upgradeGraph(document: GraphDocument, packageLock: NonNullable<GraphDocument["package_lock"]> = []) {
   if (document.schema_version === 3) throw new Error("Schema 3 configuration cannot use the legacy graph upgrade.");
@@ -605,7 +596,6 @@ export function upgradeGraph(document: GraphDocument, packageLock: NonNullable<G
   document.package_lock ??= graphClone(packageLock);
   const knownPackages = new Set(document.package_lock.map(item => item.package_id));
   document.package_lock.push(...graphClone(packageLock.filter(item => !knownPackages.has(item.package_id))));
-  document.execution_roots ??= [];
   document.control_edges ??= [];
   return document;
 }

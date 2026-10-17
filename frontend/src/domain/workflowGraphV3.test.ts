@@ -53,7 +53,6 @@ describe("schema 3 storage boundary", () => {
     (value: GraphDocument) => { Object.assign(value.nodes[0], { executable: true }); },
     (value: GraphDocument) => { Object.assign(value.nodes[0].position, { z: 1 }); },
     (value: GraphDocument) => { Object.assign(value.package_lock![0], { installed: true }); },
-    (value: GraphDocument) => { value.execution_roots = null as never; },
     (value: GraphDocument) => { value.control_edges = null as never; },
     (value: GraphDocument) => { value.edit_sequence = -1; },
     (value: GraphDocument) => { value.edit_sequence = Number.MAX_SAFE_INTEGER + 1; },
@@ -94,7 +93,6 @@ describe("schema 3 storage boundary", () => {
     value.package_lock = [{ package_id: name, version: name }];
     value.object_bindings = [{ object_key: name, type_id: name, schema_version: 1,
       scope: "shared", owner_node_id: null, readers: [id], writers: [] }];
-    value.execution_roots = [];
     value.event_bindings = [{ event_id: name, schema_version: 1, display_name: name,
       audience: "consumer", target_node_ids: [id], payload_schema: { type: "object" } }];
     expect(isGraphDocument(value)).toBe(true);

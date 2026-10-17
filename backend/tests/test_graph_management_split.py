@@ -92,7 +92,6 @@ def _new_incomplete_document(service):
              "config": output_config},
         ],
         "edges": [],
-        "execution_roots": [output_id],
         "control_edges": [],
         "event_bindings": [
             {"event_id": "management-event", "schema_version": 1, "display_name": "Management event",

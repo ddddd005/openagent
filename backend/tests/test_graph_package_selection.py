@@ -58,7 +58,7 @@ def simple_document(service):
 
 def configuration_document(service):
     value = simple_document(service)
-    value.update(schema_version=3, edit_sequence=0, execution_roots=[], control_edges=[])
+    value.update(schema_version=3, edit_sequence=0, control_edges=[])
     for item in value["nodes"]:
         item["configuration_policy"] = {"schema_version": 1, "prompt_mode": "fixed"}
     return value

@@ -89,7 +89,7 @@ def test_real_workbench_resources_and_ordinary_creation(tmp_path, width):
             field: prompt[field] for field in ("envelope_version", "scope", "type_id", "resource_id")}})
         doc = {"schema_version": 3, "workflow_definition_id": str(uuid4()), "revision": 1,
                "name": "Ordinary resource references", "nodes": [*references, prompt_reference], "edges": [],
-               "object_bindings": [], "execution_roots": [], "control_edges": [],
+               "object_bindings": [], "control_edges": [],
                "package_lock": list(service.registry.package_lock)}
         for index, row in enumerate(doc["nodes"]):
             row["position"] = {"x": index * 440, "y": 0}

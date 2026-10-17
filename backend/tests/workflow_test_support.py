@@ -97,8 +97,7 @@ def _graph(service, numbers):
         edge(execute, merge, 1306, source_port="receipts", target_port="receipts"),
         edge(execute, display, 1307, source_port="result"),
     ])
-    doc.update(execution_roots=[merge["node_binding_id"], display["node_binding_id"]],
-               package_lock=list(service.registry.package_lock), object_bindings=[
+    doc.update(package_lock=list(service.registry.package_lock), object_bindings=[
                    ObjectBinding("context", EFFECTIVE_CONTEXT_TYPE, 4, "shared",
                                  readers=(read["node_binding_id"], merge["node_binding_id"]),
                                  writers=(merge["node_binding_id"],),

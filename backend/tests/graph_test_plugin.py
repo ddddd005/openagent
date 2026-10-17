@@ -10,11 +10,10 @@ from phase1_agent.graph_contracts import NodeDefinition, NodePort
 PROBE_COMPONENT = "test.content-probe"
 
 
-def current_document(registry, nodes, edges=(), *, roots=(), controls=(), bindings=()):
+def current_document(registry, nodes, edges=(), *, controls=(), bindings=()):
     return {
         "schema_version": 2, "workflow_definition_id": str(uuid4()), "revision": 1,
         "name": "Current public graph", "nodes": nodes, "edges": list(edges),
-        "execution_roots": [item["node_binding_id"] for item in roots],
         "control_edges": list(controls), "object_bindings": list(bindings),
         "package_lock": list(registry.execution_package_lock),
     }

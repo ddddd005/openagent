@@ -37,7 +37,7 @@ function node(component, id, title, x, y) {
 function document(id, name, nodes) {
   return { schema_version: 2, workflow_definition_id: id, revision: 1, name, nodes, edges: [],
     object_bindings: [], package_lock: clone(fixture.execution_package_lock ?? fixture.package_lock),
-    execution_roots: [], control_edges: [] };
+    control_edges: [] };
 }
 const documents = [
   document(workflowA, "Drafts A", [

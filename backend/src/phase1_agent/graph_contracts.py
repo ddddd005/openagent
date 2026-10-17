@@ -101,7 +101,7 @@ def validate_graph_document(value: Any) -> dict:
             "graph_invalid_document", "Unknown graph document version")
     require(set(value) == base_fields if value["schema_version"] == 1 else
             base_fields | {"object_bindings"} <= set(value) <= base_fields | {
-                "object_bindings", "package_lock", "execution_roots", "control_edges", "event_bindings"}
+                "object_bindings", "package_lock", "control_edges", "event_bindings"}
             | ({"edit_sequence"} if value["schema_version"] == 3 else set()),
             "graph_invalid_document", "Graph document fields are invalid")
     uuid4_string(value["workflow_definition_id"])
@@ -178,16 +178,9 @@ def validate_graph_document(value: Any) -> dict:
             require(authorized_nodes <= node_ids, "graph_invalid_document",
                     "Object binding names a missing owner, registrar or authorized node")
         validate_package_lock(value.get("package_lock", []))
-        roots = value.get("execution_roots", [])
-        require(type(roots) is list and len(roots) <= MAX_GRAPH_NODES
-                and all(root in node_ids for root in roots if type(root) is str)
-                and all(type(root) is str for root in roots) and len(set(roots)) == len(roots),
-                "graph_invalid_execution_roots", "Execution roots must name distinct existing nodes")
         events = value.get("event_bindings", [])
         require(type(events) is list and len(events) <= MAX_GRAPH_NODES,
                 "graph_invalid_event_binding", "Event binding array exceeds its limit")
-        require(not events or "execution_roots" in value, "graph_invalid_execution_roots",
-                "Graphs with events must explicitly declare ordinary execution roots")
         event_identities: set[tuple[str, int]] = set()
         for event in events:
             require(type(event) is dict and set(event) == {
@@ -232,6 +225,16 @@ def validate_graph_document(value: Any) -> dict:
     require(len(canonical_bytes(value)) <= MAX_GRAPH_BYTES,
             "graph_invalid_document", "Graph document exceeds its wire limit")
     return copy.deepcopy(value)
+
+
+RETIRED_DOCUMENT_FIELDS = ("execution_roots",)
+
+
+def drop_retired_document_fields(value: Any) -> Any:
+    """Remove document fields retired from the contract before re-validating stored evidence."""
+    if type(value) is not dict:
+        return value
+    return {key: item for key, item in value.items() if key not in RETIRED_DOCUMENT_FIELDS}
 
 
 def validate_package_lock(value: Any) -> list[dict]:

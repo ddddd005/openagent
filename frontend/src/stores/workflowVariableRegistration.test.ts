@@ -78,7 +78,7 @@ describe("unified variable provider registration", () => {
     expect(graph.document!.nodes.find(node => node.node_binding_id === replace)!.config.object_keys).toEqual([]);
     expect(items.every(item => !item.readers.includes(read) && !item.writers.includes(assign))).toBe(true);
     expect(graph.entries[id]!.session_id).toBeNull(); expect(graph.session).toBeNull();
-    expect(Object.hasOwn(graph.document!, "execution_roots")).toBe(true);
+    expect(Object.hasOwn(graph.document!, "execution_roots")).toBe(false);
     expect(isGraphDocument(graph.document)).toBe(true);
     expect(graph.catalog.find(row => row.component_id === "tools.variable-assign")!.execution_class).toBe("working");
   });
@@ -107,7 +107,7 @@ describe("unified variable provider registration", () => {
     expect(graph.document!.nodes.find(node => node.node_binding_id === remainingReader)!.config.object_key).toBe(item.object_key);
     expect(graph.document!.event_bindings).toEqual([variableRegistrationEvent(provider),
       variableRegistrationEvent(copiedProvider.node_binding_id)]);
-    expect(Object.hasOwn(graph.document!, "execution_roots")).toBe(true);
+    expect(Object.hasOwn(graph.document!, "execution_roots")).toBe(false);
     expect(isGraphDocument(graph.document)).toBe(true);
   });
 
@@ -121,7 +121,7 @@ describe("unified variable provider registration", () => {
     expect(graph.document!.object_bindings).toEqual([original]);
     expect(graph.document!.nodes.find(node => node.node_binding_id === provider)!.config.object_key).toBe(original.object_key);
     expect(graph.document!.event_bindings!.filter(event => event.event_id === variableRegistrationEvent(provider).event_id)).toHaveLength(1);
-    expect(Object.hasOwn(graph.document!, "execution_roots")).toBe(true);
+    expect(Object.hasOwn(graph.document!, "execution_roots")).toBe(false);
     expect(isGraphDocument(graph.document)).toBe(true);
     graph.replaceNode(provider, "tools.variable-assign@1");
     expect(graph.document!.object_bindings).toEqual([]);

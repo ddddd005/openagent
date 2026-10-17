@@ -29,7 +29,7 @@ const doc = { schema_version: 2, workflow_definition_id: uid(101), revision: 2, 
   nodes: [group, text, currentInput, output], edges: [{ edge_id: uid(301),
     source_node_id: group.node_binding_id, source_port_id: "output",
     target_node_id: text.node_binding_id, target_port_id: "missing-old-port", order: 0 }],
-  execution_roots: [output.node_binding_id], object_bindings: [], control_edges: [{ edge_id: uid(302),
+  object_bindings: [], control_edges: [{ edge_id: uid(302),
     source_node_id: currentInput.node_binding_id, target_node_id: output.node_binding_id }],
   package_lock: clone(fixture.execution_package_lock ?? fixture.package_lock) };
 const frozen = clone(doc); frozen.revision = 1; frozen.nodes[3].title = "Frozen historical title";

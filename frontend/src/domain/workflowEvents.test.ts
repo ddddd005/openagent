@@ -12,11 +12,10 @@ function fixture() {
   document.event_bindings = [binding]; return { document, binding, id };
 }
 describe("graph v2 local event declarations", () => {
-  it("accepts an event-only graph with explicit empty ordinary roots and distinct versions of one ID", () => {
+  it("accepts an event-only graph with distinct versions of one ID", () => {
     const { document, binding } = fixture();
     document.event_bindings!.push({ ...graphClone(binding), schema_version: 2 });
-    expect(document.execution_roots).toEqual([]); expect(isGraphDocument(document)).toBe(true);
-    delete document.execution_roots; expect(isGraphDocument(document)).toBe(false);
+    expect(isGraphDocument(document)).toBe(true);
     document.schema_version = 1; expect(isGraphDocument(document)).toBe(false);
   });
   it("rejects duplicate identity pairs, missing/duplicate targets and malformed local schemas", () => {
