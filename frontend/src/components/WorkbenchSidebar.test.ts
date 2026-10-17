@@ -13,12 +13,9 @@ const state = vi.hoisted(() => ({ mounts: { workflows: 0, providers: 0, content:
 vi.mock("./WorkflowSidebar.vue", async () => {
   const { defineComponent, h } = await import("vue");
   return { default: defineComponent({
-    emits: ["openContent"],
-    setup: (_props, { emit }) => {
+    setup: () => {
       state.mounts.workflows++;
-      return () => h("section", { "data-business": "workflows" }, [
-        h("button", { "aria-label": "Existing content route", onClick: () => emit("openContent") }),
-      ]);
+      return () => h("section", { "data-business": "workflows" });
     },
   }) };
 });
@@ -134,15 +131,13 @@ describe("thin workbench sidebar", () => {
     expect(state.mounts).toEqual({ workflows: 1, providers: 1, content: 1 });
     expect("sidebarSection" in f.workspace).toBe(false);
   });
-  it("owns collapse and navigation without writing product storage or taking over a business route", async () => {
-    const f = await mount(true);
-    expect(f.collapse).toHaveBeenLastCalledWith(true);
-    await click(f.root, "供应商");
-    expect(f.collapse).toHaveBeenLastCalledWith(false);
-    expect(f.storage.setItem).toHaveBeenCalledExactlyOnceWith(sidebarPreferenceKey, "false");
-    await click(f.root, "Existing content route");
-    expect(find(f.root, "内容").props["aria-current"]).toBe("page");
-    expect(f.storage.getItem).toHaveBeenCalledExactlyOnceWith(sidebarPreferenceKey);
-    expect(f.storage.setItem).toHaveBeenCalledTimes(1);
+  it("owns collapse preferences without writing product storage", async () => {
+    const sidebar = await mount(true);
+    expect(sidebar.collapse).toHaveBeenLastCalledWith(true);
+    await click(sidebar.root, "供应商");
+    expect(sidebar.collapse).toHaveBeenLastCalledWith(false);
+    expect(sidebar.storage.setItem).toHaveBeenCalledExactlyOnceWith(sidebarPreferenceKey, "false");
+    expect(sidebar.storage.getItem).toHaveBeenCalledExactlyOnceWith(sidebarPreferenceKey);
+    expect(sidebar.storage.setItem).toHaveBeenCalledTimes(1);
   });
 });

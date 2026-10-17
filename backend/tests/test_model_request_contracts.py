@@ -223,6 +223,17 @@ def test_result3_has_exact_settings_and_accepted_three_fact_references():
         validate_model_result(result, settings=settings)
 
 
+@pytest.mark.parametrize("field,value", [
+    pytest.param("unexpected", "value", id="extra-field"),
+    pytest.param("binding_id", True, id="boolean-binding-id"),
+])
+def test_model_result_rejects_extra_fields_and_boolean_binding_lookalikes(field, value):
+    result = result_fixture(synthetic_settings())
+    result[field] = value
+    with pytest.raises(ContractValidationError):
+        validate_model_result(result)
+
+
 def test_chat_result_null_metadata_and_gemini_metadata_binding():
     settings = synthetic_settings()
     result = result_fixture(settings)

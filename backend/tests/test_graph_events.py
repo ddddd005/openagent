@@ -98,10 +98,10 @@ def event_service(tmp_path):
 def event_document(service, *, audience="management", fail=False, allow=True):
     ordinary = node(service.registry, "text", 14101, text="ordinary round")
     output = node(service.registry, "output", 14102)
-    source = node(service.registry, "event.source", 14103)
-    apply = node(service.registry, "event.apply", 14104, fail=fail)
-    event_output = node(service.registry, "event.output", 14105)
-    unrelated = node(service.registry, "event.unrelated", 14106)
+    source = node(service.registry, "event.source", 14103, component_version="1")
+    apply = node(service.registry, "event.apply", 14104, component_version="1", fail=fail)
+    event_output = node(service.registry, "event.output", 14105, component_version="1")
+    unrelated = node(service.registry, "event.unrelated", 14106, component_version="1")
     doc = document([ordinary, output, source, apply, event_output, unrelated], [
         edge(ordinary, output, 14101), edge(source, apply, 14102), edge(apply, event_output, 14103),
     ])

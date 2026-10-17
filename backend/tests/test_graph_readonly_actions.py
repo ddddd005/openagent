@@ -16,6 +16,7 @@ from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import DataTypeDefinition, ObjectBinding, TypeRegistry, WriteIntent
 from phase1_agent.session_objects import SessionObjectStore
 from phase1_agent.storage import SqliteStore
+from test_graph_service import save_definition_fixture
 
 
 def current_document(service):
@@ -39,7 +40,7 @@ def current_document(service):
 
 
 def completed(service, document):
-    service.save_definition(document, expected_revision=0, idempotency_key="definition")
+    save_definition_fixture(service, document)
     view = service.create_session(document["workflow_definition_id"], 1, idempotency_key="session")
     started = service.start(view["workflow_session_id"], expected_revision=view["revision"],
                             idempotency_key="start")
@@ -49,16 +50,14 @@ def completed(service, document):
     return view
 
 
-def test_readonly_consumer_preserves_outputs_and_candidates_are_readonly_without_selection_validation(
-    tmp_path, monkeypatch,
-):
+def test_readonly_consumer_preserves_outputs_without_compiling_unavailable_definition(tmp_path, monkeypatch):
     path = tmp_path / "readonly.sqlite"
     with closing(GraphWorkflowService(path, enabled_packages={"workflow.tools": "1.0.0"})) as service:
         document = current_document(service)
         final = completed(service, document)
         sid = final["workflow_session_id"]
-        available = service.registry.get
-        monkeypatch.setattr(service.registry, "get", lambda component_id, component_version: (
+        available = service.registry.get_definition
+        monkeypatch.setattr(service.registry, "get_definition", lambda component_id, component_version: (
             None if (component_id, component_version) == ("tools.text", "1")
             else available(component_id, component_version)
         ))
@@ -79,9 +78,6 @@ def test_readonly_consumer_preserves_outputs_and_candidates_are_readonly_without
             assert consumer["inputs"] == []
             assert consumer["diagnostics"][0]["reason_code"] == "workflow_definition_unavailable"
             assert consumer["outputs"][0]["payload"]["text"] == "Retained"
-        candidates = service.list_graph_candidates(sid)["candidates"]
-        assert candidates and all(not item["can_select"] for item in candidates)
-        assert candidates[0]["diagnostic"] is None
         assert service.get_session(sid) == before
 
 

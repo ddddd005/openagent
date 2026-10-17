@@ -7,7 +7,7 @@ import pytest
 from phase1_agent.content_contracts import (
     default_presentation, make_prompt_item, prompt_content, text_content,
 )
-from phase1_agent.context_prompt_v6 import _assemble, assemble_native_context_prompt, validate_native_context_prompt
+from phase1_agent.context_prompt_v6 import assemble_native_context_prompt, validate_native_context_prompt
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.prompt_assembly import assemble_prompt_collection
 from phase1_agent.prompt_contract import _build_assembly, assemble_prompt, validate_ready_prompt
@@ -80,24 +80,6 @@ def test_disabled_material_does_not_participate_in_depth_placement(version):
 def test_unknown_placement_profile_is_rejected(version, profile):
     result = assemble(version, 0)
     result["placement_profile"] = profile
-    with pytest.raises(ContractValidationError):
-        validate_native_context_prompt(result)
-
-
-@pytest.mark.parametrize("version", [6])
-def test_frozen_round_based_prompt_remains_readable_without_rewriting_projection(version):
-    result = assemble(version, 1)
-    del result["placement_profile"]
-    if version == 6:
-        projection = _assemble(result["items"], result["context"], result["current_input"],
-                               logical_floors=False)
-        for key, value in zip(("messages", "provenance", "layout"), projection):
-            result[key] = value
-    before = deepcopy(result)
-    assert texts(result) == ["U1", "A1", "M", "U2", "A2", "U3"]
-    assert validate_native_context_prompt(result) == before
-    assert result == before
-    result["placement_profile"] = LOGICAL_FLOOR_PLACEMENT
     with pytest.raises(ContractValidationError):
         validate_native_context_prompt(result)
 

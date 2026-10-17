@@ -2,6 +2,7 @@ import copy
 
 import pytest
 
+from phase1_agent.capability_registry import create_package_registry
 from phase1_agent.graph_contracts import (
     GraphCompiler, GraphDiagnosticError, NodeDefinition, NodePort, NodeRegistry, validate_graph_document,
 )
@@ -92,19 +93,27 @@ def test_graph_acceptance_preserves_content_after_read_only_hook_inspection(hook
         value["count"] = "invalid inspection edit"
         return []
 
-    registry = NodeRegistry()
+    registry = create_package_registry().registry.detached()
     registry.data_types.register(DataTypeDefinition(
         "test.inspected-content", 1, {"type": "object", "required": ["schema_version", "count"],
             "properties": {"schema_version": {"const": 1}, "count": {"type": "integer"}},
             "additionalProperties": False}, scope="content", **{hook_name: inspect},
     ))
     registry.register(NodeDefinition(
+        "test.inspected-source", "1", "Inspection source", "Test", {}, {"type": "object"},
+        outputs=(NodePort("output", "TEXT", data_schema_version=2),),
+    ), lambda config, inputs, context: {"output": {"schema_version": 2, "kind": "workflow.text",
+                                                    "text": "input"}})
+    registry.register(NodeDefinition(
         "test.inspected-output", "1", "Inspected", "Test", {}, {"type": "object"},
+        inputs=(NodePort("input", "TEXT", data_schema_version=2),),
         outputs=(NodePort("output", "test.inspected-content"),), is_output=True,
     ), lambda config, inputs, context: {"output": {"schema_version": 1, "count": 2}})
-    result = run_graph(document([node(1, "test.inspected-output", registry=registry)]), registry)
+    source = node(1, "test.inspected-source", registry=registry)
+    output = node(2, "test.inspected-output", registry=registry)
+    result = run_graph(document([source, output], [edge(10, 1, 2)]), registry)
     assert result.status == "succeeded"
-    assert result.outputs[identity(1)]["output"] == {"schema_version": 1, "count": 2}
+    assert result.outputs[identity(2)]["output"] == {"schema_version": 1, "count": 2}
     assert inspected == [{"schema_version": 1, "count": 2}]
 
 
@@ -190,8 +199,9 @@ def test_graph_v1_remains_strict_and_v2_can_be_saved_when_package_is_missing():
     assert caught.value.reason_code == "graph_missing_package"
     broken = copy.deepcopy(updated)
     broken["object_bindings"][0]["writers"] = [identity(999)]
-    with pytest.raises(GraphDiagnosticError, match="missing node"):
+    with pytest.raises(GraphDiagnosticError) as missing_node:
         validate_graph_document(broken)
+    assert missing_node.value.reason_code == "graph_invalid_document"
 
 
 def test_custom_content_schema_versions_are_registered_and_edges_do_not_silently_convert():

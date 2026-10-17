@@ -3,12 +3,11 @@ import { createPinia, disposePinia, setActivePinia, type Pinia } from "pinia";
 import { useWorkbenchPersistenceStore } from "./workbenchPersistence";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkspaceStore } from "./workspace";
-import { graphClone } from "../domain/workflowGraph";
+import { graphClone, newGraph } from "../domain/workflowGraph";
 import { WORKBENCH_STORAGE_KEY } from "../adapters/workbenchPersistence";
 import { workbenchDraftAddress } from "../adapters/localDraftsApi";
 import { memoryLocalDraftStorage } from "../testUtils/localDraftStorage";
 import { graphWorkbenchStorage } from "../testUtils/graphWorkbenchStorage";
-import { WorkbenchApiError } from "../adapters/workbenchApi";
 
 let pinia: Pinia;
 beforeEach(() => { pinia = createPinia(); setActivePinia(pinia); vi.useFakeTimers(); });
@@ -20,86 +19,97 @@ function memory(initial: string | null = null) {
     setItem: vi.fn((key: string, value: string) => { data.set(key, value); }) };
 }
 describe("backend-authoritative workspace initialization", () => {
-  it("waits for the backend before creating and storing one empty current graph", async () => {
+  it("waits for the backend without creating or storing an empty replacement", async () => {
     const storage = memory(), backend = memoryLocalDraftStorage(), persistence = useWorkbenchPersistenceStore();
     let finish!: (value: null) => void;
     vi.mocked(backend.ports.read).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     const loading = persistence.initialize(storage, backend.ports);
     expect(persistence.status).toBe("loading"); expect(useWorkspaceStore().workflows).toEqual([]);
     finish(null); await loading;
-    expect(useWorkspaceStore().workflows).toHaveLength(1);
-    expect(useWorkflowGraphStore().active?.document.nodes).toEqual([]);
-    expect(persistence.status).toBe("saved");
+    expect(useWorkspaceStore().workflows).toEqual([]);
+    expect(useWorkflowGraphStore().document).toBeNull();
+    expect(persistence.status).toBe("ready");
     expect(storage.setItem).not.toHaveBeenCalled();
-    expect(backend.records.get(backend.key(workbenchDraftAddress))?.value).toMatchObject({ kind: "graph-workbench" });
+    expect(backend.records.size).toBe(0);
+    expect(backend.ports.save).not.toHaveBeenCalled();
+    expect(backend.ports.receipt).not.toHaveBeenCalled();
   });
   it("does not adopt or rewrite old fixed browser material", async () => {
     const raw = JSON.stringify({ schemaVersion: 5, kind: "fixed-workbench" }), storage = memory(raw);
     const backend = memoryLocalDraftStorage(), persistence = useWorkbenchPersistenceStore();
     await persistence.initialize(storage, backend.ports);
-    expect(useWorkspaceStore().workflows).toHaveLength(1); expect("importLegacy" in persistence).toBe(false);
+    expect(useWorkspaceStore().workflows).toEqual([]); expect("importLegacy" in persistence).toBe(false);
     expect(storage.getItem(WORKBENCH_STORAGE_KEY)).toBe(raw); expect(storage.setItem).not.toHaveBeenCalled();
+    expect(backend.records.size).toBe(0);
+    expect(backend.ports.save).not.toHaveBeenCalled();
   });
-  it("preserves a frozen pending command and unknown metadata through the backend and reopening", async () => {
-    const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore(), id = graph.createWorkflow();
-    graph.active!.pending = { action: "save", path: "/api/graph/definitions", body: {
-      document: graphClone(graph.document!), expected_revision: 0, idempotency_key: crypto.randomUUID() } };
-    graph.active!.external_inputs = { original: "untouched" };
-    const original = graphClone(graph.storeSnapshot());
+  it("reopens only frozen pending evidence without restoring or rewriting editor metadata", async () => {
+    const document = newGraph("Frozen original"), id = document.workflow_definition_id;
+    const command = { action: "save", path: "/api/graph/definitions", body: {
+      document: graphClone(document), expected_revision: 0, idempotency_key: crypto.randomUUID() } };
+    const original = { schema_version: 1 as const, entries: { [id]: {
+      document, saved_revision: 0, session_id: null, pending: command,
+      external_inputs: { original: "untouched editor input" },
+    } } };
     const backend = memoryLocalDraftStorage();
-    const configuration = JSON.parse(graphWorkbenchStorage({ graph: original, catalog: workspace.workflows,
+    const configuration = JSON.parse(graphWorkbenchStorage({ graph: original, catalog: [],
       activeWorkflowId: id, selectedWorkflowId: id }).getItem()!);
-    await backend.ports.save({ address: workbenchDraftAddress, format_version: 1, value: configuration,
+    configuration.unknown_metadata = { retained: "original bytes" };
+    const record = await backend.ports.save({ address: workbenchDraftAddress, format_version: 1, value: configuration,
       expected_sequence: 0, idempotency_key: crypto.randomUUID() });
     disposePinia(pinia); pinia = createPinia(); setActivePinia(pinia);
     const persistence = useWorkbenchPersistenceStore();
     await persistence.initialize(memory(), backend.ports);
-    expect(persistence.status).toBe("saved"); expect(useWorkflowGraphStore().storeSnapshot()).toEqual(original);
-    expect(await persistence.save()).toBe(true);
-    expect(backend.records.get(backend.key(workbenchDraftAddress))?.value).toMatchObject({ graph: original });
+    expect(persistence.status).toBe("ready");
+    expect(persistence.legacyRequests).toEqual([{
+      key: `${id}:${command.body.idempotency_key}`, workflowId: id, command,
+      legacy_action: null, basis: { definitionId: id, savedRevision: 0, sessionId: null }, status: "pending",
+    }]);
+    expect(useWorkflowGraphStore().storeSnapshot().entries).toEqual({});
+    expect(JSON.stringify(persistence.legacyRequests)).not.toContain("untouched editor input");
+    expect(await persistence.save()).toBe(false);
+    expect(await backend.ports.read(record.address)).toEqual(record);
+    expect(backend.ports.save).toHaveBeenCalledOnce();
+    expect(backend.ports.receipt).not.toHaveBeenCalled();
+    expect(persistence.preferredActiveWorkflowId).toBe(id);
+    expect(persistence.preferredSelectedWorkflowId).toBe(id);
   });
-  it("retains corrupt browser bytes while using a separately saved backend workspace", async () => {
+  it("retains corrupt browser bytes while refusing retired workbench saving", async () => {
     const storage = memory("{broken"), backend = memoryLocalDraftStorage(), persistence = useWorkbenchPersistenceStore();
     await persistence.initialize(storage, backend.ports);
-    expect(persistence.status).toBe("saved"); expect(await persistence.save()).toBe(true);
+    expect(persistence.status).toBe("ready"); expect(await persistence.save()).toBe(false);
     expect("rawRecord" in persistence).toBe(false); expect("importLegacy" in persistence).toBe(false);
     expect(storage.getItem(WORKBENCH_STORAGE_KEY)).toBe("{broken"); expect(storage.setItem).not.toHaveBeenCalled();
+    expect(backend.ports.save).not.toHaveBeenCalled();
+    expect(persistence.error).toContain("已退役");
   });
-  it("keeps both sides of a stale-page CAS conflict and never overwrites the newer primary record", async () => {
+  it("never overwrites a newer primary record or creates a retired conflict copy", async () => {
     const backend = memoryLocalDraftStorage(), persistence = useWorkbenchPersistenceStore();
+    const initial = { schemaVersion: 7, kind: "graph-workbench",
+      graph: { schema_version: 1, entries: {} }, externally_saved: "first page" };
+    const current = await backend.ports.save({ address: workbenchDraftAddress, format_version: 1,
+      value: initial, expected_sequence: 0, idempotency_key: crypto.randomUUID() });
     await persistence.initialize(memory(), backend.ports);
-    const current = backend.records.get(backend.key(workbenchDraftAddress))!;
-    await backend.ports.save({ address: workbenchDraftAddress, format_version: 1,
+    const newer = await backend.ports.save({ address: workbenchDraftAddress, format_version: 1,
       value: { ...(current.value as object), externally_saved: "newer page" },
       expected_sequence: current.sequence, idempotency_key: crypto.randomUUID() });
-    useWorkflowGraphStore().active!.document.name = "Unsent stale edit";
+    const snapshot = graphClone(useWorkflowGraphStore().storeSnapshot());
+    vi.mocked(backend.ports.save).mockClear();
     expect(await persistence.save()).toBe(false); expect(persistence.status).toBe("blocked");
-    expect(backend.records.get(backend.key(workbenchDraftAddress))?.value).toMatchObject({ externally_saved: "newer page" });
-    expect(persistence.conflictCopyKey).not.toBeNull();
-    const conflict = [...backend.records.values()].find(record => record.address.key === persistence.conflictCopyKey);
-    expect(conflict?.value).toMatchObject({ graph: { entries: {
-      [useWorkspaceStore().activeWorkflowId]: { document: { name: "Unsent stale edit" } },
-    } } });
-  });
-  it("debounces edits and does not report saved after an unknown durable write", async () => {
-    const backend = memoryLocalDraftStorage(), persistence = useWorkbenchPersistenceStore();
-    await persistence.initialize(memory(), backend.ports);
-    const original = graphClone(backend.records.get(backend.key(workbenchDraftAddress)));
-    vi.mocked(backend.ports.save).mockRejectedValueOnce(new WorkbenchApiError("unknown", "disk response lost"));
-    useWorkflowGraphStore().active!.document.name = "Local edit";
-    expect(persistence.status).toBe("pending");
-    await vi.advanceTimersByTimeAsync(200);
-    expect(persistence.status).toBe("blocked");
-    expect(backend.records.get(backend.key(workbenchDraftAddress))).toEqual(original);
-    expect(await persistence.save()).toBe(false);
-    expect(backend.ports.receipt).toHaveBeenCalled();
+    expect(await backend.ports.read(workbenchDraftAddress)).toEqual(newer);
+    expect(persistence.conflictCopyKey).toBeNull();
+    expect(backend.records.size).toBe(1);
+    expect(backend.ports.save).not.toHaveBeenCalled();
+    expect(useWorkflowGraphStore().storeSnapshot()).toEqual(snapshot);
   });
   it("blocks writes after backend read failure without creating an empty replacement", async () => {
     const backend = memoryLocalDraftStorage();
     vi.mocked(backend.ports.read).mockRejectedValue(new Error("storage contract unreadable"));
     const persistence = useWorkbenchPersistenceStore();
     await persistence.initialize(memory(), backend.ports);
-    expect(persistence.status).toBe("blocked"); expect(await persistence.save()).toBe(false);
+    expect(persistence.status).toBe("ready");
+    expect(persistence.error).toContain("storage contract unreadable");
+    expect(await persistence.save()).toBe(false);
     expect(useWorkspaceStore().workflows).toEqual([]); expect(backend.ports.save).not.toHaveBeenCalled();
   });
 });

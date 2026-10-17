@@ -268,8 +268,11 @@ def test_pending_pause_on_last_node_does_not_invent_resumable_work(tmp_path):
 
         service.registry.register(NodeDefinition(
             "sample.last", "1", "Last", "Sample", {}, {"type": "object"}, is_output=True,
+            inputs=(NodePort("input", "TEXT", data_schema_version=2),),
             outputs=(NodePort("output", "TEXT", data_schema_version=2),)), execute)
-        initial = create(service, document([node(service.registry, "sample.last", 701)], []))
+        source = node(service.registry, "tools.text", 700, text="connected input")
+        last = node(service.registry, "sample.last", 701)
+        initial = create(service, document([source, last], [edge(source, last, 70)]))
         sid, chain_id = initial["workflow_session_id"], start(service, initial)
         try:
             assert entered.wait(5)
@@ -279,7 +282,8 @@ def test_pending_pause_on_last_node_does_not_invent_resumable_work(tmp_path):
         service.wait(chain_id)
         final = service.get_session(sid)
         assert final["status"] == "succeeded" and final["active_chain_run_id"] is None
-        assert final["chains"][-1]["next_node_index"] == 1
+        chain = final["chains"][-1]
+        assert chain["next_node_index"] == len(chain["ordered_nodes"])
 
 
 def test_service_shutdown_routes_pause_to_a_cooperative_active_handle_and_releases_it(tmp_path):
@@ -315,10 +319,13 @@ def test_service_shutdown_routes_pause_to_a_cooperative_active_handle_and_releas
     registry.executors.register_pause_support(PauseSupport(reference), lambda handle, token: handle is token)
     registry.register(NodeDefinition(
         "sample.shutdown.node", "1", "Shutdown", "Sample", {}, {"type": "object"},
+        inputs=(NodePort("input", "TEXT", data_schema_version=2),),
         outputs=(NodePort("output", "TEXT", data_schema_version=2),), is_output=True),
         None, executor_ref=reference)
     service = GraphWorkflowService(tmp_path / "shutdown.sqlite", registry=registry)
-    initial = create(service, document([node(service.registry, "sample.shutdown.node", 801)], []))
+    source = node(service.registry, "tools.text", 800, text="connected input")
+    output = node(service.registry, "sample.shutdown.node", 801)
+    initial = create(service, document([source, output], [edge(source, output, 80)]))
     chain_id = start(service, initial)
     assert entered.wait(5)
     host = service._runtime_hosts[chain_id]

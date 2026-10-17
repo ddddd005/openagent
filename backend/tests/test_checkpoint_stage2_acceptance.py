@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from phase1_agent.graph_contracts import NodeDefinition
 from phase1_agent.graph_service import GraphWorkflowService
-from phase1_agent.host_sdk import ObjectBinding
+from phase1_agent.host_sdk import DataTypeDefinition, ObjectBinding
 from test_context_native_integration import (
     NativeTransport,
     injected_once_contents,
@@ -95,48 +95,74 @@ def _install_noncheckpoint_runtime_state(service, document):
         "config": {},
     })
 
-    register = versioned_node(service, "tools.variable-register", "1", 4900)
-    register["config"].update(
-        object_key="outside/checkpoint",
-        name="source_only",
-        value_type="string",
-        has_initial=True,
-        initial_value="registered",
-    )
-    assign = versioned_node(service, "tools.variable-assign", "1", 4901)
-    assign["config"].update(
-        object_key="outside/checkpoint",
-        operation="set",
-        value="source-only",
-    )
-    document["nodes"].extend((register, assign))
+    service.registry.data_types.register(DataTypeDefinition(
+        "test.checkpoint-external-state",
+        1,
+        {
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+            "additionalProperties": False,
+        },
+        default_value={"value": "initial"},
+    ))
+
+    def write_external_state(config, inputs, context):
+        current = context.object_read(config["object_key"])
+        context.object_write(
+            config["object_key"], {"value": "source-only"}, expected_revision=current["revision"],
+        )
+        return {}
+
+    service.registry.register(NodeDefinition(
+        "test.checkpoint-external-writer",
+        "1",
+        "Checkpoint-excluded external object writer",
+        "Test",
+        {"object_key": "outside/checkpoint"},
+        {
+            "type": "object",
+            "properties": {"object_key": {"type": "string"}},
+            "required": ["object_key"],
+            "additionalProperties": False,
+        },
+        capabilities=("objects:read", "objects:write"),
+        object_accesses=({
+            "config_field": "object_key",
+            "multiple": False,
+            "type_id": "test.checkpoint-external-state",
+            "schema_version": 1,
+            "access": "read_write",
+        },),
+    ), write_external_state)
+    external_writer = versioned_node(service, "test.checkpoint-external-writer", "1", 4900)
+    document["nodes"].append(external_writer)
     document.setdefault("object_bindings", []).append(ObjectBinding(
         "outside/checkpoint",
-        "workflow.variable",
+        "test.checkpoint-external-state",
         1,
         "shared",
-        readers=(register["node_binding_id"], assign["node_binding_id"]),
-        writers=(register["node_binding_id"], assign["node_binding_id"]),
+        readers=(external_writer["node_binding_id"],),
+        writers=(external_writer["node_binding_id"],),
     ).to_dict())
     document.setdefault("execution_roots", []).extend((
-        fixed_id, runtime_id, register["node_binding_id"], assign["node_binding_id"],
+        fixed_id, runtime_id, external_writer["node_binding_id"],
     ))
-    document.setdefault("control_edges", []).append({
-        "edge_id": str(uuid4()),
-        "source_node_id": register["node_binding_id"],
-        "target_node_id": assign["node_binding_id"],
-    })
     merge = next(node for node in document["nodes"] if node["component_id"] == "context.merge")
     document.setdefault("control_edges", []).append({
         "edge_id": str(uuid4()),
         "source_node_id": merge["node_binding_id"],
         "target_node_id": runtime_id,
     })
+    document["control_edges"].append({
+        "edge_id": str(uuid4()),
+        "source_node_id": merge["node_binding_id"],
+        "target_node_id": external_writer["node_binding_id"],
+    })
     return {
         "fixed_node_id": fixed_id,
         "runtime_node_id": runtime_id,
-        "register_node_id": register["node_binding_id"],
-        "assign_node_id": assign["node_binding_id"],
+        "external_writer_node_id": external_writer["node_binding_id"],
     }
 
 
@@ -179,7 +205,9 @@ def test_full_diff_fork_loads_only_declared_and_agent_state_then_runs_normally(t
         assert second["private_states"][extra["runtime_node_id"]] == {"rounds": 2}
         assert second["data"]["values"]["acceptance_rounds"]["value"] == 2
         assert second["objects"]["outside/checkpoint"]["value"]["value"] == "source-only"
-        assert set(second_history["state"]) == {"configuration", "agent_contexts"}
+        assert set(second_history["state"]) == {
+            "configuration", "agent_contexts", "variables", "chat_contexts",
+        }
         assert "outside/checkpoint" not in json.dumps(second_history["state"])
         assert "acceptance_rounds" not in json.dumps(second_history["state"])
 
@@ -197,7 +225,7 @@ def test_full_diff_fork_loads_only_declared_and_agent_state_then_runs_normally(t
         assert target["objects"]["context-a"]["revision_id"] != source_object["revision_id"]
         assert target["private_states"][extra["runtime_node_id"]] == {"rounds": 0}
         assert target["data"]["values"] == {}
-        assert target["objects"]["outside/checkpoint"]["value"]["registered"] is False
+        assert target["objects"]["outside/checkpoint"]["value"] == {"value": "initial"}
 
         continued = native_run(service, target, "Continue from the checkpoint.")
         assert continued["status"] == "succeeded", continued["chains"]
@@ -222,7 +250,7 @@ def test_signed_provider_content_survives_fork_source_deletion_and_refork(tmp_pa
             tmp_path / "checkpoint-signed-context.sqlite",
             public_model_factory=fixture.factory)) as service:
         fixture.write_provider(service)
-        document, _ = gemini_graph(service, "native")
+        document = gemini_graph(service, "native")
         source = native_run(service, create(service, document), "Signed accepted input.")
         assert source["status"] == "succeeded", source["chains"]
         source_history = checkpoint_history(service, source)

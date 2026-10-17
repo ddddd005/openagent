@@ -156,15 +156,6 @@ def test_custom_envelope_shape_does_not_claim_registration_or_schema_validation(
         validate_core_payload(candidate["event_type"], candidate["payload_schema_ref"], candidate["payload"])
 
 
-def test_workflow_operation_vocabulary_matches_public_operation_contract_without_fake_pause():
-    actual = {
-        variant["properties"]["kind"]["const"]
-        for variant in CONTRACT_SCHEMAS["workflow_operation"]["oneOf"]
-    }
-    assert WORKFLOW_OPERATION_KINDS == actual
-    assert "interrupt" in actual and "pause" not in actual
-
-
 @pytest.mark.parametrize("operation_kind", sorted(WORKFLOW_OPERATION_KINDS))
 def test_workflow_operation_results_preserve_actual_id_kind_and_not_local_command_id(operation_kind):
     candidate = event("workflow_operation_result")

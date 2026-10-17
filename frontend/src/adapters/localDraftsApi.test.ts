@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createLocalDraftChannel, isLocalDraftAddress, isLocalDraftRecord, readLocalDraft, saveLocalDraft, workbenchDraftAddress } from "./localDraftsApi";
+import { createLocalDraftChannel, isLocalDraftAddress, isLocalDraftRecord, readLocalDraft, readLocalDraftReceipt, saveLocalDraft, workbenchDraftAddress } from "./localDraftsApi";
 import { memoryLocalDraftStorage } from "../testUtils/localDraftStorage";
 import { WorkbenchApiError } from "./workbenchApi";
 import { graphClone } from "../domain/workflowGraph";
@@ -89,10 +89,16 @@ describe("authoritative local draft transport", () => {
         operation_scope: "management", idempotency_key: request.idempotency_key,
         request_sha256: "a".repeat(64), authority: "service_receipt", target: {},
         accepted: { draft_address: request.address, draft_sequence: 1, draft_format_version: 1, deleted: false } } };
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(envelope))));
-    expect(await saveLocalDraft(request)).toEqual(record);
+    const fetcher = vi.fn(async (_path: string, _init?: RequestInit) => new Response(JSON.stringify({ schema_version: 1,
+      kind: "workflow.application-receipt-read", outcome: "matched", reason_code: "receipt_matched",
+      receipt: envelope.receipt, result: envelope.result })));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(saveLocalDraft(request)).rejects.toMatchObject({ code: "local_draft_write_retired" });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(await readLocalDraftReceipt(request)).toEqual(record);
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({ operation: "draft.save", parameters: request });
     envelope.result.value = { raw: "foreign value" };
-    await expect(saveLocalDraft(request)).rejects.toMatchObject({ kind: "unknown" });
+    await expect(readLocalDraftReceipt(request)).rejects.toMatchObject({ kind: "unknown" });
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ...graphClone(record),
       address: { ...record.address, key: "other" } }))));
     await expect(readLocalDraft(request.address)).rejects.toMatchObject({ kind: "unavailable" });

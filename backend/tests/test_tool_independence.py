@@ -185,7 +185,7 @@ class FakeModel:
         ))
 
 model = FakeModel()
-result = SnapshotKernel().run(snapshot, registered, model, max_model_requests=2)
+result = SnapshotKernel().run(snapshot, registered, model)
 assert result.final["value"] == {"result": "done"}
 assert effects == ["offline"] and model.requests == 2
 assert len(result.messages) == 4

@@ -14,7 +14,7 @@ from phase1_agent.context_prompt_v6 import (
     assemble_native_context_prompt, native_context_prompt_references, validate_native_context_prompt,
 )
 from phase1_agent.context_contract import project_agent_context_message
-from phase1_agent.context_v4 import validate_native_context_view
+from phase1_agent.context_v4 import validate_native_context_view_v5
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.contract_graph import validate_context_message_history, validate_message_history
 from phase1_agent.contracts_v2 import validate_context_history_message, validate_record
@@ -52,13 +52,13 @@ def content(*items):
 
 def view(messages=None, layout=None, *, basis_revision=None, head_revision=1):
     projected_messages = [project_agent_context_message(message) for message in (messages or [])]
-    return validate_native_context_view({
-        "schema_version": 4, "kind": "workflow.context-view",
-        "owner": {"workflow_session_id": uid(800), "object_key": "context", "agent_node_id": uid(801)},
+    return validate_native_context_view_v5({
+        "schema_version": 5, "kind": "workflow.context-view",
+        "owner": {"workflow_session_id": uid(800), "object_key": "context"},
         "basis": {"revision_id": basis_revision or uid(802), "head_revision": head_revision},
         "messages": projected_messages, "layout": layout or [], "accepted_delta_ids": [],
         "applied_delta_ids": [], "generation": 0,
-        "derivation": {"operation": "read", "input_view_ref": None, "update_ref": None},
+        "derivation": {"operation": "read", "input_view_ref": None, "receipts_ref": None},
     })
 
 

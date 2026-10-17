@@ -394,14 +394,15 @@ def test_pause_during_retry_starts_new_logical_request_without_resetting_attempt
     assert (result.model_requests, result.attempts) == (2, 2)
 
 
-def test_exhausted_budget_can_settle_pending_tool_but_never_sends_another_model_request():
+def test_pause_settles_pending_tool_once_and_preserves_request_counts_and_history():
     effects = []
     snapshot, tools = setup(lambda text: effects.append(text) or {"text": text})
     adapter = ScriptedAdapter(batch(
         call("inspect_text", '{"text":"first"}', "provider-one"),
         call("inspect_text", '{"text":"pending"}', "provider-two"),
-    ))
+    ), final("done"))
     checks = 0
+    events = []
 
     def boundary(kind):
         nonlocal checks
@@ -412,23 +413,39 @@ def test_exhausted_budget_can_settle_pending_tool_but_never_sends_another_model_
 
     with pytest.raises(KernelPaused) as caught:
         SnapshotKernel().run(
-            snapshot, tools, adapter, max_model_requests=1,
-            on_boundary=boundary,
+            snapshot, tools, adapter, on_boundary=boundary,
+            on_tool_event=lambda *event: events.append(event),
         )
     checkpoint = caught.value.checkpoint
     assert (checkpoint.model_requests, checkpoint.attempts) == (1, 1)
     assert len(checkpoint.pending_tools) == 1
     assert effects == ["first"]
-
-    with pytest.raises(RunFailed, match="model_request_budget_exhausted") as exhausted:
-        SnapshotKernel().run(
-            snapshot, tools, adapter, max_model_requests=1,
-            checkpoint=checkpoint,
-        )
-    assert effects == ["first", "pending"]
+    assert len(checkpoint.messages) == 2
     assert len(adapter.requests) == 1
-    assert (exhausted.value.model_requests, exhausted.value.attempts) == (1, 1)
-    assert len(exhausted.value.messages) == 3
+    first_call, second_call = [
+        block["tool_call_id"] for block in checkpoint.messages[0]["blocks"]
+        if block["kind"] == "tool_call"
+    ]
+    assert checkpoint.messages[1]["blocks"][0]["tool_call_id"] == first_call
+
+    result = SnapshotKernel().run(
+        snapshot, tools, adapter, checkpoint=checkpoint,
+        on_tool_event=lambda *event: events.append(event),
+    )
+
+    assert result.final["value"] == {"text": "done"}
+    assert effects == ["first", "pending"]
+    assert len(adapter.requests) == 2
+    assert (result.model_requests, result.attempts) == (2, 2)
+    assert [message["blocks"][0]["tool_call_id"] for message in result.messages[1:3]] == [
+        first_call, second_call,
+    ]
+    assert [event[0] for event in events if event[1] == first_call] == [
+        "queue", "start", "settle",
+    ]
+    assert [event[0] for event in events if event[1] == second_call] == [
+        "queue", "start", "settle",
+    ]
 
 
 def test_resume_preserves_final_correction_budget():

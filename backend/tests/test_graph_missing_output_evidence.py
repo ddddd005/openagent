@@ -13,6 +13,7 @@ from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_records import is_graph_record, validate_graph_bundle
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.storage import SqliteStore
+from test_graph_service import save_definition_fixture
 
 
 def uid(number):
@@ -36,7 +37,7 @@ def create(service, nodes, edges):
     document = {"schema_version": 2, "workflow_definition_id": str(uuid4()), "revision": 1,
                 "name": "Missing optional output", "nodes": nodes, "edges": edges,
                 "object_bindings": [], "package_lock": list(service.registry.execution_package_lock)}
-    service.save_definition(document, expected_revision=0, idempotency_key=str(uuid4()))
+    save_definition_fixture(service, document)
     return service.create_session(document["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
 
 

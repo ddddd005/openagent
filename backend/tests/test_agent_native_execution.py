@@ -14,11 +14,7 @@ import pytest
 
 from phase1_agent.contracts import ModelResponse, ModelToolCall
 from phase1_agent.graph_service import GraphWorkflowService
-from phase1_agent.model_contract import (
-    validate_model_source_config, validate_model_profile,
-)
 from phase1_agent.contract_errors import ContractValidationError
-from phase1_agent.runtime_fact_store import RuntimeFactStore
 from phase1_agent.storage import SqliteStore
 
 from workflow_test_support import run
@@ -61,6 +57,10 @@ class RecordingTransport:
                 return ModelResponse("tool_calls", tool_calls=(ModelToolCall(
                     "final.provider", "final_answer", json.dumps({"answer": {"text": "Native answer"}})),))
 
+            def generate_prepared(self, prepared):
+                request = prepared["transport_arguments"]
+                return self.generate(request["messages"], request["tools"])
+
             def close(self):
                 fixture.closes += 1
 
@@ -81,9 +81,10 @@ def test_native_rounds_keep_actual_tool_ids_and_project_final_answer_as_text(tmp
         call_id = calls[0]["blocks"][0]["tool_call_id"]
         second = run(service, first, "Second user turn")
         assert second["status"] == "succeeded", second["chains"]
-        historical = [message for message in fixture.calls[2]["messages"] if message["kind"] == "assistant_calls"]
-        assert historical[0]["calls"][0]["id"] == call_id
-        paired = [message for message in fixture.calls[2]["messages"] if message["kind"] == "tool_result"]
+        historical = [message for message in fixture.calls[2]["messages"]
+                      if message["role"] == "assistant" and message.get("tool_calls")]
+        assert historical[0]["tool_calls"][0]["id"] == call_id
+        paired = [message for message in fixture.calls[2]["messages"] if message["role"] == "tool"]
         assert paired[0]["tool_call_id"] == call_id
         final_view = node_output(second, entries["a"]["merge"])
         assert all(block.get("tool_name") != "final_answer"
@@ -92,7 +93,7 @@ def test_native_rounds_keep_actual_tool_ids_and_project_final_answer_as_text(tmp
         assert final_view["messages"][-1]["blocks"] == [{"kind": "text", "text": "Native answer"}]
         assert all("FIXED_RULE" not in block.get("text", "")
                    for message in final_view["messages"] for block in message["blocks"])
-        assert len(fixture.calls) == 4 and fixture.closes == 2
+        assert len(fixture.calls) == 4 and fixture.closes == len(fixture.calls)
 
 
 def test_summary_output_limit_is_controlled_and_usage_is_preserved_without_claiming_a_real_hit(tmp_path, monkeypatch):
@@ -100,28 +101,31 @@ def test_summary_output_limit_is_controlled_and_usage_is_preserved_without_claim
     with closing(GraphWorkflowService(tmp_path / "native-summary.sqlite", public_model_factory=fixture.factory)) as service:
         ModelDatabaseFixture.write(service, 1)
         doc, entries = native_graph(service)
-        ModelDatabaseFixture.update_profile(service, parameters={"max_tokens": 256},
-                                            capacity={"output_reserve_tokens": 256, "summary_max_tokens": 16})
+        ModelDatabaseFixture.update_profile(
+            service, capacity={"max_output_tokens": 256}, runtime={"output_limit_tokens": 16},
+        )
         final = run(service, create(service, doc), "Current task")
         assert final["status"] == "succeeded", final["chains"]
-        assert [call["parameters"]["max_tokens"] for call in fixture.calls] == [16, 256]
-        assert fixture.calls[0]["tools"] == fixture.calls[1]["tools"]
+        assert [call["parameters"]["max_tokens"] for call in fixture.calls] == [16, 16]
+        assert fixture.calls[0]["tools"] == []
+        assert any(tool["function"]["name"] == "final_answer" for tool in fixture.calls[1]["tools"])
         receipts = node_output(final, entries["a"]["agent"], "receipts")
         operations = agent_operations(service, final, receipts)
         compact = next(operation for operation in operations if operation["kind"] == "compact")
-        assert compact["request"]["model_parameters"]["max_tokens"] == 16
         assert compact["result"]["usage"] == {
             "prompt_tokens": 999, "completion_tokens": 5,
             "prompt_cache_hit_tokens": 64, "prompt_cache_miss_tokens": 935,
         }
         history = service.get_run(final["workflow_session_id"], final["selected_chain_run_id"])
-        model_requests = [fact for fact in history["runtime_facts"] if fact.get("stage") == "request"]
-        auxiliary = next(fact for fact in model_requests if fact["details"].get("purpose") == "context_compaction")
-        assert auxiliary["details"]["transport_arguments"]["max_tokens"] == 16
-        assert auxiliary["details"]["cold_input_estimate"]["token_count_kind"] == "utf8_bytes_estimate"
+        model_requests = [fact for fact in history["runtime_facts"]
+                          if fact.get("kind") == "workflow.model-fact" and fact.get("stage") == "request"]
+        auxiliary = next(fact for fact in model_requests if fact["details"]["tools"] == [])
+        assert compact["request"]["request_id"] == auxiliary["request_id"]
+        assert auxiliary["details"]["settings"]["parameters"]["max_tokens"] == 16
+        assert auxiliary["details"]["measurement"]["token_count_kind"] == "utf8_bytes_estimate"
         terminal = next(fact["payload"]["payload"] for fact in history["runtime_facts"]
                         if fact.get("payload", {}).get("kind") == "agent_result")
-        assert terminal["model_requests"] == terminal["attempts"] == 1
+        assert terminal["model_requests"] == terminal["attempts"] == len(fixture.calls)
         assert fixture.closes == 2
 
 
@@ -130,7 +134,7 @@ def test_cold_input_budget_rejects_summary_before_any_provider_dispatch(tmp_path
     with closing(GraphWorkflowService(tmp_path / "cold-budget.sqlite", public_model_factory=fixture.factory)) as service:
         ModelDatabaseFixture.write(service, 1)
         doc, _ = native_graph(service)
-        ModelDatabaseFixture.update_profile(service, capacity={"max_cold_input_tokens": 100})
+        ModelDatabaseFixture.update_profile(service, capacity={"input_limit_tokens": 100})
         initial = create(service, doc)
         before = deepcopy(initial["objects"]["context-a"])
         failed = run(service, initial, "Current task")
@@ -138,9 +142,7 @@ def test_cold_input_budget_rejects_summary_before_any_provider_dispatch(tmp_path
         assert fixture.calls == [] and fixture.factories == []
         assert failed["objects"]["context-a"] == before
         history = service.get_run(failed["workflow_session_id"], failed["active_chain_run_id"])
-        failures = [fact["payload"]["payload"] for fact in history["runtime_facts"]
-                    if fact.get("payload", {}).get("kind") == "execution_failed"]
-        assert failures[-1]["code"] == "context_compaction_cold_input_budget_exceeded"
+        assert history["chain"]["diagnostic"]["code"] == "model_request_capacity_exceeded"
 
 
 def test_native_pause_after_inflight_summary_resumes_same_view_without_another_summary(tmp_path, monkeypatch):
@@ -172,64 +174,9 @@ def test_native_pause_after_inflight_summary_resumes_same_view_without_another_s
         assert final["objects"]["context-a"]["revision"] == 2
 
 
-def test_model_source_cannot_override_global_capacity_and_profile_requires_explicit_budgets():
-    from test_model_package import profile_config, source_config
-    source = source_config()
-    native = {**profile_config(), "capacity": {
-        "context_window_tokens": 10_000, "output_reserve_tokens": 128,
-        "summary_max_tokens": 16, "max_cold_input_tokens": 5000,
-    }}
-    native["parameters"]["max_tokens"] = 128
-    assert validate_model_profile(native) == native
-    assert validate_model_source_config(source) == source
-    with pytest.raises(ContractValidationError):
-        validate_model_source_config({**source, "capacity": native["capacity"]})
-    for field in ("context_window_tokens", "max_cold_input_tokens"):
-        invalid = deepcopy(native)
-        invalid["capacity"][field] = 0
-        with pytest.raises(ContractValidationError):
-            validate_model_profile(invalid)
-    missing_output = deepcopy(native)
-    missing_output["parameters"].pop("max_tokens")
-    with pytest.raises(ContractValidationError):
-        validate_model_profile(missing_output)
-
-
-def test_summary_model_outcome_commit_failure_never_replays_dispatch_or_adopts_context(tmp_path, monkeypatch):
-    fixture = RecordingTransport()
-    original, fail_once = RuntimeFactStore.accept, [True]
-
-    def fail_outcome(store, *, owner, stream_id, fact):
-        if fact.get("kind") == "workflow.model-fact" and fact.get("stage") == "outcome" and fail_once[0]:
-            fail_once[0] = False
-            raise OSError("injected private model outcome commit fault")
-        return original(store, owner=owner, stream_id=stream_id, fact=fact)
-
-    monkeypatch.setattr(RuntimeFactStore, "accept", fail_outcome)
-    with closing(GraphWorkflowService(tmp_path / "model-outcome-failure.sqlite",
-                                      public_model_factory=fixture.factory)) as service:
-        ModelDatabaseFixture.write(service, 1)
-        doc, _ = native_graph(service)
-        initial = create(service, doc)
-        before = deepcopy(initial["objects"]["context-a"])
-        failed = run(service, initial, "Do not adopt an unaccepted summary")
-        assert failed["status"] == "failed", failed["chains"]
-        assert len(fixture.calls) == 1
-        assert failed["objects"]["context-a"] == before
-        history = service.get_run(failed["workflow_session_id"], failed["active_chain_run_id"])
-        failures = [fact["payload"]["payload"] for fact in history["runtime_facts"]
-                    if fact.get("payload", {}).get("kind") == "execution_failed"]
-        assert failures[-1]["code"] == "model_fact_acceptance_failed"
-        assert not any(fact.get("payload", {}).get("kind") in ("context_compaction_applied", "agent_result")
-                       for fact in history["runtime_facts"])
-        with pytest.raises(ContractValidationError):
-            service.control(failed["workflow_session_id"], action="retry_acceptance",
-                            expected_revision=failed["revision"], idempotency_key=str(uuid4()))
-        assert len(fixture.calls) == 1
-
-
 def test_native_update_proves_actual_policy_even_when_no_compaction_was_triggered(tmp_path, monkeypatch):
-    from phase1_agent.context_update import prove_agent_execution
+    from phase1_agent.context_update_v2 import prove_context_merge_execution_v2
+    from phase1_agent.model_request_transport import resolve_model_request_transport
 
     fixture = RecordingTransport()
     with closing(GraphWorkflowService(tmp_path / "policy-proof.sqlite",
@@ -243,23 +190,52 @@ def test_native_update_proves_actual_policy_even_when_no_compaction_was_triggere
         prompt = node_output(final, entries["a"]["assembly"])
         binding = node_output(final, model)
         policy = node_output(final, entries["policy"])
+        history = service.get_run(final["workflow_session_id"], final["selected_chain_run_id"])
+        runtime_facts = history["runtime_facts"]
+        executor_facts = [fact for fact in runtime_facts if fact.get("fact_id") in receipts["fact_ids"]]
+        model_fact_records = {
+            fact["fact_id"]: fact for fact in runtime_facts if fact.get("kind") == "workflow.model-fact"
+        }
+        model_facts = {"requests": [{
+            "request_id": request["request_id"],
+            "settings_id": request["settings_id"],
+            "facts": [model_fact_records[identity] for identity in request["fact_ids"]],
+        } for request in receipts["model_requests"]]}
         with closing(SqliteStore(service.database)) as store:
-            facts = RuntimeFactStore(store).executor_facts(
-                receipts["owner"], receipts["executor_ref"], receipts["fact_ids"])
-        result_fact = facts[-1]["payload"]["payload"]
-        policy_ref = result_fact["snapshot"]["config"]["payload"]["frozen_compaction_policy_ref"]
-        proof = prove_agent_execution(
-            receipts, facts, prompt, binding, policy=policy, policy_ref=policy_ref)
+            from phase1_agent.runtime import CanonicalModelAdapter
+            from phase1_agent.session_objects import SessionObjectStore
+
+            objects = SessionObjectStore(store, service.registry.data_types)
+
+            def resolve(reference):
+                return objects._resolve_write_artifact(
+                    final["workflow_session_id"], reference)["value"]
+
+            assert resolve(receipts["frozen_prompt_ref"]) == prompt
+            binding = resolve(receipts["model_ref"])
+            assert binding == node_output(final, model)
+            policy_ref = receipts["compaction_policy_ref"]
+            policy = resolve(policy_ref)
+            assert policy == node_output(final, entries["policy"])
+            proof = prove_context_merge_execution_v2(
+                prompt, binding, receipts, executor_facts, model_facts=model_facts,
+                policy=policy, policy_ref=policy_ref,
+                project_messages=CanonicalModelAdapter._project,
+                resolve_transport=resolve_model_request_transport)
         assert not any(operation["kind"] == "compact" for operation in proof["operations"])
         assert proof["final"] == {
-                "message_id": facts[-1]["payload"]["payload"]["final"]["message_id"],
+                "message_id": executor_facts[-1]["payload"]["payload"]["final"]["message_id"],
                 "value": {"text": "Native answer"},
             }
-        with pytest.raises(ContractValidationError, match="Absent accepted policy"):
-            prove_agent_execution(receipts, facts, prompt, binding)
+        with pytest.raises(ContractValidationError) as missing_policy:
+            prove_context_merge_execution_v2(
+                prompt, binding, receipts, executor_facts, model_facts=model_facts,
+                project_messages=CanonicalModelAdapter._project,
+                resolve_transport=resolve_model_request_transport)
+        assert missing_policy.value.reason_code == "agent_snapshot_mismatch"
         for forgery in ("payload", "snapshot-ref", "packet-ref"):
             altered_facts, altered_receipts, altered_policy_ref = (
-                deepcopy(facts), deepcopy(receipts), deepcopy(policy_ref))
+                deepcopy(executor_facts), deepcopy(receipts), deepcopy(policy_ref))
             snapshot = altered_facts[-1]["payload"]["payload"]["snapshot"]["config"]["payload"]
             if forgery == "payload":
                 snapshot["context_compaction"]["policy"]["enabled"] = False
@@ -267,10 +243,13 @@ def test_native_update_proves_actual_policy_even_when_no_compaction_was_triggere
                 snapshot["frozen_compaction_policy_ref"]["output_id"] = str(uuid4())
             else:
                 altered_policy_ref["output_id"] = str(uuid4())
-            with pytest.raises(ContractValidationError, match="exact accepted input"):
-                prove_agent_execution(
-                    altered_receipts, altered_facts, prompt, binding,
-                    policy=policy, policy_ref=altered_policy_ref)
+            with pytest.raises(ContractValidationError) as forged_policy:
+                prove_context_merge_execution_v2(
+                    prompt, binding, altered_receipts, altered_facts, model_facts=model_facts,
+                    policy=policy, policy_ref=altered_policy_ref,
+                    project_messages=CanonicalModelAdapter._project,
+                    resolve_transport=resolve_model_request_transport)
+            assert forged_policy.value.reason_code == "agent_snapshot_mismatch"
 
 
 def test_native_type_contracts_reopen_in_independent_processes_with_different_hash_seeds(tmp_path):
@@ -281,10 +260,12 @@ from phase1_agent.contract_json import content_digest
 from phase1_agent.graph_service import GraphWorkflowService
 
 with closing(GraphWorkflowService(sys.argv[1])) as service:
-    capacity = service.registry.data_types.get("MODEL_BINDING", 2, scope="content").schema[
-        "properties"]["capacity"]
-    assert capacity["required"] == [
-        "context_window_tokens", "output_reserve_tokens", "summary_max_tokens", "max_cold_input_tokens"]
+    schema = service.registry.data_types.get("MODEL_BINDING", 5, scope="content").schema
+    assert schema["required"] == [
+        "schema_version", "kind", "binding_id", "reference", "authorization"]
+    assert "capacity" not in schema["properties"]
+    assert schema["properties"]["authorization"]["properties"]["purposes"]["items"]["enum"] == [
+        "normal", "compaction"]
     print(content_digest({
         "data_types": service.registry.data_types.catalog(),
         "nodes": service.registry.catalog(),

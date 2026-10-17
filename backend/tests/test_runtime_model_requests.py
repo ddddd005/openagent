@@ -35,7 +35,7 @@ class KernelHarness:
             self.snapshot,
             host_call=lambda capability, operation, payload: self.host.mock.service(
                 self.host.mock.context, capability, operation, payload),
-            publish_fact=self.publish, release_run=self.host.mock.close,
+            publish_fact=self.publish,
         )
         self.host.mock.response = ModelResponse("tool_calls", tool_calls=(
             ModelToolCall("provider-final", "final_answer", '{"answer":{"text":"done"}}'),
@@ -68,12 +68,12 @@ def kernel_host(tmp_path):
 
 
 @pytest.mark.parametrize("event_kind,attempts", [("model_request", 0), ("model_result", 1)])
-def test_event_ack_loss_preserves_original_counts_id_and_result_at_exhausted_limit(
+def test_event_ack_loss_preserves_original_request_and_result_without_replay(
         kernel_host, event_kind, attempts):
     fixture = kernel_host
     fixture.fail_kind = event_kind
     with pytest.raises(RunFailed) as caught:
-        fixture.run(max_model_requests=1, max_model_attempts=1)
+        fixture.run()
     failed = caught.value
     assert failed.code == "model_execution_fact_acceptance_failed"
     assert (failed.model_requests, failed.attempts) == (1, attempts)
@@ -85,9 +85,7 @@ def test_event_ack_loss_preserves_original_counts_id_and_result_at_exhausted_lim
     assert not any(event["kind"] == "execution_failed" for event in fixture.kernel_events)
 
     fixture.save_output_limit()
-    result = fixture.run(
-        checkpoint=failed.checkpoint, max_model_requests=1, max_model_attempts=1,
-    )
+    result = fixture.run(checkpoint=failed.checkpoint)
     assert result.final["value"] == {"text": "done"}
     assert (result.model_requests, result.attempts) == (1, 1)
     assert len(fixture.host.mock.communications) == fixture.host.read_count == 1
@@ -114,29 +112,35 @@ def test_pause_before_accept_retains_real_response_and_resumes_without_dispatch(
     SnapshotKernel.validate_checkpoint(checkpoint, fixture.snapshot, request_bridge=fixture.bridge)
     before = deepcopy(fixture.host.facts())
 
-    result = fixture.run(checkpoint=checkpoint, max_model_requests=1, max_model_attempts=1)
+    result = fixture.run(checkpoint=checkpoint)
     assert result.final["value"] == {"text": "done"}
     assert (result.model_requests, result.attempts) == (1, 1)
     assert len(fixture.host.mock.communications) == 1 and fixture.host.facts() == before
 
 
-def test_request_limit_counts_original_requests_and_settles_real_tool(kernel_host):
+def test_real_tool_runs_between_original_model_requests(kernel_host):
     fixture = kernel_host
     fixture.host.mock.response = ModelResponse("tool_calls", tool_calls=(
         ModelToolCall("provider-lookup", "lookup", "{}"),
     ), model="synthetic-chat")
-    with pytest.raises(RunFailed) as caught:
-        fixture.run(max_model_requests=1)
-    assert caught.value.code == "model_request_budget_exhausted"
-    assert (caught.value.model_requests, caught.value.attempts) == (1, 1)
+    communications = 0
+
+    def next_response():
+        nonlocal communications
+        communications += 1
+        if communications == 2:
+            fixture.host.mock.response = ModelResponse("tool_calls", tool_calls=(
+                ModelToolCall("provider-final", "final_answer", '{"answer":{"text":"done"}}'),
+            ), model="synthetic-chat")
+
+    fixture.host.mock.on_communication = next_response
+    result = fixture.run()
+    assert result.final["value"] == {"text": "done"}
+    assert (result.model_requests, result.attempts) == (2, 2)
     assert fixture.effects == ["lookup"]
-    assert len(fixture.host.mock.communications) == 1
-    assert len(fixture.host.facts()) == 3
-    assert [message["role"] for message in caught.value.messages] == ["assistant", "tool"]
-    assert caught.value.checkpoint.request_boundary_index == 1
-    SnapshotKernel.validate_checkpoint(
-        caught.value.checkpoint, fixture.snapshot, request_bridge=fixture.bridge,
-    )
+    assert len(fixture.host.mock.communications) == 2
+    assert len(fixture.host.facts()) == 6
+    assert [message["role"] for message in result.messages] == ["assistant", "tool", "assistant", "tool"]
 
 
 def test_schema2_requires_explicit_bridge_before_any_model_or_tool_execution(kernel_host):

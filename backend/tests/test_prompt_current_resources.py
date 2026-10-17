@@ -20,6 +20,8 @@ from phase1_agent.model_contract import CHAT_PROVIDER_TYPE
 from phase1_agent.model_package import create_model_package
 from phase1_agent.prompt_package import PROMPT_RESOURCE_TYPE, create_prompt_package
 
+from test_graph_service import save_definition_fixture
+
 
 def uid(number):
     return str(UUID(int=number, version=4))
@@ -84,7 +86,7 @@ def prompt_graph(installed, reference):
 
 
 def create_session(service, document):
-    service.save_definition(document, expected_revision=0, idempotency_key=str(uuid4()))
+    save_definition_fixture(service, document)
     return service.create_session(
         document["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
 

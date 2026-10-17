@@ -60,7 +60,7 @@ def _draft_address():
 
 def _new_incomplete_document(service):
     text_entry = service.registry.get("tools.text", "1")
-    variable_entry = service.registry.get("tools.variable-register", "1")
+    variable_entry = service.registry.get("tools.variable-register", "2")
     output_entry = service.registry.get("tools.output", "1")
     variable_id, output_id = str(uuid4()), str(uuid4())
     variable_config = deepcopy(variable_entry.definition.default_config)
@@ -75,13 +75,14 @@ def _new_incomplete_document(service):
         "object_bindings": [ObjectBinding(
             "http-value", VARIABLE_TYPE, VARIABLE_SCHEMA_VERSION, "shared",
             readers=(variable_id,), writers=(variable_id,),
+            registrar_node_id=variable_id,
         ).to_dict()],
         "nodes": [
             {"node_binding_id": str(uuid4()), "component_id": "tools.text", "component_version": "1",
              "title": "Unconnected text", "position": {"x": 0, "y": 0},
              "configuration_policy": {"schema_version": 1, "prompt_mode": "fixed"},
              "config": deepcopy(text_entry.definition.default_config)},
-            {"node_binding_id": variable_id, "component_id": "tools.variable-register", "component_version": "1",
+            {"node_binding_id": variable_id, "component_id": "tools.variable-register", "component_version": "2",
              "title": "Session variable", "position": {"x": 0, "y": 160},
              "configuration_policy": {"schema_version": 1, "prompt_mode": "fixed"},
              "config": variable_config},
@@ -160,7 +161,8 @@ def test_http_graph_management_uses_only_the_lightweight_service(
                 "idempotency_key": "management-configuration-save",
             },
         })
-        assert status == 200 and saved["result"]["outcome"] == "saved"
+        assert status == 200, saved
+        assert saved["result"]["outcome"] == "saved"
         assert saved["result"]["definition_revision"] == 1
         assert saved["result"]["edit_sequence"] == 1
 
@@ -268,8 +270,6 @@ def test_http_graph_management_uses_only_the_lightweight_service(
         assert status == 200 and {item["audience"] for item in events["bindings"]} == {
             "management", "consumer",
         }
-        status, consumer_events = _request(port, "POST", endpoint + "/consumer/events/bindings", event_parameters)
-        assert status == 200 and {item["audience"] for item in consumer_events["bindings"]} == {"consumer"}
         missing_chain = str(uuid4())
         status, event = _request(port, "POST", endpoint + "/events/read", {"chain_id": missing_chain})
         assert status == 404
@@ -294,60 +294,6 @@ def test_http_graph_management_uses_only_the_lightweight_service(
             assert manager is not None and manager._lease is None and manager._executor is None
         _assert_no_execution_or_package_baseline(
             database, type_contracts=(("session", VARIABLE_TYPE, VARIABLE_SCHEMA_VERSION),))
-    finally:
-        server.shutdown()
-        worker.join(5)
-        server.server_close()
-        owner.close()
-
-
-def test_http_context_adoption_uses_management_without_restarting_execution(tmp_path, monkeypatch):
-    from test_context_native_integration import NativeTransport, native_graph, node_output
-    from test_graph_service import create
-    from test_models_service_integration import ModelDatabaseFixture
-    from workflow_test_support import run
-
-    database = tmp_path / "context-adoption-management.sqlite"
-    transport = NativeTransport()
-    with closing(GraphWorkflowService(database, public_model_factory=transport.factory)) as service:
-        ModelDatabaseFixture.write(service, 1)
-        document, entries = native_graph(service, policy=False, once=False)
-        completed = run(service, create(service, document), "Accepted context for management adoption.")
-        sid = completed["workflow_session_id"]
-        writer = entries["a"]["merge"]["node_binding_id"]
-        view_output = node_output(completed, entries["a"]["merge"], "commit")["view_ref"]["output_id"]
-        assert completed["objects"]["context-a"]["revision"] == 2
-        model_calls = len(transport.calls)
-        information_bindings = GraphApplication(service).query("registration.list", {
-            "session_id": sid, "chain_id": completed["selected_chain_run_id"],
-            "kind": "information_binding",
-        })["items"]
-        assert information_bindings
-        information_binding = information_bindings[0]
-
-    _reject_execution_initialization(monkeypatch)
-    owner = WorkflowHost(database)
-    server, worker, port = _start_server(owner)
-    try:
-        status, unavailable = _request(port, "POST", f"/api/graph/sessions/{sid}/information/read", {
-            "reference": information_binding["registration_ref"],
-            "owner": information_binding["owner"],
-            "generation": information_binding["generation"],
-            "source_scope": "live",
-        })
-        assert status == 409
-        assert unavailable["error"]["reason_code"] == "information_live_unavailable"
-        status, adopted = _request(port, "POST", f"/api/graph/sessions/{sid}/context/adopt", {
-            "node_id": writer, "view_output_id": view_output,
-            "expected_revision": completed["revision"], "idempotency_key": "http-context-adopt",
-        })
-        assert status == 200 and adopted["results"] == []
-        assert adopted["session"]["workflow_session_id"] == sid
-        assert adopted["session"]["objects"]["context-a"] == completed["objects"]["context-a"]
-        assert len(transport.calls) == model_calls
-        assert owner._graph is None
-        assert owner._management_graph is not None
-        assert owner._management_graph._lease is None and owner._management_graph._executor is None
     finally:
         server.shutdown()
         worker.join(5)

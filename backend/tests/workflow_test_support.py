@@ -39,6 +39,10 @@ class AgentTransportFixture:
                 return ModelResponse("tool_calls", tool_calls=(ModelToolCall(
                     "final.provider", "final_answer", json.dumps({"answer": {"text": "accepted answer"}})),))
 
+            def generate_prepared(self, prepared):
+                wire = prepared["transport_arguments"]
+                return self.generate(wire["messages"], wire.get("tools", []))
+
             def close(self):
                 fixture.closes += 1
 
@@ -65,6 +69,10 @@ class SummaryTransport:
                         f"S{fixture.summary_calls}: ORION approved; preserve decisions and pending tasks."))
                 return ModelResponse("tool_calls", tool_calls=(ModelToolCall(
                     "final.provider", "final_answer", json.dumps({"answer": {"text": "accepted ORION answer"}})),))
+
+            def generate_prepared(self, prepared):
+                wire = prepared["transport_arguments"]
+                return self.generate(wire["messages"], wire.get("tools", []))
 
             def close(self):
                 pass

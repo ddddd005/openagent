@@ -3,10 +3,8 @@
 from collections import Counter
 import json
 
-import pytest
-
 from phase1_agent.contract_graph import validate_message_history
-from phase1_agent.runtime import RunFailed, SnapshotKernel
+from phase1_agent.runtime import SnapshotKernel
 
 from test_runtime import batch, call, final, setup
 
@@ -43,8 +41,7 @@ def test_unlimited_kernel_exceeds_old_request_and_attempt_maxima_and_preserves_a
         last_progress.update(event)
 
     result = SnapshotKernel(backoff=lambda retry: None).run(
-        snapshot, tools, adapter, max_model_requests=None, max_model_attempts=None,
-        on_fact=accept_fact, on_progress=progress)
+        snapshot, tools, adapter, on_fact=accept_fact, on_progress=progress)
     assert result.final["value"] == {"text": "finished by final_answer"}
     assert (result.model_requests, result.attempts, adapter.calls) == (65, 260, 260)
     assert facts["model_request"] == 65
@@ -53,15 +50,3 @@ def test_unlimited_kernel_exceeds_old_request_and_attempt_maxima_and_preserves_a
     assert facts["message_accepted"] == 130 and facts["execution_failed"] == 0
     assert last_progress == {"model_requests": 65, "attempts": 260, "accepted_messages": 130}
     validate_message_history(snapshot["s0"] + result.messages)
-
-
-@pytest.mark.parametrize("limits", [
-    {"max_model_requests": 0}, {"max_model_requests": 65}, {"max_model_requests": True},
-    {"max_model_attempts": 0}, {"max_model_attempts": 257}, {"max_model_attempts": True},
-])
-def test_legacy_finite_limit_validation_remains_unchanged(limits):
-    snapshot, tools = setup()
-    adapter = RetryingLoopAdapter(request_count=1)
-    with pytest.raises(RunFailed, match="configuration_error"):
-        SnapshotKernel(backoff=lambda retry: None).run(snapshot, tools, adapter, **limits)
-    assert adapter.calls == 0

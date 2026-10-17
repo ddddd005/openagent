@@ -8,9 +8,8 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from phase1_agent.gemini_adapter import GeminiAdapter
-from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_service import GraphWorkflowService
+from phase1_agent.model_service import create_chat_transport
 
 from workflow_test_support import output, run
 from test_context_native_integration import native_graph
@@ -22,14 +21,13 @@ from credential_test_support import seed_service_credential
 class GeminiGraphFixture:
     def __init__(self):
         self.wires, self.original_contents = [], []
+        self.response_step = 0
 
     def factory(self, *, provider, parameters, api_key):
-        step = [0]
-
         def respond(request):
             self.wires.append(json.loads(request.content))
-            current = step[0]
-            step[0] += 1
+            current = self.response_step
+            self.response_step += 1
             calls = ([("inspect_text", {"text": "one"}), ("inspect_text", {"text": "two"})]
                      if current == 0 else [("inspect_text", {"text": "three"})]
                      if current == 1 else [("final_answer", {"answer": {"text": "Gemini accepted answer"}})])
@@ -48,10 +46,9 @@ class GeminiGraphFixture:
                 "modelVersion": parameters["model"], "responseId": str(uuid4()),
             })
 
-        return GeminiAdapter(api_key, parameters["model"], base_url=provider["base_url"],
-                             thinking=parameters["thinking"], max_tokens=parameters.get("max_tokens"),
-                             temperature=parameters.get("temperature"),
-                             http_client=httpx.Client(transport=httpx.MockTransport(respond)))
+        return create_chat_transport(
+            provider=provider, parameters=parameters, api_key=api_key,
+            http_client=httpx.Client(transport=httpx.MockTransport(respond)))
 
     @staticmethod
     def write_provider(service):
@@ -62,38 +59,36 @@ class GeminiGraphFixture:
                             "credential_ref": reference, "enabled": True}}
         service.save_global_resource(record, expected_sequence=0, idempotency_key=str(uuid4()))
         profile = profile_config()
-        profile.update(protocol="gemini")
-        profile["parameters"].update(model="gemini-3-flash-preview",
-            thinking={"mode": "level", "level": "low", "include_summary": True})
+        profile["model"]["id"] = "gemini-3-flash-preview"
+        profile["runtime"]["thinking"] = {
+            "mode": "level", "level": "low", "include_summary": True,
+        }
         service.save_global_resource({
-            **source_config()["reference"], "data_schema_version": 1, "update_sequence": 1, "value": profile,
+            **source_config()["reference"], "data_schema_version": 2, "update_sequence": 1, "value": profile,
         }, expected_sequence=0, idempotency_key=str(uuid4()))
 
 
 def gemini_graph(service, route):
     doc, _ = native_graph(service, policy=False, once=False)
-    source = next(node for node in doc["nodes"] if node["component_id"] == "models.source")
-    source["component_version"] = "6"
-    agent = next(node for node in doc["nodes"] if node["component_id"] == "agents.execute")
-    agent["component_version"] = "9"
     return doc
 
 
 def read_public_thinking(service, view):
-    application = GraphApplication(service).for_consumer()
-    directory = application.query("registration.list", {"session_id": view["workflow_session_id"], "limit": 1000})
-    bindings = [row for row in directory["items"] if row["kind"] == "information_binding"
+    directory = service.list_registrations(
+        audience="consumer", session_id=view["workflow_session_id"], limit=1000)["items"]
+    bindings = [row for row in directory if row["kind"] == "information_binding"
                 and row["declaration"]["channel_id"] == "thinking-summaries"]
     assert bindings
     items = []
     for binding in bindings:
         cursor = None
         while True:
-            page = application.query("information.read", {
-                "session_id": view["workflow_session_id"], "reference": binding["registration_ref"],
-                "owner": binding["owner"], "generation": binding["generation"],
-                "source_scope": "history", "limit": binding["declaration"]["max_page_size"],
-                **({"cursor": cursor} if cursor else {})})
+            page = service.read_information(
+                view["workflow_session_id"], reference=binding["registration_ref"],
+                owner=binding["owner"], generation=binding["generation"],
+                audience="consumer", source_scope="history",
+                limit=binding["declaration"]["max_page_size"], cursor=cursor,
+            )
             assert page["status"] == "ok"
             items.extend(page["items"])
             cursor = page["next_cursor"]
@@ -140,6 +135,7 @@ def test_gemini_agent_tools_context_cold_reopen_and_public_thinking(route, tmp_p
         assert read_public_thinking(reopened, cold) == summaries
         before = len(fixture.wires)
         assert before == 3
+        fixture.response_step = 0
         second = run(reopened, cold, "After cold reopen")
         assert second["status"] == "succeeded", json.dumps([
             {"label": item["label"], "status": item["status"], "diagnostic": item.get("diagnostic")}

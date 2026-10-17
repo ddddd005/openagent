@@ -256,14 +256,15 @@ def test_provider_schema_three_is_explicit_and_old_schemas_stay_unchanged():
 
 
 @pytest.mark.parametrize("mutation", [None, "credential.save", "credential.delete"])
-def test_local_key_executes_through_existing_model_host_and_blocks_frozen_changes(tmp_path, mutation):
+def test_local_key_is_resolved_per_request_and_missing_key_fails_before_dispatch(tmp_path, mutation):
     fixture, entered, released = ModelDatabaseFixture(), Event(), Event()
     path = tmp_path / "local-model.sqlite"
     body = request()
+    original_secret, rotated_secret = "private-api-secret", "rotated-private-secret"
     with closing(GraphWorkflowService(path, credential_protector=TestProtector(),
                                       public_model_factory=fixture.factory)) as service:
         mutate_test_credential(service.provider_configuration.credentials,
-                               body["credential_ref"], "dummy-local-model-key")
+                               body["credential_ref"], original_secret)
         record = fixture.write(service, 1)
         record = {**record, "update_sequence": 2, "data_schema_version": 3,
                   "value": {**record["value"], "credential_ref": body["credential_ref"]}}
@@ -277,7 +278,7 @@ def test_local_key_executes_through_existing_model_host_and_blocks_frozen_change
                 change = request(body["credential_ref"], 1)
                 if mutation.endswith("save"):
                     mutate_test_credential(service.provider_configuration.credentials,
-                                           change["credential_ref"], "dummy-local-model-key")
+                                           change["credential_ref"], rotated_secret)
                 else:
                     GraphApplication(service).command(mutation, change)
         finally:
@@ -285,12 +286,23 @@ def test_local_key_executes_through_existing_model_host_and_blocks_frozen_change
         service.wait(started["active_chain_run_id"])
         final = service.get_session(initial["workflow_session_id"])
         history = service.get_run(final["workflow_session_id"], started["active_chain_run_id"])
-        assert final["status"] == ("failed" if mutation else "succeeded"), final
-        assert len(fixture.calls) == (0 if mutation else 1)
-        if mutation:
-            assert history["runtime_facts"][-1]["details"]["classification"] == "not_dispatched"
-        assert "dummy-local-model-key" not in str(history)
-        assert b"dummy-local-model-key" not in path.read_bytes()
+        assert final["status"] == ("failed" if mutation == "credential.delete" else "succeeded"), final
+        if mutation == "credential.delete":
+            assert not fixture.factories and not fixture.calls
+            assert fixture.credential_generations == []
+            assert history["runtime_facts"] == []
+            assert history["chain"]["diagnostic"]["code"] == "model_credential_unavailable"
+            failed = next(run for run in history["node_runs"] if run["status"] == "failed")
+            assert failed["diagnostic"]["code"] == "model_credential_unavailable"
+        else:
+            expected_generation = "rotated" if mutation == "credential.save" else "original"
+            assert len(fixture.factories) == len(fixture.calls) == 1
+            assert fixture.credential_generations == [expected_generation]
+            assert fixture.result(final)["content"] == "https://original.test"
+            assert [fact["stage"] for fact in history["runtime_facts"]] == ["request", "attempt", "outcome"]
+        for secret in (original_secret, rotated_secret):
+            assert secret not in json.dumps([final, history])
+            assert secret.encode() not in path.read_bytes()
 
 
 @pytest.mark.parametrize("change", ["provider", "credential"])

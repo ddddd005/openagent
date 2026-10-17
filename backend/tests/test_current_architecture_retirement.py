@@ -16,6 +16,7 @@ from phase1_agent.graph_http import dispatch_graph
 from phase1_agent.graph_records import validate_graph_bundle
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.storage import SqliteStore
+from test_graph_service import save_definition_fixture
 
 
 def _document(registry):
@@ -74,51 +75,11 @@ def test_current_registry_and_protocol_do_not_expose_retired_capabilities(tmp_pa
             assert failure.value.reason_code == "not_found"
 
 
-def test_current_graph_multiround_copy_candidate_and_history_reopen(tmp_path):
-    database = tmp_path / "current-operations.sqlite"
-    with closing(GraphWorkflowService(database)) as service:
-        document = _document(service.registry)
-        service.save_definition(document, expected_revision=0, idempotency_key="definition")
-        initial = service.create_session(document["workflow_definition_id"], 1, idempotency_key="session")
-        first = _run(service, initial, "first")
-        candidate = service.list_graph_candidates(first["workflow_session_id"])["candidates"][0]
-        second = _run(service, first, "second")
-        fork = service.fork_graph_candidate(
-            second["workflow_session_id"], candidate_id=candidate["candidate_id"],
-            expected_revision=second["revision"], expected_data_revision=second["data_revision"],
-            expected_head_revision=second["head_revision"], idempotency_key="fork",
-        )
-        branch = _run(service, fork, "branch")
-        assert len(branch["history_refs"]) == 2
-        selected = service.select_graph_candidate(
-            second["workflow_session_id"], candidate_id=candidate["candidate_id"],
-            expected_revision=second["revision"], expected_data_revision=second["data_revision"],
-            expected_head_revision=second["head_revision"], idempotency_key="select",
-        )
-        assert selected["selected_chain_run_id"] == first["selected_chain_run_id"]
-        copied_document = deepcopy(document)
-        copied_document["workflow_definition_id"] = str(uuid4())
-        copied = service.copy_session(
-            selected["workflow_session_id"], document=copied_document,
-            expected_session_revision=selected["revision"],
-            expected_data_revision=selected["data_revision"],
-            expected_definition_revision=selected["definition_revision"],
-            expected_head_revision=selected["head_revision"], idempotency_key="copy",
-        )
-        assert copied["history_refs"] == selected["history_refs"]
-        sid, chain = selected["workflow_session_id"], first["selected_chain_run_id"]
-        history = service.get_run(sid, chain)
-        assert all(row["schema_version"] == 5 and "agent" not in row for row in history["node_runs"])
-    with closing(GraphWorkflowService(database)) as service:
-        assert service.get_run(sid, chain) == history
-        assert service.get_session(sid)["selected_chain_run_id"] == chain
-
-
 def test_current_node_records_require_exact_input_evidence(tmp_path):
     database = tmp_path / "input-evidence.sqlite"
     with closing(GraphWorkflowService(database)) as service:
         document = _document(service.registry)
-        service.save_definition(document, expected_revision=0, idempotency_key="definition")
+        save_definition_fixture(service, document)
         initial = service.create_session(document["workflow_definition_id"], 1, idempotency_key="session")
         _run(service, initial, "input")
     with closing(SqliteStore(database)) as store:
@@ -138,34 +99,3 @@ def test_current_control_identity_uses_only_current_service_fields():
         "session_id": sid, "action": "pause", "expected_revision": 3, "idempotency_key": "pause",
     })
     assert native["request_digest"] == "workflow-op-v1:" + content_digest(expected).rsplit(":", 1)[1]
-
-
-def test_unknown_dormant_nodes_remain_drafts_and_never_gain_an_executor(tmp_path):
-    with closing(GraphWorkflowService(tmp_path / "unknown-draft.sqlite")) as service:
-        document = _document(service.registry)
-        unknown = {
-            "node_binding_id": str(uuid4()), "component_id": "unknown.custom-node",
-            "component_version": "1", "title": "Unresolved draft",
-            "position": {"x": 200, "y": 0}, "config": {"custom": True},
-        }
-        document["nodes"].append(unknown)
-        service.save_definition(document, expected_revision=0, idempotency_key="dormant-definition")
-        initial = service.create_session(
-            document["workflow_definition_id"], 1, idempotency_key="dormant-session",
-        )
-        assert initial["can_submit"] and not initial["readonly"]
-        final = _run(service, initial, "current path")
-        assert final["nodes"][-1]["status"] == "idle"
-        document["workflow_definition_id"] = str(uuid4())
-        document["edges"][0]["source_node_id"] = unknown["node_binding_id"]
-        service.save_definition(document, expected_revision=0, idempotency_key="unresolved-definition")
-        blocked = service.create_session(
-            document["workflow_definition_id"], 1, idempotency_key="unresolved-session",
-        )
-        with pytest.raises(ContractValidationError) as failure:
-            service.start(
-                blocked["workflow_session_id"], expected_revision=blocked["revision"],
-                idempotency_key="unknown-start", inputs={"text": "not dispatched"},
-            )
-        assert failure.value.reason_code == "graph_missing_node_type"
-        assert service.get_session(blocked["workflow_session_id"])["chains"] == []

@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 
 from phase1_agent.graph_service import GraphWorkflowService
+from phase1_agent.graph_application import GraphApplication
 from phase1_agent.host_sdk import ObjectBinding
 from phase1_agent.lorebook_engine import default_lorebook_entry
 from phase1_agent.session_objects import SessionObjectStore
@@ -29,8 +30,8 @@ def tavern_graph(service, entries_a, entries_b=(), *, single=False, variables=Fa
     doc, native = native_graph(service, policy=False, once=False)
     lane = native["a"]
     current = next(item for item in doc["nodes"] if item["component_id"] == "tools.current-input")
-    scan_a = versioned_node(service, "context.assembly", "4", 6100)
-    scan_b = versioned_node(service, "context.assembly", "4", 6101)
+    scan_a = versioned_node(service, "context.assembly", "5", 6100)
+    scan_b = versioned_node(service, "context.assembly", "5", 6101)
     lore_a = versioned_node(service, "lorebook.item" if single else "lorebook.group", "1", 6102)
     lore_b = versioned_node(service, "lorebook.group", "1", 6103)
     summary = versioned_node(service, "prompts.summary", "2", 6104)
@@ -55,100 +56,35 @@ def tavern_graph(service, entries_a, entries_b=(), *, single=False, variables=Fa
         edge(lore_b, summary, 7111, order=2),
         edge(summary, lane["assembly"], 7112, target_port="materials"),
     ])
+    register = None
     if variables:
-        register = versioned_node(service, "tools.variable-register", "1", 6099)
+        register = versioned_node(service, "tools.variable-register", "2", 6099)
         register["config"].update(object_key="variable/keyword", name="keyword",
                                   has_initial=True, initial_value="DRAGON")
         lore_a["config"]["object_keys"] = ["variable/keyword"]
         doc["nodes"].append(register)
-        doc["control_edges"] = [{
-            "edge_id": uid(19000), "source_node_id": register["node_binding_id"],
-            "target_node_id": lore_a["node_binding_id"],
-        }]
         doc["object_bindings"].append(ObjectBinding(
             "variable/keyword", "workflow.variable", 1, "shared",
             readers=(register["node_binding_id"], lore_a["node_binding_id"]),
             writers=(register["node_binding_id"],),
+            registrar_node_id=register["node_binding_id"],
         ).to_dict())
+        doc["event_bindings"] = [{
+            "event_id": "tools.variable-register/" + register["node_binding_id"],
+            "schema_version": 1, "display_name": "Register keyword variable",
+            "audience": "management", "target_node_ids": [register["node_binding_id"]],
+            "payload_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+        }]
     doc["package_lock"] = list(service.registry.package_lock)
     doc["name"] = "Offline Lorebook Acceptance"
     for index, item in enumerate(doc["nodes"]):
         item["position"] = {"x": (index % 5) * 300, "y": (index // 5) * 220}
     return doc, {**lane, "scan_a": scan_a, "scan_b": scan_b, "lore_a": lore_a,
-                 "lore_b": lore_b, "summary": summary}
-
-
-def recursive_entries(prefix, number, initial):
-    return [
-        entry(number + index, f"{prefix}_STEP_{index}",
-              [initial if index == 0 else f"{prefix}_STEP_{index - 1}"], recursive=True)
-        for index in range(5)
-    ]
+                 "lore_b": lore_b, "summary": summary, "register": register}
 
 
 def material_texts(view, node):
     return {item["text"] for item in node_output(view, node)["items"]}
-
-
-def frozen_output(history, node, port="output"):
-    return next(item["payload"] for item in history["outputs"]
-                if item["node_binding_id"] == node["node_binding_id"]
-                and item["port_id"] == port)
-
-
-def test_two_lorebooks_own_three_rounds_and_materials_do_not_persist_or_duplicate(tmp_path, monkeypatch):
-    transport = NativeTransport()
-    database = tmp_path / "recursive.sqlite"
-    with closing(GraphWorkflowService(database, public_model_factory=transport.factory)) as service:
-        ModelDatabaseFixture.write(service, 1)
-        a = recursive_entries("A", 8000, "dragon")
-        b = recursive_entries("B", 8100, "A_STEP_3")
-        a[2]["presentation"].update(role="user", placement="middle", depth=0)
-        b[1]["presentation"].update(role="assistant", placement="middle", depth=20)
-        doc, nodes = tavern_graph(service, a, b)
-        first = run(service, create(service, doc), "A dragon arrives.")
-        assert first["status"] == "succeeded", first["chains"]
-        assert material_texts(first, nodes["lore_a"]) == {f"A_STEP_{i}" for i in range(4)}
-        assert material_texts(first, nodes["lore_b"]) == {f"B_STEP_{i}" for i in range(4)}
-        assembled = node_output(first, nodes["assembly"])
-        texts = [message["blocks"][0]["text"] for message in assembled["messages"]]
-        assert texts.count("FIXED_RULE_a") == texts.count("A dragon arrives.") == 1
-        assert texts.index("A_STEP_2") > texts.index("A dragon arrives.")
-        assert texts.index("B_STEP_1") < texts.index("A dragon arrives.")
-        wire = [message.get("content") for message in transport.calls[-1]["messages"]]
-        assert wire.count("FIXED_RULE_a") == wire.count("A dragon arrives.") == 1
-        assert all(wire.count(f"{prefix}_STEP_{index}") == 1
-                   for prefix in ("A", "B") for index in range(4))
-        assert "A_STEP_4" not in wire and "B_STEP_4" not in wire
-        for item in node_output(first, nodes["summary"])["items"]:
-            assert item["lifecycle"] == "per_request" and item["compaction"] == "never"
-        assert [message["blocks"][0]["text"] for message in
-                node_output(first, nodes["merge"])["messages"]] == [
-                    "A dragon arrives.", "Native accepted answer"]
-        sid, chain = first["workflow_session_id"], first["selected_chain_run_id"]
-        saved_material = deepcopy(node_output(first, nodes["lore_a"]))
-        # The first request remains real history, but only the latest user floor is scanned.
-        for node in (nodes["lore_a"], nodes["lore_b"]):
-            for member in node["config"]["entries"]:
-                member["scan_depth"] = 1
-        doc["revision"] = 2
-        service.save_definition(doc, expected_revision=1, idempotency_key=str(uuid4()))
-        rebound = service.rebind_session(
-            sid, definition_revision=2, expected_revision=first["revision"],
-            expected_data_revision=first["data_revision"], expected_head_revision=first["head_revision"],
-            idempotency_key=str(uuid4()))
-        second = run(service, rebound, "A quiet continuation.")
-        assert second["status"] == "succeeded", second["chains"]
-        assert not material_texts(second, nodes["lore_a"])
-        assert not material_texts(second, nodes["lore_b"])
-        assert "A_STEP_" not in str(node_output(second, nodes["merge"])["messages"])
-        assert "B_STEP_" not in str(node_output(second, nodes["merge"])["messages"])
-    with closing(GraphWorkflowService(database, public_model_factory=transport.factory)) as reopened:
-        history = reopened.get_run(sid, chain)
-        assert frozen_output(history, nodes["lore_a"]) == saved_material
-        assert frozen_output(history, nodes["assembly"]) == assembled
-        assert reopened.get_session(sid)["status"] == "succeeded"
-        assert len(transport.calls) == 2
 
 
 def test_variable_keyword_is_read_only_and_role_does_not_turn_material_into_history(tmp_path, monkeypatch):
@@ -164,7 +100,19 @@ def test_variable_keyword_is_read_only_and_role_does_not_turn_material_into_hist
         doc, nodes = tavern_graph(service, members, variables=True)
         nodes["fixed"]["config"]["text"] = "MATERIAL_ONLY"
         nodes["fixed"]["config"]["presentation"]["role"] = "user"
-        first = run(service, create(service, doc), "A dragon is visible.")
+        initial = create(service, doc)
+        register = nodes["register"]
+        registration = GraphApplication(service).command("event.submit", {
+            "session_id": initial["workflow_session_id"],
+            "workflow_definition_id": doc["workflow_definition_id"],
+            "definition_revision": doc["revision"],
+            "event_id": "tools.variable-register/" + register["node_binding_id"],
+            "event_schema_version": 1, "payload": {},
+            "expected_revision": initial["revision"], "idempotency_key": str(uuid4()),
+        })
+        service.wait(registration["result"]["active_chain_run_id"])
+        registered = service.get_session(initial["workflow_session_id"])
+        first = run(service, registered, "A dragon is visible.")
         assert first["status"] == "succeeded", first["chains"]
         assert material_texts(first, nodes["lore_a"]) == {"VARIABLE_MATCH"}
         variable = deepcopy(first["objects"]["variable/keyword"])
@@ -193,17 +141,22 @@ def test_single_entry_and_probability_are_frozen_across_acceptance_retry(tmp_pat
         doc, nodes = tavern_graph(service, [member], single=True)
         initial = create(service, doc)
         apply, fail = SessionObjectStore.apply, [True]
+        injected = []
+        merge_node_id = nodes["merge"]["node_binding_id"]
 
-        def fail_once(store, sid, *, node_id, writes):
-            receipts = apply(store, sid, node_id=node_id, writes=writes)
-            if writes and fail[0]:
+        def fail_once(store, sid, *, node_id, writes, write_evidence=None):
+            receipts = apply(
+                store, sid, node_id=node_id, writes=writes, write_evidence=write_evidence)
+            if writes and node_id == merge_node_id and fail[0]:
                 fail[0] = False
+                injected.append((node_id, len(writes)))
                 raise OSError("injected lorebook acceptance failure")
             return receipts
 
         monkeypatch.setattr(SessionObjectStore, "apply", fail_once)
         pending = run(service, initial, "An ordinary request.")
         assert pending["status"] == "archive_failed", pending["chains"]
+        assert injected == [(merge_node_id, 1)]
         accepted = deepcopy(node_output(pending, nodes["lore_a"]))
         assert samples == [0.25] and material_texts(pending, nodes["lore_a"]) == {"PROBABILITY_FROZEN"}
         service.control(pending["workflow_session_id"], action="retry_acceptance",

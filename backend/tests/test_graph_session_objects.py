@@ -74,8 +74,8 @@ def service(tmp_path):
 
 
 def object_graph(service, *, fail=False):
-    count = node(service.registry, "example.count", 1, fail=fail)
-    read = node(service.registry, "example.object-read", 2, object_key="main")
+    count = node(service.registry, "example.count", 1, component_version="1", fail=fail)
+    read = node(service.registry, "example.object-read", 2, component_version="1", object_key="main")
     convert = node(service.registry, "json-to-text", 3)
     output = node(service.registry, "output", 4)
     doc = document([count, read, convert, output], [

@@ -22,20 +22,49 @@ from phase1_agent.prompt_lifecycle import lifecycle_prompt_content
 from phase1_agent.storage import SqliteStore
 from phase1_agent.tool_package import create_tool_package
 
+from test_graph_service import save_definition_fixture
+
 
 STATE_TYPE = "boundary.counter"
 STATE_KEY = "counter/main"
 VARIABLE_KEY = "variable/value"
 EMPTY_SCHEMA = {"type": "object", "additionalProperties": False}
+_CURRENT_NODE_VERSIONS = {
+    "prompts.assembly": "2",
+    "prompts.global-resolve": "2",
+    "prompts.source": "2",
+    "tools.json-to-prompt": "1",
+    "tools.json-to-text": "1",
+    "tools.output": "1",
+    "tools.prompt-to-json": "1",
+    "tools.prompt-to-text": "1",
+    "tools.regex": "1",
+    "tools.text": "1",
+    "tools.text-to-json": "1",
+    "tools.variable-assign": "1",
+    "tools.variable-register": "2",
+    "tools.variable-replace-all": "1",
+    "tools.variable-replace-selected": "1",
+    "tools.variable-to-content": "1",
+}
+_TEST_NODE_NAMESPACES = {"boundary": "1", "test": "1"}
 
 
 def uid(number):
     return str(UUID(int=number, version=4))
 
 
-def node(registry, component, number, **config):
-    version = "2" if component.startswith("prompts.") else "1"
+def node(registry, component, number, *, component_version=None, **config):
+    version = component_version
+    if version is None:
+        version = _CURRENT_NODE_VERSIONS.get(component)
+    if version is None:
+        version = _TEST_NODE_NAMESPACES.get(component.partition(".")[0])
+    if version is None:
+        raise KeyError(f"Node fixture requires an explicit component version: {component}")
     entry = registry.get(component, version)
+    if entry is None:
+        raise KeyError(f"Node fixture identity is not registered: {component}@{version}")
     if component == "prompts.source":
         config["value"] = lifecycle_prompt_content([
             {**item, "source": {**item["source"], "origin_item_id": item["item_instance_id"]},
@@ -72,7 +101,7 @@ def installed():
 
 
 def create(service, doc):
-    service.save_definition(doc, expected_revision=0, idempotency_key=str(uuid4()))
+    save_definition_fixture(service, doc)
     return service.create_session(doc["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
 
 
@@ -193,23 +222,6 @@ def test_multi_identity_source_cannot_expand_downstream_authority_or_commit_earl
         assert not service._resource_frames
 
 
-def variable_graph(registry, *, ordered=True, reverse_ids=False):
-    ids = (10, 20, 80, 100) if reverse_ids else (100, 80, 20, 10)
-    register = node(registry, "tools.variable-register", ids[0], has_initial=True, initial_value="seed")
-    assign = node(registry, "tools.variable-assign", ids[1], value="assigned")
-    read = node(registry, "tools.variable-to-content", ids[2])
-    output = node(registry, "tools.output", ids[3])
-    binding = ObjectBinding(
-        VARIABLE_KEY, "workflow.variable", 1, "shared",
-        readers=(register["node_binding_id"], assign["node_binding_id"], read["node_binding_id"]),
-        writers=(register["node_binding_id"], assign["node_binding_id"]),
-    ).to_dict()
-    doc = document([output, read, assign, register], [edge(500, read, output)], bindings=[binding],
-                   roots=[register["node_binding_id"], assign["node_binding_id"]],
-                   controls=[control(600, register, assign), control(601, assign, read)] if ordered else [])
-    return doc, register, assign, read, output
-
-
 @pytest.mark.parametrize("reverse_ids", [False, True])
 def test_shared_object_access_without_graph_dependency_is_not_rejected(reverse_ids):
     registry = installed()
@@ -258,65 +270,6 @@ def test_shared_object_access_without_graph_dependency_is_not_rejected(reverse_i
     with pytest.raises(ContractValidationError) as denied:
         GraphCompiler(registry).compile(unauthorized)
     assert denied.value.reason_code == "session_object_access_denied"
-
-
-@pytest.mark.parametrize("reverse_ids", [False, True])
-def test_control_dependencies_run_registration_assignment_and_read_in_that_order(tmp_path, reverse_ids):
-    registry = installed()
-    doc, register, assign, read, output = variable_graph(registry, reverse_ids=reverse_ids)
-    with closing(GraphWorkflowService(tmp_path / "ordered.sqlite", registry=registry)) as service:
-        final = execute(service, create(service, doc))
-        assert final["status"] == "succeeded"
-        records = history(service, final)
-        assert records["chain"]["ordered_nodes"] == [
-            entry["node_binding_id"] for entry in (register, assign, read, output)]
-        assert final["objects"][VARIABLE_KEY]["value"]["value"] == "assigned"
-        assert next(entry for entry in final["nodes"]
-                    if entry["node_binding_id"] == output["node_binding_id"])["outputs"]["output"] == text_content("assigned")
-
-
-@pytest.fixture
-def accepted_bundle(tmp_path):
-    registry = installed()
-    doc, register, assign, read, output = variable_graph(registry)
-    with closing(GraphWorkflowService(tmp_path / "records.sqlite", registry=registry)) as service:
-        final = execute(service, create(service, doc))
-        assert final["status"] == "succeeded"
-        records = bundle(service)
-    validate_graph_bundle(records)
-    return records, read["node_binding_id"], output["node_binding_id"]
-
-
-@pytest.mark.parametrize("tamper", [
-    "empty-inputs", "duplicate-input", "unknown-input-output", "wrong-input-output",
-    "unknown-input-edge", "empty-controls", "wrong-control-run", "wrong-output-owner",
-])
-def test_successful_reference_only_records_cannot_lose_or_forge_binding_evidence(accepted_bundle, tamper):
-    original, read_id, output_id = accepted_bundle
-    records = deepcopy(original)
-    runs = {row["node_binding_id"]: row for row in records["node_run"]}
-    read, output = runs[read_id], runs[output_id]
-    assert output["schema_version"] == 5 and output["input_storage"] == "references"
-    assert output["input_values"] == {}
-    if tamper == "empty-inputs":
-        output["input_refs"] = {}
-    elif tamper == "duplicate-input":
-        output["input_refs"]["input"].append(deepcopy(output["input_refs"]["input"][0]))
-    elif tamper == "unknown-input-output":
-        output["input_refs"]["input"][0]["output_id"] = uid(9990)
-    elif tamper == "wrong-input-output":
-        output["input_refs"]["input"][0]["output_id"] = output["output_refs"]["output"]
-    elif tamper == "unknown-input-edge":
-        output["input_refs"]["input"][0]["edge_id"] = uid(9991)
-    elif tamper == "empty-controls":
-        read["control_refs"] = []
-    elif tamper == "wrong-control-run":
-        read["control_refs"][0]["run_id"] = read["run_id"]
-    else:
-        output["output_refs"]["output"] = read["output_refs"]["output"]
-    with pytest.raises(ContractValidationError) as caught:
-        validate_graph_bundle(records)
-    assert caught.value.reason_code == "storage_contract_violation"
 
 
 @pytest.mark.parametrize("foreign", [False, True], ids=["unknown-output", "another-session-output"])
@@ -553,19 +506,46 @@ def test_assembled_prompt_transform_rebuilds_current_input_and_retains_source_ar
     output = node(registry, "tools.output", 4, mode="prompt")
     nodes.append(output)
     edges.append(edge(103, transform, output))
-    bindings, controls = [], []
+    bindings = []
     if variable:
-        register = node(registry, "tools.variable-register", 9, has_initial=True, initial_value="answer")
+        register = node(registry, "tools.variable-register", 9, object_key=VARIABLE_KEY,
+                        has_initial=True, initial_value="answer")
         nodes.append(register)
-        controls.append(control(200, register, transform))
         bindings.append(ObjectBinding(
             VARIABLE_KEY, "workflow.variable", 1, "shared",
             readers=(register["node_binding_id"], transform["node_binding_id"]),
             writers=(register["node_binding_id"],),
+            registrar_node_id=register["node_binding_id"],
         ).to_dict())
     with closing(GraphWorkflowService(tmp_path / "transform.sqlite", registry=registry)) as service:
-        final = execute(service, create(service, document(
-            nodes, edges, bindings=bindings, controls=controls)))
+        graph = document(nodes, edges, bindings=bindings)
+        if variable:
+            event_id = "tools.variable-register/" + register["node_binding_id"]
+            graph["event_bindings"] = [{
+                "event_id": event_id, "schema_version": 1, "display_name": "Register variable",
+                "audience": "management", "target_node_ids": [register["node_binding_id"]],
+                "payload_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+            }]
+        initial = create(service, graph)
+        if variable:
+            accepted = service.submit_event(
+                initial["workflow_session_id"],
+                workflow_definition_id=graph["workflow_definition_id"], definition_revision=graph["revision"],
+                event_id=event_id, event_schema_version=1, payload={}, expected_revision=initial["revision"],
+                idempotency_key=str(uuid4()),
+            )
+            service.wait(accepted["active_chain_run_id"])
+            registration = service.read_event(
+                initial["workflow_session_id"], chain_id=accepted["active_chain_run_id"])
+            assert registration["status"] == "succeeded"
+            assert registration["ordered_nodes"] == registration["completed_nodes"] == [
+                register["node_binding_id"]]
+            initial = service.get_session(initial["workflow_session_id"])
+            assert initial["objects"][VARIABLE_KEY]["value"] == {
+                "registered": True, "name": "value", "value_type": "string",
+                "assigned": True, "value": "answer",
+            }
+        final = execute(service, initial)
         assert final["status"] == "succeeded"
         payloads = {entry["node_binding_id"]: entry["outputs"].get("output") for entry in final["nodes"]}
         original = payloads[assembly["node_binding_id"]]

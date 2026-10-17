@@ -3,18 +3,13 @@
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 
-import pytest
+from test_tavern_workbench_browser import browser_runtime
 
 
 def test_frontend_node_page_offline_browser(tmp_path):
-    executable = shutil.which("node")
-    bundle = Path.home() / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "node"
-    packages = Path(os.environ.get("TAVERN_BROWSER_NODE_MODULES", str(bundle / "node_modules")))
-    if executable is None or not (packages / "playwright").is_dir():
-        pytest.skip("An installed Playwright runtime is required for offline node-page rendering")
+    executable, packages = browser_runtime()
     environment = {**os.environ, "NODE_PATH": str(packages)}
     completed = subprocess.run(
         [executable, str(Path(__file__).with_name("frontend_node_page_browser.cjs")), str(tmp_path)],

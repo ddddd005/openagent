@@ -47,7 +47,6 @@ def complete_after_two_checkpoint_failures(service, initial):
     assert pending["chains"][-1]["diagnostic"]["reason_code"] == "checkpoint_commit_pending"
     assert pending["available_actions"] == ["retry_archive", "close"]
     assert pending["head_commit_id"] == initial["head_commit_id"]
-    assert service.list_graph_candidates(initial["workflow_session_id"])["candidates"] == []
     assert len(records(service)["workflow_commit"]) == 1
     assert len(records(service)["state_snapshot"]) == 1
     evidence = service.get_run(initial["workflow_session_id"], chain_id)
@@ -62,13 +61,16 @@ def complete_after_two_checkpoint_failures(service, initial):
     assert completed["status"] == "succeeded" and completed["active_chain_run_id"] is None
     assert len(records(service)["workflow_commit"]) == 2
     assert len(records(service)["state_snapshot"]) == 2
-    assert len(service.list_graph_candidates(initial["workflow_session_id"])["candidates"]) == 1
+    checkpoints = service.list_checkpoints(initial["workflow_session_id"])
+    assert len(checkpoints) == 1
+    assert checkpoints[0]["parent_checkpoint_id"] is None
     after = service.get_run(initial["workflow_session_id"], chain_id)
     assert after["node_runs"] == evidence["node_runs"]
     assert after["outputs"] == evidence["outputs"]
     assert after["runtime_facts"] == evidence["runtime_facts"]
     assert attempts == [(initial["workflow_definition_id"], initial["definition_revision"])] * 3
     assert not service._acceptance_candidates
+    assert completed["head_commit_id"] != initial["head_commit_id"]
     return completed
 
 
@@ -112,6 +114,7 @@ def test_all_accepted_nodes_without_returned_success_do_not_gain_checkpoint_retr
 
     monkeypatch.setattr(execution, "execute_graph", execute)
     initial = create(service, text_graph(service.registry))
+    commits_before = len(records(service)["workflow_commit"])
     started = service.start(initial["workflow_session_id"], expected_revision=initial["revision"],
                             idempotency_key=str(uuid4()))
     with pytest.raises(Exception):
@@ -120,7 +123,8 @@ def test_all_accepted_nodes_without_returned_success_do_not_gain_checkpoint_retr
     assert failed["chains"][-1]["next_node_index"] == len(failed["chains"][-1]["ordered_nodes"])
     assert failed["status"] == "recovery_unavailable"
     assert failed["available_actions"] == ["close"]
-    assert service.list_graph_candidates(initial["workflow_session_id"])["candidates"] == []
+    assert failed["head_commit_id"] == initial["head_commit_id"]
+    assert len(records(service)["workflow_commit"]) == commits_before
     with pytest.raises(ContractValidationError):
         retry_archive(service, failed)
 
@@ -134,11 +138,13 @@ def test_business_failure_does_not_gain_checkpoint_retry(service):
         outputs=(NodePort("output", "TEXT", data_schema_version=2),)), execute)
     failing, output = node(service.registry, "test.business-failure", 1), node(service.registry, "output", 2)
     initial = create(service, document([failing, output], [edge(failing, output, 1)]))
+    commits_before = len(records(service)["workflow_commit"])
     started = service.start(initial["workflow_session_id"], expected_revision=initial["revision"],
                             idempotency_key=str(uuid4()))
     service.wait(started["active_chain_run_id"])
     failed = service.get_session(initial["workflow_session_id"])
     assert failed["status"] == "failed" and failed["available_actions"] == ["close"]
-    assert service.list_graph_candidates(initial["workflow_session_id"])["candidates"] == []
+    assert failed["head_commit_id"] == initial["head_commit_id"]
+    assert len(records(service)["workflow_commit"]) == commits_before
     with pytest.raises(ContractValidationError):
         retry_archive(service, failed)

@@ -22,11 +22,17 @@ from test_models_service_integration import ModelDatabaseFixture
 from credential_test_support import seed_service_credential
 
 
-CURRENT_CONTRACT_DIGESTS = {
+LEGACY_CONTRACT_DIGESTS = {
     ("content", "MODEL_BINDING", 2):
         "json-v1:sha256:d19506a06bca810eab3450dc8103ed6b75fefde0dade03db63d3c9e505aefc96",
     ("content", "MODEL_RESULT", 1):
         "json-v1:sha256:cbcadeba1191e3dfe7516b8d3ff47ff5ce3740f29a11482862e88820e22c69ed",
+}
+CURRENT_CONTRACT_DIGESTS = {
+    ("content", "MODEL_BINDING", 5):
+        "json-v1:sha256:5b01975a9c13d1219a5bf852c403c6f486a4d79f59d242d0e1af42f8bdff9a02",
+    ("content", "MODEL_RESULT", 3):
+        "json-v1:sha256:bdc67eb66fe94990402a8865c4f6ecb969f4ed902bfa520fca8db2dfb8304955",
 }
 
 
@@ -38,10 +44,12 @@ def write_provider(service):
                         "credential_ref": reference, "enabled": True}}
     service.save_global_resource(record, expected_sequence=0, idempotency_key=str(uuid4()))
     profile = profile_config()
-    profile.update(protocol="gemini", parameters=deepcopy(PARAMETERS))
-    profile["capacity"]["output_reserve_tokens"] = PARAMETERS["max_tokens"]
+    profile["model"]["id"] = PARAMETERS["model"]
+    profile["model"]["capacity"]["max_output_tokens"] = PARAMETERS["max_tokens"]
+    profile["runtime"]["thinking"] = deepcopy(PARAMETERS["thinking"])
+    profile["runtime"]["output_limit_tokens"] = PARAMETERS["max_tokens"]
     service.save_global_resource({
-        **source_config()["reference"], "data_schema_version": 1, "update_sequence": 1, "value": profile,
+        **source_config()["reference"], "data_schema_version": 2, "update_sequence": 1, "value": profile,
     }, expected_sequence=0, idempotency_key=str(uuid4()))
     return record
 
@@ -49,10 +57,6 @@ def write_provider(service):
 def document(service, **kwargs):
     doc = ModelDatabaseFixture.document(service, **kwargs)
     for node in doc["nodes"]:
-        if node["component_id"] == "models.source":
-            node["component_version"] = "6"
-        if node["component_id"] == "models.chat":
-            node["component_version"] = "4"
         if node["component_id"] == "prompts.group":
             node["config"]["members"][0]["presentation"]["role"] = "user"
     return doc
@@ -71,14 +75,13 @@ def test_registered_gemini_chat_thinking_result_and_facts_survive_sqlite_reopen(
             **kwargs, http_client=httpx.Client(transport=httpx.MockTransport(handler)))
     path = tmp_path / "gemini.sqlite"
     with closing(GraphWorkflowService(path, public_model_factory=factory)) as service:
-        assert service.registry.get("models.source", "3") is None
-        assert service.registry.get("models.source", "6") is not None
-        assert service.registry.get("models.chat", "4") is not None
+        assert service.registry.get("models.source", "7") is not None
+        assert service.registry.get("models.chat", "5") is not None
         write_provider(service)
         final = ModelDatabaseFixture.execute(service, ModelDatabaseFixture.create(service, document(service)))
         assert final["status"] == "succeeded", final
         result = ModelDatabaseFixture.result(final)
-        assert result["schema_version"] == 2
+        assert result["schema_version"] == 3
         assert result["content"] == "Answer"
         assert result["thinking_summary"] == "Visible summary"
         history = service.get_run(final["workflow_session_id"], final["selected_chain_run_id"])
@@ -94,10 +97,10 @@ def test_registered_gemini_chat_thinking_result_and_facts_survive_sqlite_reopen(
     assert len(observed) == 1
 
 
-def test_current_registered_type_declarations_are_unchanged_and_existing_evidence_reopens(tmp_path):
-    # These digests are the stable fc225390 declarations, not newly computed expectations.
+def test_current_registered_type_declarations_roundtrip_through_sqlite(tmp_path):
     definitions = {(value.scope, value.type_id, value.schema_version): value
                    for value in model_type_definitions()}
+    assert all(key not in definitions for key in LEGACY_CONTRACT_DIGESTS)
     path = tmp_path / "old-contracts.sqlite"
     with closing(sqlite3.connect(path)) as connection:
         initialize_type_contract_tables(connection)
@@ -111,7 +114,8 @@ def test_current_registered_type_declarations_are_unchanged_and_existing_evidenc
         assert service.registry.data_types.get("workflow.chat-provider", 1, scope="global") is None
         assert service.registry.data_types.get("workflow.chat-provider", 2, scope="global") is None
         assert service.registry.data_types.get("workflow.chat-provider", 3, scope="global") is not None
-        assert service.registry.data_types.get("MODEL_BINDING", 4) is not None
+        assert service.registry.data_types.get("MODEL_BINDING", 5) is not None
+        assert service.registry.data_types.get("MODEL_RESULT", 3) is not None
     with closing(sqlite3.connect(path)) as connection:
         assert {(scope, type_id, version): digest for scope, type_id, version, digest
                 in connection.execute("SELECT scope,type_id,schema_version,digest FROM registered_type_contracts")
@@ -150,21 +154,18 @@ def test_gemini_same_process_pause_before_dispatch_resumes_without_replay(tmp_pa
     assert len(observed) == 1
 
 
-def test_source_protocol_mismatch_preflight_prevents_all_effects(tmp_path, monkeypatch):
+def test_missing_current_model_profile_reference_prevents_graph_effects(tmp_path, monkeypatch):
     effects = []
     with closing(GraphWorkflowService(tmp_path / "wrong-source.sqlite")) as service:
         write_provider(service)
         doc = document(service, side_effect=effects)
-        for node in doc["nodes"]:
-            if node["component_id"] == "models.source":
-                node["component_version"] = "5"
-            if node["component_id"] == "models.chat":
-                node["component_version"] = "3"
+        source = next(node for node in doc["nodes"] if node["component_id"] == "models.source")
+        source["config"]["reference"]["resource_id"] = uid(90)
         initial = ModelDatabaseFixture.create(service, doc)
         with pytest.raises(ContractValidationError) as error:
             service.start(initial["workflow_session_id"], expected_revision=initial["revision"],
                           idempotency_key=str(uuid4()))
-        assert error.value.reason_code == "model_source_protocol_mismatch"
+        assert error.value.reason_code == "global_resource_missing"
         assert not effects
 
 
@@ -174,27 +175,20 @@ def test_gemini_native_binding_and_compaction_use_same_actual_wire_estimate():
         observed.append(json.loads(request.content))
         return httpx.Response(200, json=response([{"text": "short summary"}]))
     value = fixture(handler)
-    value.service.release_run(uid(2), uid(3))
-    value.profile["value"]["capacity"] = {
-        "context_window_tokens": 32768, "output_reserve_tokens": 1024,
-        "summary_max_tokens": 128, "max_cold_input_tokens": 10000,
+    value.profile["value"]["model"]["capacity"] = {
+        "context_window_tokens": 32768, "input_limit_tokens": 10000, "max_output_tokens": 1024,
     }
-    value.service.prepare_run(workflow_session_id=uid(2), chain_run_id=uid(3),
-                              node_configs={uid(10): value.config}, records=[value.profile, value.record])
-    value.binding = value.service.bind_model(value.source, value.config)
-    value.service.accept_binding_output(workflow_session_id=uid(2), chain_run_id=uid(3),
-                                       node_run_id=uid(11), binding_id=value.binding["binding_id"],
-                                       output_id=uid(30))
-    result = value.service.call_model(
-        value.consumer, binding_id=value.binding["binding_id"],
-        messages=[{"kind": "text", "role": "user", "content": "Summarize"}],
-        tools=[], request_key="compact", purpose="compaction")
-    assert value.binding["schema_version"] == 4
+    value.profile["value"]["runtime"].update(context_length_tokens=32768, output_limit_tokens=128)
+    prepared = value.prepare(key="compact", purpose="compaction",
+                             messages=[{"kind": "text", "role": "user", "content": "Summarize"}])
+    result = value.dispatch(prepared, key="compact")
+    assert value.binding["schema_version"] == 5
     assert result["content"] == "short summary"
-    details = value.facts[0]["details"]
+    details = next(fact for fact in value.accepted.values()
+                   if fact["stage"] == "request")["details"]
     assert observed == [details["wire_request"]]
-    assert details["cold_input_estimate"]["input_tokens"] == len(canonical_bytes(observed[0]))
+    assert details["measurement"]["input_tokens"] == len(canonical_bytes(observed[0]))
     assert observed[0]["generationConfig"]["maxOutputTokens"] == 128
     assert observed[0]["generationConfig"]["thinkingConfig"] == {
         "thinkingLevel": "low", "includeThoughts": True}
-    value.service.close()
+    value.close()

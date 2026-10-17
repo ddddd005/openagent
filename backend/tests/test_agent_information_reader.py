@@ -50,10 +50,12 @@ def test_default_agent_source_pages_original_facts_and_reopens_exact_binding(tmp
         assert app.query("session.read", {"session_id": sid}) == final
         with pytest.raises(ContractValidationError) as denied:
             app.for_consumer().query("information.read", parameters)
-        assert denied.value.reason_code == "information_read_denied"
-        assert app.for_consumer().query("registration.list", {
-            "session_id": sid, "kind": "information_binding",
-        })["items"] == []
+        assert denied.value.reason_code == "application_scope_denied"
+        with pytest.raises(ContractValidationError) as hidden:
+            app.for_consumer().query("registration.list", {
+                "session_id": sid, "kind": "information_binding",
+            })
+        assert hidden.value.reason_code == "application_scope_denied"
         with pytest.raises(ContractValidationError) as unavailable:
             app.query("information.read", {**parameters, "source_scope": "live"})
         assert unavailable.value.reason_code == "information_live_unavailable"

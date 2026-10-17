@@ -209,7 +209,7 @@ def test_unknown_and_pause_close_entire_batch_before_checkpoint_and_do_not_resum
 
 
 @pytest.mark.parametrize("pause_first", [False, True])
-def test_unknown_preserves_closed_observations_at_budget_exhaustion_including_resume(pause_first):
+def test_unknown_preserves_closed_observations_without_budget_including_resume(pause_first):
     executed = []
 
     def implementation(text):
@@ -217,26 +217,28 @@ def test_unknown_preserves_closed_observations_at_budget_exhaustion_including_re
         raise ToolOutcomeUnknown("PRIVATE")
 
     snapshot, tools = setup(implementation)
-    adapter = ScriptedAdapter(batch("uncertain", "skipped"), final("unreachable"))
+    adapter = ScriptedAdapter(batch("uncertain", "skipped"), final("accepted after observations"))
     checkpoint = None
     if pause_first:
         with pytest.raises(KernelPaused) as paused:
             SnapshotKernel().run(
-                snapshot, tools, adapter, max_model_requests=1,
+                snapshot, tools, adapter,
                 on_boundary=lambda kind: kind != "after_tool",
             )
         checkpoint = paused.value.checkpoint
         assert checkpoint.pending_tools == ()
-    with pytest.raises(RunFailed, match="model_request_budget_exhausted") as caught:
-        SnapshotKernel().run(snapshot, tools, adapter, max_model_requests=1, checkpoint=checkpoint)
+        assert len(checkpoint.messages) == 3
+        validate_message_history(snapshot["s0"] + list(checkpoint.messages))
+    result = SnapshotKernel().run(snapshot, tools, adapter, checkpoint=checkpoint)
     assert executed == ["uncertain"]
-    assert len(adapter.requests) == 1
-    assert len(caught.value.messages) == 3
-    assert (caught.value.model_requests, caught.value.attempts) == (1, 1)
-    assert [message["source"]["reason_code"] for message in caught.value.messages[1:]] == [
+    assert len(adapter.requests) == 2
+    assert (result.model_requests, result.attempts) == (2, 2)
+    assert [message["source"]["reason_code"] for message in result.messages[1:3]] == [
         "outcome_unknown", "never_started",
     ]
-    validate_message_history(snapshot["s0"] + caught.value.messages)
+    assert adapter.requests[1] == snapshot["s0"] + result.messages[:3]
+    assert result.final["value"] == {"text": "accepted after observations"}
+    validate_message_history(snapshot["s0"] + result.messages)
 
 
 def test_canonical_adapter_forwards_every_observation_and_retry_guidance_to_provider_wire():

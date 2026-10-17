@@ -49,7 +49,7 @@ def loaded(*, tools=None):
 
 
 def graph_node(registry, component, number, **config):
-    version = ("5" if component == "models.source" else "3" if component == "models.chat"
+    version = ("7" if component == "models.source" else "5" if component == "models.chat"
                else "2" if component.startswith("prompts.") else "1")
     entry = registry.get(component, version)
     return {"node_binding_id": uid(number), "component_id": component, "component_version": version,

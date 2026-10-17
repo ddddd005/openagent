@@ -1,7 +1,6 @@
 """Temporary-database prompt runs, bindings and current-only global resources."""
 
 from contextlib import closing
-from copy import deepcopy
 from threading import Event
 from uuid import uuid4
 
@@ -17,6 +16,7 @@ from phase1_agent.storage import SqliteStore
 from test_prompt_package import (
     graph_document, graph_edge, graph_node, loaded, member, register_sink, uid,
 )
+from test_graph_service import save_definition_fixture
 
 
 def registry():
@@ -32,7 +32,7 @@ def registry():
 
 
 def create(service, document):
-    service.save_definition(document, expected_revision=0, idempotency_key=str(uuid4()))
+    save_definition_fixture(service, document)
     return service.create_session(document["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
 
 
@@ -57,15 +57,6 @@ def write_resource(service, reference, text, sequence):
     with closing(SqliteStore(service.database)) as store:
         GlobalResourceStore(store, service.registry.data_types).write(
             record, expected_sequence=sequence - 1, idempotency_key=str(uuid4()))
-
-
-def choose(service, view, candidate_id, *, fork=False):
-    method = service.fork_graph_candidate if fork else service.select_graph_candidate
-    return method(
-        view["workflow_session_id"], candidate_id=candidate_id,
-        expected_revision=view["revision"], expected_data_revision=view["data_revision"],
-        expected_head_revision=view["head_revision"], idempotency_key=str(uuid4()),
-    )
 
 
 def test_real_service_assembly_persists_exact_artifacts_and_reopens_without_input_body_copies(tmp_path):
@@ -104,7 +95,7 @@ def test_real_service_assembly_persists_exact_artifacts_and_reopens_without_inpu
         assert reopened.get_run(final["workflow_session_id"], final["selected_chain_run_id"]) == history
 
 
-def test_global_edit_after_start_keeps_activity_frozen_and_next_run_reads_current(tmp_path):
+def test_global_edit_before_resource_use_reads_current_and_keeps_materialized_history(tmp_path):
     installed = registry()
     entered, released = Event(), Event()
 
@@ -141,7 +132,7 @@ def test_global_edit_after_start_keeps_activity_frozen_and_next_run_reads_curren
         service.wait(started["active_chain_run_id"])
         first = service.get_session(initial["workflow_session_id"])
         assert first["status"] == "succeeded", first
-        assert output_texts(first, output) == ["old-frame-body"]
+        assert output_texts(first, output) == ["new-current-body"]
         history = service.get_run(first["workflow_session_id"], first["selected_chain_run_id"])
         persisted_inputs = canonical_bytes(history["chain"]["inputs"]).decode("utf-8")
         assert "old-frame-body" not in persisted_inputs and "new-current-body" not in persisted_inputs
@@ -151,41 +142,9 @@ def test_global_edit_after_start_keeps_activity_frozen_and_next_run_reads_curren
                                 if value["output_id"] == reference_run["output_refs"]["output"])
         assert reference_output["payload"] == {
             "schema_version": 1, "kind": "workflow.global-resource-ref", "reference": reference}
+        write_resource(service, reference, "next-current-body", 3)
+        assert service.get_run(first["workflow_session_id"], first["selected_chain_run_id"]) == history
         second = execute(service, first)
-        assert output_texts(second, output) == ["new-current-body"]
+        assert output_texts(second, output) == ["next-current-body"]
+        assert service.get_run(first["workflow_session_id"], first["selected_chain_run_id"]) == history
         assert not service._resource_frames
-
-
-def test_candidate_restore_fork_and_copy_preserve_past_artifacts_without_rolling_back_globals(tmp_path):
-    installed = registry()
-    reference = ResourceIdentity("workspace", PROMPT_RESOURCE_TYPE, uid(60)).to_dict()
-    source = graph_node(installed, "prompts.global-reference", 1, reference=reference)
-    resolve = graph_node(installed, "prompts.global-resolve", 2)
-    assembly = graph_node(installed, "prompts.assembly", 3)
-    output = graph_node(installed, "test.prompt-sink", 4)
-    doc = graph_document([source, resolve, assembly, output], [
-        graph_edge(20, source, resolve), graph_edge(21, resolve, assembly), graph_edge(22, assembly, output)])
-    with closing(GraphWorkflowService(tmp_path / "branch.sqlite", registry=installed)) as service:
-        write_resource(service, reference, "first", 1)
-        first = execute(service, create(service, doc))
-        candidate = service.list_graph_candidates(first["workflow_session_id"])["candidates"][0]["candidate_id"]
-        write_resource(service, reference, "second", 2)
-        second = execute(service, first)
-        assert output_texts(second, output) == ["second"]
-        selected = choose(service, second, candidate)
-        assert output_texts(selected, output) == ["first"]
-        fork = choose(service, selected, candidate, fork=True)
-        forked_run = execute(service, fork)
-        assert output_texts(forked_run, output) == ["second"]
-        assert service.get_session(selected["workflow_session_id"])["selected_chain_run_id"] == first["selected_chain_run_id"]
-        with closing(SqliteStore(service.database)) as store:
-            assert GlobalResourceStore(store, installed.data_types).get(reference)["value"]["members"][0]["text"] == "second"
-        target = deepcopy(doc)
-        target["workflow_definition_id"] = uid(999)
-        copied = service.copy_session(
-            selected["workflow_session_id"], document=target,
-            expected_session_revision=selected["revision"], expected_data_revision=selected["data_revision"],
-            expected_definition_revision=selected["definition_revision"],
-            expected_head_revision=selected["head_revision"], idempotency_key=str(uuid4()))
-        copied_run = execute(service, copied)
-        assert output_texts(copied_run, output) == ["second"]

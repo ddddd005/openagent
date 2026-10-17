@@ -18,7 +18,7 @@ from phase1_agent.host_sdk import ResourceIdentity
 from phase1_agent.prompt_package import PROMPT_RESOURCE_TYPE
 
 from workflow_test_support import run as native_run
-from test_context_native_integration import NativeTransport, native_graph, node_output, rebind, versioned_node
+from test_context_native_integration import NativeTransport, native_graph, node_output, versioned_node
 from test_graph_service import create, document, edge, node, run, uid
 from test_models_service_integration import ModelDatabaseFixture
 from test_prompt_current_resources import registry
@@ -54,9 +54,16 @@ def once_sources(value):
     context = value.get("context", {})
     frozen = {message["message_id"] for message in context.get("messages", [])}
     return {
-        item["source"]["item_instance_id"] for message, item in zip(value["messages"], value["layout"])
-        if item["kind"] == "once" and message["message_id"] not in frozen
+        provenance["source"]["origin_item_id"]
+        for message, provenance, layout in zip(value["messages"], value["provenance"], value["layout"])
+        if layout["kind"] == "once" and provenance["kind"] == "material"
+        and message["message_id"] not in frozen
     }
+
+
+def prompt_texts(value):
+    return [block["text"] for message in value["messages"] for block in message["blocks"]
+            if block["kind"] == "text"]
 
 
 def save(app, value):
@@ -169,7 +176,7 @@ def test_preset_management_keeps_existing_strict_schema_and_current_body(tmp_pat
         assert app.query("resource.read", {"identity": identity(value)}) == value
 
 
-def test_global_group_freezes_at_start_and_preserves_order_and_old_history(tmp_path):
+def test_global_group_reads_at_use_and_preserves_order_and_old_history(tmp_path):
     value = record(member(9001, "Later rule", order=8), member(9002, "Earlier rule", order=-7))
     entered, release = Event(), Event()
     installed, doc, resolver, sink = preset_graph(registry(), identity(value), gate=(entered, release))
@@ -193,7 +200,8 @@ def test_global_group_freezes_at_start_and_preserves_order_and_old_history(tmp_p
         first = service.get_session(initial["workflow_session_id"])
         assert first["status"] == "succeeded", first["chains"]
         assert node_output(first, doc["nodes"][0]) == global_resource_reference(identity(value))
-        assert [entry["text"] for entry in node_output(first, sink)["items"]] == ["Earlier rule", "Later rule"]
+        assert [entry["text"] for entry in node_output(first, sink)["items"]] == [
+            "Updated later rule", "Earlier rule"]
         first_ids = {entry["source"]["member_id"]: entry["origin_item_ids"]
                      for entry in node_output(first, resolver)["items"]}
         archived = service.get_run(first["workflow_session_id"], first["selected_chain_run_id"])
@@ -209,7 +217,7 @@ def test_global_group_freezes_at_start_and_preserves_order_and_old_history(tmp_p
         assert reopened.get_run(first["workflow_session_id"], first["selected_chain_run_id"]) == archived
 
 
-def test_real_workflow_edits_keep_once_identity_and_explicit_copy_creates_new_identity(tmp_path, monkeypatch):
+def test_real_workflow_edits_keep_once_identity_and_separate_global_resource_copy(tmp_path, monkeypatch):
     transport = NativeTransport()
     database = tmp_path / "native.sqlite"
     value = record(
@@ -239,7 +247,7 @@ def test_real_workflow_edits_keep_once_identity_and_explicit_copy_creates_new_id
         assert [message["blocks"][0]["text"] for message in first_prompt["messages"]] == [
             "PRESET_FIXED_RULE", "PRESET_ORIGINAL_BACKGROUND", "First input."]
         effective = node_output(first, entries["a"]["merge"])
-        assert once_sources({"messages": effective["messages"], "layout": effective["layout"]}) == {original_once_id}
+        assert prompt_texts(effective).count("PRESET_ORIGINAL_BACKGROUND") == 1
         assert "PRESET_FIXED_RULE" not in str(effective["messages"])
         assert "PRESET_DISABLED_BACKGROUND" not in str(effective["messages"])
         archived = service.get_run(first["workflow_session_id"], first["selected_chain_run_id"])
@@ -254,43 +262,25 @@ def test_real_workflow_edits_keep_once_identity_and_explicit_copy_creates_new_id
         save(app, changed)
         second = native_run(service, first, "Second input.")
         assert second["status"] == "succeeded", second["chains"]
-        assert once_sources(node_output(second, entries["a"]["assembly"])) == set()
+        assert once_sources(node_output(second, entries["a"]["assembly"])) == {original_once_id}
         wire = [message.get("content") for message in transport.calls[-1]["messages"]]
         assert wire.count("PRESET_ORIGINAL_BACKGROUND") == 1
-        assert "PRESET_EDITED_BACKGROUND" not in wire
+        assert wire.count("PRESET_EDITED_BACKGROUND") == 1
         assert wire.count("PRESET_EDITED_RULE") == 1
         second_effective = node_output(second, entries["a"]["merge"])
-        assert once_sources({"messages": second_effective["messages"],
-                             "layout": second_effective["layout"]}) == {original_once_id}
+        assert prompt_texts(second_effective).count("PRESET_ORIGINAL_BACKGROUND") == 1
+        assert prompt_texts(second_effective).count("PRESET_EDITED_BACKGROUND") == 1
 
         copied = deepcopy(changed)
         copied.update(resource_id=str(uuid4()), update_sequence=1)
         for entry in copied["value"]["members"]:
             entry["id"] = str(uuid4())
         save(app, copied)
+        copied_once = next(entry for entry in copied["value"]["members"]
+                           if entry["text"] == "PRESET_EDITED_BACKGROUND")
+        assert identity(copied) != identity(value)
+        assert stable_item_id(resolver["node_binding_id"], copied_once["id"]) != original_once_id
         assert reference["config"] == {"reference": identity(value)}
         assert app.query("resource.read", {"identity": identity(value)}) == changed
-        reference["config"] = {"reference": identity(copied)}
-        rebound, doc = rebind(service, second, doc)
-        third = native_run(service, rebound, "Third input.")
-        assert third["status"] == "succeeded", third["chains"]
-        new_once_id = stable_item_id(resolver["node_binding_id"], copied["value"]["members"][1]["id"])
-        assert new_once_id != original_once_id
-        assert once_sources(node_output(third, entries["a"]["assembly"])) == {new_once_id}
-        third_effective = node_output(third, entries["a"]["merge"])
-        assert once_sources({"messages": third_effective["messages"],
-                             "layout": third_effective["layout"]}) == {original_once_id, new_once_id}
-        wire = [message.get("content") for message in transport.calls[-1]["messages"]]
-        assert wire.count("PRESET_ORIGINAL_BACKGROUND") == wire.count("PRESET_EDITED_BACKGROUND") == 1
-        assert "PRESET_EDITED_RULE" not in str(third_effective["messages"])
+        assert app.query("resource.read", {"identity": identity(copied)}) == copied
         assert service.get_run(first["workflow_session_id"], first["selected_chain_run_id"]) == archived
-        sid = third["workflow_session_id"]
-
-    with closing(GraphWorkflowService(database, public_model_factory=transport.factory)) as reopened:
-        fourth = native_run(reopened, reopened.get_session(sid), "Fourth input after reopen.")
-        assert fourth["status"] == "succeeded", fourth["chains"]
-        assert once_sources(node_output(fourth, entries["a"]["assembly"])) == set()
-        wire = [message.get("content") for message in transport.calls[-1]["messages"]]
-        assert wire.count("PRESET_EDITED_BACKGROUND") == wire.count("PRESET_ORIGINAL_BACKGROUND") == 1
-        assert len(transport.calls) == 4 and not transport.summaries
-        assert reopened.get_run(first["workflow_session_id"], first["selected_chain_run_id"]) == archived

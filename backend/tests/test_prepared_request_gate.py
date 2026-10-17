@@ -54,10 +54,8 @@ def ordinary_snapshot():
 def public_snapshot():
     from phase1_agent.agent_executor import make_public_agent_snapshot
     from phase1_agent.content_contracts import text_content
-    from phase1_agent.context_contract import EFFECTIVE_CONTEXT_TYPE
-    from phase1_agent.context_v4 import read_native_context
+    from phase1_agent.context_v4 import validate_native_context_view_v5
     from phase1_agent.context_prompt_v6 import assemble_native_context_prompt
-    from phase1_agent.host_sdk import ObjectBinding
 
     registered = tools()
     context = SimpleNamespace(
@@ -65,19 +63,24 @@ def public_snapshot():
         input_artifact_refs=lambda port: [{"output_id": uid(81 if port == "prompt" else 83)}],
     )
     reference = lambda number: {"scope": "artifact", "output_id": uid(number)}
-    record = {
-        "revision_id": uid(50), "revision": 1, "type_id": EFFECTIVE_CONTEXT_TYPE,
-        "schema_version": 4, "deleted": False,
-        "binding": ObjectBinding(
-            "context", EFFECTIVE_CONTEXT_TYPE, 4, "shared",
-            readers=(uid(3),), writers=(uid(3),),
-        ).to_dict(),
-        "value": {"messages": [], "layout": [], "accepted_delta_ids": [], "generation": 0},
-    }
+    view = validate_native_context_view_v5({
+        "schema_version": 5, "kind": "workflow.context-view",
+        "owner": {"workflow_session_id": uid(1), "object_key": "context"},
+        "basis": {"revision_id": uid(50), "head_revision": 1},
+        "messages": [], "layout": [], "accepted_delta_ids": [], "applied_delta_ids": [],
+        "generation": 0,
+        "derivation": {"operation": "read", "input_view_ref": None, "receipts_ref": None},
+    })
     prompt = assemble_native_context_prompt(
-        [], read_native_context(record, uid(1), "context", uid(3)), text_content("question"),
+        [], view, text_content("question"),
         context_ref=reference(60), current_input_ref=reference(61),
     )
+    context.host_call = lambda capability, operation, payload: {
+        "value": deepcopy(prompt), "producer": {}, "output_id": uid(81),
+    }
+    from phase1_agent.context_prompt_v6 import agent_computation_input
+
+    agent_input = agent_computation_input(context, prompt)
     binding = {
         "schema_version": 2, "kind": "workflow.model-binding", "binding_id": uid(70),
         "reference": {
@@ -94,7 +97,7 @@ def public_snapshot():
         "capacity": {"context_window_tokens": 100000, "output_reserve_tokens": 128,
                      "summary_max_tokens": 128, "max_cold_input_tokens": 100000},
     }
-    return make_public_agent_snapshot(context, {}, prompt, binding, registered,
+    return make_public_agent_snapshot(context, {}, agent_input, binding, registered,
                                       schema_version=1), registered
 
 

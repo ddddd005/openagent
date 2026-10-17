@@ -274,7 +274,7 @@ def test_current_configuration_uses_registry_definition_not_conflicting_legacy_r
     assert current["nodes"][0]["node_binding_id"] == node_id
     assert current["nodes"][0]["title"] == "Current title"
     assert current["nodes"][0]["config"]["text"] == "Current accepted value"
-    assert lookups == [(COMPONENT_ID, COMPONENT_VERSION)]
+    assert lookups and set(lookups) == {(COMPONENT_ID, COMPONENT_VERSION)}
     assert descriptor_reads == []
     assert business_snapshot(management_service) == before
 

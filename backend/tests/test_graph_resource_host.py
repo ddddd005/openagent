@@ -22,6 +22,7 @@ from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import ResourceIdentity
 from phase1_agent.prompt_package import PROMPT_RESOURCE_TYPE, create_prompt_package
 from phase1_agent.tool_package import create_tool_package
+from test_graph_service import save_definition_fixture
 
 
 def uid(number):
@@ -78,7 +79,7 @@ def current_graph(registry, record):
 
 
 def create_session(service, document):
-    service.save_definition(document, expected_revision=0, idempotency_key=str(uuid4()))
+    save_definition_fixture(service, document)
     return service.create_session(document["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
 
 

@@ -24,6 +24,7 @@ from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import DataTypeDefinition, TypeRegistry
 from phase1_agent.storage import SqliteStore
 from phase1_agent.type_contract_store import TypeContractStore
+from test_graph_service import save_definition_fixture
 
 
 TOOLS = {"workflow.tools": "1.0.0"}
@@ -342,7 +343,7 @@ def test_running_and_paused_current_execution_still_block_package_changes_withou
             "edges": [{"edge_id": uid(4), "source_node_id": uid(2), "source_port_id": "output",
                        "target_node_id": uid(3), "target_port_id": "input", "order": 0}],
         }
-        instance.save_definition(document, expected_revision=0, idempotency_key="active-definition")
+        save_definition_fixture(instance, document)
         initial = instance.create_session(uid(1), 1, idempotency_key="active-session")
         started = instance.start(initial["workflow_session_id"], expected_revision=initial["revision"],
                                  idempotency_key="active-start")

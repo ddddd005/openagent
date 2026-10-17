@@ -28,6 +28,11 @@ def prompt_registry(calls=None):
         return {"output": text_content(config["text"])}
 
     registry.register(NodeDefinition(
+        "test.configuration-output", "1", "Configuration output", "Test", {}, {"type": "object"},
+        inputs=(NodePort("input", "TEXT", data_schema_version=2),),
+        outputs=(NodePort("output", "TEXT", data_schema_version=2),), is_output=True,
+    ), lambda config, inputs, context: {"output": inputs["input"]})
+    registry.register(NodeDefinition(
         "prompts.item", "3", "Configuration fixture", "Test",
         {"id": str(uuid4()), "text": "original"},
         {"type": "object", "properties": {
@@ -43,8 +48,8 @@ def prompt_registry(calls=None):
     return registry
 
 
-def configuration_document(registry):
-    return {
+def configuration_document(registry, *, connected_output=False):
+    document = {
         "schema_version": 3, "workflow_definition_id": str(uuid4()), "revision": 1,
         "name": "Configuration", "object_bindings": [], "edges": [],
         "nodes": [{
@@ -54,6 +59,20 @@ def configuration_document(registry):
             "config": deepcopy(registry.get("prompts.item", "3").definition.default_config),
         }],
     }
+    if connected_output:
+        output_id = str(uuid4())
+        document["nodes"].append({
+            "node_binding_id": output_id, "component_id": "test.configuration-output",
+            "component_version": "1", "title": "Output", "position": {"x": 100, "y": 0},
+            "configuration_policy": {"schema_version": 1, "prompt_mode": "fixed"},
+            "config": {},
+        })
+        document["edges"].append({
+            "edge_id": str(uuid4()), "source_node_id": document["nodes"][0]["node_binding_id"],
+            "source_port_id": "output", "target_node_id": output_id,
+            "target_port_id": "input", "order": 0,
+        })
+    return document
 
 
 @pytest.fixture
@@ -288,7 +307,7 @@ def test_run_facts_validate_consumed_config_against_trusted_fixed_projection():
 def test_retained_result_keeps_consumed_config_after_adjustable_edit():
     calls = []
     registry = prompt_registry(calls)
-    doc = configuration_document(registry)
+    doc = configuration_document(registry, connected_output=True)
     run_id, sid, chain_id = str(uuid4()), str(uuid4()), str(uuid4())
     cache = {}
 
@@ -300,7 +319,10 @@ def test_retained_result_keeps_consumed_config_after_adjustable_edit():
         plan = GraphCompiler(registry).compile(document)
         return execute_graph(
             plan, registry, workflow_session_id=sid, chain_run_id=chain_id,
-            node_run_ids={doc["nodes"][0]["node_binding_id"]: run_id},
+            node_run_ids={
+                node["node_binding_id"]: run_id if index == 0 else node["node_binding_id"]
+                for index, node in enumerate(document["nodes"])
+            },
             state={"revision": 0, "values": {}}, acceptance_cache=cache, on_node=on_node,
         )
 

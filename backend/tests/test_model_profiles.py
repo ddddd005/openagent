@@ -14,7 +14,8 @@ from phase1_agent.graph_provider_host import ProviderConfigurationService
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.credential_store import PrivateCredentialStore
 from phase1_agent.model_contract import validate_model_source_config
-from test_model_package import BoundaryFixture, profile_config, source_config, uid
+from test_model_package import profile_config, source_config, uid
+from test_model_request_service import ServiceHarness
 from credential_test_support import TestProtector, mutate_test_credential
 
 
@@ -340,46 +341,71 @@ def test_management_application_key_request_is_secret_free_and_consumer_denied(t
 
 
 def test_workflow_source_rejects_per_workflow_parameters_capacity_and_provider_reference():
-    for changes in ({"parameters": profile_config()["parameters"]},
-                    {"capacity": profile_config()["capacity"]},
+    for changes in ({"parameters": {"temperature": 0.25}},
+                    {"capacity": {"summary_max_tokens": 64}},
+                    {"model": profile_config()["model"]},
+                    {"runtime": profile_config()["runtime"]},
+                    {"provider": profile_config()["provider"]},
                     {"reference": profile_config()["provider"]}):
         with pytest.raises(Exception):
             validate_model_source_config({**source_config(), **changes})
 
 
-def test_named_profiles_share_provider_and_new_runs_adopt_current_without_changing_old_frame():
-    fixture = BoundaryFixture()
-    second_profile = deepcopy(fixture.profile)
-    second_profile["resource_id"] = uid(90)
-    second_profile["value"]["name"] = "Another temperature"
-    second_profile["value"]["parameters"]["temperature"] = 1
-    fixture.profile["value"]["parameters"]["temperature"] = 0.25
-    fixture.profile["value"]["capacity"]["summary_max_tokens"] = 64
-    fixture.profile["update_sequence"] = 2
-    fixture.service.prepare_run(
-        workflow_session_id=uid(2), chain_run_id=uid(4),
-        node_configs={uid(10): fixture.config, uid(12): {
-            "reference": {key: second_profile[key] for key in (
-                "envelope_version", "scope", "type_id", "resource_id")}}},
-        records=[fixture.profile, second_profile, fixture.record])
-    source = fixture.context(10, 15, ("models:resolve",))
-    source.chain_run_id = uid(4)
-    current = fixture.service.bind_model(source, fixture.config)
-    source.node_binding_id, source.node_run_id = uid(12), uid(16)
-    other = fixture.service.bind_model(source, {"reference": {
-        key: second_profile[key] for key in ("envelope_version", "scope", "type_id", "resource_id")}})
-    assert fixture.binding["parameters"]["temperature"] == 0.5
-    assert fixture.binding["capacity"]["summary_max_tokens"] == 128
-    assert current["parameters"]["temperature"] == 0.25
-    assert current["capacity"]["summary_max_tokens"] == 64
-    assert other["parameters"]["temperature"] == 1
-    fixture.chat()
-    assert fixture.factory_args[0]["parameters"]["temperature"] == 0.5
+def test_named_profiles_share_provider_and_keep_request_settings_independent():
+    first, second = ServiceHarness(), ServiceHarness()
+    second.profile["resource_id"] = uid(90)
+    second.binding["reference"] = {
+        key: second.profile[key] for key in ("envelope_version", "scope", "type_id", "resource_id")}
+    second.profile["value"]["name"] = "Another model configuration"
+    second.profile["value"]["model"]["id"] = "second-synthetic-model"
+    second.profile["value"]["runtime"]["output_limit_tokens"] = 16000
+    second.profile["value"]["provider"] = deepcopy(first.profile["value"]["provider"])
+    second.provider = first.provider
+    first_prepared = first.prepare()
+    first.provider["update_sequence"] += 1
+    first.provider["value"]["base_url"] = "https://shared-updated.example.invalid"
+    first.profile["update_sequence"] += 1
+    first.profile["value"]["runtime"]["output_limit_tokens"] = 24000
+    second_prepared = second.prepare()
+    first_result = first.dispatch(first_prepared)
+    second_result = second.dispatch(second_prepared)
+    first_new = first.prepare(key="normal:2")
+    first_new_result = first.dispatch(first_new, key="normal:2")
+    assert first.profile["value"]["provider"] == second.profile["value"]["provider"]
+    assert first_prepared["settings"]["configuration"]["reference"] != (
+        second_prepared["settings"]["configuration"]["reference"])
+    assert first_prepared["settings"]["provider"]["update_sequence"] == 1
+    assert second_prepared["settings"]["provider"]["update_sequence"] == 2
+    assert first_new["settings"]["provider"]["update_sequence"] == 2
+    assert first_prepared["settings"]["parameters"]["max_tokens"] == 32000
+    assert second_prepared["settings"]["parameters"]["max_tokens"] == 16000
+    assert first_new["settings"]["parameters"]["max_tokens"] == 24000
+    assert first_result["settings_id"] == first_prepared["settings"]["settings_id"]
+    assert second_result["settings_id"] == second_prepared["settings"]["settings_id"]
+    assert first_new_result["settings_id"] == first_new["settings"]["settings_id"]
+    assert first.communications[0]["parameters"]["model"] == "synthetic-chat"
+    assert first.communications[0]["provider"]["base_url"] == "https://first.example.invalid"
+    assert first.communications[0]["parameters"]["max_tokens"] == 32000
+    assert second.communications[0]["parameters"]["model"] == "second-synthetic-model"
+    assert second.communications[0]["provider"]["base_url"] == "https://shared-updated.example.invalid"
+    assert second.communications[0]["parameters"]["max_tokens"] == 16000
+    assert first.communications[1]["provider"]["base_url"] == "https://shared-updated.example.invalid"
+    assert first.communications[1]["parameters"]["max_tokens"] == 24000
+    first.close()
+    second.close()
 
 
-def test_missing_profile_reports_configuration_failure_before_freezing_credentials():
-    fixture = BoundaryFixture()
+def test_missing_profile_fails_before_freezing_credentials():
+    fixture = ServiceHarness()
+    def missing_profile(context, root_reference, binding_output_id):
+        fixture.reads.append((deepcopy(root_reference), binding_output_id))
+        return {"profile": None, "provider": deepcopy(fixture.provider)}
+
+    fixture.service = fixture.make_service(read_resource_bundle=missing_profile)
     with pytest.raises(Exception) as failure:
-        fixture.service.prepare_run(workflow_session_id=uid(2), chain_run_id=uid(4),
-                                    node_configs={uid(10): fixture.config}, records=[fixture.record])
+        fixture.prepare()
     assert failure.value.reason_code == "model_profile_unavailable"
+    assert fixture.broker.freeze_calls == []
+    assert fixture.accepted == {}
+    assert fixture.communications == []
+    fixture.close()

@@ -1,60 +1,14 @@
 # OpenAgent Backend
 
-On 2026-10-16 the accepted architecture was locally fast-forwarded into both
-develop and main. See the [local promotion receipt](../docs/中期检查2/59-新架构本地晋升develop与main实施回执-2026-10-16.md)
-and [two-round offline acceptance](../docs/中期检查2/58-用户极简工作流两轮离线验收与主干接续建议-2026-10-16.md).
-No push, stable-service deployment or database migration occurred. Dated
-construction and service statements below describe their original batches.
+## Current Scope
 
-The 2026-10-15 construction checkout has retired unused history-closure restore
-authority and cross-workflow session copying. Current checkpoints initialize a
-new session through the dedicated checkpoint loader. Frozen receipt verification,
-live object ACL/CAS and runtime evidence remain in place. See the
-[cleanup receipt](../docs/中期检查2/38-阶段D后旧架构代码整理实施回执-2026-10-15.md).
-The mainline/develop history below is not a deployment claim for this checkout.
+The backend provides the Python workflow runtime, persistence, model and capability services, and exact-node interfaces used by the workbench. Legacy GraphChat/Tavern creation, chat pages, preset workflows, direct consumer writes and automatic wiring are retired; ordinary workflows and the current node-owned path remain. The scoped retirement and closeout are recorded in the [E5 receipt](../docs/归档/2026-10-17/中期检查2/49-阶段E旧入口退役与测试工作流清理实施回执-2026-10-15.md) and [57 receipt](../docs/归档/2026-10-17/中期检查2/57-D-E阶段旧内容退役与收口实施回执-2026-10-15.md).
 
-The scoped D/E retirement is now complete. The current menu creates
-`frontend.node@2`; old reference-display business, duplicate commit-candidate
-queries and session-data mutations are retired. Final scoped validation passed
-778 backend tests; services were not updated during that batch. See the
-[retirement and closeout receipt](../docs/中期检查2/57-D-E阶段旧内容退役与收口实施回执-2026-10-15.md)
-for exact evidence; subsequent user-workflow evidence is in receipt 58 above.
-Real-model acceptance remains separate.
+`workflow.tavern` retains Lorebook functionality. Logical chat and candidate operations use registered `workflow.chat-context@1` data through `frontend.node@2`, not the retired Tavern pages; the [53 receipt](../docs/归档/2026-10-17/中期检查2/53-工作流独立操作与节点入口补齐实施回执-2026-10-15.md) and [55 receipt](../docs/归档/2026-10-17/中期检查2/55-聊天候选数据层与重roll检查点接续实施回执-2026-10-15.md) record their scoped delivery. Original requests and receipts remain evidence and are not replayed or upgraded automatically.
 
-Stage E4 installed node-owned HTTP entry/channel/events addresses and a
-display-only frontend page for the then-current `frontend.node@1` instance.
-Opening the page does not create a session or start execution. At E4 delivery,
-existing product services and legacy GraphChat/Tavern entries were unchanged. See the
-[E4 scoped delivery receipt](../docs/中期检查2/47-阶段E节点HTTP入口与页面限定验收实施回执-2026-10-15.md).
+Current legacy-test disposition is maintained in the [cleanup entry](../docs/开发新基线-2026-10-16/旧债清理/README.md) and [implementation ledger](../docs/开发新基线-2026-10-16/旧债清理/09-测试旧债实施与验证总账-2026-10-17.md): 559 historical identities comprise 403 passed, 58 simplified, 96 removed, one not run and one environment-skipped. This is not a full-suite green result. B081 remains unrun; B138 remains skipped without installing a browser or running services.
 
-Stage E5 retires legacy GraphChat/Tavern page entry, active consumer mutations
-and preset workflow creation. Only ordinary workflows are created. Lorebook,
-current explicit display nodes, exact frontend-node routes and original request
-evidence remain. Four old page addresses return 410; retained old source is
-served as non-executable plain text. Two exact legacy test workflows were deleted
-from the named construction databases, preserving ordinary workflows and global
-resources. Product services were not started or restarted. See the
-[E5 scoped delivery receipt](../docs/中期检查2/49-阶段E旧入口退役与测试工作流清理实施回执-2026-10-15.md).
-
-Workflow operations are now independent of frontend nodes:
-`WorkflowOperations` owns create/start coordination, pause/resume/close and
-checkpoint metadata reads/fork calls over the existing service. Exact-node
-adapters verify ownership before calling it; the node page now exposes resume,
-end-round and checkpoint controls. Original start/pause request identities remain
-readable without redispatch. See the
-[operation delivery receipt](../docs/中期检查2/53-工作流独立操作与节点入口补齐实施回执-2026-10-15.md).
-
-Logical chat is now stored in registered `workflow.chat-context@1` items and
-admitted to checkpoint schema4. Independent chat operations use the fixed
-pre-round checkpoint for reroll, select successful candidates, lock earlier
-floors and fork whole floors with target-owned checkpoint references.
-`frontend.node@2` consumes these functions through the exact-node channel.
-The current retirement batch removes version 1 from executable registration;
-its saved original requests retain receipt-only verification, not live business
-access or an automatic upgrade. Existing schema3 product databases
-were not migrated. Conflicting computation bases across participating chat
-items are rejected pending a separate user decision. See the
-[scoped chat delivery receipt](../docs/中期检查2/55-聊天候选数据层与重roll检查点接续实施回执-2026-10-15.md).
+The 2026-10-16 [receipt 64](../docs/归档/2026-10-17/中期检查2/64-Agent内置final_answer工具声明与两轮真实调用验收回执-2026-10-16.md) records two user-confirmed real-model calls within its stated acceptance scope; it is not a general product or full-suite acceptance. [65](../docs/中期检查2/65-工作流架构阶段总规划-2026-10-17.md), [66](../docs/中期检查2/66-工作流数据管理与定义域会话域契约-2026-10-17.md), [67](../docs/中期检查2/67-工作流基础支持与配置管理交互契约-2026-10-17.md) and [68](../docs/中期检查2/68-工作流运行与能力调用契约-2026-10-17.md) describe the next architecture stage; they are plans/contracts, not installed APIs. Normal development uses `develop`; do not infer current database, service or remote state from dated receipts or treat historical approvals as current authorization.
 
 ## Historical Delivery
 
@@ -77,8 +31,8 @@ Frontend-userization P1-P6 is locally committed and fast-forwarded into `main`,
 with feature commit `0c15587`; this batch has not been pushed. P4 adds
 management-only private credentials and bounded model discovery; P5 adds
 read-only draft input declarations.
-See the [P3/P4 record](../docs/FRONTEND-P3-P4-2026-10-09.md) and
-[P5/P6 record](../docs/FRONTEND-P5-P6-2026-10-09.md).
+See the [P3/P4 record](../docs/归档/2026-10-17/FRONTEND-P3-P4-2026-10-09.md) and
+[P5/P6 record](../docs/归档/2026-10-17/FRONTEND-P5-P6-2026-10-09.md).
 The BAT files remain unchanged and `start.bat` still selects `main`, now with
 these features. The main worktree build and BAT `-CheckOnly` preflight passed;
 no product service or real model call was started. Live acceptance is pending.
@@ -88,7 +42,7 @@ or pushed to `main`; the stable BAT remains unchanged. Development now uses
 global `workflow.model-profile@1` resources and reference-only model sources
 `@5/@6`. New runs resolve and freeze current profile/provider values; active
 runs and historical facts do not change. See the
-[correction record](../docs/MODEL-CONFIG-CORRECTION-2026-10-10.md).
+[correction record](../docs/归档/2026-10-17/MODEL-CONFIG-CORRECTION-2026-10-10.md).
 
 The development credential path is now page-entered Key -> protected private
 vault -> `local:<UUID>`. Environment credentials and their manual reference
@@ -121,11 +75,11 @@ owner. The startup record identifies the selected source, database and owned
 processes. See Quickstart before setting up a fresh clone or a `main` worktree.
 Git push updates the repository, not a running service or a deployment.
 
-The authorized construction branch is `retirement/architecture-2026-10-13`,
-not a `develop` checkout eligible for the development BAT. Use the explicit
-construction startup record with an isolated schema4 database and a workbench
-build whose base is `/workbench/`; do not bypass branch checks or automatically
-migrate an existing schema3 database.
+Normal development uses `develop` with `start-dev.bat`. `start.bat` requires a
+unique clean `main` worktree. The 2026-10-17 read-only inventory found no
+`.local/stable-main` checkout; do not create one or bypass the branch gate under
+the current cleanup scope. See Quickstart for setup details when setup is
+authorized.
 
 For an explicitly isolated backend-only session, run from this directory with
 Python 3.10 or later:
@@ -203,8 +157,11 @@ is not expanded. Prompt group fields are an exact frontend extension, not a new
 node or data schema. Display names and directory archive metadata remain
 management editing records, separate from runtime facts and resource bodies.
 
-The P5/P6 targeted backend group passed 286 tests in 14 files using isolated
-databases and mock transports, not a full backend rerun or live BAT acceptance.
+The P5/P6 targeted backend group historically passed 286 tests in 14 files
+using isolated databases and mock transports; this was not a full backend rerun
+or live BAT acceptance. Current cleanup results are recorded in the
+[implementation ledger](../docs/开发新基线-2026-10-16/旧债清理/09-测试旧债实施与验证总账-2026-10-17.md);
+the historical count is not today's suite result.
 
 Private credentials use a separate `<database>.credentials.sqlite` protected
 with Windows current-user DPAPI and path-bound entropy. No plaintext fallback
@@ -215,13 +172,11 @@ receipts. Unknown requests are never replayed. Key rotation or deletion after
 run preparation prevents later dispatch; it does not cancel an already sent call.
 Vault migration to another account, host or path is not guaranteed.
 
-The 2026-10-11 restructuring remains uncommitted on `develop`; `main` and all
-launchers are unchanged. Independent provider/content management, target
-workflow/session archive and deletion, and live prompt/lorebook reads are in
-place. Definition derivation/autosave and per-request model settings are still
-unfinished. See the [implementation record](../docs/中期检查/11-首批整改实施与离线验证-2026-10-11.md).
-Storage v17 no longer runs legacy retirement scans during initialization;
-explicit development reset owns scoped cleanup and separate request evidence.
+The following 2026-10-11 restructuring status is historical, not a description
+of the current branch or remaining implementation work. See the
+[implementation record](../docs/归档/2026-10-17/中期检查/11-首批整改实施与离线验证-2026-10-11.md)
+for that batch's branch, storage and acceptance details; later receipts and the
+current cleanup ledger supersede its then-current statements.
 
 The provider form has one "Save provider" action, for both creation and updates.
 Editing remains a draft until submission. With a newly entered Key,

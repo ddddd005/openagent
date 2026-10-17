@@ -13,7 +13,7 @@ import pytest
 from phase1_agent.adapter import DeepSeekAdapter
 from phase1_agent.contract_errors import ContractValidationError, DiagnosticError, require
 from phase1_agent.contract_json import canonical_bytes, loads_strict
-from phase1_agent.contracts import ModelResponse
+from phase1_agent.contracts import ModelResponse, ModelToolCall
 from phase1_agent.credential_contract import CredentialLease
 from phase1_agent.gemini_adapter import GeminiAdapter
 from phase1_agent.model_request_budget import validate_context_reduction
@@ -416,6 +416,25 @@ def test_host_recovery_retries_only_the_retained_model_fact_acceptance(harness):
     assert len(harness.communications) == 1
 
 
+def test_tool_call_response_reuses_the_original_failed_request_without_communication(harness):
+    harness.response = ModelResponse(
+        "tool_calls", tool_calls=(ModelToolCall("call-1", "inspect", "{}"),))
+    prepared = harness.prepare(tools=[{"type": "function", "function": {
+        "name": "inspect", "description": "Inspect",
+        "parameters": {"type": "object"},
+    }}])
+    harness.fail_stage = "outcome"
+    with pytest.raises(DiagnosticError) as error:
+        harness.dispatch(prepared)
+    assert error.value.reason_code == "model_fact_acceptance_failed"
+    result = harness.dispatch(prepared)
+    assert result["tool_calls"] == [
+        {"id": "call-1", "name": "inspect", "raw_arguments": "{}", "type": "function"},
+    ]
+    assert result["request_id"] == prepared["request_id"]
+    assert len(harness.communications) == 1
+
+
 @pytest.mark.parametrize("stage", ["request", "attempt"])
 def test_pre_dispatch_fact_failure_preserves_controlled_cause_and_never_communicates(harness, stage):
     prepared = harness.prepare()
@@ -429,6 +448,51 @@ def test_pre_dispatch_fact_failure_preserves_controlled_cause_and_never_communic
     with pytest.raises(DiagnosticError):
         harness.dispatch(prepared)
     assert not harness.communications
+
+
+def test_transport_setup_failure_is_sanitized_and_never_replayed(harness):
+    original = harness.resolve_transport("chat", harness.profile["value"]["model"]["id"])
+    factory_calls = []
+
+    def fail_factory(**kwargs):
+        factory_calls.append(kwargs)
+        raise RuntimeError("synthetic-private-key arbitrary factory error")
+
+    definition = ModelRequestTransport(
+        original.capability, original.projection_version, original.projector, fail_factory,
+        original.counter, original.estimator_id, original.estimator_version,
+    )
+    harness.service = harness.make_service(resolve_transport=lambda *_: definition)
+    prepared = harness.prepare()
+    for _ in range(2):
+        with pytest.raises(DiagnosticError) as error:
+            harness.dispatch(prepared)
+        assert error.value.reason_code == "model_not_dispatched"
+        assert error.value.diagnostics[0]["cause_code"] == "internal_error"
+        assert error.value.diagnostics[0]["step"] == "transport_setup"
+        assert b"synthetic-private-key" not in canonical_bytes(error.value.diagnostics)
+    assert len(factory_calls) == 1
+    assert not harness.communications
+    outcome = next(fact for fact in harness.accepted.values() if fact["stage"] == "outcome")
+    assert outcome["details"]["classification"] == "not_dispatched"
+
+
+@pytest.mark.parametrize("failure", [
+    pytest.param(httpx.ReadTimeout("synthetic-private-key"), id="read-timeout"),
+    pytest.param(ConnectionError("synthetic-private-key"), id="connection-error"),
+    pytest.param(RuntimeError("synthetic-private-key"), id="transport-runtime-error"),
+])
+def test_current_transport_exception_types_are_unknown_once_and_never_replayed(harness, failure):
+    harness.transport_error = failure
+    prepared = harness.prepare()
+    for _ in range(2):
+        with pytest.raises(DiagnosticError) as error:
+            harness.dispatch(prepared)
+        assert error.value.reason_code == "model_dispatch_unknown"
+        assert b"synthetic-private-key" not in canonical_bytes(error.value.diagnostics)
+    assert len(harness.communications) == 1
+    outcome = next(fact for fact in harness.accepted.values() if fact["stage"] == "outcome")
+    assert outcome["details"]["classification"] == "dispatch_unknown"
 
 
 @pytest.mark.parametrize("classification", ["provider_error", "dispatch_unknown", "response_invalid"])
@@ -462,6 +526,15 @@ def test_terminal_external_failure_is_not_replayed_after_configuration_and_key_s
     assert outcome["details"]["classification"] == classification
     assert "response" not in outcome["details"]
     assert harness.created[0].closed == 1
+
+
+def test_retired_kernel_model_operation_is_rejected_before_model_effects(harness):
+    with pytest.raises(DiagnosticError) as error:
+        harness.service(harness.context, "models:call", "kernel-model", {
+            "binding_id": harness.binding["binding_id"], "api_key": "fixture-only",
+        })
+    assert error.value.reason_code == "model_request_operation_invalid"
+    assert not harness.reads and not harness.accepted and not harness.communications
 
 
 def test_compaction_measurements_keep_exact_settings_projector_estimator_without_private_work(harness):

@@ -22,12 +22,16 @@ from credential_test_support import mutate_test_credential, seed_service_credent
 
 class ModelDatabaseFixture:
     def __init__(self):
-        self.factories, self.calls = [], []
+        self.factories, self.calls, self.credential_generations = [], [], []
         self.closes = 0
         self.fail = False
+        self.response = None
 
     def factory(self, *, provider, parameters, api_key):
         self.factories.append({"provider": deepcopy(provider), "parameters": deepcopy(parameters)})
+        self.credential_generations.append(
+            "original" if api_key == "private-api-secret"
+            else "rotated" if api_key == "rotated-private-secret" else "other")
         fixture = self
 
         class Transport:
@@ -39,8 +43,14 @@ class ModelDatabaseFixture:
                 fixture.calls.append({"messages": deepcopy(messages), "tools": deepcopy(tools)})
                 if fixture.fail:
                     raise RuntimeError("private-api-secret")
+                if fixture.response is not None:
+                    return deepcopy(fixture.response)
                 return ModelResponse("stop", provider["base_url"], usage={"completion_tokens": 1},
                                      model=parameters["model"], response_id="mock-response")
+
+            def generate_prepared(self, prepared):
+                wire = prepared["wire_request"]
+                return self.generate(wire["messages"], wire.get("tools", []))
 
             def close(self):
                 fixture.closes += 1
@@ -80,16 +90,16 @@ class ModelDatabaseFixture:
                                       record["value"]["credential_ref"], secret)
 
     @staticmethod
-    def update_profile(service, *, parameters=None, capacity=None, protocol=None):
+    def update_profile(service, *, model=None, capacity=None, runtime=None):
         record = service.get_global_resource(source_config()["reference"])
         assert record is not None
         record["update_sequence"] += 1
-        if parameters:
-            record["value"]["parameters"].update(parameters)
+        if model:
+            record["value"]["model"].update(model)
         if capacity:
-            record["value"]["capacity"].update(capacity)
-        if protocol:
-            record["value"]["protocol"] = protocol
+            record["value"]["model"]["capacity"].update(capacity)
+        if runtime:
+            record["value"]["runtime"].update(runtime)
         service.save_global_resource(record, expected_sequence=record["update_sequence"] - 1,
                                      idempotency_key=str(uuid4()))
         return record
@@ -160,7 +170,7 @@ def test_default_loaded_model_graph_persists_secret_free_facts_and_releases_fram
     fixture = ModelDatabaseFixture()
     path = tmp_path / "models.sqlite"
     with closing(GraphWorkflowService(path, public_model_factory=fixture.factory)) as service:
-        assert service.registry.get("models.chat", "3") is not None
+        assert service.registry.get("models.chat", "5") is not None
         assert service.registry.data_types.get(CHAT_PROVIDER_TYPE, 3, scope="global") is not None
         fixture.write(service, 1)
         final = fixture.execute(service, fixture.create(service, fixture.document(service)))
@@ -191,20 +201,25 @@ def test_missing_credential_preflight_rolls_back_before_any_graph_effect(tmp_pat
     with closing(GraphWorkflowService(tmp_path / "preflight.sqlite",
                                       public_model_factory=fixture.factory)) as service:
         fixture.write(service, 1)
+        provider = service.get_global_resource(profile_config()["provider"])
+        credential_ref = provider["value"]["credential_ref"]
         fixture.set_credential(service, None)
+        assert service.provider_configuration.credentials.status(credential_ref)["state"] == "missing"
         initial = fixture.create(service, fixture.document(service, side_effect=effects))
-        with pytest.raises(ContractValidationError) as caught:
-            service.start(initial["workflow_session_id"], expected_revision=initial["revision"],
-                          idempotency_key=str(uuid4()))
-        assert caught.value.reason_code == "model_credential_unavailable"
-        assert service.get_session(initial["workflow_session_id"]) == initial
+        started = service.start(initial["workflow_session_id"], expected_revision=initial["revision"],
+                                idempotency_key=str(uuid4()))
+        service.wait(started["active_chain_run_id"])
+        failed = service.get_session(initial["workflow_session_id"])
+        history = service.get_run(failed["workflow_session_id"], started["active_chain_run_id"])
+        assert failed["status"] == "failed"
+        assert history["runtime_facts"] == []
         assert not effects and not fixture.calls and not fixture.factories
         assert not service._resource_frames
         assert not service._execution_registries
         assert not service._service_runs
 
 
-def test_pause_preserves_frozen_provider_next_run_and_fork_use_current(tmp_path, monkeypatch):
+def test_pause_before_request_and_checkpoint_fork_use_current_profile(tmp_path, monkeypatch):
     fixture = ModelDatabaseFixture()
     entered, released = Event(), Event()
     with closing(GraphWorkflowService(tmp_path / "paused.sqlite",
@@ -223,33 +238,38 @@ def test_pause_preserves_frozen_provider_next_run_and_fork_use_current(tmp_path,
         service.wait(started["active_chain_run_id"])
         paused = service.get_session(initial["workflow_session_id"])
         assert paused["status"] == "paused", paused
-        assert not fixture.calls
-        assert sum(instance.active_frame_count for instance in service.host_service_instances(
-            started["active_chain_run_id"]) if hasattr(instance, "active_frame_count")) == 1
+        assert not fixture.calls and not fixture.factories
+        assert service.get_run(initial["workflow_session_id"],
+                               started["active_chain_run_id"])["runtime_facts"] == []
         fixture.write(service, 2, address="https://changed.test")
         resumed = service.control(paused["workflow_session_id"], action="resume",
                                   expected_revision=paused["revision"], idempotency_key=str(uuid4()))
         service.wait(resumed["active_chain_run_id"])
         first = service.get_session(initial["workflow_session_id"])
         assert first["status"] == "succeeded", first
-        assert fixture.result(first)["content"] == "https://original.test"
-        candidate = service.list_graph_candidates(first["workflow_session_id"])["candidates"][0]["candidate_id"]
+        assert fixture.result(first)["content"] == "https://changed.test"
+        assert fixture.credential_generations == ["original"]
         second = fixture.execute(service, first)
         assert fixture.result(second)["content"] == "https://changed.test"
-        fork = service.fork_graph_candidate(
-            second["workflow_session_id"], candidate_id=candidate,
-            expected_revision=second["revision"], expected_data_revision=second["data_revision"],
+        assert fixture.credential_generations == ["original", "original"]
+        points = service.list_checkpoints(second["workflow_session_id"])
+        assert points
+        fork = service.fork_checkpoint(
+            second["workflow_session_id"], checkpoint_id=points[-1]["checkpoint_id"],
+            expected_session_revision=second["revision"], expected_data_revision=second["data_revision"],
             expected_head_revision=second["head_revision"], idempotency_key=str(uuid4()))
-        child = fixture.execute(service, fork)
+        child_initial = service.get_session(fork["target_session_id"])
+        child = fixture.execute(service, child_initial)
         assert fixture.result(child)["content"] == "https://changed.test"
-        assert fixture.result(first)["binding_id"] != fixture.result(child)["binding_id"]
+        assert child["workflow_definition_id"] == second["workflow_definition_id"]
+        assert child["definition_revision"] == second["definition_revision"]
         assert len(fixture.calls) == 3
         assert fixture.closes == 3
         assert not service._service_runs
 
 
 @pytest.mark.parametrize("policy_change", ["disabled", "credential_changed", "credential_missing"])
-def test_policy_changed_before_dispatch_has_not_dispatched_fact_and_releases_frame(tmp_path, monkeypatch, policy_change):
+def test_policy_change_before_first_model_request_uses_current_resource_state(tmp_path, monkeypatch, policy_change):
     fixture = ModelDatabaseFixture()
     entered, released = Event(), Event()
     with closing(GraphWorkflowService(tmp_path / "revoked.sqlite",
@@ -269,11 +289,16 @@ def test_policy_changed_before_dispatch_has_not_dispatched_fact_and_releases_fra
         finally:
             released.set()
         service.wait(started["active_chain_run_id"])
-        failed = service.get_session(initial["workflow_session_id"])
-        assert failed["status"] == "failed", failed
-        history = service.get_run(failed["workflow_session_id"], started["active_chain_run_id"])
-        assert history["runtime_facts"][-1]["details"]["classification"] == "not_dispatched"
-        assert not fixture.calls
+        current = service.get_session(initial["workflow_session_id"])
+        history = service.get_run(current["workflow_session_id"], started["active_chain_run_id"])
+        if policy_change == "credential_changed":
+            assert current["status"] == "succeeded", current
+            assert len(fixture.calls) == 1 and fixture.credential_generations == ["rotated"]
+            assert [fact["stage"] for fact in history["runtime_facts"]] == ["request", "attempt", "outcome"]
+        else:
+            assert current["status"] == "failed", current
+            assert history["runtime_facts"] == []
+            assert not fixture.calls and not fixture.factories
         assert not service._service_runs
         assert "private-api-secret" not in json.dumps(history)
         assert "rotated-private-secret" not in json.dumps(history)

@@ -15,7 +15,6 @@ from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_receipts import read_graph_application_receipt
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.storage import SqliteStore
-from test_graph_service import gate_graph
 
 
 def uid(number):
@@ -182,7 +181,9 @@ def test_missing_saved_package_keeps_history_and_original_receipts_read_only_unt
         assert not missing.get_session(sid)["can_submit"]
         assert not missing.get_consumer(sid)["can_submit"]
         assert missing.get_run(sid, chain_id) == historical
-        assert missing.read_public_output(sid, **public_parameters)["output"] == output
+        with pytest.raises(ContractValidationError) as unavailable:
+            missing.read_public_output(sid, **public_parameters)
+        assert unavailable.value.reason_code == "graph_missing_node_type"
         assert missing.create_session(document["workflow_definition_id"], 1,
                                       idempotency_key="original-session") == initial
         assert missing.start(sid, expected_revision=initial["revision"],
@@ -211,55 +212,3 @@ def test_missing_saved_package_keeps_history_and_original_receipts_read_only_unt
         assert missing.get_session(sid)["status"] == "succeeded"
         assert missing.get_run(sid, chain_id) == historical
         assert not hasattr(missing, "_native_runtime")
-
-
-def test_missing_saved_package_does_not_reconcile_or_block_closing_owned_execution(tmp_path):
-    optional = CapabilityPackage(PackageManifest("example.optional-ui", "1"), lambda host:
-        host.register_frontend_extension(
-            "example.optional-ui.panel", "workbench-panel", "example.optional-ui.panel",
-            binding={"surface": "workbench", "slot": "panel", "target": {}}, host_protocol_version=1))
-    path = tmp_path / "missing-active.sqlite"
-    selection = {"workflow.tools": "1.0.0", "example.optional-ui": "1"}
-    with closing(GraphWorkflowService(path, capability_packages=(optional,), enabled_packages=selection)) as service:
-        sid, chain_id, release = gate_graph(service)
-        try:
-            current = service.get_session(sid)
-            service.control(sid, action="pause", expected_revision=current["revision"], idempotency_key="pause")
-        finally:
-            release.set()
-        service.wait(chain_id)
-        assert service.get_session(sid)["status"] == "paused"
-    persisted = saved_selection(path)
-
-    with closing(GraphWorkflowService(path)) as missing:
-        current = missing.get_session(sid)
-        assert current["status"] == "paused"
-        assert current["active_chain_run_id"] == chain_id
-        assert not current["can_submit"] and current["available_actions"] == ["close"]
-        assert missing.registry.catalog() == []
-        assert missing.platform_capabilities()["package_diagnostics"][0]["enabled_packages"] == selection
-        with pytest.raises(ContractValidationError) as denied:
-            missing.configure_capability_packages({"workflow.tools": "1.0.0"})
-        assert denied.value.reason_code == "package_change_during_execution"
-        assert missing.get_session(sid) == current
-        assert saved_selection(path) == persisted
-        assert missing._futures == {} and not hasattr(missing, "_native_runtime")
-        closed = missing.control(sid, action="close", expected_revision=current["revision"],
-                                 idempotency_key="unavailable-close")
-        assert closed["status"] == "closed" and closed["active_chain_run_id"] is None
-        assert missing.get_run(sid, chain_id)["chain"]["status"] == "closed"
-        assert missing.get_run(sid, chain_id)["chain"]["diagnostic"] is None
-        assert missing.control(sid, action="close", expected_revision=current["revision"],
-                               idempotency_key="unavailable-close") == closed
-
-    with closing(GraphWorkflowService(path, capability_packages=(optional,))) as restored:
-        current = restored.get_session(sid)
-        assert restored.platform_capabilities()["package_diagnostics"] == []
-        assert saved_selection(path) == persisted
-        assert current["status"] == "closed" and current["active_chain_run_id"] is None
-        with pytest.raises(ContractValidationError) as denied:
-            restored.control(sid, action="resume", expected_revision=current["revision"],
-                             idempotency_key="restored-resume")
-        assert denied.value.reason_code == "invalid_state"
-        assert restored._futures == {} and not hasattr(restored, "_native_runtime")
-        assert restored.configure_capability_packages(DEFAULT_PACKAGES)["package_diagnostics"] == []

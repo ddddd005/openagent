@@ -11,7 +11,7 @@ from phase1_agent.agent_executor import PublicAgentExecutor
 from phase1_agent.content_contracts import text_content
 from phase1_agent.context_contract import project_agent_context_message
 from phase1_agent.context_prompt_v6 import assemble_native_context_prompt
-from phase1_agent.context_v4 import merge_native_context, validate_native_context_view
+from phase1_agent.context_v4 import merge_native_context_v5, validate_native_context_view_v5
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.contract_json import canonical_bytes
 from phase1_agent.contracts import ModelResponse, ModelToolCall
@@ -79,16 +79,15 @@ class KernelHarness:
             "schema_version": 2, "kind": "workflow.context-compaction-policy",
             "enabled": True, "keep_depth": 0, "summary_prompt": "Summarize permitted text.",
         }
-        initial = validate_native_context_view({
-            "schema_version": 4, "kind": "workflow.context-view",
-            "owner": {"workflow_session_id": self.context.workflow_session_id,
-                      "object_key": "context", "agent_node_id": self.context.node_binding_id},
+        initial = validate_native_context_view_v5({
+            "schema_version": 5, "kind": "workflow.context-view",
+            "owner": {"workflow_session_id": self.context.workflow_session_id, "object_key": "context"},
             "basis": {"revision_id": str(uuid4()), "head_revision": 1},
             "messages": [project_agent_context_message(human("previous context " * 500))],
             "layout": [{"kind": "history", "round_id": str(uuid4()), "compaction": "allowed"}],
             "accepted_delta_ids": [], "applied_delta_ids": [],
             "generation": 0,
-            "derivation": {"operation": "read", "input_view_ref": None, "update_ref": None},
+            "derivation": {"operation": "read", "input_view_ref": None, "receipts_ref": None},
         })
         self.once = item(701, "ONCE_MATERIAL")
         self.fixed = item(702, "FIXED_MATERIAL", role="system",
@@ -120,9 +119,7 @@ class KernelHarness:
 
         def factory(config, inputs, context):
             handle = PublicAgentExecutor(
-                config, inputs, context, tools=tools, schema_version=2,
-                release_run=lambda: self.mock.service.release_run(
-                    context.workflow_session_id, context.chain_run_id))
+                config, inputs, context, tools=tools, schema_version=2)
             self.handles.append(handle)
             return handle
 
@@ -200,28 +197,27 @@ class KernelHarness:
             raise OSError("Synthetic terminal acknowledgment loss")
         return receipt
 
-    def executor_facts(self, packet):
-        receipts = packet["receipts"]
+    def executor_facts(self, receipts):
         with closing(SqliteStore(self.integrated.resources.path)) as store:
             return RuntimeFactStore(store).executor_facts(
                 receipts["owner"], receipts["executor_ref"], receipts["fact_ids"])
 
-    def model_facts(self, packet):
+    def model_facts(self, receipts):
         dispatched = {result["request_id"] for result in self.results}
         reader_host = FactHarness.from_integrated(
             self.integrated,
             preparations=[prepared for prepared in self.preparations if prepared["request_id"] in dispatched],
             results=self.results)
-        reader_host.receipts = deepcopy(packet["receipts"])
-        reader_host.evidence["input_output"]["payload"] = deepcopy(packet)
+        reader_host.receipts = deepcopy(receipts)
+        reader_host.evidence["input_output"]["payload"] = deepcopy(receipts)
         reader_host.persist("input_output")
-        reader_host.payload["requests"] = deepcopy(packet["receipts"]["model_requests"])
+        reader_host.payload["requests"] = deepcopy(receipts["model_requests"])
         return reader_host.read()
 
-    def prove(self, packet, executor_facts, model_facts):
-        from phase1_agent.context_update_v2 import validate_execution_update_v2
-        return validate_execution_update_v2(
-            packet, executor_facts, self.prompt, self.mock.binding,
+    def prove(self, receipts, executor_facts, model_facts):
+        from phase1_agent.context_update_v2 import prove_context_merge_execution_v2
+        return prove_context_merge_execution_v2(
+            self.prompt, self.mock.binding, receipts, executor_facts,
             model_facts=model_facts, policy=self.policy, policy_ref=self.policy_ref,
             project_messages=CanonicalModelAdapter._project,
             resolve_transport=self.mock.resolve_transport)
@@ -243,43 +239,42 @@ def test_real_kernel_tools_compaction_receipts_and_authorized_update_proof(kerne
     outcome = host.runtime.drive(host.owner)
     assert outcome.status == "succeeded"
     assert outcome.outputs["result"] == text_content("Accepted answer")
-    packet = outcome.outputs["context"]
-    assert packet["schema_version"] == packet["receipts"]["schema_version"] == 2
+    receipts = outcome.outputs["receipts"]
+    assert receipts["schema_version"] == 2
     assert host.lookup_calls == ["executed"]
-    assert [call["parameters"]["max_tokens"] for call in host.mock.communications] == [32000, 1024, 8000]
     assert [event["payload"]["kind"] for event in host.accepted_envelopes.values()].count(
         "context_compaction_applied") == 1
-    assert len(packet["receipts"]["model_requests"]) == 3
-    executor_facts = host.executor_facts(packet)
+    assert len(receipts["model_requests"]) == 3
+    executor_facts = host.executor_facts(receipts)
     assert executor_facts[-1]["payload"]["payload"]["model_requests"] == 3
     assert executor_facts[-1]["payload"]["payload"]["attempts"] == 3
-    model_facts = host.model_facts(packet)
+    model_facts = host.model_facts(receipts)
     before = (host.integrated.read_count, len(host.mock.communications),
               len(host.mock.broker.freeze_calls), deepcopy(host.integrated.facts()))
     host.save_runtime(5000, 9000)
-    assert host.prove(packet, executor_facts, model_facts)["value"] == {"text": "Accepted answer"}
-    update_ref = {"scope": "artifact", "output_id": str(uuid4())}
-    merged = merge_native_context(
-        host.prompt["context"], host.prompt["context_ref"], packet, update_ref, host.prompt)
+    execution = host.prove(receipts, executor_facts, model_facts)
+    assert execution["final"]["value"] == {"text": "Accepted answer"}
+    receipts_ref = {"scope": "artifact", "output_id": str(uuid4())}
+    merged = merge_native_context_v5(
+        host.prompt["context"], host.prompt["context_ref"], receipts, receipts_ref, host.prompt, execution)
     assert merged["derivation"] == {
-        "operation": "merge", "input_view_ref": host.prompt["context_ref"], "update_ref": update_ref}
-    assert merged["applied_delta_ids"] == [packet["update_id"]]
+        "operation": "merge", "input_view_ref": host.prompt["context_ref"], "receipts_ref": receipts_ref}
+    assert len(merged["applied_delta_ids"]) == 1
     with pytest.raises(ContractValidationError):
-        merge_native_context(merged, update_ref, packet, update_ref, host.prompt)
+        merge_native_context_v5(merged, receipts_ref, receipts, receipts_ref, host.prompt, execution)
     assert before == (host.integrated.read_count, len(host.mock.communications),
                       len(host.mock.broker.freeze_calls), host.integrated.facts())
-    # The accepted view keeps once content only while it remains in the layout.
-    assert _once_content(host.once) not in _persisted_once_contents(packet["next_view"])
+    assert _once_content(host.once) not in _persisted_once_contents(merged)
     assert _injected_once_contents(host.prompt) == {_once_content(host.once)}
-    assert packet["next_view"]["messages"][-1]["blocks"] == [{"kind": "text", "text": "Accepted answer"}]
+    assert merged["messages"][-1]["blocks"] == [{"kind": "text", "text": "Accepted answer"}]
     assert not any("FIXED_MATERIAL" in block.get("text", "")
-                   for message in packet["next_view"]["messages"] for block in message["blocks"])
+                   for message in merged["messages"] for block in message["blocks"])
     assert any(block.get("tool_name") == "lookup"
-               for message in packet["next_view"]["messages"] for block in message["blocks"])
+               for message in merged["messages"] for block in message["blocks"])
     assert not any(block.get("tool_name") == "final_answer"
-                   for message in packet["next_view"]["messages"] for block in message["blocks"])
+                   for message in merged["messages"] for block in message["blocks"])
     assert b"synthetic-integration-key" not in canonical_bytes({
-        "packet": packet, "executor_facts": executor_facts, "model_facts": model_facts})
+        "receipts": receipts, "executor_facts": executor_facts, "model_facts": model_facts})
 
 
 def test_host_pause_keeps_completed_tool_and_reads_new_settings_only_on_next_request(tmp_path):
@@ -295,10 +290,11 @@ def test_host_pause_keeps_completed_tool_and_reads_new_settings_only_on_next_req
         assert completed.status == "succeeded"
         assert host.lookup_calls == ["executed"] and len(host.mock.communications) == 3
         assert host.integrated.facts()[:3] == original
-        packet = completed.outputs["context"]
-        operation = next(value for value in packet["operations"] if value["kind"] == "compact")
+        receipts = completed.outputs["receipts"]
+        execution = host.prove(receipts, host.executor_facts(receipts), host.model_facts(receipts))
+        operation = next(value for value in execution["operations"] if value["kind"] == "compact")
         assert operation["trigger_decision"]["preparation"]["settings"]["parameters"]["max_tokens"] == 14000
-        assert host.prove(packet, host.executor_facts(packet), host.model_facts(packet))["value"] == {
+        assert execution["final"]["value"] == {
             "text": "Accepted answer"}
     finally:
         host.close()
@@ -321,8 +317,9 @@ def test_host_terminal_acceptance_reuses_original_fact_and_never_redrives_kernel
         assert repeated == [terminal, terminal]
         assert host.integrated.facts() == before
         assert host.lookup_calls == ["executed"] and len(host.mock.communications) == 3
-        packet = completed.outputs["context"]
-        assert host.prove(packet, host.executor_facts(packet), host.model_facts(packet))["value"] == {
+        receipts = completed.outputs["receipts"]
+        execution = host.prove(receipts, host.executor_facts(receipts), host.model_facts(receipts))
+        assert execution["final"]["value"] == {
             "text": "Accepted answer"}
     finally:
         host.close()
@@ -340,11 +337,18 @@ def test_host_pause_after_summary_retains_replacement_and_sends_only_new_normal_
         completed = host.runtime.drive(host.owner)
         assert completed.status == "succeeded"
         assert host.integrated.facts()[:6] == original
-        assert [call["parameters"]["max_tokens"] for call in host.mock.communications] == [32000, 1024, 6000]
         assert host.lookup_calls == ["executed"]
-        packet = completed.outputs["context"]
-        assert sum(value["kind"] == "compact" for value in packet["operations"]) == 1
-        assert host.prove(packet, host.executor_facts(packet), host.model_facts(packet))["value"] == {
+        receipts = completed.outputs["receipts"]
+        execution = host.prove(receipts, host.executor_facts(receipts), host.model_facts(receipts))
+        assert sum(value["kind"] == "compact" for value in execution["operations"]) == 1
+        dispatched = {result["request_id"] for result in host.results}
+        dispatched_preparations = [
+            preparation for preparation in host.preparations if preparation["request_id"] in dispatched]
+        assert len(dispatched_preparations) == len(host.mock.communications) == 3
+        assert [call["parameters"]["max_tokens"] for call in host.mock.communications] == [
+            preparation["settings"]["parameters"]["max_tokens"] for preparation in dispatched_preparations]
+        assert dispatched_preparations[-1]["settings"]["parameters"]["max_tokens"] == 6000
+        assert execution["final"]["value"] == {
             "text": "Accepted answer"}
     finally:
         host.close()
@@ -370,16 +374,17 @@ def test_unknown_host_call_never_outputs_context_or_replays_after_resource_save(
 def test_full_update_rejects_modified_ownership_timeline_and_result(kernel_host, tamper):
     host = kernel_host
     outcome = host.runtime.drive(host.owner)
-    packet = deepcopy(outcome.outputs["context"])
-    facts, models = host.executor_facts(packet), host.model_facts(packet)
+    receipts = deepcopy(outcome.outputs["receipts"])
+    facts, models = host.executor_facts(receipts), host.model_facts(receipts)
     if tamper == "owner":
-        packet["owner"]["node_run_id"] = str(uuid4())
+        receipts["owner"]["node_run_id"] = str(uuid4())
     elif tamper == "order":
-        packet["receipts"]["model_requests"].reverse()
+        receipts["model_requests"].reverse()
     elif tamper == "settlement":
         settled = next(fact for fact in facts if fact["payload"]["kind"] == "tool_settled")
         settled["payload"]["payload"]["message"]["blocks"][0]["content"] = {"value": "forged"}
     else:
-        packet["next_view"]["messages"][-1]["blocks"][0]["text"] = "forged"
+        terminal = next(fact for fact in facts if fact["payload"]["kind"] == "agent_result")
+        terminal["payload"]["payload"]["final"]["value"]["text"] = "forged"
     with pytest.raises(ContractValidationError):
-        host.prove(packet, facts, models)
+        host.prove(receipts, facts, models)

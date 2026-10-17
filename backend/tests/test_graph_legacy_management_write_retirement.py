@@ -116,8 +116,7 @@ def test_management_draft_writer_retires_but_evidence_readers_and_receipts_remai
     assert "draft.save" not in names and "draft.save" in retired
     assert {"draft.read", "draft.list"} <= query_names
     assert not hasattr(service, "save_draft")
-    with pytest.raises(ContractValidationError):
-        service._save_draft(**request)
+    assert not hasattr(service, "_save_draft")
 
     with pytest.raises(ContractValidationError) as direct:
         app.command("draft.save", request)

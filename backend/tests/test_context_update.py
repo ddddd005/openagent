@@ -11,6 +11,7 @@ from phase1_agent.context_update import (
     prepare_context_update_adoption, prove_context_update, replay_context_operations,
     validate_context_update, validate_working_context_view,
 )
+from phase1_agent.context_v4 import prepare_native_context_adoption_v5, validate_native_context_view_v5
 from phase1_agent.graph_contracts import GraphDiagnosticError
 
 
@@ -259,22 +260,29 @@ def test_candidate_rejects_wrong_agent_basis_unproven_append_and_unproven_compac
 def object_record(view):
     return {"type_id": EFFECTIVE_CONTEXT_TYPE, "schema_version": 4, "deleted": False,
             "binding": {"object_key": "context"}, "revision": 7, "revision_id": uid(103),
-            "value": {"view_ref": ref(120), "accepted_delta_ids": deepcopy(view["accepted_delta_ids"])}}
+            "value": {"messages": [], "layout": [], "accepted_delta_ids": [],
+                      "generation": 0}}
 
 
 def adoption(view, record):
-    return prepare_context_update_adoption(
-        workflow_session_id=uid(101), object_key="context", agent_node_id=uid(102),
+    return prepare_native_context_adoption_v5(
+        workflow_session_id=uid(101), object_key="context",
         object_record=record, view_ref=ref(121), view=view)
 
 
 def test_pure_adoption_is_cas_fenced_and_duplicate_submission_reuses_original_candidate():
-    _, packet, _, _ = packet_fixture()
-    view = packet["next_view"]
+    view = validate_native_context_view_v5({
+        "schema_version": 5, "kind": "workflow.context-view",
+        "owner": {"workflow_session_id": uid(101), "object_key": "context"},
+        "basis": {"revision_id": uid(103), "head_revision": 7},
+        "messages": [], "layout": [], "accepted_delta_ids": [],
+        "applied_delta_ids": [uid(104)], "generation": 1,
+        "derivation": {"operation": "merge", "input_view_ref": ref(119), "receipts_ref": ref(120)},
+    })
     record = object_record(view)
     prepared = adoption(view, record)
     assert prepared["write_intent"]["expected_revision"] == 7
-    assert prepared["desired_value"]["accepted_delta_ids"] == view["accepted_delta_ids"] + view["applied_delta_ids"]
+    assert prepared["desired_value"]["accepted_delta_ids"] == view["applied_delta_ids"]
     assert record["value"] != prepared["desired_value"]
     committed = {**deepcopy(record), "revision": 8, "revision_id": uid(122),
                  "value": prepared["desired_value"]}

@@ -8,6 +8,10 @@ import { useWorkbenchNoticesStore } from "./workbenchNotices";
 import { graphClone, newGraph, type GraphDocument, type GraphNodeType, type GraphSession } from "../domain/workflowGraph";
 import { graphWorkbenchStorage } from "../testUtils/graphWorkbenchStorage";
 import { memoryLocalDraftStorage } from "../testUtils/localDraftStorage";
+import { installDebtCleanupEvidence } from "../testUtils/debtCleanupEvidence";
+import { createGraphCommand } from "../application/workflowCommands";
+import { workbenchDraftAddress } from "../adapters/localDraftsApi";
+import { installDebtCleanupConfiguration } from "../testUtils/debtCleanupConfiguration";
 
 const textType: GraphNodeType = { component_id: "workflow.text", component_version: "1", display_name: "text",
   category: "content", config_schema: { type: "object" }, default_config: {}, inputs: [], outputs: [],
@@ -34,11 +38,14 @@ function view(document: GraphDocument, status = "idle"): GraphSession {
   return { schema_version: 2, execution_model: "graph", workflow_session_id: crypto.randomUUID(),
     workflow_definition_id: document.workflow_definition_id, definition_revision: document.revision,
     revision: 1, data_revision: 0, head_revision: 1, status, can_submit: status === "idle",
+    available_actions: ["prepared", "running", "pausing"].includes(status) ? ["pause", "close"]
+      : status === "paused" ? ["resume", "close"] : ["close"],
     nodes: [], chains: [], outputs: [], data: { revision: 0, values: {} } };
 }
-function setup(status = "idle") {
+async function setup(status = "idle") {
   const graph = useWorkflowGraphStore(); graph.setPersistenceGuard(() => true); graph.catalog = [textType];
   const id = graph.createWorkflow();
+  await graph.reconcile(id);
   const current = view(graph.document!, status);
   graph.entries[id].saved_revision = current.definition_revision;
   graph.entries[id].saved_document = graphClone(graph.document!);
@@ -46,22 +53,24 @@ function setup(status = "idle") {
   graph.views[current.workflow_session_id] = current;
   return { graph, id, current, workspace: useWorkspaceStore() };
 }
-beforeEach(() => { setActivePinia(createPinia()); vi.useFakeTimers(); });
+beforeEach(() => { setActivePinia(createPinia()); installDebtCleanupEvidence(); vi.useFakeTimers(); });
 afterEach(() => {
   useWorkbenchPersistenceStore().$dispose(); useWorkflowGraphStore().$dispose(); useWorkspaceStore().$dispose();
-  vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals();
+  vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals();
 });
 describe("reviewed graph receipt and operation races", () => {
-  it("accepts a canonical lost-save receipt read with its original body and rejects changed content", async () => {
-    const { graph, id } = setup();
+  it("verifies canonical lost-save receipts without installing or clearing old evidence", async () => {
+    const { graph, id } = await setup();
     graph.entries[id].session_id = null;
     graph.entries[id].document.nodes.push({ node_binding_id: crypto.randomUUID(), component_id: "external.test",
       component_version: "1", title: "plugin", position: { x: 1, y: 2 },
       config: { z: "retained", nested: { z: 3, a: [false, 1, "1"] } } });
-    stubGraphApplicationFetch( vi.fn().mockRejectedValue(new Error("lost receipt")));
-    expect(await graph.saveWorkflow()).toBe(false);
-    const request = graphClone(graph.pending)!;
-    expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(true);
+    const saved = graphClone(graph.entries[id].saved_document);
+    const request = createGraphCommand("/api/graph/definitions", {
+      document: { ...graphClone(graph.document!), revision: 2 }, expected_revision: 1,
+    }, "save");
+    graph.entries[id].pending = graphClone(request);
+    expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(false);
     const calls: unknown[] = [];
     let invalid = true;
     stubGraphApplicationFetch( vi.fn(async (path, init) => {
@@ -77,12 +86,13 @@ describe("reviewed graph receipt and operation races", () => {
     expect(graph.pending).toEqual(request);
     invalid = false; await graph.reconcile(id);
     expect(calls).toEqual([request.body, request.body]);
-    expect(graph.pending).toBeNull(); expect(graph.entries[id].saved_revision).toBe(2);
-    expect(graph.entries[id].saved_document?.nodes[0].config).toEqual((request.body.document as GraphDocument).nodes[0].config);
+    expect(graph.pending).toEqual(request); expect(graph.entries[id].saved_revision).toBe(1);
+    expect(graph.entries[id].saved_document).toEqual(saved);
+    expect(graph.receiptChecks[id]).toContain("pending 证据保留");
   });
 
-  it("blocks start during selection and restores the complete persisted workbench", async () => {
-    const { graph, id, current } = setup();
+  it("blocks start during selection while preserving only read-only workbench preferences", async () => {
+    const { graph, id, current } = await setup();
     const storage = memory(), backend = memoryLocalDraftStorage(); const persistence = useWorkbenchPersistenceStore();
     await persistence.initialize(storage, backend.ports);
     const next = view(graph.document!); const choice = deferred<Response>();
@@ -97,16 +107,20 @@ describe("reviewed graph receipt and operation races", () => {
     expect(graph.pending).toBeNull();
     choice.resolve(response(next)); await selecting;
     expect(graph.entries[id].session_id).toBe(next.workflow_session_id);
-    expect(await persistence.save()).toBe(true);
+    const record = await backend.ports.save({ address: workbenchDraftAddress, format_version: 1,
+      value: JSON.parse(memory().getItem()!), expected_sequence: 0, idempotency_key: crypto.randomUUID() });
+    expect(await persistence.save()).toBe(false);
     persistence.$dispose(); graph.$dispose(); setActivePinia(createPinia());
     const restored = useWorkbenchPersistenceStore(); await restored.initialize(storage, backend.ports);
-    expect(restored.status).toBe("saved");
-    expect(useWorkflowGraphStore().entries[id].session_id).toBe(next.workflow_session_id);
-    expect(useWorkflowGraphStore().entries[id].pending).toBeNull();
+    expect(restored.status).toBe("ready");
+    expect(restored.preferredActiveWorkflowId).toBe(id);
+    expect(useWorkflowGraphStore().entries).toEqual({});
+    expect(await backend.ports.read(record.address)).toEqual(record);
+    expect(backend.ports.save).toHaveBeenCalledOnce();
   });
 
   it("lets only the latest selection win and retains its lock when an older read ends", async () => {
-    const { graph, current } = setup();
+    const { graph, current } = await setup();
     const b = view(graph.document!), c = view(graph.document!);
     const first = deferred<Response>(), latest = deferred<Response>();
     stubGraphApplicationFetch( vi.fn(path => path.endsWith(b.workflow_session_id) ? first.promise : latest.promise));
@@ -120,7 +134,7 @@ describe("reviewed graph receipt and operation races", () => {
   });
 
   it("ignores an older selection that finishes after the latest one", async () => {
-    const { graph } = setup(); const b = view(graph.document!), c = view(graph.document!);
+    const { graph } = await setup(); const b = view(graph.document!), c = view(graph.document!);
     const first = deferred<Response>(), latest = deferred<Response>();
     stubGraphApplicationFetch( vi.fn(path => path.endsWith(b.workflow_session_id) ? first.promise : latest.promise));
     const selectingB = graph.selectSession(b.workflow_session_id), selectingC = graph.selectSession(c.workflow_session_id);
@@ -130,7 +144,7 @@ describe("reviewed graph receipt and operation races", () => {
   });
 
   it("ignores a selection from before leaving and returning to the same workflow", async () => {
-    const { graph, id, current, workspace } = setup();
+    const { graph, id, current, workspace } = await setup();
     const next = view(graph.document!), choice = deferred<Response>();
     stubGraphApplicationFetch( vi.fn(path => {
       if (path.endsWith(next.workflow_session_id)) return choice.promise;
@@ -144,24 +158,31 @@ describe("reviewed graph receipt and operation races", () => {
     expect(graph.entries[id].session_id).toBe(current.workflow_session_id); expect(graph.locked).toBe(false);
   });
 
-  it("ignores a selection when save starts and finishes before its response arrives", async () => {
-    const { graph, id, current } = setup(); const next = view(graph.document!), choice = deferred<Response>();
-    graph.entries[id].document.name = "changed definition";
+  it("blocks formal edits during selection without submitting a retired save", async () => {
+    const { graph, id, current } = await setup(); const next = view(graph.document!), choice = deferred<Response>();
+    const document = { ...graphClone(graph.document!), schema_version: 3 as const, edit_sequence: 1 };
+    graph.entries[id].document = document;
+    graph.entries[id].saved_document = graphClone(document);
+    const configuration = installDebtCleanupConfiguration(graph, installDebtCleanupEvidence());
+    await configuration.application.forWorkflow(id).initialize();
     stubGraphApplicationFetch( vi.fn(async (path, init) => {
       if (path.endsWith(next.workflow_session_id)) return choice.promise;
       if (path === "/api/graph/definitions") return response(JSON.parse(init.body).document);
       return response(current);
     }));
     const selecting = graph.selectSession(next.workflow_session_id);
-    expect(await graph.saveWorkflow()).toBe(true);
+    expect(graph.renameWorkflow("blocked edit")).toBeNull();
+    expect(await graph.saveWorkflow()).toBe(false);
+    expect(configuration.update).not.toHaveBeenCalled();
+    expect(graph.entries[id].document).toEqual(document);
     expect(graph.busy).toBeNull(); expect(graph.pending).toBeNull();
     choice.resolve(response(next)); await selecting;
-    expect(graph.entries[id].session_id).toBe(current.workflow_session_id);
+    expect(graph.entries[id].session_id).toBe(next.workflow_session_id);
     expect(graph.session?.definition_revision).toBe(1); expect(graph.locked).toBe(false);
   });
 
   it("retains the displayed workflow poll after a hidden command receipt", async () => {
-    const { graph, id: a, current, workspace } = setup("running");
+    const { graph, id: a, current, workspace } = await setup("running");
     const command = deferred<Response>();
     const b = graph.createWorkflow(); const bView = view(graph.document!, "running");
     graph.entries[b].session_id = bView.workflow_session_id; graph.views[bView.workflow_session_id] = bView;
@@ -185,7 +206,7 @@ describe("reviewed graph receipt and operation races", () => {
   });
 
   it("retains the displayed workflow poll after a hidden in-flight poll finishes", async () => {
-    const { graph, id: a, current, workspace } = setup("running");
+    const { graph, id: a, current, workspace } = await setup("running");
     const b = graph.createWorkflow(), bView = view(graph.document!, "running"), oldPoll = deferred<Response>();
     graph.entries[b].session_id = bView.workflow_session_id; graph.views[bView.workflow_session_id] = bView;
     let polling = false; const paths: string[] = [];
@@ -208,7 +229,7 @@ describe("reviewed graph receipt and operation races", () => {
   });
 
   it("keeps session rows current when the detail read settles after the directory read", async () => {
-    const { graph, id, current } = setup("running");
+    const { graph, id, current } = await setup("running");
     const other = view(graph.document!);
     graph.sessions[id] = [current, other];
     const completed = { ...current, status: "succeeded", revision: 2, can_submit: true };
@@ -226,7 +247,7 @@ describe("reviewed graph receipt and operation races", () => {
   });
 
   it("reads final run permissions once after the active poll reaches a settled status", async () => {
-    const { graph, id, current } = setup("running");
+    const { graph, id, current } = await setup("running");
     let terminating = false, detailReads = 0;
     const paths: string[] = [];
     const early = { ...current, status: "failed", revision: 2, available_actions: ["close"] };
@@ -252,7 +273,7 @@ describe("reviewed graph receipt and operation races", () => {
   });
 
   it("explains a stale prepared pause without resending the rejected control", async () => {
-    const { graph } = setup("prepared");
+    const { graph } = await setup("prepared");
     const fetcher = vi.fn(async (_path: string, _init: { body: string }) => new Response(JSON.stringify({ error: {
       reason_code: "stale_revision", diagnostic: { reason_code: "stale_revision", message: "Session changed" },
     } }), { status: 409 }));
@@ -261,8 +282,8 @@ describe("reviewed graph receipt and operation races", () => {
     const message = "会话状态已变化，暂停未提交；请刷新运行后重试 [stale_revision]";
     expect(graph.primaryAction).toBe("pause");
     expect(graph.pending).toBeNull();
-    expect(graph.active?.diagnostics).toEqual([{ reason_code: "stale_revision", message }]);
     expect(useWorkbenchNoticesStore().error?.reason).toBe(message);
+    expect(useWorkbenchNoticesStore().error?.kind).toBe("rejected");
     await vi.advanceTimersByTimeAsync(1050);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(JSON.parse(fetcher.mock.calls[0][1].body).action).toBe("pause");
@@ -270,8 +291,8 @@ describe("reviewed graph receipt and operation races", () => {
 });
 
 describe("duplicated graph context references", () => {
-  it("remaps declared plugin bindings while retaining references to nodes outside the selection", () => {
-    const { graph, id } = setup(); graph.entries[id].session_id = null;
+  it("remaps declared plugin bindings while retaining references to nodes outside the selection", async () => {
+    const { graph, id } = await setup(); graph.entries[id].session_id = null;
     const agentType: GraphNodeType = { ...textType, component_id: "agents.execute", component_version: "2" };
     const contextType: GraphNodeType = { ...textType, component_id: "plugin.bound-context",
       config_node_references: [
@@ -295,8 +316,8 @@ describe("duplicated graph context references", () => {
     graph.undo(); expect(graph.document).toEqual(original);
   });
 
-  it("remaps declared plugin sources and edges as one undoable transaction", () => {
-    const { graph, id } = setup(); graph.entries[id].session_id = null;
+  it("remaps declared plugin sources and edges as one undoable transaction", async () => {
+    const { graph, id } = await setup(); graph.entries[id].session_id = null;
     const doc = newGraph("references");
     const agent = crypto.randomUUID(), external = crypto.randomUUID();
     const node = (component_id: string, source_node_id?: string) => ({

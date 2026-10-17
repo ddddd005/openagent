@@ -157,12 +157,12 @@ def test_check_only_prefers_current_source_without_creating_database(tmp_path):
     assert not port_open(backend_port) and not port_open(frontend_port)
 
 
-@pytest.mark.parametrize("entry", ["stable", "develop", "legacy"])
+@pytest.mark.parametrize("entry", ["develop", "legacy"])
 def test_bat_entry_forwards_selected_checkout_and_arguments(tmp_path, entry):
     backend_port, frontend_port = free_ports()
     database = tmp_path / "not-created" / "workflow.sqlite"
     script = (WORKSPACE.parent / "step1" / "docs" / "\u542f\u52a8\u670d\u52a1.bat" if entry == "legacy"
-              else WORKSPACE / ("start-dev.bat" if entry == "develop" else "start.bat"))
+              else WORKSPACE / "start-dev.bat")
     if entry == "legacy" and not script.is_file():
         pytest.skip("The legacy sibling BAT is only available in the full local workspace")
     assert script.is_file(), "The selected BAT must be present"
@@ -284,7 +284,7 @@ def test_real_launcher_serves_current_nodes_and_vite_proxy(dev_services):
     with pytest.raises(HTTPError) as retired:
         fetch(backend, "/tavern/")
     assert retired.value.code == 410
-    assert json.loads(retired.value.read())["reason_code"] == "legacy_frontend_entry_retired"
+    assert json.loads(retired.value.read())["error"]["reason_code"] == "legacy_frontend_entry_retired"
 
 
 def test_invalid_stop_metadata_cannot_stop_owned_services(dev_services, tmp_path):

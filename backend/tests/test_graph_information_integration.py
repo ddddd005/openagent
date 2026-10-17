@@ -16,7 +16,6 @@ from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import InformationSourceDefinition, InformationSourceReference
 
 from test_graph_service import create
-from test_candidate_mutation_retirement import _test_only_consumer_child
 from test_runtime_hosting_integration import COMPONENT, OBJECT_KEY, graph, hosted_package, pause, resume, start
 
 
@@ -247,7 +246,7 @@ def test_pause_keeps_readers_and_resume_does_not_mix_generations(information_ser
     assert_error("information_live_unavailable", lambda: read(app, initial, route))
 
 
-def test_fork_and_reopen_read_original_history_without_latest_run_fallback(information_service):
+def test_history_read_reopen_uses_exact_owner_without_latest_run_fallback(information_service):
     service, provider, app = information_service
     provider.proceed.set()
     initial = create(service, graph(service))
@@ -257,19 +256,16 @@ def test_fork_and_reopen_read_original_history_without_latest_run_fallback(infor
     assert first["status"] == "succeeded", first["chains"]
     route = next(item for item in bindings(app, first, chain=first_chain)
                  if item["registration_ref"] == PUBLIC.to_dict())
-    candidate = service.list_graph_candidates(first["workflow_session_id"])["candidates"][0]
-    child, _ = _test_only_consumer_child(
-        service, service.get_definition(first["workflow_definition_id"]), first, candidate)
-    original = read(app, child, route, source_scope="history")
+    original = read(app, first, route, source_scope="history")
     assert original["owner"]["workflow_session_id"] == first["workflow_session_id"]
     second_chain = start(service, first)
     service.wait(second_chain)
     second = service.get_session(initial["workflow_session_id"])
     second_route = next(item for item in bindings(app, second, chain=second_chain)
                         if item["registration_ref"] == PUBLIC.to_dict())
-    assert_error("information_scope_denied", lambda: read(app, child, second_route, source_scope="history"))
-    assert read(app, child, route, source_scope="history") == original
+    assert read(app, first, route, source_scope="history") == original
     other = service.create_session(first["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
+    assert_error("information_scope_denied", lambda: read(app, other, second_route, source_scope="history"))
     assert_error("information_scope_denied", lambda: read(app, other, route, source_scope="history"))
     service.close()
     with closing(GraphWorkflowService(
@@ -277,10 +273,10 @@ def test_fork_and_reopen_read_original_history_without_latest_run_fallback(infor
     )) as reopened:
         provider.service = reopened
         reopened_app = GraphApplication(reopened)
-        assert read(reopened_app, child, route, source_scope="history") == original
-        assert_error("information_live_unavailable", lambda: read(reopened_app, child, route))
+        assert read(reopened_app, first, route, source_scope="history") == original
+        assert_error("information_live_unavailable", lambda: read(reopened_app, first, route))
         assert_error("information_scope_denied", lambda: read(
-            reopened_app, child, second_route, source_scope="history"))
+            reopened_app, other, second_route, source_scope="history"))
 
 
 def test_plain_node_history_binding_is_optional_and_reader_does_not_execute(information_service):

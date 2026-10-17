@@ -137,6 +137,7 @@ def test_bad_frozen_configuration_zero_dispatch(change):
     assert caught.value.code == "configuration_error"
     assert caught.value.__cause__ is not None
     assert caught.value.messages == []
+    assert caught.value.checkpoint is None
     assert (caught.value.model_requests, caught.value.attempts) == (0, 0)
     assert adapter.inputs == []
 
@@ -283,39 +284,21 @@ def test_adapter_program_fault_is_not_recorded_retried_or_masked(failure):
     assert "PRIVATE-SECRET" not in str(caught.value)
 
 
-def test_retry_keeps_logical_request_identical_and_attempt_budget_is_independent():
+def test_retry_keeps_logical_request_identical_and_counts_transport_attempts():
     backoffs = []
     adapter = ScriptedAdapter(TimeoutError(), TimeoutError(), final({"text": "yes"}))
     result = execute(adapter, backoff=backoffs.append)
     assert (result.model_requests, result.attempts) == (1, 3)
     assert backoffs == [1, 2]
     assert adapter.inputs[0] == adapter.inputs[1] == adapter.inputs[2]
-    adapter = ScriptedAdapter(TimeoutError(), TimeoutError(), final({"text": "unreachable"}))
-    with pytest.raises(RunFailed) as caught:
-        execute(adapter, max_model_requests=2, max_model_attempts=2)
-    assert caught.value.code == "model_attempt_budget_exhausted"
-    assert (caught.value.model_requests, caught.value.attempts) == (1, 2)
-    assert len(adapter.inputs) == 2
 
 
-def test_retry_limit_is_four_attempts_and_default_logical_budget_is_eight():
+def test_retry_limit_is_four_transport_attempts_per_request():
     adapter = ScriptedAdapter(*[TimeoutError() for _ in range(5)])
     with pytest.raises(RunFailed) as caught:
         execute(adapter)
     assert caught.value.code == "model_retry_exhausted"
     assert (caught.value.model_requests, caught.value.attempts) == (1, 4)
-    adapter = ScriptedAdapter(*[
-        batch(call("inspect_text", '{"text":"x"}', f"call-{n}"))
-        for n in range(9)
-    ])
-    with pytest.raises(RunFailed) as caught:
-        execute(adapter)
-    assert caught.value.code == "model_request_budget_exhausted"
-    assert (caught.value.model_requests, caught.value.attempts) == (8, 8)
-    assert len(adapter.inputs) == 8
-    assert len(caught.value.messages) == 16
-    with pytest.raises(RunFailed, match="configuration_error"):
-        execute(ScriptedAdapter(), max_model_requests=65)
 
 
 def test_retry_only_429_5xx_timeout_connection():

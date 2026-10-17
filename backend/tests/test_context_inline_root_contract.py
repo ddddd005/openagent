@@ -9,10 +9,10 @@ from phase1_agent.context_contract import (
     project_agent_context_message,
     project_agent_context_value,
 )
-from phase1_agent.context_v4 import read_native_context
+from phase1_agent.context_v4 import prepare_native_context_adoption_v5, read_native_context
 from phase1_agent.contract_errors import ContractValidationError
-from phase1_agent.graph_contracts import GraphDiagnosticError
 from phase1_agent.graph_service import GraphWorkflowService
+from phase1_agent.host_sdk import WriteIntent
 
 from test_context_native_integration import NativeTransport, native_graph, node_output
 from test_gemini_history import canonical_text
@@ -110,37 +110,33 @@ def test_context_merge_writer_is_authorized_but_agent_and_stale_cas_are_not(tmp_
         session_id = first["workflow_session_id"]
         merge_id = entries["a"]["merge"]["node_binding_id"]
         agent_id = entries["a"]["agent"]["node_binding_id"]
+        first_view = node_output(first, entries["a"]["merge"])
         view_ref = node_output(first, entries["a"]["merge"], "commit")["view_ref"]
-        view_output_id = view_ref["output_id"]
         assert first["objects"]["context-a"]["revision"] == 2
 
-        accepted = service.adopt_context_view(
-            session_id,
-            node_id=merge_id,
-            view_output_id=view_output_id,
-            expected_revision=first["revision"],
-            idempotency_key=str(uuid4()),
-        )
-        assert accepted["session"]["objects"]["context-a"] == first["objects"]["context-a"]
+        record = first["objects"]["context-a"]
+        forged = deepcopy(record["value"])
+        forged["messages"][-1]["blocks"][0]["text"] = "unaccepted context"
+        for node_id in (merge_id, agent_id):
+            with pytest.raises(ContractValidationError) as denied:
+                service.update_session_objects(
+                    session_id,
+                    node_id=node_id,
+                    writes=[WriteIntent(
+                        "context-a", record["revision"], "forged-" + node_id, forged).to_dict()],
+                    expected_revision=first["revision"],
+                    idempotency_key=str(uuid4()),
+                )
+            assert denied.value.reason_code == "context_managed_write_denied"
+            assert service.get_session(session_id) == first
 
-        with pytest.raises(ContractValidationError) as denied:
-            service.adopt_context_view(
-                session_id,
-                node_id=agent_id,
-                view_output_id=view_output_id,
-                expected_revision=accepted["session"]["revision"],
-                idempotency_key=str(uuid4()),
-            )
-        assert denied.value.reason_code == "context_adoption_writer_denied"
-
-        second = run(service, accepted["session"], "Second accepted request.")
+        second = run(service, first, "Second accepted request.")
         assert second["status"] == "succeeded", second["chains"]
-        with pytest.raises(GraphDiagnosticError) as stale:
-            service.adopt_context_view(
-                session_id,
-                node_id=merge_id,
-                view_output_id=view_output_id,
-                expected_revision=second["revision"],
-                idempotency_key=str(uuid4()),
-            )
+        calls = len(fixture.calls)
+        with pytest.raises(ContractValidationError) as stale:
+            prepare_native_context_adoption_v5(
+                workflow_session_id=session_id, object_key="context-a",
+                object_record=second["objects"]["context-a"], view_ref=view_ref, view=first_view)
         assert stale.value.reason_code == "context_stale_basis"
+        assert service.get_session(session_id)["objects"]["context-a"] == second["objects"]["context-a"]
+        assert len(fixture.calls) == calls

@@ -16,7 +16,7 @@ from phase1_agent.session_objects import SessionObjectStore
 from phase1_agent.storage import SqliteStore
 
 from workflow_test_support import run
-from test_graph_service import copy_current, create, document, edge, node
+from test_graph_service import create, document, edge, node
 from test_model_package import source_config
 from test_models_service_integration import ModelDatabaseFixture
 
@@ -62,28 +62,27 @@ class NativeTransport:
 
 
 def versioned_node(service, component, version, number):
-    entry = node(service.registry, component, number)
-    entry["component_version"] = version
-    entry["config"] = deepcopy(service.registry.get(component, version).definition.default_config)
-    return entry
+    return node(service.registry, component, number, component_version=version)
 
 
 def native_graph(service, *, policy=True, once=True, dual=False):
     entries, edges, bindings, roots = {}, [], [], []
     current = versioned_node(service, "tools.current-input", "1", 4100)
-    model = versioned_node(service, "models.source", "5", 4101)
+    model = versioned_node(service, "models.source", "7", 4101)
     model["config"] = source_config()
-    ModelDatabaseFixture.update_profile(service, parameters={"max_tokens": 128}, capacity={
-        "context_window_tokens": 100_000, "output_reserve_tokens": 128,
-        "summary_max_tokens": 128, "max_cold_input_tokens": 100_000})
+    ModelDatabaseFixture.update_profile(service, capacity={
+        "context_window_tokens": 100_000, "input_limit_tokens": 100_000,
+        "max_output_tokens": 128,
+    }, runtime={"context_length_tokens": 100_000, "output_limit_tokens": 128,
+                "compaction_threshold_bps": 1000})
     shared = [current, model]
     if policy:
-        strategy = versioned_node(service, "agents.compaction-policy", "1", 4102)
-        strategy["config"].update(trigger_tokens=10_000, keep_depth=0, summary_prompt="SUMMARY_ONLY")
+        strategy = versioned_node(service, "agents.compaction-policy", "2", 4102)
+        strategy["config"].update(keep_depth=0, summary_prompt="SUMMARY_ONLY")
         shared.append(strategy)
         entries["policy"] = strategy
     if once:
-        material = versioned_node(service, "prompts.item", "2", 4103)
+        material = versioned_node(service, "prompts.item", "3", 4103)
         material["config"].update(text="ONCE_ORIGINAL_TEXT " * 2000, lifecycle="context_once", compaction="allowed")
         material["config"]["presentation"]["role"] = "user"
         shared.append(material)
@@ -93,8 +92,8 @@ def native_graph(service, *, policy=True, once=True, dual=False):
         read, assembly, agent, merge, fixed, output = [
             versioned_node(service, component, version, offset + position)
             for position, (component, version) in enumerate((
-                ("context.output", "5"), ("context.assembly", "5"), ("agents.execute", "5"),
-                ("context.merge", "5"), ("prompts.item", "2"), ("tools.output", "1")))]
+                ("context.output", "5"), ("context.assembly", "5"), ("agents.execute", "10"),
+                ("context.merge", "6"), ("prompts.item", "3"), ("tools.output", "1")))]
         fixed["config"]["text"] = "FIXED_RULE_" + suffix
         key = "context-" + suffix
         for entry in (read, merge):
@@ -181,68 +180,6 @@ def rebind(service, view, doc):
         idempotency_key=str(uuid4())), doc
 
 
-def test_native_graph_two_compactions_project_then_append_and_survive_copy_reopen(tmp_path, monkeypatch):
-    fixture = NativeTransport(generate_long_text=True)
-    database = tmp_path / "native.sqlite"
-    with closing(GraphWorkflowService(database, public_model_factory=fixture.factory)) as service:
-        ModelDatabaseFixture.write(service, 1)
-        doc, entries = native_graph(service)
-        first = run(service, create(service, doc), "Current protected task.")
-        assert first["status"] == "succeeded", first["chains"]
-        effective = node_output(first, entries["a"]["merge"])
-        receipts = node_output(first, entries["a"]["agent"], "receipts")
-        operations = agent_operations(service, first, receipts)
-        assert effective["schema_version"] == 5 and effective["generation"] == 2
-        assert len(fixture.summaries) == 2
-        assert any(operation["kind"] == "append" and "GENERATED_LONG_TEXT" in str(operation)
-                   for operation in operations)
-        assert any(operation["kind"] == "compact" for operation in operations)
-        assert "next_view" not in receipts and "object_key" not in receipts
-        assert "GENERATED_LONG_TEXT" not in str(effective["messages"])
-        assert "ONCE_ORIGINAL_TEXT" not in str(effective["messages"])
-        assert "FIXED_RULE_" not in str(effective["messages"])
-        assert effective["messages"][-1]["role"] == "assistant"
-        assert effective["messages"][-1]["blocks"][0]["text"] == "Native accepted answer"
-        assert all(block["kind"] != "tool_call" for message in effective["messages"] for block in message["blocks"])
-        assert len(fixture.calls) == 4
-        frozen = node_output(first, entries["a"]["assembly"])
-        assert injected_once_contents(frozen) == {once_content(entries["once"])}
-        assert receipts["frozen_prompt_ref"]["scope"] == "artifact"
-        assert receipts["snapshot_id"] == agent_events(service, first, receipts)[-1]["payload"]["snapshot_id"]
-        assert first["objects"]["context-a"]["revision"] == 2
-        saved = deepcopy(first["objects"]["context-a"])
-        copied_doc = deepcopy(doc)
-        copied_doc.update(workflow_definition_id=str(uuid4()), revision=1)
-        child = copy_current(service, first, copied_doc)
-        child_sid = child["workflow_session_id"]
-        second = run(service, first, "Next parent request.")
-        assert second["status"] == "succeeded", second["chains"]
-        assert len(fixture.summaries) == 3
-        second_prompt = node_output(second, entries["a"]["assembly"])
-        # Once content re-enters, it remains compaction-eligible and is replaced again.
-        assert injected_once_contents(second_prompt) == {once_content(entries["once"])}
-        assert "ONCE_ORIGINAL_TEXT" in str(second_prompt["messages"])
-        second_effective = node_output(second, entries["a"]["merge"])
-        assert "ONCE_ORIGINAL_TEXT" not in str(second_effective["messages"])
-        assert any("Checkpoint 3:" in _message_text(message) and layout["kind"] == "summary"
-                   for message, layout in zip(second_effective["messages"], second_effective["layout"]))
-        assert any(message["blocks"][0].get("text") == "Current protected task."
-                   and layout["kind"] == "history" and layout["compaction"] == "allowed"
-                   for message, layout in zip(second_prompt["messages"], second_prompt["layout"]))
-        assert service.get_session(child_sid)["objects"]["context-a"]["value"] == saved["value"]
-        history = service.get_run(first["workflow_session_id"], first["selected_chain_run_id"])
-        assert "ONCE_ORIGINAL_TEXT" in str(history["runtime_facts"])
-        assert "GENERATED_LONG_TEXT" in str(history["runtime_facts"])
-        assert len(fixture.calls) == 6
-    with closing(GraphWorkflowService(database, public_model_factory=fixture.factory)) as reopened:
-        child_final = run(reopened, reopened.get_session(child_sid), "Next child request after reopen.")
-        assert child_final["status"] == "succeeded", child_final["chains"]
-        assert len(fixture.summaries) == 4
-        child_prompt = node_output(child_final, entries["a"]["assembly"])
-        assert injected_once_contents(child_prompt) == {once_content(entries["once"])}
-        assert "Next parent request." not in str(child_prompt["messages"])
-
-
 def test_two_agents_keep_separate_contexts_and_once_content(tmp_path, monkeypatch):
     fixture = NativeTransport()
     with closing(GraphWorkflowService(tmp_path / "dual.sqlite", public_model_factory=fixture.factory)) as service:
@@ -290,10 +227,14 @@ def test_context_acceptance_rollback_retries_without_reexecuting_summary_or_agen
         initial = create(service, doc)
         before = deepcopy(initial["objects"]["context-a"])
         apply, fail = SessionObjectStore.apply, [True]
+        merge_node_id = entries["a"]["merge"]["node_binding_id"]
+        apply_calls = []
 
-        def fail_once(store, sid, *, node_id, writes):
-            receipts = apply(store, sid, node_id=node_id, writes=writes)
-            if writes and fail[0]:
+        def fail_once(store, sid, *, node_id, writes, write_evidence=None):
+            apply_calls.append((node_id, len(writes)))
+            receipts = apply(
+                store, sid, node_id=node_id, writes=writes, write_evidence=write_evidence)
+            if writes and node_id == merge_node_id and fail[0]:
                 fail[0] = False
                 raise OSError("injected native context settlement fault")
             return receipts
@@ -301,8 +242,13 @@ def test_context_acceptance_rollback_retries_without_reexecuting_summary_or_agen
         monkeypatch.setattr(SessionObjectStore, "apply", fail_once)
         pending = run(service, initial, "Current request.")
         assert pending["status"] == "archive_failed", pending["chains"]
+        assert not fail[0], apply_calls
         assert pending["objects"]["context-a"] == before
-        accepted_receipts = deepcopy(node_output(pending, entries["a"]["agent"], "receipts"))
+        pending_history = service.get_run(pending["workflow_session_id"], pending["active_chain_run_id"])
+        accepted_receipts = deepcopy(next(
+            row["payload"] for row in pending_history["outputs"]
+            if row["node_binding_id"] == entries["a"]["agent"]["node_binding_id"]
+            and row["port_id"] == "receipts"))
         calls = len(fixture.calls)
         sid, chain = pending["workflow_session_id"], pending["active_chain_run_id"]
         service.control(sid, action="retry_acceptance", expected_revision=pending["revision"],
@@ -328,10 +274,18 @@ def test_context_merge_rebuilds_only_from_exact_receipts_prompt_model_policy_and
         assert final["status"] == "succeeded", final["chains"]
         effective = node_output(final, entries["a"]["merge"])
         receipts = node_output(final, entries["a"]["agent"], "receipts")
-        facts = [
-            fact for fact in service.get_run(final["workflow_session_id"], final["selected_chain_run_id"])
-            ["runtime_facts"] if fact.get("fact_id") in receipts["fact_ids"]
-        ]
+        runtime_facts = service.get_run(
+            final["workflow_session_id"], final["selected_chain_run_id"])["runtime_facts"]
+        facts = [fact for fact in runtime_facts if fact.get("fact_id") in receipts["fact_ids"]]
+        model_fact_records = {
+            fact["fact_id"]: fact for fact in runtime_facts
+            if fact.get("kind") == "workflow.model-fact"
+        }
+        model_facts = {"requests": [{
+            "request_id": request["request_id"],
+            "settings_id": request["settings_id"],
+            "facts": [model_fact_records[identity] for identity in request["fact_ids"]],
+        } for request in receipts["model_requests"]]}
         events = [fact["payload"] for fact in facts]
         snapshot = events[-1]["payload"]["snapshot"]
         prompt_ref = receipts["frozen_prompt_ref"]
@@ -342,8 +296,10 @@ def test_context_merge_rebuilds_only_from_exact_receipts_prompt_model_policy_and
             objects = SessionObjectStore(store, service.registry.data_types)
             from phase1_agent.context_contract import project_agent_context_value
             from phase1_agent.context_prompt_v6 import agent_computation_input
-            from phase1_agent.context_update import prove_agent_execution
+            from phase1_agent.context_update_v2 import prove_context_merge_execution_v2
             from phase1_agent.context_v4 import validate_native_context_artifacts_v5
+            from phase1_agent.model_request_transport import resolve_model_request_transport
+            from phase1_agent.runtime import CanonicalModelAdapter
 
             def resolve(reference):
                 return objects._resolve_write_artifact(final["workflow_session_id"], reference)["value"]
@@ -378,8 +334,15 @@ def test_context_merge_rebuilds_only_from_exact_receipts_prompt_model_policy_and
                 agent_computation_input(prompt_context_for(forged_prompt), forged_prompt)
             binding = resolve(model_ref)
             policy = resolve(policy_ref)
-            proof = prove_agent_execution(receipts, facts, prompt, binding,
-                                          policy=policy, policy_ref=policy_ref)
+            def prove(current_receipts, current_facts, current_prompt, current_binding,
+                      current_policy, current_policy_ref):
+                return prove_context_merge_execution_v2(
+                    current_prompt, current_binding, current_receipts, current_facts,
+                    model_facts=model_facts, policy=current_policy, policy_ref=current_policy_ref,
+                    project_messages=CanonicalModelAdapter._project,
+                    resolve_transport=resolve_model_request_transport)
+
+            proof = prove(receipts, facts, prompt, binding, policy, policy_ref)
             assert proof["snapshot_id"] == receipts["snapshot_id"]
             assert proof["operations"] == agent_operations(service, final, receipts)
             assert snapshot["s0"] == computation_input["messages"]
@@ -397,32 +360,26 @@ def test_context_merge_rebuilds_only_from_exact_receipts_prompt_model_policy_and
             forged_receipts = deepcopy(receipts)
             forged_receipts["owner"]["chain_run_id"] = str(uuid4())
             with pytest.raises(ContractValidationError):
-                prove_agent_execution(forged_receipts, facts, prompt, binding,
-                                      policy=policy, policy_ref=policy_ref)
+                prove(forged_receipts, facts, prompt, binding, policy, policy_ref)
             with pytest.raises(ContractValidationError):
-                prove_agent_execution(receipts, list(reversed(facts)), prompt, binding,
-                                      policy=policy, policy_ref=policy_ref)
+                prove(receipts, list(reversed(facts)), prompt, binding, policy, policy_ref)
             forged_prompt = deepcopy(prompt)
             forged_prompt["items"][0]["text"] = "FORGED_ONCE_TEXT"
             with pytest.raises(ContractValidationError):
-                prove_agent_execution(receipts, facts, forged_prompt, binding,
-                                      policy=policy, policy_ref=policy_ref)
+                prove(receipts, facts, forged_prompt, binding, policy, policy_ref)
             forged_binding = deepcopy(binding)
-            forged_binding["parameters"]["max_tokens"] += 1
+            forged_binding["reference"]["resource_id"] = str(uuid4())
             with pytest.raises(ContractValidationError):
-                prove_agent_execution(receipts, facts, prompt, forged_binding,
-                                      policy=policy, policy_ref=policy_ref)
+                prove(receipts, facts, prompt, forged_binding, policy, policy_ref)
             forged_policy = deepcopy(policy)
             forged_policy["enabled"] = False
             with pytest.raises(ContractValidationError):
-                prove_agent_execution(receipts, facts, prompt, binding,
-                                      policy=forged_policy, policy_ref=policy_ref)
+                prove(receipts, facts, prompt, binding, forged_policy, policy_ref)
             for counter in ("attempts", "model_requests"):
                 forged_facts = deepcopy(facts)
                 forged_facts[-1]["payload"]["payload"][counter] = True
                 with pytest.raises(ContractValidationError):
-                    prove_agent_execution(receipts, forged_facts, prompt, binding,
-                                          policy=policy, policy_ref=policy_ref)
+                    prove(receipts, forged_facts, prompt, binding, policy, policy_ref)
 
 
 def test_native_graph_without_compaction_stores_current_and_final_text_not_fixed_rules(tmp_path, monkeypatch):

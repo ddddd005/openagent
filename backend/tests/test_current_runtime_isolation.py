@@ -38,6 +38,7 @@ def _run_current_scenario(database):
     from phase1_agent.model_host_service import MODEL_SERVICE_REF
     from phase1_agent.prompt_package import PROMPT_RESOURCE_TYPE
     from credential_test_support import seed_service_credential
+    from test_graph_service import save_definition_fixture
 
     calls = []
 
@@ -55,6 +56,10 @@ def _run_current_scenario(database):
                     f"public.final.{len(calls)}", "final_answer",
                     json.dumps({"answer": {"text": f"answer-{len(calls)}"}}),
                 ),))
+
+            def generate_prepared(self, prepared):
+                request = prepared["transport_arguments"]
+                return self.generate(request["messages"], request["tools"])
 
             def close(self):
                 pass
@@ -85,7 +90,7 @@ def _run_current_scenario(database):
             })
 
         from test_model_package import profile_config, source_config
-        model = node("models.source", "5", **source_config())
+        model = node("models.source", "7", **source_config())
         reference = seed_service_credential(service, secret="offline-isolation-credential")
         provider = {
             **profile_config()["provider"], "data_schema_version": 3, "update_sequence": 1,
@@ -96,7 +101,7 @@ def _run_current_scenario(database):
         }
         service.save_global_resource(provider, expected_sequence=0, idempotency_key=str(uuid4()))
         service.save_global_resource({
-            **source_config()["reference"], "data_schema_version": 1, "update_sequence": 1,
+            **source_config()["reference"], "data_schema_version": 2, "update_sequence": 1,
             "value": profile_config(),
         }, expected_sequence=0, idempotency_key=str(uuid4()))
         reference = ResourceIdentity("workspace", PROMPT_RESOURCE_TYPE, str(uuid4())).to_dict()
@@ -111,10 +116,10 @@ def _run_current_scenario(database):
         prompt = node("prompts.global-reference", "2", reference=reference)
         resolved = node("prompts.global-resolve", "2")
         current = node("tools.current-input")
-        execute = node("agents.execute", "4")
-        read = node("context.output", "4", object_key="context", agent_node_id=execute["node_binding_id"])
-        assembly = node("context.assembly", "4")
-        merge = node("context.merge", "4", object_key="context", agent_node_id=execute["node_binding_id"])
+        execute = node("agents.execute", "10")
+        read = node("context.output", "5", object_key="context")
+        assembly = node("context.assembly", "5")
+        merge = node("context.merge", "6", object_key="context")
         output = node("tools.output")
         output["public_outputs"] = ["output"]
         connect(prompt, resolved)
@@ -124,7 +129,7 @@ def _run_current_scenario(database):
         connect(model, execute, target_port="model")
         connect(assembly, execute, target_port="prompt")
         connect(read, merge, target_port="view")
-        connect(execute, merge, source_port="context", target_port="context")
+        connect(execute, merge, source_port="receipts", target_port="receipts")
         connect(execute, output, source_port="result")
         document = {
             "schema_version": 2, "workflow_definition_id": str(uuid4()), "revision": 1,
@@ -139,10 +144,13 @@ def _run_current_scenario(database):
                 "context", "workflow.effective-context", 4, "shared",
                 readers=(read["node_binding_id"], merge["node_binding_id"]),
                 writers=(merge["node_binding_id"],),
+                registrar_node_id=execute["node_binding_id"],
             ).to_dict()],
         }
-        saved = service.save_definition(document, expected_revision=0, idempotency_key=str(uuid4()))
-        initial = service.create_session(saved["workflow_definition_id"], 1, idempotency_key=str(uuid4()))
+        save_definition_fixture(service, document)
+        initial = service.create_session(
+            document["workflow_definition_id"], 1, idempotency_key=str(uuid4()),
+        )
 
         def run(view, question):
             started = service.start(
@@ -157,17 +165,19 @@ def _run_current_scenario(database):
             return final
 
         first = run(initial, "first question")
-        candidate = service.list_graph_candidates(first["workflow_session_id"])["candidates"][0]
+        first_checkpoint = service.list_checkpoints(first["workflow_session_id"])[-1]
         second = run(first, "second question")
         assert len(calls) == 2
         assert calls[1][0]["content"] == "Retained current prompt"
         assert any(message.get("content") == "first question" for message in calls[1])
         assert len(second["objects"]["context"]["value"]["accepted_delta_ids"]) == 2
-        fork = service.fork_graph_candidate(
-            second["workflow_session_id"], candidate_id=candidate["candidate_id"],
-            expected_revision=second["revision"], expected_data_revision=second["data_revision"],
+        fork_result = service.fork_checkpoint(
+            second["workflow_session_id"], checkpoint_id=first_checkpoint["checkpoint_id"],
+            expected_session_revision=second["revision"],
+            expected_data_revision=second["data_revision"],
             expected_head_revision=second["head_revision"], idempotency_key=str(uuid4()),
         )
+        fork = service.get_session(fork_result["target_session_id"])
         branch = run(fork, "branch question")
         assert len(calls) == 3
         assert not any(message.get("content") == "second question" for message in calls[2])

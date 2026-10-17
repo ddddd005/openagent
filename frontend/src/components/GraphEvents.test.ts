@@ -5,17 +5,26 @@ import { describe, expect, it, vi } from "vitest";
 import GraphEvents from "./GraphEvents.vue";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { useWorkspaceStore } from "../stores/workspace";
+import { requestEvidencePorts } from "../adapters/requestEvidenceApi";
+import { memoryRequestEvidence } from "../testUtils/requestEvidence";
 
 describe("minimum event workbench", () => {
   it("renders declaration and payload JSON without implicit session creation or network requests", async () => {
+    const evidence = memoryRequestEvidence();
+    vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+    vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+    vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
     const pinia = createPinia(), graph = useWorkflowGraphStore(pinia);
-    graph.setPersistenceGuard(() => true); graph.createWorkflow();
+    const workflowId = graph.createWorkflow();
+    await graph.reconcile(workflowId);
     const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
     try {
       const before = graph.storeSnapshot(), html = await renderToString(createSSRApp(GraphEvents).use(pinia));
       expect(html).toContain("事件绑定 JSON"); expect(html).toContain("事件载荷 JSON");
       expect(html).toContain("提交局部事件"); expect(html).toContain("尚未选择工作流会话");
       expect(fetcher).not.toHaveBeenCalled(); expect(graph.storeSnapshot()).toEqual(before);
-    } finally { graph.$dispose(); useWorkspaceStore(pinia).$dispose(); vi.unstubAllGlobals(); }
+      expect(evidence.ports.write).not.toHaveBeenCalled();
+      expect(evidence.ports.resolve).not.toHaveBeenCalled();
+    } finally { graph.$dispose(); useWorkspaceStore(pinia).$dispose(); vi.restoreAllMocks(); vi.unstubAllGlobals(); }
   });
 });

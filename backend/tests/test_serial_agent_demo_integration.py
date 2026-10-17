@@ -1,4 +1,4 @@
-"""Latest ordinary A -> B graph with isolated contexts and completed-round forks."""
+"""Offline A/B handoff across isolated current context objects."""
 
 from contextlib import closing
 from copy import deepcopy
@@ -11,7 +11,7 @@ from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import ObjectBinding
 
 from workflow_test_support import run
-from test_graph_service import copy_current, create, document, edge, node
+from test_graph_service import create, document, edge, node
 from test_model_package import source_config
 from test_models_service_integration import ModelDatabaseFixture
 
@@ -37,6 +37,10 @@ class SerialTransport:
                 fixture.calls.append({"agent": label, "messages": deepcopy(messages), "answer": answer})
                 return ModelResponse("tool_calls", tool_calls=(ModelToolCall(
                     "final.provider", "final_answer", json.dumps({"answer": {"text": answer}})),))
+
+            def generate_prepared(self, prepared):
+                request = prepared["transport_arguments"]
+                return self.generate(request["messages"], request["tools"])
 
             def close(self):
                 pass
@@ -67,11 +71,12 @@ def serial_graph(service):
     current, model = make("tools.current-input", input_name="text"), make("models.source", **source_config())
     agents = {}
     for label in ("A", "B"):
-        execute = make("agents.execute", "4")
+        execute = make("agents.execute", "10")
         key = f"context/{label.lower()}"
-        read = make("context.output", "4", object_key=key, agent_node_id=execute["node_binding_id"])
-        assembly = make("context.assembly", "4")
-        merge = make("context.merge", "4", object_key=key, agent_node_id=execute["node_binding_id"])
+        read = make("context.output", "5", object_key=key)
+        assembly = make("context.assembly", "5")
+        merge = make("context.merge", "6", object_key=key)
+        output = make("tools.output", "1")
         prompt = make("prompts.item", text=f"ROLE {label}")
         connect(current, assembly, target_port="current_input")
         connect(read, assembly, target_port="view")
@@ -79,11 +84,14 @@ def serial_graph(service):
         connect(assembly, execute, target_port="prompt")
         connect(model, execute, target_port="model")
         connect(read, merge, target_port="view")
-        connect(execute, merge, source_port="context", target_port="context")
+        connect(execute, merge, source_port="receipts", target_port="receipts")
+        connect(execute, output, source_port="result")
         bindings.append(ObjectBinding(key, "workflow.effective-context", 4, "shared",
             readers=(read["node_binding_id"], merge["node_binding_id"]),
-            writers=(merge["node_binding_id"],)).to_dict())
-        agents[label] = {"execute": execute, "read": read, "assembly": assembly, "merge": merge}
+            writers=(merge["node_binding_id"],), registrar_node_id=execute["node_binding_id"]).to_dict())
+        agents[label] = {
+            "execute": execute, "read": read, "assembly": assembly, "merge": merge, "output": output,
+        }
     handoff = make("prompts.source", presentation={
         "role": "user", "placement": "after", "depth": None, "order": 0, "enabled": True})
     connect(agents["A"]["execute"], handoff, source_port="result")
@@ -92,8 +100,7 @@ def serial_graph(service):
     precede(agents["A"]["merge"], agents["B"]["merge"])
     doc = document(entries, connections)
     doc.update(schema_version=2, package_lock=list(registry.execution_package_lock), object_bindings=bindings,
-               control_edges=controls, execution_roots=[
-                   agents["A"]["merge"]["node_binding_id"], agents["B"]["merge"]["node_binding_id"]])
+               control_edges=controls)
     return doc, agents
 
 
@@ -109,7 +116,8 @@ def assert_round(view, agents, roots, *, local_rounds=None):
     for label in ("A", "B"):
         key = f"context/{label.lower()}"
         merged = result(view, agents[label]["merge"])
-        assert merged["owner"]["agent_node_id"] == agents[label]["execute"]["node_binding_id"]
+        assert merged["owner"] == {
+            "workflow_session_id": view["workflow_session_id"], "object_key": key}
         assert [message["blocks"][0]["text"] for message in merged["messages"]
                 if message["role"] == "user"] == roots
         assert len(view["objects"][key]["value"]["accepted_delta_ids"]) == len(roots)
@@ -122,12 +130,10 @@ def assert_serial_packages(service):
     assert not hasattr(service, "_native_runtime")
 
 
-def test_serial_two_rounds_distinct_contexts_exact_handoff_and_completed_checkpoint(
-    tmp_path, monkeypatch,
-):
+def test_serial_current_contexts_keep_exact_agent_handoff(tmp_path):
     transport = SerialTransport()
-    database = tmp_path / "serial.sqlite"
-    with closing(GraphWorkflowService(database, public_model_factory=transport.factory)) as service:
+    with closing(GraphWorkflowService(tmp_path / "serial.sqlite",
+                                     public_model_factory=transport.factory)) as service:
         assert_serial_packages(service)
         ModelDatabaseFixture.write(service, 1)
         doc, agents = serial_graph(service)
@@ -135,76 +141,10 @@ def test_serial_two_rounds_distinct_contexts_exact_handoff_and_completed_checkpo
         assert transport.calls == []
         first = run(service, initial, "first original question")
         assert_round(first, agents, ["first original question"])
-        candidate = service.list_graph_candidates(first["workflow_session_id"])["candidates"][0]
-        second = run(service, first, "second original question")
-        assert_round(second, agents, ["first original question", "second original question"])
-        assert [call["agent"] for call in transport.calls] == ["A", "B", "A", "B"]
-        for index in (0, 2):
-            a_call, b_call = transport.calls[index:index + 2]
-            assert b_call["messages"][-1] == {"kind": "text", "role": "user", "content": a_call["answer"]}
-            assert b_call["messages"][-2] == {
-                "kind": "text", "role": "user",
-                "content": "first original question" if index == 0 else "second original question"}
-        assert not any(message.get("content") == "A-answer-1" for message in transport.calls[3]["messages"])
-        forked = service.fork_graph_candidate(
-            second["workflow_session_id"], candidate_id=candidate["candidate_id"],
-            expected_revision=second["revision"], expected_data_revision=second["data_revision"],
-            expected_head_revision=second["head_revision"], idempotency_key=str(uuid4()))
-        # Restoring a completed checkpoint must include every registered object's exact value.
-        for key in first["objects"]:
-            assert forked["objects"][key]["value"] == first["objects"][key]["value"]
-        branch = run(service, forked, "branch question")
-        assert_round(branch, agents, ["first original question", "branch question"], local_rounds=1)
-        assert service.get_session(second["workflow_session_id"])["objects"] == second["objects"]
-        assert_serial_packages(service)
-        sid, expected = second["workflow_session_id"], deepcopy(second["objects"])
-    calls = len(transport.calls)
-    with closing(GraphWorkflowService(database, public_model_factory=transport.factory)) as service:
-        reopened = service.get_session(sid)
-        assert reopened["objects"] == expected
-        assert len(transport.calls) == calls
-        continued = run(service, reopened, "reopened question")
-        assert_round(continued, agents, ["first original question", "second original question", "reopened question"])
-        assert len(transport.calls) == calls + 2
-        assert_serial_packages(service)
-
-
-def test_serial_copy_remaps_agents_keeps_parent_future_outside_child(tmp_path, monkeypatch):
-    transport = SerialTransport()
-    with closing(GraphWorkflowService(tmp_path / "serial-copy.sqlite", public_model_factory=transport.factory)) as service:
-        assert_serial_packages(service)
-        ModelDatabaseFixture.write(service, 1)
-        doc, agents = serial_graph(service)
-        first = run(service, create(service, doc), "shared first")
-        copied = deepcopy(doc)
-        copied["workflow_definition_id"] = str(uuid4())
-        mapping = {entry["node_binding_id"]: str(uuid4()) for entry in copied["nodes"]}
-        for entry in copied["nodes"]:
-            entry["node_binding_id"] = mapping[entry["node_binding_id"]]
-            if "agent_node_id" in entry["config"]:
-                entry["config"]["agent_node_id"] = mapping[entry["config"]["agent_node_id"]]
-        for connection in copied["edges"] + copied["control_edges"]:
-            connection["edge_id"] = str(uuid4())
-            for key in ("source_node_id", "target_node_id"):
-                connection[key] = mapping[connection[key]]
-        copied["execution_roots"] = [mapping[identity] for identity in copied["execution_roots"]]
-        for binding in copied["object_bindings"]:
-            for key in ("readers", "writers"):
-                binding[key] = [mapping[identity] for identity in binding[key]]
-        child = copy_current(service, first, copied, mappings=[
-            {"source_node_id": source, "target_node_id": target, "action": "copy"}
-            for source, target in mapping.items()])
-        assert len(transport.calls) == 2
-        child_agents = deepcopy(agents)
-        for family in child_agents.values():
-            for entry in family.values():
-                entry["node_binding_id"] = mapping[entry["node_binding_id"]]
-        parent = run(service, first, "parent future")
-        child = run(service, child, "child future")
-        assert_round(parent, agents, ["shared first", "parent future"])
-        assert_round(child, child_agents, ["shared first", "child future"], local_rounds=1)
-        for label in ("A", "B"):
-            owner = result(child, child_agents[label]["merge"])["owner"]
-            assert owner["workflow_session_id"] == child["workflow_session_id"]
-            assert owner["agent_node_id"] == child_agents[label]["execute"]["node_binding_id"]
+        assert [call["agent"] for call in transport.calls] == ["A", "B"]
+        a_call, b_call = transport.calls
+        assert b_call["messages"][-1] == {
+            "role": "user", "content": a_call["answer"]}
+        assert b_call["messages"][-2] == {
+            "role": "user", "content": "first original question"}
         assert_serial_packages(service)

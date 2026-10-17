@@ -8,12 +8,14 @@ import pytest
 
 from phase1_agent.adapter import ProviderResponseError
 from phase1_agent.contract_errors import ContractValidationError
+from phase1_agent.contracts import ModelResponse, ModelToolCall
 from phase1_agent.frozen_model import FrozenModelParameters
 from phase1_agent.gemini_adapter import GeminiAdapter
 from phase1_agent.gemini_capabilities import validate_provider_parameters
-from phase1_agent.model_contract import validate_public_model_result
+from phase1_agent.model_request_contracts import validate_model_result
+from phase1_agent.model_request_transport import resolve_model_request_transport
 from phase1_agent.model_service import create_chat_transport
-from test_model_package import BoundaryFixture, uid
+from test_model_request_service import ServiceHarness
 
 
 MODEL = "gemini-3-flash-preview"
@@ -57,24 +59,32 @@ def history(response_value):
 
 
 def fixture(handler):
-    value = BoundaryFixture()
-    value.service.release_run(uid(2), uid(3))
-    value.profile["value"]["parameters"] = deepcopy(PARAMETERS)
-    value.profile["value"]["protocol"] = "gemini"
-    value.profile["value"]["capacity"]["output_reserve_tokens"] = PARAMETERS["max_tokens"]
-    value.record["value"].update(protocol="gemini",
-                                 base_url="https://generativelanguage.googleapis.com/v1beta")
-    value.record["data_schema_version"] = 3
-    value.set_credential("private-gemini-fixture-secret")
-    value.service._factory = lambda **kwargs: create_chat_transport(
-        **kwargs, http_client=httpx.Client(transport=httpx.MockTransport(handler)))
-    value.service.prepare_run(workflow_session_id=uid(2), chain_run_id=uid(3),
-                              node_configs={uid(10): value.config}, records=[value.profile, value.record])
-    value.binding = value.service.bind_model(value.source, value.config)
-    value.service.accept_binding_output(workflow_session_id=uid(2), chain_run_id=uid(3),
-                                       node_run_id=uid(11), binding_id=value.binding["binding_id"],
-                                       output_id=uid(30))
+    value = ServiceHarness()
+    value.profile["value"]["model"]["id"] = MODEL
+    value.profile["value"]["model"]["capacity"]["max_output_tokens"] = PARAMETERS["max_tokens"]
+    value.profile["value"]["runtime"].update(
+        thinking=PARAMETERS["thinking"], output_limit_tokens=PARAMETERS["max_tokens"])
+    value.provider["value"].update(
+        protocol="gemini", base_url="https://generativelanguage.googleapis.com/v1beta")
+    credential_ref = value.provider["value"]["credential_ref"]
+    value.broker.save(credential_ref, "private-gemini-fixture-secret")
+    value.transport_calls = []
+
+    def transport(request):
+        value.transport_calls.append(request)
+        return handler(request)
+
+    value.service._resolve_transport = lambda protocol, model: resolve_model_request_transport(
+        protocol, model, transport_factory=lambda **kwargs: create_chat_transport(
+            **kwargs, http_client=httpx.Client(transport=httpx.MockTransport(transport))))
     return value
+
+
+def request(value, *, key="normal:1", messages=None, tools=None):
+    messages = [{"kind": "text", "role": "user", "content": "Hello"}] if messages is None else messages
+    tools = [] if tools is None else tools
+    prepared = value.prepare(key=key, messages=messages, tools=tools)
+    return value.dispatch(prepared, key=key)
 
 
 def test_three_channels_preserve_interleaved_parts_and_native_ids():
@@ -115,28 +125,29 @@ def test_http_wire_matches_all_accepted_facts_through_three_rounds():
     value = fixture(handler)
     messages = deepcopy(MESSAGES)
     for round_number in range(3):
-        result = value.service.call_model(
-            value.consumer, binding_id=value.binding["binding_id"],
-            messages=messages, tools=TOOLS, request_key=f"round-{round_number}")
-        assert validate_public_model_result(result) == result
-        assert result["schema_version"] == 2
+        result = request(value, key=f"round-{round_number}", messages=messages, tools=TOOLS)
+        assert validate_model_result(result) == result
+        assert result["schema_version"] == 3
         if result["tool_calls"]:
             parsed = GeminiAdapter._parse_response(replies[round_number], MODEL)
-            # Service IDs are retained from its accepted response, not regenerated.
-            parsed = type(parsed)(
+            parsed = ModelResponse(
                 finish_reason=result["finish_reason"], content=result["content"],
-                tool_calls=tuple(type(parsed.tool_calls[0])(**call) for call in result["tool_calls"]),
+                tool_calls=tuple(ModelToolCall(
+                    call["id"], call["name"], call["raw_arguments"], call["type"])
+                    for call in result["tool_calls"]),
+                usage=result["usage"], response_id=result["response_id"], model=result["model"],
                 thinking_summary=result["thinking_summary"], provider_metadata=result["provider_metadata"])
             messages += history(parsed)
-    assert [fact["details"]["wire_request"] for fact in value.facts if fact["stage"] == "request"] == observed
+    facts = list(value.accepted.values())
+    assert [fact["details"]["wire_request"] for fact in facts if fact["stage"] == "request"] == observed
     assert observed[1]["contents"][1]["parts"] == batch()
     assert observed[2]["contents"][3]["parts"][0]["thoughtSignature"] == "fixture-next-round"
     assert all(fact["details"]["projection"] == "gemini-generate-content@1"
-               for fact in value.facts if fact["stage"] == "request")
-    assert value.binding["schema_version"] == 4
-    assert "private-gemini-fixture-secret" not in json.dumps(value.facts)
+               for fact in facts if fact["stage"] == "request")
+    assert value.binding["schema_version"] == 5
+    assert "private-gemini-fixture-secret" not in json.dumps(facts)
     assert observed[0]["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"] == TOOLS[0]["function"]["parameters"]
-    value.service.close()
+    value.close()
 
 
 def test_acceptance_failure_reuses_retained_gemini_response_without_transport():
@@ -147,15 +158,15 @@ def test_acceptance_failure_reuses_retained_gemini_response_without_transport():
     value = fixture(handler)
     value.fail_stage = "outcome"
     with pytest.raises(ContractValidationError) as error:
-        value.chat()
+        request(value)
     assert error.value.reason_code == "model_fact_acceptance_failed"
     value.fail_stage = None
-    result = value.service.retry_acceptance(value.consumer)
+    result = value.service.retry_acceptance(value.context)
     assert result["thinking_summary"] == "Summary"
     assert result["provider_metadata"]["content"]["parts"][1] == {"text": "Answer"}
-    assert value.chat() == result
+    assert request(value) == result
     assert len(observed) == 1
-    value.service.close()
+    value.close()
 
 
 @pytest.mark.parametrize("status", [400, 429, 503])
@@ -167,13 +178,14 @@ def test_provider_http_failure_is_recorded_once_without_signature_bypass(status)
     value = fixture(handler)
     for _ in range(2):
         with pytest.raises(ContractValidationError) as error:
-            value.chat()
+            request(value)
         assert error.value.reason_code == "model_provider_error"
     assert len(observed) == 1
-    assert value.facts[-1]["details"]["status_code"] == status
-    assert value.facts[-1]["details"]["classification"] == "provider_error"
-    assert "private-gemini-fixture-secret" not in json.dumps(value.facts)
-    value.service.close()
+    facts = list(value.accepted.values())
+    assert facts[-1]["details"]["status_code"] == status
+    assert facts[-1]["details"]["classification"] == "provider_error"
+    assert "private-gemini-fixture-secret" not in json.dumps(facts)
+    value.close()
 
 
 def test_timeout_is_unknown_once_and_does_not_replay():
@@ -184,10 +196,10 @@ def test_timeout_is_unknown_once_and_does_not_replay():
     value = fixture(handler)
     for _ in range(2):
         with pytest.raises(ContractValidationError) as error:
-            value.chat()
+            request(value)
         assert error.value.reason_code == "model_dispatch_unknown"
     assert len(observed) == 1
-    value.service.close()
+    value.close()
 
 
 @pytest.mark.parametrize("parts", [
@@ -203,19 +215,29 @@ def test_invalid_or_missing_signature_response_rejects_before_tool_execution(par
 
 
 def test_missing_signature_diagnostic_retains_source_and_part_without_leaking_parts():
+    provider_response = response([
+        {"text": "Private but visible thought", "thought": True},
+        {"functionCall": {"name": "inspect", "args": {}}},
+    ])
+    with pytest.raises(ProviderResponseError) as rejected:
+        GeminiAdapter._parse_response(provider_response, MODEL)
+    assert rejected.value.diagnostic == {
+        "code": "gemini_thought_signature_missing", "model": MODEL,
+        "source": "provider_response", "part_index": 1,
+    }
+    assert "Private but visible thought" not in str(rejected.value)
+
     value = fixture(lambda request: httpx.Response(200, json=response([
         {"text": "Private but visible thought", "thought": True},
         {"functionCall": {"name": "inspect", "args": {}}},
     ])))
     with pytest.raises(ContractValidationError) as error:
-        value.chat()
+        request(value)
     assert error.value.reason_code == "model_response_invalid"
-    assert value.facts[-1]["details"]["diagnostic"] == {
-        "code": "gemini_thought_signature_missing", "model": MODEL,
-        "source": "provider_response", "part_index": 1,
-    }
-    assert "Private but visible thought" not in json.dumps(value.facts[-1])
-    value.service.close()
+    fact = list(value.accepted.values())[-1]
+    assert fact["details"]["classification"] == "response_invalid"
+    assert "Private but visible thought" not in json.dumps(fact)
+    value.close()
 
 
 @pytest.mark.parametrize("body", [
@@ -226,10 +248,10 @@ def test_missing_signature_diagnostic_retains_source_and_part_without_leaking_pa
 def test_http_non_strict_or_non_utf8_json_is_confirmed_response_invalid(body):
     value = fixture(lambda request: httpx.Response(200, content=body))
     with pytest.raises(ContractValidationError) as error:
-        value.chat()
+        request(value)
     assert error.value.reason_code == "model_response_invalid"
-    assert value.facts[-1]["details"]["classification"] == "response_invalid"
-    value.service.close()
+    assert list(value.accepted.values())[-1]["details"]["classification"] == "response_invalid"
+    value.close()
 
 
 def test_signed_history_different_model_and_reordered_results_refuse_dispatch():
@@ -256,25 +278,27 @@ def test_model_version_alias_does_not_change_frozen_signed_model_identity():
 
 def test_public_result_actual_model_must_match_original_response_model():
     value = fixture(lambda request: httpx.Response(200, json=response([{"text": "Answer"}])))
-    result = value.chat()
+    prepared = value.prepare()
+    result = value.dispatch(prepared)
     with pytest.raises(ContractValidationError):
-        validate_public_model_result({**result, "model": "different-response-model"})
+        validate_model_result({**result, "model": "different-response-model"}, settings=prepared["settings"])
     with pytest.raises(ContractValidationError):
-        validate_public_model_result({**result, "model": None})
-    assert validate_public_model_result(result) == result
-    value.service.close()
+        validate_model_result({**result, "model": None}, settings=prepared["settings"])
+    assert validate_model_result(result, settings=prepared["settings"]) == result
+    value.close()
 
 
 def test_optional_response_model_absence_is_not_filled_with_requested_identity():
     body = response([{"text": "Answer"}])
     del body["modelVersion"]
     value = fixture(lambda request: httpx.Response(200, json=body))
-    result = value.chat()
+    prepared = value.prepare()
+    result = value.dispatch(prepared)
     assert result["model"] is None
     assert result["provider_metadata"]["response_model"] is None
     assert result["provider_metadata"]["model"] == MODEL
-    assert validate_public_model_result(result) == result
-    value.service.close()
+    assert validate_model_result(result, settings=prepared["settings"]) == result
+    value.close()
 
 
 def test_missing_required_history_signature_has_local_part_diagnostic():
@@ -347,9 +371,10 @@ def test_gemini_uses_only_the_saved_private_key():
         assert request.headers["x-goog-api-key"] == "private-gemini-fixture-secret"
         return httpx.Response(200, json=response([{"text": "Answer"}]))
     value = fixture(handler)
-    value.chat()
-    assert value.record["value"]["credential_ref"].startswith("local:")
-    assert "private-gemini-fixture-secret" not in json.dumps(value.facts)
+    request(value)
+    assert value.provider["value"]["credential_ref"].startswith("local:")
+    assert "private-gemini-fixture-secret" not in json.dumps(list(value.accepted.values()))
+    value.close()
 
 
 def test_25_unsigned_legacy_history_is_readable_but_3_tool_continuation_is_refused():

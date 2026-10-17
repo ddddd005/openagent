@@ -13,14 +13,58 @@ from phase1_agent.graph_service import GraphWorkflowService
 from graph_test_plugin import register_content_probe
 
 
+_CURRENT_NODE_VERSIONS = {
+    "agents.compaction-policy": "2",
+    "agents.execute": "10",
+    "context.assembly": "5",
+    "context.merge": "6",
+    "context.output": "5",
+    "frontend.node": "2",
+    "lorebook.global-activate": "1",
+    "lorebook.global-reference": "1",
+    "models.chat": "5",
+    "models.source": "7",
+    "prompts.assembly": "2",
+    "prompts.global-reference": "2",
+    "prompts.global-resolve": "2",
+    "prompts.group": "2",
+    "prompts.item": "3",
+    "prompts.source": "2",
+    "prompts.summary": "2",
+    "prompts.tool": "2",
+    "prompts.tool-summary": "2",
+    "tools.current-input": "1",
+    "tools.editable-input": "1",
+    "tools.json-to-prompt": "1",
+    "tools.json-to-text": "1",
+    "tools.output": "1",
+    "tools.prompt-to-json": "1",
+    "tools.prompt-to-text": "1",
+    "tools.regex": "1",
+    "tools.text": "1",
+    "tools.text-to-json": "1",
+    "tools.text-to-prompt": "1",
+    "tools.variable-assign": "1",
+    "tools.variable-register": "2",
+    "tools.variable-replace-all": "1",
+    "tools.variable-replace-selected": "1",
+    "tools.variable-to-content": "1",
+}
+_TEST_PLUGIN_NAMESPACES = {"lorebook": "1", "sample": "1", "test": "1"}
+
+
 def uid(number):
     return str(UUID(int=number, version=4))
 
 
-def node(registry, type_name, number, **config):
+def node(registry, type_name, number, *, component_version=None, **config):
     component = type_name if "." in type_name else "tools." + type_name
-    version = {"models.source": "5", "models.chat": "3", "agents.execute": "5"}.get(
-        component, "5" if component.startswith("context.") else "2" if component.startswith("prompts.") else "1")
+    version = component_version or _CURRENT_NODE_VERSIONS.get(component)
+    if version is None:
+        namespace = component.partition(".")[0]
+        version = _TEST_PLUGIN_NAMESPACES.get(namespace)
+    if version is None:
+        raise KeyError(f"Node fixture requires an explicit component version: {component}")
     entry = registry.get(component, version)
     return {
         "node_binding_id": uid(number), "component_id": component, "component_version": version,
@@ -37,24 +81,11 @@ def edge(source, target, number, source_port="output", target_port="input", orde
     }
 
 
-def document(nodes, edges):
-    bindings = []
-    for entry in nodes:
-        identity = entry["component_id"], entry["component_version"]
-        provided_type = (
-            ("workflow.effective-context", 4)
-            if identity in {("agents.execute", "5"), ("agents.execute", "9")} else None
-        )
-        if provided_type is not None:
-            bindings.append({
-                "object_key": "item-" + entry["node_binding_id"],
-                "type_id": provided_type[0], "schema_version": provided_type[1],
-                "scope": "shared", "readers": [], "writers": [], "owner_node_id": None,
-                "registrar_node_id": entry["node_binding_id"],
-            })
+def document(nodes, edges, *, object_bindings=()):
     return {
         "schema_version": 2, "workflow_definition_id": str(uuid4()), "revision": 1,
-        "name": "Graph integration", "nodes": nodes, "edges": edges, "object_bindings": bindings,
+        "name": "Graph integration", "nodes": nodes, "edges": edges,
+        "object_bindings": deepcopy(list(object_bindings)),
     }
 
 

@@ -358,33 +358,3 @@ def test_global_activation_preserves_exact_prompt_and_resource_type_checks():
         with pytest.raises(ContractValidationError) as invalid_type:
             implementation.resource_preflight_validator({"object_keys": []}, [invalid])
         assert invalid_type.value.reason_code == "lorebook_resource_type_mismatch"
-
-
-def test_global_materials_assemble_once_without_entering_agent_history(tmp_path, monkeypatch):
-    from workflow_test_support import run as native_run
-    from test_context_native_integration import NativeTransport, node_output, versioned_node
-    from test_graph_service import create as native_create, edge
-    from test_models_service_integration import ModelDatabaseFixture
-    from test_tavern_integration import tavern_graph
-    transport = NativeTransport()
-    with closing(GraphWorkflowService(
-            tmp_path / "native.sqlite", public_model_factory=transport.factory)) as service:
-        ModelDatabaseFixture.write(service, 1)
-        value = record(entries=[entry(9010, text="GLOBAL_LOREBOOK_ONLY", primary_keywords=["dragon"])])
-        save(GraphApplication(service), value)
-        document, nodes = tavern_graph(service, [])
-        for index, key in enumerate(("lore_a", "lore_b")):
-            activation = nodes[key]
-            activation["component_id"] = "lorebook.global-activate"
-            activation["config"] = {"object_keys": []}
-            reference = versioned_node(service, "lorebook.global-reference", "1", 9020 + index)
-            reference["config"]["reference"] = identity(value)
-            document["nodes"].append(reference)
-            document["edges"].append(edge(reference, activation, 9030 + index, target_port="resource"))
-        completed = native_run(service, native_create(service, document), "A dragon appears.")
-        assert completed["status"] == "succeeded", completed["chains"]
-        wire = [message.get("content") for message in transport.calls[0]["messages"]]
-        assert wire.count("GLOBAL_LOREBOOK_ONLY") == 1
-        assert "GLOBAL_LOREBOOK_ONLY" not in str(node_output(completed, nodes["merge"])["messages"])
-        assert all(node_output(completed, nodes[key])["items"][0]["lifecycle"] == "per_request"
-                   for key in ("lore_a", "lore_b"))
