@@ -57,7 +57,7 @@ def test_package_changes_and_object_edit_refuse_active_run_and_paused_manifests_
     with closing(GraphWorkflowService(tmp_path / "active.sqlite", capability_packages=[task_package(), gate_package],
         enabled_packages={"workflow.tools": "1.0.0", "example.tasks": "1.0.0", "example.gate": "1"})) as service:
         doc = object_graph(service)
-        gate = node(service.registry, "example.gate", 0)
+        gate = node(service.registry, "example.gate", 0, component_version="1")
         output = node(service.registry, "output", 10)
         doc["nodes"].extend([gate, output])
         doc["edges"].append(edge(gate, output, 20))

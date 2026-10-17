@@ -204,7 +204,8 @@ def frozen_v1_graph(service, *, count=1, bound=True, readers=True, writers=True)
         for index in range(count)
     ]
     frontends = [
-        node(service.registry, "frontend.node", 19011 + index, object_key="legacy-" + str(index),
+        node(service.registry, "frontend.node", 19011 + index, component_version="1",
+             object_key="legacy-" + str(index),
              input_node_id=messages[index]["node_binding_id"] if bound else "")
         for index in range(count)
     ]
