@@ -158,6 +158,9 @@ def test_patch_projection_returns_only_own_text_and_original_receipt(service, mo
     }
     assert channel.handle(request(owner, "state"))["pending"] == []
     monkeypatch.setattr(service, "_document", lambda *args: pytest.fail("receipt read looked up latest graph"))
+    monkeypatch.setattr(
+        "phase1_agent.configuration_data.ConfigurationDataSession.fixed_document",
+        lambda *args: pytest.fail("receipt read looked up latest graph"))
     assert channel.handle(request(owner, "receipt", {
         "operation": "patch_input", "original_request": parameters,
     })) == result

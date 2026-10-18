@@ -1,4 +1,10 @@
-"""Trusted configuration partitions and transactional workflow editing.
+"""Trusted configuration rules and projections for schema 3 workflow editing.
+
+The configuration functional interface accepts and dispatches commands; the
+configuration data interface performs limited reads and writes in the caller's
+transaction.  This module only decides policy validity, edit categories,
+confirmation and derivation, and composes the current configuration view.  It
+does not open transactions, hold repositories or touch SQLite directly.
 
 A node configuration is split by the policy declared on its exact contract.
 Adjustable fields are the current-value family: their values are not part of
@@ -257,33 +263,23 @@ def classify_configuration_changes(previous, proposed, descriptor_lookup):
             if canonical_bytes(before) != canonical_bytes(after)]
 
 
-def initialize_configuration_tables(connection):
-    connection.execute(
-        "CREATE TABLE IF NOT EXISTS workflow_current_configuration ("
-        "workflow_definition_id TEXT PRIMARY KEY NOT NULL, edit_sequence INTEGER NOT NULL, "
-        "fixed_definition_revision INTEGER NOT NULL, display_name TEXT NOT NULL, "
-        "node_presentation_json TEXT NOT NULL, adjustable_config_json TEXT NOT NULL)")
-
-
 class WorkflowConfiguration:
-    def _configuration_descriptor(self, repo, node):
+    def _configuration_descriptor(self, node):
         definition = self.registry.get_definition(node["component_id"], node["component_version"])
         require(definition is not None, "graph_missing_node_type",
                 "Current trusted node definition is unavailable", 409,
                 node_id=node["node_binding_id"])
         return definition.to_dict()
 
-    def _configuration_document(self, repo, identity):
-        current = repo.current_configuration(identity)
-        require(current is not None, "not_found", "Current workflow configuration not found", 404)
-        document = deepcopy(self._document(repo, identity, current["fixed_definition_revision"]))
+    def _compose_configuration(self, current, fixed_document):
+        document = deepcopy(fixed_document)
         document["name"] = current["display_name"]
         document["edit_sequence"] = current["edit_sequence"]
         for node in document["nodes"]:
             identity = node["node_binding_id"]
             presentation = current["node_presentation"][identity]
             node.update(deepcopy(presentation))
-            descriptor = self._configuration_descriptor(repo, node)
+            descriptor = self._configuration_descriptor(node)
             declaration = validate_node_configuration(node, descriptor)
             if declaration is not None and node["configuration_policy"]["prompt_mode"] == "adjustable":
                 for field in declaration["fields"]:
@@ -294,72 +290,40 @@ class WorkflowConfiguration:
         validate_session_item_registrations(document, self.registry)
         return document
 
-    def _write_configuration(self, repo, document, edit_sequence):
+    def _configuration_view(self, data, identity):
+        current, fixed = data.configuration_view(identity)
+        require(current is not None, "not_found", "Current workflow configuration not found", 404)
+        return self._compose_configuration(current, fixed)
+
+    def _write_configuration(self, data, document, edit_sequence):
         adjustable = {}
         presentation = {}
         for node in document["nodes"]:
             identity = node["node_binding_id"]
-            declaration = validate_node_configuration(node, self._configuration_descriptor(repo, node))
+            declaration = validate_node_configuration(node, self._configuration_descriptor(node))
             adjustable[identity] = adjustable_configuration_projection(
                 node["config"], declaration, node["configuration_policy"])
             presentation[identity] = {field: deepcopy(node[field]) for field in ("title", "position")}
-        repo.put_current_configuration({
+        data.save_current_configuration({
             "workflow_definition_id": document["workflow_definition_id"], "edit_sequence": edit_sequence,
             "fixed_definition_revision": document["revision"], "display_name": document["name"],
             "node_presentation": presentation, "adjustable_config": adjustable,
         })
 
-    def update_definition(self, document, *, workflow_definition_id, expected_edit_sequence, idempotency_key,
-                          confirm_derivation=None):
-        # The confirmed second submission carries an explicit flag and its own
-        # idempotency key; a request without it can only ever ask, never derive.
-        request = {"workflow_definition_id": workflow_definition_id,
-                   "expected_edit_sequence": expected_edit_sequence, "document": document}
-        if confirm_derivation is not None:
-            request["confirm_derivation"] = confirm_derivation
-
-        return self._change(
-            "graph.definition.update", idempotency_key, request,
-            lambda repo: self._save_configuration_update(
-                repo, document, workflow_definition_id=workflow_definition_id,
-                expected_edit_sequence=expected_edit_sequence, confirm_derivation=confirm_derivation))
-
-    def patch_node_configuration(self, *, workflow_definition_id, node_binding_id, component_id,
-                                 component_version, changes, expected_edit_sequence, idempotency_key,
-                                 confirm_derivation=None):
-        changes = deepcopy(changes)
-        request = {
-            "workflow_definition_id": workflow_definition_id, "node_binding_id": node_binding_id,
-            "component_id": component_id, "component_version": component_version, "changes": changes,
-            "expected_edit_sequence": expected_edit_sequence,
-        }
-        if confirm_derivation is not None:
-            request["confirm_derivation"] = confirm_derivation
-
-        def change(repo):
-            return self._patch_node_configuration(
-                repo, workflow_definition_id=workflow_definition_id, node_binding_id=node_binding_id,
-                component_id=component_id, component_version=component_version, changes=changes,
-                expected_edit_sequence=expected_edit_sequence, confirm_derivation=confirm_derivation)
-
-        # The receipt hashes the original narrow request before any current graph
-        # is read, so replay keeps the original result after subsequent edits.
-        return self._change("graph.configuration.patch-node", idempotency_key, request, change)
-
-    def _patch_node_configuration(self, repo, *, workflow_definition_id, node_binding_id, component_id,
+    def _patch_node_configuration(self, data, *, workflow_definition_id, node_binding_id, component_id,
                                   component_version, changes, expected_edit_sequence, confirm_derivation=None):
         uuid4_string(workflow_definition_id)
         uuid4_string(node_binding_id)
         self._validate_configuration_edit_basis(expected_edit_sequence, confirm_derivation)
         rule = configuration_mutation_rule(component_id, component_version)
         rule.validate_changes(changes, node_id=node_binding_id)
-        self._require_definition_active(repo, workflow_definition_id)
-        current = repo.current_configuration(workflow_definition_id)
+        self._require_definition_active_in(data, workflow_definition_id)
+        current = data.current_configuration(workflow_definition_id)
         require(current is not None, "graph_configuration_missing",
                 "Configuration patch requires a current schema 3 configuration", 409)
         require(current["edit_sequence"] == expected_edit_sequence,
                 "stale_edit_sequence", "Workflow configuration changed", 409)
-        proposed = self._configuration_document(repo, workflow_definition_id)
+        proposed = self._configuration_view(data, workflow_definition_id)
         node = next((entry for entry in proposed["nodes"] if entry["node_binding_id"] == node_binding_id), None)
         require(node is not None, "graph_missing_node", "Configuration patch target node not found", 404,
                 node_id=node_binding_id)
@@ -369,7 +333,7 @@ class WorkflowConfiguration:
         node["config"].update(deepcopy(changes))
         rule.validate_configuration(node["config"], node_id=node_binding_id)
         return self._save_configuration_update(
-            repo, proposed, workflow_definition_id=workflow_definition_id,
+            data, proposed, workflow_definition_id=workflow_definition_id,
             expected_edit_sequence=expected_edit_sequence, confirm_derivation=confirm_derivation)
 
     @staticmethod
@@ -379,7 +343,7 @@ class WorkflowConfiguration:
         require(confirm_derivation is None or type(confirm_derivation) is bool, "invalid_request",
                 "Derivation confirmation must be boolean")
 
-    def _save_configuration_update(self, repo, document, *, workflow_definition_id, expected_edit_sequence,
+    def _save_configuration_update(self, data, document, *, workflow_definition_id, expected_edit_sequence,
                                    confirm_derivation):
         from .graph_contracts import validate_graph_document, validate_session_item_registrations
         uuid4_string(workflow_definition_id)
@@ -393,29 +357,29 @@ class WorkflowConfiguration:
         require("edit_sequence" not in proposed or proposed["edit_sequence"] == expected_edit_sequence,
                 "invalid_request", "Document edit sequence differs from its editing basis")
         proposed.pop("edit_sequence", None)
-        self._require_definition_active(repo, workflow_definition_id)
-        current = repo.current_configuration(workflow_definition_id)
+        self._require_definition_active_in(data, workflow_definition_id)
+        current = data.current_configuration(workflow_definition_id)
         require((current["edit_sequence"] if current else 0) == expected_edit_sequence,
                 "stale_edit_sequence", "Workflow configuration changed", 409)
-        existing = repo.rows("workflow_definition_revision", workflow_definition_id=workflow_definition_id)
+        existing = data.definition_revisions(workflow_definition_id)
         require(current is not None or not existing, "graph_configuration_missing",
                 "An existing definition has no current schema 3 configuration", 409)
-        effective = any(not self._archived(repo, "session", session["workflow_session_id"])
-                        for session in repo.rows("workflow_session", workflow_definition_id=workflow_definition_id))
+        effective = any(not data.archived("session", session["workflow_session_id"])
+                        for session in data.definition_sessions(workflow_definition_id))
         for node in proposed["nodes"]:
-            validate_node_configuration(node, self._configuration_descriptor(repo, node))
+            validate_node_configuration(node, self._configuration_descriptor(node))
         if current is None:
             require(proposed["revision"] == 1, "invalid_request", "A new workflow starts at fixed revision 1")
             categories = ["fixed"]
             outcome, sequence = "saved", 1
-            self._save_definition(repo, proposed, 0)
-            self._write_configuration(repo, proposed, sequence)
+            data.save_fixed_revision(proposed, 0)
+            self._write_configuration(data, proposed, sequence)
         else:
             require(proposed["revision"] == current["fixed_definition_revision"], "stale_revision",
                     "Document fixed revision differs from its editing basis", 409)
-            previous = self._configuration_document(repo, workflow_definition_id)
+            previous = self._configuration_view(data, workflow_definition_id)
             categories = classify_configuration_changes(
-                previous, proposed, lambda node: self._configuration_descriptor(repo, node))
+                previous, proposed, self._configuration_descriptor)
             if effective and "fixed" in categories and not confirm_derivation:
                 # Ask before writing any definition, configuration or session.
                 proposed["edit_sequence"] = expected_edit_sequence
@@ -435,19 +399,19 @@ class WorkflowConfiguration:
                 proposed["workflow_definition_id"] = str(uuid4())
                 proposed["revision"] = 1
                 sequence = 1
-                self._save_definition(repo, proposed, 0)
-                self._write_configuration(repo, proposed, sequence)
+                data.save_fixed_revision(proposed, 0)
+                self._write_configuration(data, proposed, sequence)
             elif categories:
                 require(current["edit_sequence"] < MAX_EDIT_SEQUENCE, "graph_edit_sequence_exhausted",
                         "Workflow configuration edit sequence is exhausted", 409)
                 sequence = current["edit_sequence"] + 1
                 if "fixed" in categories:
                     proposed["revision"] += 1
-                    self._save_definition(repo, proposed, current["fixed_definition_revision"])
-                self._write_configuration(repo, proposed, sequence)
+                    data.save_fixed_revision(proposed, current["fixed_definition_revision"])
+                self._write_configuration(data, proposed, sequence)
             else:
                 sequence = current["edit_sequence"]
-        actual = self._configuration_document(repo, proposed["workflow_definition_id"])
+        actual = self._configuration_view(data, proposed["workflow_definition_id"])
         return {
             "schema_version": 1, "kind": "workflow.configuration-result", "outcome": outcome,
             "source_workflow_definition_id": workflow_definition_id,

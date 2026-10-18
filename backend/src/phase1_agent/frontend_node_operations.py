@@ -1,6 +1,5 @@
 """Same-process operations owned by one exact saved frontend node instance."""
 
-from contextlib import closing
 from copy import deepcopy
 from dataclasses import dataclass
 
@@ -8,7 +7,6 @@ from .chat_contracts import CHAT_CONTEXT_TYPE
 from .contract_errors import require, uuid4_string
 from .contract_json import content_digest
 from .frontend_node_contracts import FRONTEND_NODE_COMPONENT
-from .graph_store import GraphRecordStore
 from .workflow_operations import WorkflowOperations, read_native_receipt
 from .workflow_chat_operations import WorkflowChatOperations
 
@@ -58,9 +56,9 @@ class FrontendNodeOperations:
             uuid4_string(session_id)
         bound = BoundFrontendNodeOperations(
             self._service, workflow_definition_id, definition_revision, node_binding_id, session_id)
-        with self._service._lock, closing(self._service._store()) as store:
+        with self._service._lock, self._service._configuration_data.read() as data:
             self._service._check_open()
-            bound._require_binding(GraphRecordStore(store))
+            bound._require_binding(data)
         return bound
 
 
@@ -79,10 +77,18 @@ class BoundFrontendNodeOperations:
             "node_binding_id": self.node_binding_id, "session_id": self.session_id,
         }
 
-    def _require_binding(self, repo, *, current=False):
+    def _binding_data(self, access):
+        # Inside an existing command transaction, wrap the caller's repo
+        # instead of opening a second store (which would block on its
+        # BEGIN IMMEDIATE).  A limited data session is used as-is.
+        return (access if hasattr(access, "fixed_document")
+                else self._service._configuration_data.transaction(access))
+
+    def _require_binding(self, access, *, current=False):
+        data = self._binding_data(access)
         service = self._service
-        service._require_definition_active(repo, self.workflow_definition_id)
-        document = service._document(repo, self.workflow_definition_id, self.definition_revision)
+        service._require_definition_active_in(data, self.workflow_definition_id)
+        document = data.fixed_document(self.workflow_definition_id, self.definition_revision)
         node = next((entry for entry in document["nodes"]
                      if entry["node_binding_id"] == self.node_binding_id), None)
         require(node is not None, "frontend_node_binding_mismatch",
@@ -104,16 +110,16 @@ class BoundFrontendNodeOperations:
                 "frontend_node_registration_mismatch",
                 "Frontend operations require the node's own registered readable and writable item", 409)
         if current:
-            configuration = repo.current_configuration(self.workflow_definition_id)
+            configuration = data.current_configuration(self.workflow_definition_id)
             require(configuration is not None
                     and configuration["fixed_definition_revision"] == self.definition_revision,
                     "stale_revision", "Frontend node fixed definition changed", 409)
         if self.session_id is not None:
-            session = repo.get("workflow_session", workflow_session_id=self.session_id)
+            session = data.session(self.session_id)
             require(session["workflow_definition_id"] == self.workflow_definition_id
                     and session["definition_revision"] == self.definition_revision,
                     "frontend_node_session_mismatch", "Session belongs to another saved frontend node", 409)
-            service._require_session_active(repo, session)
+            service._require_session_active_in(data, session)
         return node
 
     def _request(self, operation, arguments):
@@ -139,22 +145,22 @@ class BoundFrontendNodeOperations:
             arguments["confirm_derivation"] = confirm_derivation
         request = self._request("patch_input", arguments)
 
-        def change(repo):
-            node = self._require_binding(repo, current=True)
+        def change(data):
+            node = self._require_binding(data, current=True)
             target_id = node["config"]["input_node_id"]
             require(bool(target_id), "frontend_node_input_unbound",
                     "Frontend node has no editable input binding", 409)
-            document = self._service._document(repo, self.workflow_definition_id, self.definition_revision)
+            document = data.fixed_document(self.workflow_definition_id, self.definition_revision)
             target = next((item for item in document["nodes"] if item["node_binding_id"] == target_id), None)
             require(target is not None
                     and (target["component_id"], target["component_version"]) == ("tools.editable-input", "1"),
                     "frontend_node_input_mismatch", "Frontend node input must be exactly tools.editable-input@1", 409)
-            return self._service._patch_node_configuration(
-                repo, workflow_definition_id=self.workflow_definition_id, node_binding_id=target_id,
+            return self._service.configuration_service.patch_exact_configuration(
+                data, workflow_definition_id=self.workflow_definition_id, node_binding_id=target_id,
                 component_id="tools.editable-input", component_version="1", changes={"text": request["text"]},
                 expected_edit_sequence=expected_edit_sequence, confirm_derivation=confirm_derivation)
 
-        return self._service._change(_OPERATIONS["patch_input"], idempotency_key, request, change)
+        return self._service._configuration_change(_OPERATIONS["patch_input"], idempotency_key, request, change)
 
     def read_snapshot(self):
         return self._service.read_frontend_node_snapshot(
@@ -205,18 +211,18 @@ class BoundFrontendNodeOperations:
             verify=self._require_binding, dispatch_key=self._child_key("fork_checkpoint", idempotency_key))
 
     def list_checkpoints(self):
-        with self._service._lock, closing(self._service._store()) as store:
+        with self._service._lock, self._service._configuration_data.read() as data:
             self._service._check_open()
-            self._require_binding(GraphRecordStore(store))
+            self._require_binding(data)
             require(self.session_id is not None, "invalid_request", "Checkpoint reads require a session")
             operations = WorkflowOperations(self._service)
             return {"items": operations.list_checkpoints(self.session_id),
                     "session": operations.read_session_state(self.session_id)}
 
     def read_checkpoint(self, checkpoint_id):
-        with self._service._lock, closing(self._service._store()) as store:
+        with self._service._lock, self._service._configuration_data.read() as data:
             self._service._check_open()
-            self._require_binding(GraphRecordStore(store))
+            self._require_binding(data)
             require(self.session_id is not None, "invalid_request", "Checkpoint reads require a session")
             return WorkflowOperations(self._service).read_checkpoint(self.session_id, checkpoint_id)
 
@@ -241,13 +247,13 @@ class BoundFrontendNodeOperations:
             return node
 
         parameters = dict(arguments)
-        with self._service._lock, closing(self._service._store()) as store:
+        with self._service._lock, self._service._configuration_data.read() as data:
             self._service._check_open()
             # A replay observes its saved plan even if the binding has changed.
             previous = read_native_receipt(self._service, _OPERATIONS[operation], idempotency_key, request)
             if previous is not None:
                 return WorkflowChatOperations(self._service).read_operation_result(operation, previous)
-            node = verify(GraphRecordStore(store))
+            node = verify(data)
             parameters["object_key"] = node["config"]["object_key"]
         return WorkflowChatOperations(self._service).execute_operation(
             operation, self.session_id, parameters=parameters, idempotency_key=idempotency_key,

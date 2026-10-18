@@ -32,6 +32,16 @@ const same = (left: unknown, right: unknown) => graphJsonSignature(left) === gra
 function failure(kind: "rejected" | "unknown" | "unavailable", message: string, code: string) {
   return new WorkbenchApiError(kind, message, undefined, code);
 }
+// A fixed-revision read and a current read may both look like configuration
+// documents. The source decides whether a candidate can become current; the
+// version relation only orders candidates that are already allowed to compete.
+export type WorkflowConfigurationAcceptanceStatus =
+  "accepted" | "duplicate" | "stale" | "conflict" | "fixed" | "invalid";
+export interface WorkflowConfigurationAcceptance {
+  status: WorkflowConfigurationAcceptanceStatus;
+  document: GraphConfigurationDocument | null;
+  message?: string;
+}
 
 // The workbench installs this application with its trusted extension registry.
 export function createWorkflowConfigurationApplication(ports: WorkflowConfigurationApplicationPorts) {
@@ -48,14 +58,49 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
     workflowId: document.workflow_definition_id, name: document.name, revision: document.revision,
     editSequence: document.edit_sequence, nodeCount: document.nodes.length,
   })));
-  function observe(document: GraphConfigurationDocument) {
+  // The single acceptance decision for current configuration. It never writes
+  // on stale, duplicate, conflicting, fixed or invalid input, and reports the
+  // reason so a caller can surface a partial directory result instead of
+  // letting one row abort the batch.
+  function acceptDocument(document: unknown, source: "current" | "fixed" = "current"):
+    WorkflowConfigurationAcceptance {
     if (!isGraphConfigurationDocument(document))
-      throw failure("unavailable", "正式工作流配置格式无效", "graph_invalid_document");
+      return { status: "invalid", document: null, message: "正式工作流配置格式无效" };
     const prior = documents.get(document.workflow_definition_id);
-    if (prior && prior.edit_sequence > document.edit_sequence) return;
-    if (prior && prior.edit_sequence === document.edit_sequence && !same(prior, document))
-      throw failure("unavailable", "同一配置序号的正式正文不同", "graph_configuration_basis_mismatch");
-    documents.set(document.workflow_definition_id, graphClone(document));
+    if (source === "fixed") return { status: "fixed", document: prior ? graphClone(prior) : null };
+    if (!prior) {
+      const accepted = graphClone(document);
+      documents.set(document.workflow_definition_id, accepted);
+      return { status: "accepted", document: accepted };
+    }
+    if (document.edit_sequence < prior.edit_sequence) return { status: "stale", document: prior };
+    if (document.edit_sequence === prior.edit_sequence) {
+      if (document.revision !== prior.revision)
+        return { status: "conflict", document: prior, message: "同一配置序号的固定修订不同" };
+      if (same(prior, document)) return { status: "duplicate", document: prior };
+      return { status: "conflict", document: prior, message: "同一配置序号的正式正文不同" };
+    }
+    const sequenceDelta = document.edit_sequence - prior.edit_sequence;
+    const revisionDelta = document.revision - prior.revision;
+    // A fixed revision advance consumes exactly one edit sequence. An
+    // adjustable edit keeps the fixed revision while advancing the sequence,
+    // so the revision delta may be smaller, but never larger or negative.
+    if (revisionDelta < 0 || revisionDelta > sequenceDelta)
+      return { status: "conflict", document: prior, message: "配置修订与编辑序号的推进关系无效" };
+    const accepted = graphClone(document);
+    documents.set(document.workflow_definition_id, accepted);
+    return { status: "accepted", document: accepted };
+  }
+  function observe(document: GraphConfigurationDocument, source: "current" | "fixed" = "current") {
+    const acceptance = acceptDocument(document, source);
+    if (acceptance.status === "invalid")
+      throw failure("unavailable", acceptance.message ?? "正式工作流配置格式无效", "graph_invalid_document");
+    if (acceptance.status === "conflict")
+      throw failure("unavailable", acceptance.message ?? "配置依据冲突", "graph_configuration_basis_mismatch");
+    return acceptance;
+  }
+  function acceptDirectory(rows: readonly unknown[]): WorkflowConfigurationAcceptance[] {
+    return rows.map(document => acceptDocument(document, "current"));
   }
   function select(workflowId: string, sessionId: string | null = null) {
     if (!graphUuid(workflowId) || sessionId !== null && !graphUuid(sessionId))
@@ -243,15 +288,28 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
     if (!entry) { entry = createEntry(workflowId); entries.set(workflowId, entry); }
     return entry;
   }
+  // The accepted projection readers use this stable object. It is replaced
+  // only by a real acceptance, so duplicate reads keep the same reference.
+  function acceptedDocument(workflowId: string) {
+    return documents.get(workflowId) ?? null;
+  }
+  // Removes the accepted cache and an idle request channel after the workflow
+  // business and its original evidence are finished. Pending evidence is never
+  // dropped here; the management completion path must close it first.
+  function forget(workflowId: string) {
+    documents.delete(workflowId);
+    const request = entries.get(workflowId);
+    if (request && !request.pending.value && !request.confirmation.value && !request.busy.value)
+      entries.delete(workflowId);
+  }
   const sdk = createWorkflowConfigurationSdk({ document: () => current.value,
     locked: workflowId => forWorkflow(workflowId).locked.value, extensions: ports.extensions,
     submit: request => forWorkflow(request.workflow_definition_id).submit(request),
-    accept: (result, request) => accept(result, request),
     confirmDerivation: workflowId => forWorkflow(workflowId).confirm(),
     declineDerivation: workflowId => forWorkflow(workflowId).reject() });
   return { current, directory, selection: computed(() => selection.value ? { ...selection.value } : null),
     document: (workflowId: string) => {
       const document = documents.get(workflowId);
       return document ? graphClone(document) : null;
-    }, observe, select, forWorkflow, sdk };
+    }, accepted: acceptedDocument, acceptDocument, acceptDirectory, observe, select, forWorkflow, forget, sdk };
 }

@@ -41,7 +41,7 @@ export function installDebtCleanupConfiguration(graph: ReturnType<typeof useWork
     evidence: evidence.ports, extensions: () => [], update,
     readReceipt: vi.fn(async () => { throw new Error("No configuration receipt read expected"); }),
   });
-  graph.installWorkflowConfigurationApplication(application);
+  graph.installWorkflowConfigurationApplication(application, { seed: true });
   async function settled(workflowId: string) {
     const channel = application.forWorkflow(workflowId);
     await channel.initialize();

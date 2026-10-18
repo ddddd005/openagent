@@ -14,6 +14,8 @@ from uuid import uuid4
 from jsonschema import Draft202012Validator
 
 from .contract_json import validate_json_value
+from .configuration_data import WorkflowConfigurationData, WorkflowDataManagement
+from .configuration_service import WorkflowConfigurationService
 from .graph_records import graph_record, graph_error, require, uuid_value
 from .graph_store import GraphRecordStore
 from .program_variable_store import ProgramVariableStore
@@ -161,6 +163,12 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         self._resource_frames = {}
         self._execution_registries = {}
         self._lock = RLock()
+        # Configuration is management-scope: assemble it for the execution
+        # owner and for the management-only service used by definition
+        # commands and reads.
+        self._configuration_data = WorkflowConfigurationData(
+            WorkflowDataManagement(self._store))
+        self.configuration_service = WorkflowConfigurationService(self)
         self._executor = (ThreadPoolExecutor(max_workers=1, thread_name_prefix="workflow-graph")
                           if execution_owner else None)
         self._futures: dict[str, Any] = {}
@@ -230,6 +238,17 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
             require(not self._closed, "service_closed", "Graph service is closed", 409)
             return GraphRecordStore(store, definition_registry=self.registry).atomic(operation, key, request, callback)
 
+    def _configuration_change(self, operation, key, request, callback):
+        """Run a configuration command in the original transaction.
+
+        The callback receives a limited configuration data session bound to the
+        same ``GraphRecordStore``; the repo, connection and transaction holder
+        stay inside the existing ``_change``/``atomic`` envelope.
+        """
+        return self._change(
+            operation, key, request,
+            lambda repo: callback(self._configuration_data.transaction(repo)))
+
     def node_types(self, *, protocol_version=1):
         catalog = self.registry.catalog()
         if protocol_version == 2:
@@ -254,48 +273,36 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         return repo.get("workflow_definition_revision", workflow_definition_id=identity, revision=revision)["document"]
 
     def get_definition(self, identity, revision=None):
-        with self._lock, closing(self._store()) as store:
-            repo = GraphRecordStore(store)
-            if revision is None and repo.current_configuration(identity) is not None:
-                return self._configuration_document(repo, identity)
-            return self._document(repo, identity, revision)
+        return self.configuration_service.read_configuration(identity, revision)
 
     def list_definitions(self, *, include_archived=False):
-        require(type(include_archived) is bool, "invalid_request", "Archive filter must be boolean")
-        with self._lock, closing(self._store()) as store:
-            repo = GraphRecordStore(store)
-            latest = {}
-            for row in repo.rows("workflow_definition_revision"):
-                identity = row["workflow_definition_id"]
-                if identity not in latest or row["revision"] > latest[identity]["revision"]:
-                    latest[identity] = row
-            return [
-                {"document": (self._configuration_document(repo, identity)
-                              if repo.current_configuration(identity) is not None else row["document"]),
-                 "archived": self._archived(repo, "definition", identity)}
-                for identity, row in latest.items()
-                if include_archived or not self._archived(repo, "definition", identity)
-            ]
+        return self.configuration_service.list_configuration_definitions(
+            include_archived=include_archived)
+
+    def _configuration_document(self, repo, identity):
+        """Compatibility adapter for out-of-batch consumers holding a repo."""
+        return self._configuration_view(self._configuration_data.transaction(repo), identity)
 
     def _save_definition(self, repo, document, expected_revision):
-        from .graph_contracts import validate_graph_document
-        document = validate_graph_document(document)
-        document.pop("edit_sequence", None)
-        _revision(expected_revision, zero=True)
-        existing = repo.rows("workflow_definition_revision",
-                             workflow_definition_id=document["workflow_definition_id"])
-        current = max((row["revision"] for row in existing), default=0)
-        require(current == expected_revision, "stale_revision", "Definition changed", 409)
-        require(document["revision"] == current + 1, "invalid_request", "Definition revision must advance once")
-        for node in document["nodes"]:
-            repo.put("node_binding", graph_record("node_binding",
-                workflow_definition_id=document["workflow_definition_id"],
-                workflow_definition_revision=document["revision"], node_binding_id=node["node_binding_id"],
-                component_id=node["component_id"], component_version=node["component_version"], config=node["config"]))
-        repo.put("workflow_definition_revision", graph_record("workflow_definition_revision",
-            workflow_definition_id=document["workflow_definition_id"], revision=document["revision"],
-            bindings=[node["node_binding_id"] for node in document["nodes"]], edges=document["edges"], document=document))
-        return document
+        """Compatibility adapter for legacy definition writes inside a repo transaction."""
+        return self._configuration_data.transaction(repo).save_fixed_revision(
+            document, expected_revision)
+
+    def update_definition(self, document, *, workflow_definition_id, expected_edit_sequence,
+                          idempotency_key, confirm_derivation=None):
+        return self.configuration_service.update_definition(
+            document, workflow_definition_id=workflow_definition_id,
+            expected_edit_sequence=expected_edit_sequence, idempotency_key=idempotency_key,
+            confirm_derivation=confirm_derivation)
+
+    def patch_node_configuration(self, *, workflow_definition_id, node_binding_id, component_id,
+                                 component_version, changes, expected_edit_sequence, idempotency_key,
+                                 confirm_derivation=None):
+        return self.configuration_service.patch_node_configuration(
+            workflow_definition_id=workflow_definition_id, node_binding_id=node_binding_id,
+            component_id=component_id, component_version=component_version, changes=changes,
+            expected_edit_sequence=expected_edit_sequence, idempotency_key=idempotency_key,
+            confirm_derivation=confirm_derivation)
 
     def _definition(self, node):
         try:

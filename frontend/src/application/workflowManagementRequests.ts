@@ -19,6 +19,9 @@ export interface WorkflowManagementRequestPorts {
   readReceipt?: GraphCommandPorts["readReceipt"];
   current?(workflowId: string): boolean;
   accept(workflowId: string, receipt: GraphReceipt, command: GraphCommand): void | Promise<void>;
+  // Called only after the original request evidence has been resolved. The
+  // receipt may already say deleted, but local removal waits for this point.
+  completed?(workflowId: string, command: GraphCommand, receipt: GraphReceipt): void | Promise<void>;
 }
 const ownerKind = "workflow-management";
 const operations = new Set(["definition.archive", "definition.delete", "session.create",
@@ -133,7 +136,12 @@ export function createWorkflowManagementRequests(ports: WorkflowManagementReques
     const outbox = createResourceOutbox<ManagementRequest>({
       readPending, writePending, save: request => invoke(request),
       readReceipt: request => invoke(request, true),
-    }, valid, async () => {}, "工作流管理");
+    }, valid, async request => {
+      if (!request || (request.operation !== "definition.delete" && request.operation !== "session.delete")) return;
+      const receipt = lastReceipt.value;
+      if (!receipt || receipt.kind !== "management" || !receipt.result.deleted) return;
+      await ports.completed?.(workflowId, originalCommand(request), graphClone(receipt));
+    }, "工作流管理");
     async function dispatch(command: GraphCommand): Promise<GraphReceipt> {
       const request = graphCommandOperation(command.path, command.body);
       if (!valid(request)) throw unavailable("此写操作尚未接入管理原请求保护，未提交");

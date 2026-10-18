@@ -17,7 +17,7 @@ import { defaultGraphConfigurationPolicy, graphClone, graphNodeAllowsAdjustable,
 import { useWorkspaceStore } from "./workspace";
 import { useWorkbenchNoticesStore } from "./workbenchNotices";
 import type { FrontendExtension } from "../domain/frontendExtensions";
-import { isGraphConfigurationDocument, type GraphConfigurationResult,
+import { isGraphConfigurationDocument, type GraphConfigurationDocument, type GraphConfigurationResult,
   type GraphConfigurationUpdateDocument, type GraphConfigurationUpdateRequest } from "../domain/workflowConfiguration";
 import type { WorkflowNodeConfigurationRequest, WorkflowNodeConfigurationResult } from "../plugins/workflowFrontendSdk";
 import { syncVariableRegistrationEvent, variableRegistrationTarget } from "../domain/workflowVariableRegistration";
@@ -37,6 +37,12 @@ function configurationUpdateDocument(document: GraphDocument, editSequence: numb
   for (const node of next.nodes)
     node.configuration_policy ??= { schema_version: 1, prompt_mode: "fixed" };
   return next;
+}
+// Compare the edit body without the counters that a save is expected to move.
+function sameConfigurationBody(left: GraphDocument, right: GraphDocument) {
+  const body = (document: GraphDocument) =>
+    graphSignature({ ...document, revision: 0, edit_sequence: 0 });
+  return body(left) === body(right);
 }
 
 function syncProvidedSessionItems(document: GraphDocument, nodeId: string,
@@ -99,6 +105,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   const managementRequests = createWorkflowManagementRequests({
     current: id => alive && !!entries.value[id],
     accept: acceptManagementReceipt,
+    completed: (id, command) => finishManagedDeletion(id, command),
   });
   const configurationSubmitting = ref<Record<string, boolean>>({});
   const configurationApplicationVersion = ref(0);
@@ -155,12 +162,17 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   }
   watch(() => [workspace.activeWorkflowId, entries.value[workspace.activeWorkflowId]?.session_id] as const,
     selectConfigurationBasis);
-  function installWorkflowConfigurationApplication(application: WorkflowConfigurationApplication) {
+  function installWorkflowConfigurationApplication(application: WorkflowConfigurationApplication,
+    options: { seed?: boolean } = {}) {
     configurationApplication = application;
     configurationApplicationVersion.value++;
-    for (const entry of Object.values(entries.value))
-      if (isGraphConfigurationDocument(entry.document) && Number.isSafeInteger(entry.document.edit_sequence))
-        application.observe(entry.document);
+    // Production installs before the directory read, so the current read below
+    // establishes accepted. Tests that construct entries by hand must ask for
+    // this explicit seed instead of relying on an implicit reverse observe.
+    if (options.seed)
+      for (const entry of Object.values(entries.value))
+        if (isGraphConfigurationDocument(entry.document) && Number.isSafeInteger(entry.document.edit_sequence))
+          application.observe(entry.document);
     selectConfigurationBasis();
   }
   function setPersistenceGuard(_guard: () => boolean | Promise<boolean>) {
@@ -209,6 +221,20 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     catch (failure) { if (alive) catalogError.value = failure instanceof Error ? failure.message : "节点目录不可用"; }
     finally { catalogLoading.value = false; }
   }
+  function projectAcceptedConfiguration(workflowId: string, archived: boolean) {
+    const accepted = configurationApplication?.accepted(workflowId);
+    if (!accepted) return false;
+    if (!entries.value[workflowId]) {
+      entries.value[workflowId] = { document: accepted, saved_document: graphClone(accepted),
+        saved_revision: accepted.revision, session_id: null, pending: null };
+      history.value[workflowId] = { past: [], future: [] };
+      workspace.registerGraphWorkflow({ id: workflowId, title: accepted.name, description: "",
+        nodeCount: accepted.nodes.length, state: "saved", archived });
+    }
+    projectAcceptedState(workflowId, workflowId, accepted, workspace.currentViewToken(), "none", false);
+    workspace.setWorkflowManagement(workflowId, archived);
+    return true;
+  }
   async function loadDefinitions() {
     if (definitionsLoading.value) return false;
     definitionsLoading.value = true;
@@ -218,21 +244,43 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       if (!alive || generation !== mutationGeneration) return false;
       for (const row of rows) {
         const doc = graphClone(row.document), id = doc.workflow_definition_id;
-        const entry = entries.value[id], workflow = workspace.workflows.find(item => item.id === id);
+        const workflow = workspace.workflows.find(item => item.id === id);
+        const entry = entries.value[id];
+        // A directory read that races with an in-flight or unresolved
+        // management request must not write that target's projection. A
+        // confirmed deletion keeps its owner until cleanup finishes.
+        const requests = managementRequests.forWorkflow(id);
+        if (workflow?.deleted || requests.busy.value || requests.pending.value) continue;
+        const archived = row.archived || !!workflow?.archived;
+        // A local first save is not a current configuration yet. A directory
+        // row must not become its accepted state behind the pending create.
+        const localFirstSave = !!entry && entry.saved_revision === 0;
+        const localPending = !!entry?.pending;
+        if (configurationApplication && isGraphConfigurationDocument(doc)
+          && !localFirstSave && !localPending) {
+          const acceptance = configurationApplication.acceptDocument(doc);
+          if (acceptance.status === "conflict" || acceptance.status === "invalid") {
+            notices.notify("unavailable", `${acceptance.message ?? "工作流配置无法接纳"}：${id}`,
+              "读取工作流目录");
+            continue;
+          }
+          projectAcceptedConfiguration(id, archived);
+          continue;
+        }
+        if (configurationApplication?.accepted(id)) continue;
         if (!entry) {
           entries.value[id] = { document: doc, saved_document: graphClone(doc), saved_revision: doc.revision,
             session_id: null, pending: null };
           history.value[id] = { past: [], future: [] };
           workspace.registerGraphWorkflow({ id, title: doc.name, description: "", nodeCount: doc.nodes.length,
-            state: "saved", archived: row.archived });
+            state: "saved", archived });
         } else if (!entry.pending && workflow?.state !== "draft" && doc.revision >= entry.saved_revision) {
           entry.document = doc; entry.saved_document = graphClone(doc); entry.saved_revision = doc.revision;
           workspace.updateWorkflowProjection(id, doc.name, doc.nodes.length);
         }
-        entries.value[id].latest_published_revision = doc.revision;
-        if (configurationApplication && isGraphConfigurationDocument(doc))
-          configurationApplication.observe(doc);
-        workspace.setWorkflowManagement(id, row.archived);
+        entries.value[id].latest_published_revision =
+          Math.max(entries.value[id].latest_published_revision ?? 0, doc.revision);
+        workspace.setWorkflowManagement(id, archived);
       }
       selectConfigurationBasis();
       return true;
@@ -243,55 +291,76 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     const error = failure instanceof WorkbenchApiError ? failure : new WorkbenchApiError("unavailable", String(failure));
     notices.notify(error.kind, error.reason, action);
   }
-  function acceptConfigurationResult(sourceId: string, result: GraphConfigurationResult,
-    viewToken: ReturnType<typeof workspace.currentViewToken>, historyAction: ConfigurationHistoryAction) {
-    if (result.outcome === "confirmation_required") return null;
-    const targetId = result.workflow_definition_id, document = graphClone(result.document);
+  function projectAcceptedState(sourceId: string, targetId: string, accepted: GraphConfigurationDocument,
+    viewToken: ReturnType<typeof workspace.currentViewToken>, historyAction: ConfigurationHistoryAction,
+    derived: boolean) {
     const source = entries.value[sourceId];
     if (!source) throw new WorkbenchApiError("unknown", "配置结果的原工作流已不存在");
-    if (targetId === sourceId) {
-      const record = history.value[sourceId] ?? { past: [], future: [] };
-      if (historyAction === "edit" && source.saved_revision > 0
-        && graphSignature(source.document) !== graphSignature(document)) {
-        record.past = [...record.past, graphClone(source.document)].slice(-60);
-        record.future = [];
-      } else if (historyAction === "undo") {
-        const previous = record.past.at(-1);
-        if (previous) {
-          record.past = record.past.slice(0, -1);
-          record.future = [...record.future, graphClone(source.document)].slice(-60);
-        }
-      } else if (historyAction === "redo") {
-        const next = record.future.at(-1);
-        if (next) {
-          record.future = record.future.slice(0, -1);
+    if (!derived) {
+      const unchanged = source.document.edit_sequence === accepted.edit_sequence
+        && graphSignature(source.document) === graphSignature(accepted);
+      if (!unchanged) {
+        const record = history.value[sourceId] ?? { past: [], future: [] };
+        if (historyAction === "edit" && source.saved_revision > 0) {
           record.past = [...record.past, graphClone(source.document)].slice(-60);
+          record.future = [];
+        } else if (historyAction === "undo") {
+          const previous = record.past.at(-1);
+          if (previous) {
+            record.past = record.past.slice(0, -1);
+            record.future = [...record.future, graphClone(source.document)].slice(-60);
+          }
+        } else if (historyAction === "redo") {
+          const next = record.future.at(-1);
+          if (next) {
+            record.future = record.future.slice(0, -1);
+            record.past = [...record.past, graphClone(source.document)].slice(-60);
+          }
         }
+        history.value[sourceId] = record;
+        source.document = accepted;
       }
-      history.value[sourceId] = record;
-      source.document = document;
-      source.saved_document = graphClone(document);
-      source.saved_revision = document.revision;
-      source.latest_published_revision = Math.max(source.latest_published_revision ?? 0, document.revision);
-      workspace.updateWorkflowProjection(sourceId, document.name, document.nodes.length);
-      workspace.markWorkflowSaved(sourceId, document.name);
-      return { workflowId: targetId, document };
+      source.saved_document = graphClone(accepted);
+      source.saved_revision = accepted.revision;
+      source.latest_published_revision = Math.max(source.latest_published_revision ?? 0, accepted.revision);
+      workspace.updateWorkflowProjection(sourceId, accepted.name, accepted.nodes.length);
+      workspace.markWorkflowSaved(sourceId, accepted.name);
+      return { workflowId: targetId, document: accepted };
     }
-    if (result.outcome !== "derived")
-      throw new WorkbenchApiError("unknown", "配置回执的工作流归属无效");
     const existing = entries.value[targetId];
-    entries.value[targetId] = { ...(existing ?? {}), document, saved_document: graphClone(document),
-      saved_revision: document.revision, latest_published_revision: document.revision,
+    entries.value[targetId] = { ...(existing ?? {}), document: accepted, saved_document: graphClone(accepted),
+      saved_revision: accepted.revision, latest_published_revision: accepted.revision,
       session_id: null, pending: null };
     history.value[targetId] = history.value[targetId] ?? { past: [], future: [] };
     if (!workspace.workflows.some(row => row.id === targetId))
-      workspace.registerGraphWorkflow({ id: targetId, title: document.name, description: "",
-        nodeCount: document.nodes.length, state: "saved" });
-    workspace.updateWorkflowProjection(targetId, document.name, document.nodes.length);
-    workspace.markWorkflowSaved(targetId, document.name);
+      workspace.registerGraphWorkflow({ id: targetId, title: accepted.name, description: "",
+        nodeCount: accepted.nodes.length, state: "saved" });
+    workspace.updateWorkflowProjection(targetId, accepted.name, accepted.nodes.length);
+    workspace.markWorkflowSaved(targetId, accepted.name);
     if (workspace.activeWorkflowId === sourceId && workspace.isCurrentView(viewToken))
       workspace.openWorkflow(targetId);
-    return { workflowId: targetId, document };
+    return { workflowId: targetId, document: accepted };
+  }
+  function projectConfigurationResult(sourceId: string, result: GraphConfigurationResult,
+    viewToken: ReturnType<typeof workspace.currentViewToken>, historyAction: ConfigurationHistoryAction) {
+    if (result.outcome === "confirmation_required") return null;
+    const targetId = result.workflow_definition_id, derived = targetId !== sourceId;
+    if (derived && result.outcome !== "derived")
+      throw new WorkbenchApiError("unknown", "配置回执的工作流归属无效");
+    const accepted = configurationApplication?.accepted(targetId);
+    if (!accepted) throw new WorkbenchApiError("unknown", "配置结果尚未被正式配置应用接纳");
+    return projectAcceptedState(sourceId, targetId, accepted, viewToken, historyAction, derived);
+  }
+  // A save may have been accepted before evidence closing failed. Project that
+  // accepted state without reading the unaccepted lastResult backdoor.
+  function projectChangedAcceptance(workflowId: string,
+    viewToken: ReturnType<typeof workspace.currentViewToken>, historyAction: ConfigurationHistoryAction) {
+    const accepted = configurationApplication?.accepted(workflowId), source = entries.value[workflowId];
+    if (!accepted || !source) return false;
+    if (source.document.edit_sequence === accepted.edit_sequence
+      && graphSignature(source.document) === graphSignature(accepted)) return false;
+    projectAcceptedState(workflowId, workflowId, accepted, viewToken, historyAction, false);
+    return true;
   }
   async function settleConfigurationQuestion(workflowId: string,
     result: GraphConfigurationResult): Promise<SettledConfigurationResult | null> {
@@ -315,34 +384,52 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     if (source.pending || source.document.workflow_definition_id !== workflowId
       || proposed.workflow_definition_id !== workflowId)
       throw new WorkbenchApiError("rejected", "工作流配置编辑依据无效");
+    // Capture the body and counters from the same edit baseline. Waiting for
+    // initialization must re-check this baseline, never fetch a newer version
+    // and silently attach the old body to it.
+    const baseline = graphClone(source.document);
     configurationSubmitting.value[workflowId] = true;
     const viewToken = workspace.currentViewToken();
     let request: GraphConfigurationUpdateRequest | null = null;
     try {
       await entry.initialize();
-      const current = application.document(workflowId);
-      if (source.saved_revision > 0 && !current)
+      const workflow = workspace.workflows.find(row => row.id === workflowId);
+      const management = managementRequests.forWorkflow(workflowId);
+      if (busy.value || applicationBusy.value || management.pending.value || management.busy.value
+        || workflow?.archived || workflow?.deleted)
+        throw new WorkbenchApiError("rejected", "工作流管理操作正在进行，未提交配置修改",
+          undefined, "graph_management_pending");
+      const current = application.accepted(workflowId);
+      if (!current && source.saved_revision > 0)
         throw new WorkbenchApiError("unavailable", "正式配置读取暂不可用；未提交工作流修改");
-      if (current && current.revision !== source.document.revision)
-        throw new WorkbenchApiError("rejected", "正式配置修订已变化；请重新读取工作流", undefined, "stale_revision");
+      if (current && graphSignature(current) !== graphSignature(baseline))
+        throw new WorkbenchApiError("rejected", "配置编辑依据已变化；请重新读取工作流",
+          undefined, "stale_configuration_basis");
       const editSequence = current?.edit_sequence ?? 0;
       const document = configurationUpdateDocument(proposed, current ? editSequence : null);
       document.revision = current?.revision ?? 1;
-      request = { workflow_definition_id: workflowId, expected_edit_sequence: editSequence,
-        document, idempotency_key: crypto.randomUUID() };
+      request = { workflow_definition_id: workflowId,
+        expected_edit_sequence: editSequence, document, idempotency_key: crypto.randomUUID() };
       let result: GraphConfigurationResult;
       try {
         result = await entry.submit(request);
       } catch (failure) {
-        const known = entry.lastResult.value;
-        if (known && known.outcome !== "confirmation_required")
-          acceptConfigurationResult(workflowId, graphClone(known) as GraphConfigurationResult, viewToken, historyAction);
+        // The application may have accepted the write before evidence closing
+        // failed; reflect only that accepted state, not an unaccepted result.
+        const accepted = application.accepted(workflowId);
+        const fromThisRequest = !!request && !!accepted && sameConfigurationBody(accepted, request.document);
+        projectChangedAcceptance(workflowId, viewToken, fromThisRequest ? historyAction : "none");
         throw failure;
       }
       const settled = await settleConfigurationQuestion(workflowId, result);
       if (!settled) return null;
-      acceptConfigurationResult(workflowId, settled, viewToken, historyAction);
+      projectConfigurationResult(workflowId, settled, viewToken, historyAction);
       return settled;
+    } catch (failure) {
+      // A changed basis or management gate rejects this edit; only sync the
+      // accepted projection, without advancing history for the rejected body.
+      projectChangedAcceptance(workflowId, viewToken, "none");
+      throw failure;
     } finally {
       delete configurationSubmitting.value[workflowId];
     }
@@ -352,10 +439,11 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     const application = configurationApplication;
     if (!application)
       throw new WorkbenchApiError("unavailable", "正式配置应用不可用，节点配置尚未提交");
-    const source = entries.value[request.workflowId], document = application.document(request.workflowId);
+    const source = entries.value[request.workflowId], document = application.accepted(request.workflowId);
     if (!alive || locked.value || request.workflowId !== workspace.activeWorkflowId || !source
       || !isGraphConfigurationDocument(document) || !graphObject(request.patch) || !isGraphJsonValue(request.patch))
       return null;
+    if (graphSignature(source.document) !== graphSignature(document)) return null;
     const node = document.nodes.find(row => row.node_binding_id === request.nodeId);
     if (!node || !node.configuration_policy)
       return null;
@@ -369,6 +457,16 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     const viewToken = workspace.currentViewToken(), entry = application.forWorkflow(request.workflowId);
     try {
       await entry.initialize();
+      const workflow = workspace.workflows.find(row => row.id === request.workflowId);
+      const management = managementRequests.forWorkflow(request.workflowId);
+      if (busy.value || applicationBusy.value || management.pending.value || management.busy.value
+        || workflow?.archived || workflow?.deleted)
+        throw new WorkbenchApiError("rejected", "工作流管理操作正在进行，未提交节点配置",
+          undefined, "graph_management_pending");
+      const current = application.accepted(request.workflowId);
+      if (!isGraphConfigurationDocument(current) || graphSignature(current) !== graphSignature(document))
+        throw new WorkbenchApiError("rejected", "配置编辑依据已变化；请重新读取工作流",
+          undefined, "stale_configuration_basis");
       const submission = {
         workflowId: request.workflowId, nodeId: request.nodeId, componentId: request.componentId,
         componentVersion: request.componentVersion, extensionId: request.extensionId,
@@ -381,13 +479,11 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       const settled = await settleConfigurationQuestion(request.workflowId, result);
       if (!settled)
         return { workflowId: request.workflowId, nodeId: request.nodeId, outcome: "cancelled" };
-      const accepted = acceptConfigurationResult(request.workflowId, settled, viewToken, "edit");
+      const accepted = projectConfigurationResult(request.workflowId, settled, viewToken, "edit");
       if (!accepted) return null;
       return { workflowId: accepted.workflowId, nodeId: request.nodeId, outcome: settled.outcome };
     } catch (failure) {
-      const known = entry.lastResult.value;
-      if (known && known.outcome !== "confirmation_required")
-        acceptConfigurationResult(request.workflowId, graphClone(known) as GraphConfigurationResult, viewToken, "edit");
+      projectChangedAcceptance(request.workflowId, viewToken, "edit");
       report(failure, "保存节点配置");
       return null;
     } finally {
@@ -422,9 +518,10 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       const result = await request.reconcile();
       const settled = await settleConfigurationQuestion(workflowId, result);
       if (!settled) return true;
-      acceptConfigurationResult(workflowId, settled, viewToken, "edit");
+      projectConfigurationResult(workflowId, settled, viewToken, "edit");
       return true;
     } catch (failure) {
+      projectChangedAcceptance(workflowId, viewToken, "edit");
       report(failure, "核实工作流配置原请求");
       return false;
     } finally { delete configurationSubmitting.value[workflowId]; }
@@ -459,8 +556,14 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     }
     if (receipt.kind !== "management")
       throw new WorkbenchApiError("unknown", "管理回执不是当前入口的结果");
+    // Accepting a definition management receipt invalidates directory reads
+    // that were issued while the command was in flight.
+    mutationGeneration++;
     if (receipt.result.deleted) {
-      await finishManagedDeletion(id, request);
+      // The business is deleted, but the original request is not closed yet.
+      // Keep the entry and its verification owner until the outbox resolves;
+      // a failed resolution must remain visible instead of disappearing here.
+      if (request.action === "definition-delete") workspace.setWorkflowManagement(id, true, true);
     } else if (request.action === "definition-archive") {
       workspace.setWorkflowManagement(id, true);
     } else {
@@ -475,7 +578,51 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
         busy: request.busy.value, pending: !!request.pending.value }] : [];
     });
   }
+  const guardedManagementActions = new Set([
+    "definition-archive", "definition-delete", "session-archive", "session-delete",
+  ]);
+  // The public management commands and the outer manageWorkflow/manageSession
+  // both reach this shared dispatch path. Check the target's own configuration
+  // and management state here, before any new original-request evidence.
+  async function guardManagementWrite(id: string, command: GraphCommand) {
+    if (!guardedManagementActions.has(command.action)) return;
+    const entry = entries.value[id], application = configurationApplication;
+    if (!entry) throw new WorkbenchApiError("unavailable", "工作流不存在");
+    if (command.action.startsWith("session-")) {
+      const sessionId = command.source_session_id;
+      const view = sessionId ? views.value[sessionId] : null;
+      if (!sessionId || !view || view.workflow_definition_id !== entry.document.workflow_definition_id)
+        throw new WorkbenchApiError("rejected", "目标会话不属于该工作流，未提交管理请求",
+          undefined, "graph_management_target_invalid");
+    }
+    const channel = application?.forWorkflow(id);
+    if (channel) {
+      const initialized = await channel.initialize();
+      if (!initialized)
+        throw new WorkbenchApiError("unavailable", "工作流原请求证据未能初始化，未提交管理请求");
+      if (!alive || entries.value[id] !== entry || configurationApplication !== application)
+        throw new WorkbenchApiError("unavailable", "工作流目标已变化，未提交管理请求");
+      if (configurationSubmitting.value[id] || channel.locked.value)
+        throw new WorkbenchApiError("rejected", "工作流配置正在提交或待核实，未提交管理请求",
+          undefined, "graph_configuration_pending");
+    }
+    const requests = managementRequests.forWorkflow(id);
+    const ready = await requests.initialize();
+    if (!ready)
+      throw new WorkbenchApiError("unavailable", "工作流管理原请求证据未能初始化，未提交管理请求");
+    if (!alive || entries.value[id] !== entry || configurationApplication !== application)
+      throw new WorkbenchApiError("unavailable", "工作流目标已变化，未提交管理请求");
+    if (channel && (configurationSubmitting.value[id] || channel.locked.value))
+      throw new WorkbenchApiError("rejected", "工作流配置正在提交或待核实，未提交管理请求",
+        undefined, "graph_configuration_pending");
+    if (entry.pending || requests.pending.value || requests.busy.value)
+      throw new WorkbenchApiError("unknown", "目标工作流仍有管理请求未结束，未提交新请求");
+    const workflow = workspace.workflows.find(row => row.id === id);
+    if (workflow?.deleted)
+      throw new WorkbenchApiError("rejected", "目标工作流已删除，未提交管理请求");
+  }
   async function dispatch(id: string, command: GraphCommand, reconcile = false): Promise<unknown> {
+    if (!reconcile) await guardManagementWrite(id, command);
     const generation = ++mutationGeneration;
     const entry = entries.value[id];
     const eventSessionId = entry.session_id, eventDefinitionId = entry.document.workflow_definition_id,
@@ -487,19 +634,21 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       try { return await managementRequests.forWorkflow(id).dispatch(command); }
       finally { managementTargets.delete(key); }
     }
-    return dispatchGraphCommand(entry, command, {
-      readReceipt: readGraphReceipt,
-      readDefinition: workflowManagementQueries.definition,
-      observedSession: sessionId => views.value[sessionId],
-      current: () => alive && entries.value[id] === entry && mutationGeneration === generation
-        && (command.action !== "event"
-        || entry.session_id === eventSessionId && entry.document.workflow_definition_id === eventDefinitionId
-          && entry.document.revision === eventDefinitionRevision),
-    }, reconcile);
+    try {
+      return await dispatchGraphCommand(entry, command, {
+        readReceipt: readGraphReceipt,
+        readDefinition: workflowManagementQueries.definition,
+        observedSession: sessionId => views.value[sessionId],
+        current: () => alive && entries.value[id] === entry && mutationGeneration === generation
+          && (command.action !== "event"
+          || entry.session_id === eventSessionId && entry.document.workflow_definition_id === eventDefinitionId
+            && entry.document.revision === eventDefinitionRevision),
+      }, reconcile);
+    } finally { mutationGeneration++; }
   }
   const management = createWorkflowManagement({
     entry: id => entries.value[id], observedSession: id => views.value[id], observe, dispatch,
-    commandState: value => { applicationBusy.value = value; if (value) mutationGeneration++; },
+    commandState: value => { applicationBusy.value = value; mutationGeneration++; },
     canSubmit(id) {
       const workflow = workspace.workflows.find(row => row.id === id);
       return alive && !!workflow && !workflow.copyPending
@@ -547,6 +696,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     const entry = entries.value[id];
     if (!entry || entry.pending) return;
     if (request.action === "definition-delete") {
+      mutationGeneration++;
       const ownedSessions = Object.values(views.value)
         .filter(view => view.workflow_definition_id === entry.document.workflow_definition_id);
       for (const view of ownedSessions) {
@@ -559,6 +709,7 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       }
       workspace.removeWorkflow(id);
       delete entries.value[id]; delete history.value[id]; delete sessions.value[id];
+      configurationApplication?.forget(id);
     } else if (request.action === "session-delete") {
       const sessionId = request.source_session_id!;
       sessions.value[id] = (sessions.value[id] ?? []).filter(view => view.workflow_session_id !== sessionId);
@@ -570,24 +721,34 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   }
   async function manageWorkflow(id: string, action: "archive" | "delete") {
     if (busy.value || applicationBusy.value || !entries.value[id] || entries.value[id].pending) return false;
+    const configuration = configurationApplication?.forWorkflow(id);
+    if (configuration) {
+      await configuration.initialize();
+      if (configuration.locked.value || configurationSubmitting.value[id]) return false;
+    }
+    const requests = managementRequests.forWorkflow(id);
+    if (requests.pending.value || requests.busy.value) return false;
     busy.value = `definition-${action}`;
     try {
       await management.commands.manageDefinition({ workflowId: id }, action);
-      if (action === "delete") await finishManagedDeletion(id, { action: "definition-delete" });
-      else await refresh(id);
+      if (action === "archive") await refresh(id);
       return true;
     } catch (failure) { report(failure, action === "archive" ? "归档工作流" : "删除工作流"); return false; }
     finally { busy.value = null; }
   }
   async function manageSession(sessionId: string, action: "archive" | "delete", id = workspace.activeWorkflowId) {
     if (busy.value || applicationBusy.value || !entries.value[id] || entries.value[id].pending) return false;
+    const configuration = configurationApplication?.forWorkflow(id);
+    if (configuration) {
+      await configuration.initialize();
+      if (configuration.locked.value || configurationSubmitting.value[id]) return false;
+    }
+    const requests = managementRequests.forWorkflow(id);
+    if (requests.pending.value || requests.busy.value) return false;
     busy.value = `session-${action}`;
     try {
       await management.commands.manageSession({ workflowId: id }, sessionId, action);
-      if (action === "delete") await finishManagedDeletion(id, {
-        action: "session-delete", source_session_id: sessionId,
-      });
-      else await refresh(id);
+      if (action === "archive") await refresh(id);
       return true;
     } catch (failure) { report(failure, action === "archive" ? "归档会话" : "删除会话"); return false; }
     finally { busy.value = null; }
@@ -1072,12 +1233,19 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     if (locked.value || !editorStable.value || workflow.state !== "draft") return;
     const id = workflow.id;
     const entry = entries.value[id];
-    if (entry?.saved_document) {
-      entry.document = graphClone(entry.saved_document);
+    if (!entry) return;
+    // Restoring a saved draft returns to the accepted current, not to an
+    // arbitrary Store value that happens to sit in saved_document.
+    const accepted = configurationApplication?.accepted(id) ?? null;
+    if (accepted || entry.saved_document) {
+      const restored = graphClone(accepted ?? entry.saved_document!);
+      entry.document = restored;
+      entry.saved_document = graphClone(restored);
+      entry.saved_revision = restored.revision;
       entry.state_mappings = [];
       history.value[id] = { past: [], future: [] };
-      workspace.updateWorkflowProjection(id, entry.document.name, entry.document.nodes.length);
-      workspace.markWorkflowSaved(id, entry.document.name);
+      workspace.updateWorkflowProjection(id, restored.name, restored.nodes.length);
+      workspace.markWorkflowSaved(id, restored.name);
       return;
     }
     const fallback = workspace.workflows.find(row => row.id !== id && !row.copyPending)?.id;

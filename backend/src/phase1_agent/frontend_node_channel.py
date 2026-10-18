@@ -52,8 +52,8 @@ class FrontendNodeChannel:
         return self._bound
 
     def _require_chat_receipt_binding(self, bound):
-        with self._service._lock, closing(self._service._store()) as store:
-            node = bound._require_binding(GraphRecordStore(store))
+        with self._service._lock, self._service._configuration_data.read() as data:
+            node = bound._require_binding(data)
         require(node["component_version"] == "2",
                 "frontend_node_chat_unavailable",
                 "Chat receipts require frontend.node@2 and an exact session", 409)
@@ -175,8 +175,9 @@ class FrontendNodeChannel:
         with self._service._lock, closing(self._service._store()) as store:
             self._service._check_open()
             repo = GraphRecordStore(store)
-            bound._require_binding(repo, current=True)
-            document = self._service._configuration_document(repo, self._owner["workflow_definition_id"])
+            data = self._service._configuration_data.transaction(repo)
+            bound._require_binding(data, current=True)
+            document = self._service._configuration_view(data, self._owner["workflow_definition_id"])
             require(document["revision"] == self._owner["definition_revision"],
                     "stale_revision", "Frontend current definition revision changed", 409)
             node = next(item for item in document["nodes"]

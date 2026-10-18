@@ -42,6 +42,11 @@ function result(id: string, action: "archive" | "delete", sid?: string) {
     revision: sid ? 2 : 1, archived: action === "archive", deleted: action === "delete" };
 }
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status }); }
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
 
 describe("object-scoped workflow lifecycle", () => {
   it("reads backend definitions including archives without losing an independent local draft", async () => {
@@ -82,6 +87,13 @@ describe("object-scoped workflow lifecycle", () => {
     expect(graph.document!.name).toBe("Unpublished retained edit");
     expect(graph.views[view.workflow_session_id]).toMatchObject({ archived: true, readonly: true,
       can_submit: false, available_actions: [] });
+    // A stale directory row must not clear the confirmed archive flag.
+    stubGraphApplicationFetch(vi.fn(async path => {
+      expect(path).toBe("/api/graph/definitions");
+      return json([{ document: graphClone(document), archived: false }]);
+    }));
+    expect(await graph.loadDefinitions()).toBe(true);
+    expect(workspace.workflows.find(row => row.id === id)?.archived).toBe(true);
   });
   it("keeps target content unchanged after an explicitly rejected archive", async () => {
     const { graph, workspace, id } = await fixture(), before = graphClone(graph.entries[id]);
@@ -130,6 +142,71 @@ describe("object-scoped workflow lifecycle", () => {
     vi.stubGlobal("fetch", receipt);
     await graph.reconcile(id);
     expect(receipt).toHaveBeenCalledOnce(); expect(graph.entries[id]).toBeUndefined();
+    expect(workspace.workflows).toEqual([]);
+    expect([...evidence.records.values()][0]).toEqual({ ...original, resolution: "verified" });
+  });
+  it("does not restore a workflow from a directory requested during deletion", async () => {
+    const { graph, workspace, id } = await fixture();
+    const stale = graphClone(graph.entries[id]!.document);
+    const deletion = deferred<Response>(), directory = deferred<Response>(), requested = deferred<void>();
+    stubGraphApplicationFetch(vi.fn(async path => {
+      if (path === `/api/graph/definitions/${id}/delete`) return deletion.promise;
+      if (path === "/api/graph/definitions") { requested.resolve(undefined); return directory.promise; }
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+    const deleting = graph.manageWorkflow(id, "delete");
+    const loading = graph.loadDefinitions();
+    await requested.promise;
+    deletion.resolve(json(result(id, "delete")));
+    expect(await deleting).toBe(true);
+    directory.resolve(new Response(JSON.stringify([{ document: stale, archived: false }])));
+    expect(await loading).toBe(false);
+    expect(graph.entries[id]).toBeUndefined();
+    expect(workspace.workflows).toEqual([]);
+  });
+  it("keeps a deleted definition and its verification owner when evidence closing fails", async () => {
+    const { graph, workspace, id } = await fixture();
+    stubGraphApplicationFetch(vi.fn(async path => {
+      expect(path).toBe(`/api/graph/definitions/${id}/delete`);
+      return json(result(id, "delete"));
+    }));
+    vi.spyOn(requestEvidencePorts, "resolve").mockRejectedValue(new Error("Evidence disk unavailable"));
+    expect(await graph.manageWorkflow(id, "delete")).toBe(false);
+    // The business receipt is confirmed, but the owner is not silently removed.
+    expect(graph.entries[id]).toBeDefined();
+    expect(workspace.workflows.find(row => row.id === id)?.deleted).toBe(true);
+    expect(graph.managementPendingRequests()).toEqual([
+      expect.objectContaining({ workflowId: id, pending: true }),
+    ]);
+    expect([...evidence.records.values()][0]).toMatchObject({
+      operation: "definition.delete", owner_id: id, resolution: "pending",
+    });
+
+    // A directory row for the confirmed deletion must not clear `deleted`,
+    // recreate the entry, or hide the owner while evidence is still pending.
+    stubGraphApplicationFetch(vi.fn(async path => {
+      expect(path).toBe("/api/graph/definitions");
+      return json([{ document: graphClone(graph.entries[id]!.document), archived: false }]);
+    }));
+    expect(await graph.loadDefinitions()).toBe(true);
+    expect(graph.entries[id]).toBeDefined();
+    expect(workspace.workflows.find(row => row.id === id)?.deleted).toBe(true);
+    expect(graph.managementPendingRequests()).toEqual([
+      expect.objectContaining({ workflowId: id, pending: true }),
+    ]);
+
+    vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
+    const original = graphClone([...evidence.records.values()][0]);
+    const receipt = vi.fn(async (path, options) => {
+      expect(path).toBe("/api/graph/receipts/read");
+      const envelope = JSON.parse(options.body);
+      expect(envelope).toEqual({ operation: "definition.delete",
+        parameters: { ...graph.pending!.body, identity: id } });
+      return graphReceiptReadResponse(envelope.operation, envelope.parameters, result(id, "delete"));
+    });
+    vi.stubGlobal("fetch", receipt);
+    await graph.reconcile(id);
+    expect(graph.entries[id]).toBeUndefined();
     expect(workspace.workflows).toEqual([]);
     expect([...evidence.records.values()][0]).toEqual({ ...original, resolution: "verified" });
   });

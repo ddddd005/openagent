@@ -411,8 +411,8 @@ def test_same_version_declaration_updates_are_visible_without_rewriting_fixed_re
     observed = []
     original_descriptor = management_service._configuration_descriptor
 
-    def capture_descriptor(repo, node):
-        descriptor = original_descriptor(repo, node)
+    def capture_descriptor(node):
+        descriptor = original_descriptor(node)
         observed.append((descriptor["checkpoint_save"], descriptor["execution_class"]))
         return descriptor
 

@@ -164,7 +164,7 @@ async function mount(kind: "model" | "lorebook") {
     evidence: evidence.ports, extensions: () => host.extensions.value, update,
     readReceipt: async request => savedResult(request),
   });
-  graph.installWorkflowConfigurationApplication(configuration);
+  graph.installWorkflowConfigurationApplication(configuration, { seed: true });
   const lifecycle = computed(() => JSON.stringify([workspace.activeWorkflowId,
     graph.session?.workflow_session_id ?? null, host.extensions.value.map(row => row.declaration)]));
   const sdk: WorkflowFrontendSdk = {

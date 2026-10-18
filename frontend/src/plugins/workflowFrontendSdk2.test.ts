@@ -34,16 +34,16 @@ function fixture() {
       edit_sequence: target === workflowId ? 2 : 1 },
   });
   let observed: GraphConfigurationDocument | null = document;
-  const submit = vi.fn(async (request: GraphConfigurationUpdateRequest) => result(request)), accept = vi.fn();
+  const submit = vi.fn(async (request: GraphConfigurationUpdateRequest) => result(request));
   const confirmDerivation = vi.fn(async () => result({
     workflow_definition_id: workflowId, expected_edit_sequence: 1,
     document: graphClone(document), idempotency_key: crypto.randomUUID(),
   }));
   const declineDerivation = vi.fn();
   const sdk = createWorkflowConfigurationSdk({ document: () => observed, locked: () => false,
-    extensions: () => [{ declaration, configurationFields: ["text"] }], submit, accept,
+    extensions: () => [{ declaration, configurationFields: ["text"] }], submit,
     confirmDerivation, declineDerivation });
-  return { workflowId, nodeId, document, declaration, input, result, submit, accept, sdk,
+  return { workflowId, nodeId, document, declaration, input, result, submit, sdk,
     select: (value: GraphConfigurationDocument | null) => { observed = value; } };
 }
 describe("uninstalled frontend host 2 configuration SDK", () => {
@@ -56,7 +56,6 @@ describe("uninstalled frontend host 2 configuration SDK", () => {
     expect(request.expected_edit_sequence).toBe(1);
     expect(request.document.nodes[0]!.config.text).toBe("After");
     expect(f.document.nodes[0]!.config.text).toBe("Before");
-    expect(f.accept).toHaveBeenCalledWith(value, request);
   });
   it("rejects an unconfirmed derived result even after selection changes", async () => {
     const f = fixture(), target = crypto.randomUUID();
@@ -67,7 +66,6 @@ describe("uninstalled frontend host 2 configuration SDK", () => {
     await expect(f.sdk.submitNodeConfiguration(f.input))
       .rejects.toMatchObject({ kind: "unknown", code: "graph_configuration_receipt_invalid" });
     expect(f.submit).toHaveBeenCalledOnce();
-    expect(f.accept).not.toHaveBeenCalled();
   });
   it.each(["stale", "other-node", "old-host", "unowned-field", "policy-in-fields"] as const)(
     "rejects %s before submitting", async reason => {
@@ -78,7 +76,7 @@ describe("uninstalled frontend host 2 configuration SDK", () => {
       if (reason === "unowned-field") f.input.nextConfig.fixed = false;
       if (reason === "policy-in-fields") f.input.nextPolicy.prompt_mode = "adjustable";
       await expect(f.sdk.submitNodeConfiguration(f.input)).rejects.toMatchObject({ kind: "rejected" });
-      expect(f.submit).not.toHaveBeenCalled(); expect(f.accept).not.toHaveBeenCalled();
+      expect(f.submit).not.toHaveBeenCalled();
     });
   it("limits a registered node action to the same business configuration", async () => {
     const f = fixture();
@@ -91,7 +89,6 @@ describe("uninstalled frontend host 2 configuration SDK", () => {
     const f = fixture();
     f.submit.mockRejectedValue(new WorkbenchApiError("unknown", "No receipt"));
     await expect(f.sdk.submitNodeConfiguration(f.input)).rejects.toMatchObject({ kind: "unknown" });
-    expect(f.accept).not.toHaveBeenCalled();
     expect(f.document.nodes[0]!.config.text).toBe("Before");
   });
   it("serializes configuration submissions for the same workflow", async () => {

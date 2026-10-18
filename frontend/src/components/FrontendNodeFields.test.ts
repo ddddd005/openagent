@@ -91,7 +91,7 @@ async function fixture(version = "2") {
   });
   graph.installWorkflowConfigurationApplication(createWorkflowConfigurationApplication({
     evidence: evidence.ports, extensions: () => host.extensions.value, update,
-  }));
+  }), { seed: true });
   const configureNode = vi.fn((request: Parameters<typeof graph.patchNodeConfiguration>[0]) => graph.patchNodeConfiguration(request));
   const sdk: WorkflowFrontendSdk = {
     workflowId: computed(() => id), document: computed(() => graph.document),

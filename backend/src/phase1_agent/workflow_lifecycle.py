@@ -77,33 +77,33 @@ class WorkflowLifecycle:
             "INSERT INTO workflow_management VALUES(?,?,1) "
             "ON CONFLICT(object_kind,object_id) DO UPDATE SET archived=1", (kind, identity))
 
-    def _require_definition_active(self, repo, identity):
-        require(not self._archived(repo, "definition", identity), "workflow_archived",
+    def _require_definition_active_in(self, data, identity):
+        """Check definition writability through the limited data interface."""
+        require(not data.archived("definition", identity), "workflow_archived",
                 "Archived workflows are read-only", 409)
         require(identity not in self._management_workflows, "workflow_management_pending",
                 "Workflow archive or deletion is in progress", 409)
 
-    def _require_session_active(self, repo, session):
-        self._require_definition_active(repo, session["workflow_definition_id"])
+    def _require_session_active_in(self, data, session):
+        self._require_definition_active_in(data, session["workflow_definition_id"])
         sid = session["workflow_session_id"]
-        require(not self._archived(repo, "session", sid), "session_archived",
+        require(not data.archived("session", sid), "session_archived",
                 "Archived sessions are read-only", 409)
         require(sid not in self._management_sessions, "session_management_pending",
                 "Session archive or deletion is in progress", 409)
 
+    def _require_definition_active(self, repo, identity):
+        self._require_definition_active_in(self._configuration_data.transaction(repo), identity)
+
+    def _require_session_active(self, repo, session):
+        self._require_session_active_in(self._configuration_data.transaction(repo), session)
+
     def list_definitions(self, *, include_archived=False):
-        require(type(include_archived) is bool, "invalid_request", "Archive filter must be boolean")
-        with self._lock, closing(self._store()) as store:
-            repo = GraphRecordStore(store)
-            latest = {}
-            for row in repo.rows("workflow_definition_revision"):
-                identity = row["workflow_definition_id"]
-                if identity not in latest or row["revision"] > latest[identity]["revision"]:
-                    latest[identity] = row
-            return [{"document": row["document"],
-                     "archived": self._archived(repo, "definition", identity)}
-                    for identity, row in latest.items()
-                    if include_archived or not self._archived(repo, "definition", identity)]
+        # Keep one directory implementation; the fixed-only projection here
+        # would silently drop current-configuration composition if it were ever
+        # reached instead of GraphWorkflowService.list_definitions.
+        return self.configuration_service.list_configuration_definitions(
+            include_archived=include_archived)
 
     def _stop_owned_runs(self, sessions, key):
         chains = [(session["workflow_session_id"], session["active_chain_run_id"])

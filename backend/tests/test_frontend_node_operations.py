@@ -111,6 +111,9 @@ def test_patch_uses_own_target_and_own_original_receipt_before_current_graph(ser
         assert store.read_receipt("graph.frontend-node.patch-input", "patch-original") is not None
         assert store.read_receipt("graph.configuration.patch-node", "patch-original") is None
     monkeypatch.setattr(service, "_document", lambda *args: pytest.fail("replay reread current graph"))
+    monkeypatch.setattr(
+        "phase1_agent.configuration_data.ConfigurationDataSession.fixed_document",
+        lambda *args: pytest.fail("replay reread current graph"))
     assert bound.patch_input(**original) == changed
     assert bound.read_receipt("patch_input", original) == changed
     with pytest.raises(ContractValidationError) as failure:

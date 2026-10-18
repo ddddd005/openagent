@@ -11,7 +11,7 @@ export interface ResourceOutboxPorts<T> {
   archivePending?(value: string): Promise<void>;
 }
 export function createResourceOutbox<T>(ports: ResourceOutboxPorts<T>, valid: (value: unknown) => value is T,
-  refresh: () => Promise<void>, label: string) {
+  refresh: (request: T | null) => Promise<void>, label: string) {
   const pending = ref<T | null>(null);
   const completed = ref<T | null>(null);
   const error = ref("");
@@ -71,7 +71,9 @@ export function createResourceOutbox<T>(ports: ResourceOutboxPorts<T>, valid: (v
       if (!locallyCurrent()) return false;
       pending.value = null;
       completed.value = graphClone(original) as typeof completed.value;
-      await refresh();
+      // Refresh runs only after the durable original request has been closed;
+      // completion handlers must not delete verification entries before this.
+      await refresh(graphClone(original) as T);
       return true;
     } catch (failure) {
       if (!await current()) return false;
@@ -136,7 +138,7 @@ export function createResourceOutbox<T>(ports: ResourceOutboxPorts<T>, valid: (v
       if (!current()) return false;
       pending.value = null;
       error.value = "原请求已归档并解除本机锁定；不表示撤销已发生的保存，未重新提交";
-      await refresh();
+      await refresh(null);
       return true;
     } catch (failure) {
       if (current()) error.value = failure instanceof Error ? failure.message : "原请求归档失败，原记录仍保留";

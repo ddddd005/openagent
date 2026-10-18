@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, disposePinia, setActivePinia, type Pinia } from "pinia";
+import { WorkbenchApiError } from "../adapters/workbenchApi";
 import { createWorkflowConfigurationApplication } from "../application/workflowConfiguration";
 import { graphClone, type GraphNodeType, type GraphSession } from "../domain/workflowGraph";
 import type { GraphConfigurationResult, GraphConfigurationUpdateRequest } from "../domain/workflowConfiguration";
@@ -194,12 +195,109 @@ describe("workflow configuration store wiring", () => {
     graph.patchNode(nodeId, { config: { text: "ordinary edit" } });
     expect(graph.editorLocked).toBe(true);
     expect(graph.patchNode(nodeId, { config: { text: "blocked while submitting" } })).toBeNull();
+    const archive = vi.fn(async () => new Response("{}"));
+    vi.stubGlobal("fetch", archive);
+    // A management write must not interleave with the configuration submit,
+    // even though the buttons are only disabled in the UI.
+    expect(await graph.manageWorkflow(workflowId, "archive")).toBe(false);
+    expect(archive).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(requests).toHaveLength(4));
     pending.resolve(accepted(requests[3]!));
     await vi.waitFor(() => expect(graph.document?.nodes[0]?.config.text).toBe("ordinary edit"));
     expect(graph.active?.saved_document?.nodes[0]?.config.text).toBe("ordinary edit");
+    await vi.waitFor(() => expect(graph.locked).toBe(false));
+    pending = null;
+    // A save accepted before evidence closing failed still projects the real
+    // written body; the lock and original evidence remain until reconcile.
+    const resolveEvidence = evidence.ports.resolve;
+    evidence.ports.resolve = vi.fn(async () => { throw new Error("Evidence disk unavailable"); });
+    expect(graph.patchNode(nodeId, { config: { text: "evidence failure" } })).toBe(workflowId);
+    await vi.waitFor(() => expect(graph.document?.nodes[0]?.config.text).toBe("evidence failure"));
+    expect(graph.editorLocked).toBe(true);
+    expect(graph.configurationPendingRequests()).toHaveLength(1);
+    evidence.ports.resolve = resolveEvidence;
+    await graph.reconcileConfiguration(workflowId);
+    expect(graph.configurationPendingRequests()).toEqual([]);
+    expect(graph.document?.nodes[0]?.config.text).toBe("evidence failure");
     expect([...evidence.records.values()].every(row => row.operation === "definition.update"
       && row.owner_kind === "workflow-configuration" && row.resolution === "verified")).toBe(true);
+  });
+
+  it.each(["archive", "delete"] as const)(
+    "rejects a direct definition %s while a configuration request is unknown", async action => {
+      const evidence = memoryRequestEvidence();
+      vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+      vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+      vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
+      const graph = useWorkflowGraphStore();
+      let calls = 0;
+      const update = vi.fn(async (request: GraphConfigurationUpdateRequest) => {
+        calls++;
+        if (calls === 1) return accepted(request);
+        throw new WorkbenchApiError("unknown", "Configuration response lost");
+      });
+      const application = createWorkflowConfigurationApplication({
+        evidence: evidence.ports, extensions: () => [], update,
+      });
+      graph.installWorkflowConfigurationApplication(application);
+      graph.catalog = [graphClone(nodeType)];
+      const workflowId = graph.createWorkflow();
+      await vi.waitFor(() => expect(graph.entries[workflowId]?.saved_revision).toBe(1));
+      await vi.waitFor(() => expect(graph.locked).toBe(false));
+      expect(graph.renameWorkflow("unknown configuration")).toBe(workflowId);
+      await vi.waitFor(() => expect(application.forWorkflow(workflowId).pending.value).not.toBeNull());
+      expect(application.forWorkflow(workflowId).locked.value).toBe(true);
+      const records = evidence.records.size;
+      const fetch = vi.fn(async () => new Response("{}"));
+      vi.stubGlobal("fetch", fetch);
+
+      await expect(graph.management.commands.manageDefinition({ workflowId }, action))
+        .rejects.toMatchObject({ code: "graph_configuration_pending" });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(evidence.records.size).toBe(records);
+      expect(graph.entries[workflowId]).toBeDefined();
+      expect(application.forWorkflow(workflowId).pending.value).not.toBeNull();
+    });
+
+  it("rejects a direct session delete while a configuration request is unknown", async () => {
+    const evidence = memoryRequestEvidence();
+    vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+    vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+    vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
+    const graph = useWorkflowGraphStore();
+    let calls = 0;
+    const update = vi.fn(async (request: GraphConfigurationUpdateRequest) => {
+      calls++;
+      if (calls === 1) return accepted(request);
+      throw new WorkbenchApiError("unknown", "Configuration response lost");
+    });
+    const application = createWorkflowConfigurationApplication({
+      evidence: evidence.ports, extensions: () => [], update,
+    });
+    graph.installWorkflowConfigurationApplication(application);
+    graph.catalog = [graphClone(nodeType)];
+    const workflowId = graph.createWorkflow();
+    await vi.waitFor(() => expect(graph.entries[workflowId]?.saved_revision).toBe(1));
+    await vi.waitFor(() => expect(graph.locked).toBe(false));
+    expect(graph.renameWorkflow("unknown configuration")).toBe(workflowId);
+    await vi.waitFor(() => expect(application.forWorkflow(workflowId).pending.value).not.toBeNull());
+
+    const sessionId = crypto.randomUUID();
+    const view = { schema_version: 2 as const, execution_model: "graph" as const,
+      workflow_session_id: sessionId, workflow_definition_id: workflowId, definition_revision: 1,
+      revision: 1, data_revision: 0, head_revision: 1, status: "idle" as const, can_submit: true,
+      nodes: [], chains: [], outputs: [], data: { revision: 0, values: {} } };
+    const paths: string[] = [];
+    stubGraphApplicationFetch(vi.fn(async path => {
+      paths.push(path);
+      return new Response(JSON.stringify(view));
+    }));
+    const records = evidence.records.size;
+    await expect(graph.management.commands.manageSession({ workflowId }, sessionId, "delete"))
+      .rejects.toMatchObject({ code: "graph_configuration_pending" });
+    expect(paths).toEqual([`/api/graph/sessions/${sessionId}`]);
+    expect(evidence.records.size).toBe(records);
+    expect(graph.entries[workflowId]).toBeDefined();
   });
 
   it("adds current context, Agent and output contracts through formal schema 3 without creating a session or item value", async () => {
@@ -361,7 +459,7 @@ describe("workflow configuration store wiring", () => {
           return configurationResult(request, { outcome: "saved", categories: ["fixed"] });
         }),
       });
-      graph.installWorkflowConfigurationApplication(application);
+      graph.installWorkflowConfigurationApplication(application, { seed: true });
       await vi.waitFor(() => expect(graph.locked).toBe(false));
 
       expect(graph.patchNodeConfigurationPolicy(document.nodes[0]!.node_binding_id, "adjustable")).toBeNull();
@@ -392,7 +490,7 @@ describe("workflow configuration store wiring", () => {
       });
     });
     const application = createWorkflowConfigurationApplication({ evidence: evidence.ports, extensions: () => [], update });
-    graph.installWorkflowConfigurationApplication(application);
+    graph.installWorkflowConfigurationApplication(application, { seed: true });
     const confirm = vi.fn(() => false);
     vi.stubGlobal("window", { confirm });
     await vi.waitFor(() => expect(graph.locked).toBe(false));
@@ -439,7 +537,7 @@ describe("workflow configuration store wiring", () => {
         });
     });
     const application = createWorkflowConfigurationApplication({ evidence: evidence.ports, extensions: () => [], update });
-    graph.installWorkflowConfigurationApplication(application);
+    graph.installWorkflowConfigurationApplication(application, { seed: true });
     vi.stubGlobal("window", { confirm: vi.fn(() => true) });
     await vi.waitFor(() => expect(graph.locked).toBe(false));
 
@@ -512,7 +610,7 @@ describe("workflow configuration store wiring", () => {
           outcome: "confirmation_required", categories: ["fixed"], hasSession: true,
         }),
       });
-      graph.installWorkflowConfigurationApplication(application);
+      graph.installWorkflowConfigurationApplication(application, { seed: true });
       vi.stubGlobal("window", { confirm: vi.fn(() => confirmDerivation) });
       await vi.waitFor(() => expect(application.forWorkflow(workflowId).initialized.value).toBe(true));
 
@@ -574,7 +672,7 @@ describe("workflow configuration store wiring", () => {
       return configurationResult(request, { outcome: "saved", categories: ["adjustable"], hasSession: true });
     });
     const application = createWorkflowConfigurationApplication({ evidence: evidence.ports, extensions: () => [], update });
-    graph.installWorkflowConfigurationApplication(application);
+    graph.installWorkflowConfigurationApplication(application, { seed: true });
     await vi.waitFor(() => expect(graph.locked).toBe(false));
 
     expect(graph.patchNode(document.nodes[0]!.node_binding_id, {

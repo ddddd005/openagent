@@ -83,7 +83,7 @@ class SqliteStore:
             from .request_evidence import initialize_request_evidence
             from .workflow_lifecycle import initialize_session_metadata
             from .content_configuration import initialize_content_metadata
-            from .workflow_configuration import initialize_configuration_tables
+            from .configuration_data import initialize_configuration_tables
             from .checkpoint_repository import initialize_checkpoint_tables
             from .workflow_chat_runtime import initialize_chat_tables
             initialize_object_tables(self._connection)

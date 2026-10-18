@@ -349,3 +349,53 @@ describe("uninstalled configuration application and SDK2", () => {
     expect(getItem).not.toHaveBeenCalled(); expect(setItem).not.toHaveBeenCalled();
   });
 });
+
+describe("unified current acceptance", () => {
+  function candidate(base: GraphConfigurationDocument, revision: number, editSequence: number,
+    text: string): GraphConfigurationDocument {
+    return { ...graphClone(base), revision, edit_sequence: editSequence,
+      nodes: base.nodes.map(node => ({ ...graphClone(node), config: { ...node.config, text } })) };
+  }
+  it("keeps a fixed-revision read out of current even when its counters look newer", () => {
+    const f = fixture(), fixed = candidate(f.document, 5, 9, "Fixed later");
+    expect(f.app.observe(fixed, "fixed").status).toBe("fixed");
+    expect(f.app.accepted(f.document.workflow_definition_id)).toMatchObject({ revision: 2, edit_sequence: 4 });
+    expect(f.app.accepted(f.document.workflow_definition_id)!.nodes[0]!.config.text).toBe("Before");
+  });
+  it("does not replace accepted with a stale or same-sequence different body", () => {
+    const f = fixture(), key = f.document.workflow_definition_id;
+    expect(f.app.acceptDocument(candidate(f.document, 2, 3, "Older")).status).toBe("stale");
+    expect(f.app.acceptDocument(candidate(f.document, 2, 4, "Different at same sequence")).status)
+      .toBe("conflict");
+    expect(f.app.accepted(key)).toMatchObject({ revision: 2, edit_sequence: 4 });
+    expect(f.app.accepted(key)!.nodes[0]!.config.text).toBe("Before");
+  });
+  it("accepts newer adjustable and fixed observations and rejects an impossible revision jump", () => {
+    const f = fixture(), key = f.document.workflow_definition_id;
+    const adjustable = candidate(f.document, 2, 5, "Adjustable");
+    expect(f.app.acceptDocument(adjustable)).toMatchObject({ status: "accepted" });
+    expect(f.app.accepted(key)).toMatchObject({ revision: 2, edit_sequence: 5 });
+    const fixed = candidate(f.document, 3, 6, "Fixed");
+    expect(f.app.acceptDocument(fixed)).toMatchObject({ status: "accepted" });
+    expect(f.app.accepted(key)).toMatchObject({ revision: 3, edit_sequence: 6 });
+    expect(f.app.acceptDocument(candidate(f.document, 6, 7, "Too many revisions")).status).toBe("conflict");
+    expect(f.app.accepted(key)).toMatchObject({ revision: 3, edit_sequence: 6 });
+  });
+  it("returns a duplicate with the same accepted reference and no directory row aborts the batch", () => {
+    const f = fixture(), key = f.document.workflow_definition_id;
+    const duplicate = f.app.acceptDocument(graphClone(f.app.accepted(key)!));
+    expect(duplicate.status).toBe("duplicate");
+    expect(duplicate.document).toBe(f.app.accepted(key));
+    const rows: unknown[] = [
+      { schema_version: 2, workflow_definition_id: crypto.randomUUID(), revision: 3, name: "Legacy" },
+      candidate(f.document, 2, 5, "Adjustable"),
+      candidate(f.document, 2, 6, "Adjustable two"),
+      candidate(f.document, 2, 6, "Conflicting same sequence"),
+      candidate(f.document, 3, 7, "Fixed"),
+    ];
+    const accepted = f.app.acceptDirectory(rows);
+    expect(accepted.map(row => row.status)).toEqual(["invalid", "accepted", "accepted", "conflict", "accepted"]);
+    expect(f.app.accepted(key)).toMatchObject({ revision: 3, edit_sequence: 7 });
+    expect(f.app.accepted(key)!.nodes[0]!.config.text).toBe("Fixed");
+  });
+});

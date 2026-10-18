@@ -21,9 +21,9 @@ export interface WorkflowConfigurationSubmissionPorts {
   document(): GraphConfigurationDocument | null;
   locked(workflowId: string): boolean;
   extensions(): readonly { declaration: FrontendExtension; configurationFields: readonly string[] }[];
-  // The application submitter owns durable original-request evidence and unknown-request locks.
+  // The application submitter owns durable original-request evidence, unknown-request locks
+  // and the single accepted current. A successful submit already accepted the result.
   submit(request: GraphConfigurationUpdateRequest): Promise<GraphConfigurationResult>;
-  accept(result: GraphConfigurationResult, request: GraphConfigurationUpdateRequest): void;
   // A "confirmation_required" result wrote nothing; the application retains that
   // exact ask. Only explicit user consent resubmits it as a derivation request.
   confirmDerivation(workflowId: string): Promise<GraphConfigurationResult>;
@@ -88,7 +88,6 @@ export function createWorkflowConfigurationSdk(ports: WorkflowConfigurationSubmi
         if (!isGraphConfigurationResult(result, submission))
           throw new WorkbenchApiError("unknown", "正式配置回执与原请求不匹配，保留原请求", undefined,
             "graph_configuration_receipt_invalid");
-        ports.accept(graphClone(result), graphClone(submission));
         return graphClone(result);
       } finally {
         pending.delete(request.workflowId);

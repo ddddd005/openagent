@@ -34,6 +34,48 @@ const create = owner => new scope.FrontendNodeClient({
 
 (async () => {
   const owner = JSON.parse(process.argv[2]);
+  const mode = process.argv[3];
+  if (mode === "modify" || mode === "modify_unknown") {
+    let client = create(owner);
+    const initial = await client.initialize();
+    assert.equal(initial.input.text, "current B");
+    assert.equal(initial.input.edit_sequence, 2);
+    assert.equal(initial.run, null);
+    assert.equal(initial.snapshot, null);
+    client.update("new message C");
+    if (mode === "modify_unknown") {
+      await assert.rejects(client.flush());
+      const original = client.view().pending.patch_input;
+      assert.equal(client.view().status.patch_input, "unknown");
+      assert.equal(original.parameters.text, "new message C");
+      assert.equal(original.parameters.expected_edit_sequence, 2);
+      client.dispose();
+      client = create(owner);
+      const reopened = await client.initialize();
+      assert.equal(reopened.input.text, "new message C");
+      assert.equal(reopened.input.edit_sequence, 3);
+      assert.equal(reopened.pending.patch_input.parameters.text, "new message C");
+      assert.equal(reopened.pending.patch_input.parameters.expected_edit_sequence, 2);
+      assert.equal(reopened.pending.patch_input.parameters.idempotency_key,
+        original.parameters.idempotency_key);
+      await client.reconcile("patch_input");
+    } else {
+      await client.flush();
+    }
+    assert.equal(client.view().input.text, "new message C");
+    assert.equal(client.view().input.edit_sequence, 3);
+    assert.equal(client.view().pending.patch_input, null);
+    assert.equal(client.view().status.patch_input, "saved");
+    if (mode === "modify") {
+      const reread = await client.initialize();
+      assert.equal(reread.input.text, "new message C");
+      assert.equal(reread.input.edit_sequence, 3);
+    }
+    client.dispose();
+    process.stdout.write(JSON.stringify({ done: true }) + "\n");
+    lines.close();
+    return;
+  }
   let client = create(owner);
   const initial = await client.initialize();
   assert.equal(initial.input.text, "current B");

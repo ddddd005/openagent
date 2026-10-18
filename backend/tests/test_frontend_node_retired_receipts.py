@@ -244,16 +244,17 @@ def save_graph(service, graph):
 def allow_test_fixture_binding(monkeypatch, fixture_service):
     original = BoundFrontendNodeOperations._require_binding
 
-    def require_binding(self, repo, *, current=False):
+    def require_binding(self, access, *, current=False):
         if self._service is not fixture_service:
-            return original(self, repo, current=current)
-        document = self._service._document(
-            repo, self.workflow_definition_id, self.definition_revision)
+            return original(self, access, current=current)
+        data = self._binding_data(access)
+        document = data.fixed_document(
+            self.workflow_definition_id, self.definition_revision)
         node = next((item for item in document["nodes"]
                      if item["node_binding_id"] == self.node_binding_id), None)
         assert node is not None
         if (node["component_id"], node["component_version"]) != ("frontend.node", "1"):
-            return original(self, repo, current=current)
+            return original(self, access, current=current)
         entry = self._service.registry.get("frontend.node", "1")
         assert entry is not None
         self._service.registry.validate_config(entry, node["config"])
@@ -265,11 +266,11 @@ def allow_test_fixture_binding(monkeypatch, fixture_service):
         assert self.node_binding_id in binding["readers"]
         assert self.node_binding_id in binding["writers"]
         if current:
-            configuration = repo.current_configuration(self.workflow_definition_id)
+            configuration = data.current_configuration(self.workflow_definition_id)
             assert configuration is not None
             assert configuration["fixed_definition_revision"] == self.definition_revision
         if self.session_id is not None:
-            session = repo.get("workflow_session", workflow_session_id=self.session_id)
+            session = data.session(self.session_id)
             assert session["workflow_definition_id"] == self.workflow_definition_id
             assert session["definition_revision"] == self.definition_revision
         return node
