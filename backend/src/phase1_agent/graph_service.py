@@ -26,6 +26,7 @@ from .graph_public import GraphPublic
 from .graph_history import GraphHistory
 from .graph_platform import GraphPlatform
 from .graph_runtime_host import GraphRuntimeHost
+from .graph_tool_host import GraphToolHost
 from .frontend_node_snapshots import GraphFrontendNodes
 from .graph_resource_host import GraphResourceHost
 from .graph_information import GraphInformation
@@ -75,7 +76,8 @@ class _GraphLease:
 
 class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowLifecycle, GraphEditingHost,
                            GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost,
-                           GraphFrontendNodes, GraphResourceHost, GraphPlatform, GraphPublic, GraphHistory):
+                           GraphToolHost, GraphFrontendNodes, GraphResourceHost, GraphPlatform, GraphPublic,
+                           GraphHistory):
     def __init__(self, database_path: str | Path, *, registry=None, fault_injector=None,
                  capability_packages=(), enabled_packages=None, trusted_package_entrypoints=(),
                  public_model_factory=None, credential_protector=None, provider_discovery_client_factory=None):
@@ -162,6 +164,8 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
             # Every accepted run receives its own immutable registry.
             self.registry = registry.detached()
         self._resource_frames = {}
+        # chain id -> prepared business tool frame; same lifecycle as the basis.
+        self._tool_frames = {}
         # chain id -> RunBasis.  The historical attribute name is kept because
         # it is the existing per-chain execution map; values are now the whole
         # bound load result, not a bare registry.
@@ -732,6 +736,8 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                 if event else compiler.compile(document, external_inputs=inputs))
         data.type_evidence.check_registry(registry.data_types)
         self._check_implementations(document, plan, registry=registry)
+        tool_frame = self._prepare_tool_bindings(
+            data, sid, document, plan, registry=registry, definitions=basis.definitions)
         frozen_resources = self._preflight_capabilities(data.records, sid, plan, registry=registry)
         chain_id = _uid()
         runtime_resources = frozen_resources.pop("current_global_resources", {})
@@ -740,6 +746,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
             node_id: [record for record in records if record["type_id"] not in CONTENT_RESOURCE_TYPES]
             for node_id, records in runtime_resources.items()}
         self._prepare_public_capabilities(sid, chain_id, plan, runtime_resources, registry=registry)
+        self._tool_frames[chain_id] = tool_frame
         self._execution_registries[chain_id] = basis
         nodes = {node["node_binding_id"]: node for node in document["nodes"]}
         if not event:
@@ -1141,7 +1148,8 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                     runtime_host=self._host_for_chain(chain_id, registry),
                     acceptance_cache=self._acceptance_candidates[chain_id],
                     result_recovery=self._retained_result_recovery,
-                    chat_append_contexts=chat_contexts)
+                    chat_append_contexts=chat_contexts,
+                    tool_bridge=self._tool_bridge)
                 if result.status == "succeeded":
                     with self._lock, closing(self._store()) as store:
                         data = self._data_management.execution_read(

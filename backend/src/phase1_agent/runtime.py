@@ -44,7 +44,7 @@ from .provider_metadata import (
     canonical_message_metadata, remap_provider_metadata, validate_provider_metadata,
     validate_thinking_summary,
 )
-from .tools import RegisteredTool, ToolExecutionError, ToolOutcomeUnknown
+from .tools import RegisteredTool, ToolExecutionError, ToolInvocation, ToolOutcomeUnknown
 
 
 @dataclass
@@ -929,7 +929,8 @@ class SnapshotKernel:
                 tool_event("start", call_id, execution_id)
                 uncertain_reason = None
                 try:
-                    value = registered[name].execute(copy.deepcopy(args))
+                    value = registered[name].execute(
+                        copy.deepcopy(args), invocation=ToolInvocation(call_id, execution_id, name))
                 except ToolOutcomeUnknown as exc:
                     uncertain_reason = exc.reason_code
                     if uncertain_reason not in {"outcome_unknown", "interrupted"}:

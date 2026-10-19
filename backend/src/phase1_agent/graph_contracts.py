@@ -18,6 +18,7 @@ from .host_sdk import (
     ObjectBinding, TypeRegistry, bounded_name,
 )
 from .runtime_executor_contracts import ExecutorReference, ExecutorRegistry
+from .tool_binding_contract import ToolBindingAdapter
 from .variable_contract import VARIABLE_SCHEMA_VERSION, VARIABLE_TYPE, empty_variable_value
 
 
@@ -451,6 +452,7 @@ class RegisteredNode:
     executor_ref: ExecutorReference | None = None
     settlement_builder: Callable | None = None
     failed_retry_validator: Callable[[dict, dict], dict] | None = None
+    tool_binding: ToolBindingAdapter | None = None
 
 
 class NodeRegistry:
@@ -484,6 +486,7 @@ class NodeRegistry:
                  executor_ref: ExecutorReference | None = None,
                  settlement_builder: Callable | None = None,
                  failed_retry_validator: Callable[[dict, dict], dict] | None = None,
+                 tool_binding: ToolBindingAdapter | None = None,
                  *, trusted_scope: str = "host") -> None:
         require(isinstance(definition, NodeDefinition), "graph_invalid_type",
                 "Node registration requires a node definition")
@@ -512,6 +515,12 @@ class NodeRegistry:
                 "Settlement builder must be callable")
         require(failed_retry_validator is None or callable(failed_retry_validator), "graph_invalid_type",
                 "Failed retry validator must be callable")
+        require(tool_binding is None or isinstance(tool_binding, ToolBindingAdapter), "graph_invalid_type",
+                "Tool binding declaration must be a trusted adapter")
+        require(tool_binding is None or executor is None and executor_ref is None
+                and definition.execution_class == "non_working",
+                "graph_invalid_type",
+                "Tool binding anchors must be non-working declarations without an executor")
         declared_fields = set()
         for reference in definition.config_node_references:
             require(type(reference) is dict
@@ -567,7 +576,8 @@ class NodeRegistry:
         self._nodes[key] = RegisteredNode(copy.deepcopy(definition), executor, config_validator, state_migrator,
                                           external_inputs_validator, external_inputs_declaration,
                                           resource_dependencies_declaration, resource_preflight_validator,
-                                          resource_input_ports, executor_ref, settlement_builder, failed_retry_validator)
+                                          resource_input_ports, executor_ref, settlement_builder,
+                                          failed_retry_validator, tool_binding)
         self._trusted_scopes[key] = trusted_scope
 
     def update_declarations(self, definition: NodeDefinition, *, trusted_scope: str = "host") -> None:
@@ -727,6 +737,30 @@ def validate_session_item_registrations(document: dict, registry: NodeRegistry) 
                 "Provider node is missing its declared session item registration", node_id=identity[0])
 
 
+def validate_config_node_references(entry: RegisteredNode, node: dict,
+                                    nodes: dict[str, dict]) -> None:
+    """Resolve one declaration's explicit node references against this document."""
+    for reference in entry.definition.config_node_references:
+        value = node["config"].get(reference["config_field"])
+        if reference.get("allow_empty", False) and value == "":
+            continue
+        identities = value if reference["multiple"] else [value]
+        require(type(identities) is list and bool(identities),
+                "graph_invalid_config_reference", "Node binding must name explicit node identities")
+        allowed_types = {(item["component_id"], item["component_version"])
+                         for item in reference["target_types"]}
+        for referenced_id in identities:
+            uuid4_string(referenced_id)
+            referenced_node = nodes.get(referenced_id)
+            require(referenced_node is not None, "graph_missing_config_reference",
+                    "Configured node binding names a missing node")
+            require((referenced_node["component_id"], referenced_node["component_version"])
+                    in allowed_types, "graph_config_reference_type_mismatch",
+                    "Configured node binding differs from its declared target type")
+        require(len(set(identities)) == len(identities), "graph_invalid_config_reference",
+                "Configured node bindings must not repeat an identity")
+
+
 class GraphCompiler:
     def __init__(self, registry: NodeRegistry):
         self.registry = registry
@@ -848,25 +882,7 @@ class GraphCompiler:
                     node_id=identity, dependent_outputs=[target])
             try:
                 self.registry.validate_config(entry, node["config"])
-                for reference in entry.definition.config_node_references:
-                    value = node["config"].get(reference["config_field"])
-                    if reference.get("allow_empty", False) and value == "":
-                        continue
-                    identities = value if reference["multiple"] else [value]
-                    require(type(identities) is list and bool(identities),
-                            "graph_invalid_config_reference", "Node binding must name explicit node identities")
-                    allowed_types = {(item["component_id"], item["component_version"])
-                                     for item in reference["target_types"]}
-                    for referenced_id in identities:
-                        uuid4_string(referenced_id)
-                        referenced_node = nodes.get(referenced_id)
-                        require(referenced_node is not None, "graph_missing_config_reference",
-                                "Configured node binding names a missing node")
-                        require((referenced_node["component_id"], referenced_node["component_version"])
-                                in allowed_types, "graph_config_reference_type_mismatch",
-                                "Configured node binding differs from its declared target type")
-                    require(len(set(identities)) == len(identities), "graph_invalid_config_reference",
-                            "Configured node bindings must not repeat an identity")
+                validate_config_node_references(entry, node, nodes)
                 input_ports, output_ports = entry.definition.ports(node["config"])
                 if external_inputs is not None and entry.external_inputs_validator is not None:
                     entry.external_inputs_validator(copy.deepcopy(node["config"]), copy.deepcopy(external_inputs))

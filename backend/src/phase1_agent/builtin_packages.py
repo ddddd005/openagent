@@ -2,6 +2,7 @@
 
 from .content_contracts import create_content_package
 from .prompt_package import create_prompt_package
+from .tool_binding_package import create_tool_binding_package
 from .tool_package import create_tool_package
 from .workflow_tool_catalog import builtin_prompt_tool_catalog
 from .model_package import create_model_package
@@ -14,7 +15,8 @@ from .tavern.package import create_current_tavern_package, create_global_tavern_
 
 
 DEFAULT_PACKAGES = {
-    "workflow.tools": "1.0.0", "workflow.prompts": "1.0.0",
+    "workflow.tools": "1.0.0", "workflow.tool-bindings": "1.0.0",
+    "workflow.prompts": "1.0.0",
     "workflow.models": "1.0.0", "workflow.context": "1.0.0",
     "workflow.agents": "1.0.0",
     "workflow.frontend-business": "1.0.0",
@@ -24,7 +26,7 @@ DEFAULT_PACKAGES = {
 
 
 def builtin_capability_packages(*, runtime_fact_reader=None):
-    return (create_content_package(), create_tool_package(),
+    return (create_content_package(), create_tool_package(), create_tool_binding_package(),
             create_prompt_package(tool_catalog=builtin_prompt_tool_catalog()),
             create_model_package(), create_context_package(),
             create_agent_package(information_reader=runtime_fact_reader),

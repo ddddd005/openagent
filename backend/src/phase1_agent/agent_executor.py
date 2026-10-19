@@ -18,7 +18,7 @@ from .graph_contracts import require, uuid4_string
 from .model_contract import validate_public_model_binding
 from .provider_metadata import canonical_message_metadata
 from .runtime import KernelCheckpoint, KernelPaused, SnapshotKernel
-from .tools import final_answer_tool
+from .tools import final_answer_tool, register_bound_tool
 from .workflow_tool_catalog import builtin_workflow_tools
 
 
@@ -27,13 +27,37 @@ AGENT_OUTPUT_SCHEMA = {"type": "object", "properties": {"text": {"type": "string
                        "required": ["text"], "additionalProperties": False}
 
 
-def _agent_tools(tools):
-    """Freeze usage guidance and parameters together for this Agent's built-ins."""
+def _agent_tools(tools, bound=()):
+    """Freeze usage guidance and parameters together for this Agent's tools."""
     registered = builtin_workflow_tools() if tools is None else tuple(tools)
     final = final_answer_tool(output_schema=AGENT_OUTPUT_SCHEMA)
     if not any(tool.name == final.name for tool in registered):
-        return (*registered, final)
-    return tuple(final if tool.name == final.name else tool for tool in registered)
+        registered = (*registered, final)
+    else:
+        registered = tuple(final if tool.name == final.name else tool for tool in registered)
+    combined = (*registered, *tuple(bound))
+    if bound:
+        names = [tool.name for tool in combined]
+        require(len(names) == len(set(names)), "agent_tool_conflict",
+                "Agent tools require distinct model-facing names")
+    return combined
+
+
+def _bound_tools(context):
+    """Read this run's prepared business tools; absence is an empty binding set."""
+    if not callable(getattr(context, "bound_tool_specs", None)):
+        return ()
+    specs = context.bound_tool_specs(context.node_binding_id)
+    result = []
+    for spec in specs:
+        def invoke(arguments, invocation, *, exact=spec):
+            return context.invoke_bound_tool(
+                binding_id=exact["binding_id"], operation=exact["operation"],
+                arguments=arguments, tool_call_id=invocation.tool_call_id,
+                tool_execution_id=invocation.tool_execution_id)
+        result.append(register_bound_tool(
+            spec["name"], spec["description"], spec["parameters"], invoke))
+    return tuple(result)
 
 
 def exact_input(context, port: str) -> dict:
@@ -155,7 +179,7 @@ class PublicAgentExecutor:
             policy = validate_compaction_policy(inputs["compaction_policy"])
             policy_ref = exact_input(context, "compaction_policy")
             resolve_input(context, "compaction_policy", policy)
-        self.tools = _agent_tools(tools)
+        self.tools = _agent_tools(tools, _bound_tools(context))
         self.snapshot = make_public_agent_snapshot(
             context, config, self.prompt, self.binding, self.tools, policy=policy, policy_ref=policy_ref,
             schema_version=schema_version)

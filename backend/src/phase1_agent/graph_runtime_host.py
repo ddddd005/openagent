@@ -248,6 +248,7 @@ class GraphRuntimeHost:
         frame.prepare(environment, resources)
 
     def _release_public_capabilities(self, sid, chain_id, *, known_chain=None):
+        self._release_tool_bindings(chain_id)
         frame = self._service_runs.get(chain_id)
         if frame is not None and frame.release():
             self._service_runs.pop(chain_id, None)

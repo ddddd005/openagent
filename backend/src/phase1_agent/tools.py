@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from jsonschema import Draft202012Validator
@@ -58,6 +58,20 @@ def _freeze(value: Any) -> Any:
 
 
 @dataclass(frozen=True)
+class ToolInvocation:
+    """The kernel-generated identities of one actual tool dispatch."""
+
+    tool_call_id: str
+    tool_execution_id: str
+    tool_name: str
+
+    def __post_init__(self) -> None:
+        if not all(type(value) is str and value for value in (
+                self.tool_call_id, self.tool_execution_id, self.tool_name)):
+            raise TypeError("Tool invocation identities must be nonempty strings")
+
+
+@dataclass(frozen=True)
 class RegisteredTool:
     """A model-facing function definition and its callable implementation."""
 
@@ -66,13 +80,19 @@ class RegisteredTool:
     definition: dict[str, Any]
     _validator: Draft202012Validator = field(repr=False, compare=False)
     _implementation: Callable[..., Any] | None = field(default=None, repr=False, compare=False)
+    _invoker: Callable[[dict[str, Any], ToolInvocation], Any] | None = field(
+        default=None, repr=False, compare=False)
 
     def validate(self, arguments: dict[str, Any]) -> None:
         """Raise ``jsonschema.ValidationError`` when arguments violate the schema."""
         self._validator.validate(arguments)
 
-    def execute(self, arguments: dict[str, Any]) -> Any:
+    def execute(self, arguments: dict[str, Any], *, invocation: ToolInvocation | None = None) -> Any:
         """Call the underlying tool with keyword arguments, or return a final answer."""
+        if self._invoker is not None:
+            if not isinstance(invocation, ToolInvocation):
+                raise TypeError("A bound business tool requires its kernel invocation identity")
+            return self._invoker(arguments, invocation)
         if self._implementation is None:
             return arguments["answer"]
         return self._implementation(**arguments)
@@ -131,19 +151,11 @@ def _scalar_properties(inputs: dict[str, Any]) -> dict[str, dict[str, str]]:
     return properties
 
 
-def register_callable(
-    name: str,
-    description: str,
-    schema: dict[str, Any],
-    implementation: Callable[..., Any],
-) -> RegisteredTool:
-    """Register a callable with a strict required, scalar-only JSON object schema."""
-    if not isinstance(name, str) or not name or not isinstance(description, str):
-        raise TypeError("name must be a nonempty string and description must be a string")
+def _model_tool_schema(name: str, schema: dict[str, Any]) -> dict[str, dict[str, str]]:
+    if not isinstance(name, str) or not name:
+        raise TypeError("name must be a nonempty string")
     if name == "final_answer":
         raise ValueError("'final_answer' is reserved for the control tool")
-    if not callable(implementation):
-        raise TypeError("implementation must be callable")
     Draft202012Validator.check_schema(schema)
     if (
         schema.get("type") != "object"
@@ -156,6 +168,21 @@ def register_callable(
     properties = _scalar_properties(schema["properties"])
     if len(schema["required"]) != len(properties) or set(schema["required"]) != set(properties):
         raise ValueError("Every tool input must be required exactly once")
+    return properties
+
+
+def register_callable(
+    name: str,
+    description: str,
+    schema: dict[str, Any],
+    implementation: Callable[..., Any],
+) -> RegisteredTool:
+    """Register a callable with a strict required, scalar-only JSON object schema."""
+    if not isinstance(description, str):
+        raise TypeError("description must be a string")
+    if not callable(implementation):
+        raise TypeError("implementation must be callable")
+    properties = _model_tool_schema(name, schema)
     try:
         parameters = inspect.signature(implementation).parameters
     except (TypeError, ValueError) as exc:
@@ -168,6 +195,24 @@ def register_callable(
         if parameter.default is not inspect.Parameter.empty:
             raise ValueError(f"Input '{parameter.name}' is optional; all registered inputs must be required")
     return _registered_tool(name, description, deepcopy(schema), implementation)
+
+
+def register_bound_tool(
+    name: str,
+    description: str,
+    schema: dict[str, Any],
+    invoker: Callable[[dict[str, Any], ToolInvocation], Any],
+) -> RegisteredTool:
+    """Register a business tool whose target is resolved by an invocation-aware bridge."""
+    if not isinstance(description, str):
+        raise TypeError("description must be a string")
+    if not callable(invoker):
+        raise TypeError("invoker must be callable")
+    _model_tool_schema(name, schema)
+    return replace(
+        _registered_tool(name, description, deepcopy(schema), None),
+        _invoker=invoker,
+    )
 
 
 def final_answer_tool(*, output_schema: dict[str, Any] | None = None) -> RegisteredTool:

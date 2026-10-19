@@ -31,7 +31,7 @@ class NodeExecutionContext:
                  workflow_session_id: str, chain_run_id: str, node_run_id: str,
                  state: dict, private_states: dict, external_inputs: dict, host=None,
                  object_states: dict | None = None, type_registry=None, input_refs=None, object_accesses=None,
-                 chat_append_context=None):
+                 chat_append_context=None, operation_scope: str | None = None, tool_bridge=None):
         self.definition = definition
         self.node_binding_id, self.workflow_session_id = node_binding_id, workflow_session_id
         self.chain_run_id, self.node_run_id = chain_run_id, node_run_id
@@ -43,6 +43,8 @@ class NodeExecutionContext:
         self._input_refs = copy.deepcopy(input_refs or {})
         self._object_accesses = object_accesses
         self._chat_append_context = copy.deepcopy(chat_append_context)
+        self._operation_scope = operation_scope
+        self._tool_bridge = tool_bridge
         self.object_writes: list[dict] = []
         self.effects: list[dict] = []
         self.reads: list[dict] = []
@@ -73,6 +75,28 @@ class NodeExecutionContext:
         require(callable(self._host), "graph_host_unavailable", "Node requires a workflow host",
                 node_id=self.node_binding_id)
         return self._host(self, capability, operation, copy.deepcopy(payload))
+
+    def bound_tool_specs(self, agent_node_id: str) -> list[dict]:
+        """Read model-facing declarations prepared for one Agent in this run."""
+        require(callable(self._tool_bridge), "tool_binding_not_prepared",
+                "This invocation has no prepared tool bridge", node_id=self.node_binding_id)
+        return self._tool_bridge(self, "specs", {"agent_node_id": agent_node_id})
+
+    def invoke_bound_tool(self, *, binding_id: str, operation: str, arguments: dict,
+                          tool_call_id: str, tool_execution_id: str) -> dict:
+        """Invoke one prepared business tool under the exact kernel identity."""
+        require(callable(self._tool_bridge), "tool_binding_not_prepared",
+                "This invocation has no prepared tool bridge", node_id=self.node_binding_id)
+        return self._tool_bridge(self, "invoke", {
+            "binding_id": binding_id, "operation": operation, "arguments": arguments,
+            "tool_call_id": tool_call_id, "tool_execution_id": tool_execution_id,
+        })
+
+    def apply_accepted_object(self, object_key: str, record: dict) -> None:
+        """Replace this run's object view with the freshly re-read accepted record."""
+        require(object_key in self._object_states, "session_object_unbound",
+                "Object is not bound", node_id=self.node_binding_id)
+        self._object_states[object_key] = copy.deepcopy(record)
 
     def external_input(self, name: str) -> Any:
         self._allow("external:read")
@@ -121,7 +145,7 @@ class NodeExecutionContext:
         if not delete:
             require(self._type_registry is not None, "host_unknown_type", "Object types are unavailable")
             value = self._type_registry.validate(item["type_id"], item["schema_version"], value, scope="session")
-        default_key = self.node_run_id + ":object:" + hashlib.sha256(key.encode("utf-8")).hexdigest()
+        default_key = (self._operation_scope or self.node_run_id) + ":object:" + hashlib.sha256(key.encode("utf-8")).hexdigest()
         intent = WriteIntent(key, expected_revision, operation_key or default_key,
                              value, "delete" if delete else "put").to_dict()
         self.object_writes.append(intent)
@@ -256,7 +280,8 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
                   validate_output_references: Callable | None = None,
                   runtime_host=None, acceptance_cache=None,
                   result_recovery: Callable | None = None,
-                  chat_append_contexts: dict | None = None) -> GraphExecutionResult:
+                  chat_append_contexts: dict | None = None,
+                  tool_bridge=None) -> GraphExecutionResult:
     """Resume only from a persisted completed boundary; never retry unknown effects."""
     uuid4_string(workflow_session_id)
     uuid4_string(chain_run_id)
@@ -381,6 +406,7 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
                 object_states=objects, type_registry=registry.data_types,
                 input_refs=input_refs,
                 chat_append_context=(chat_append_contexts or {}).get(identity),
+                tool_bridge=tool_bridge,
                 object_accesses={
                     key: access["access"] for access in definition.object_accesses
                     for key in (node["config"][access["config_field"]] if access["multiple"]
