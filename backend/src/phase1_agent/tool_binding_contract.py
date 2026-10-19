@@ -9,6 +9,7 @@ can be shared by the registry and the execution host without a cycle.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -46,19 +47,19 @@ class PreparedToolSpec:
     source: tuple[dict[str, Any], ...] = ()
 
     def adapter_spec(self) -> dict[str, Any]:
-        return {
+        return deepcopy({
             "name": self.name, "operation": self.operation, "access": self.access,
             "description": self.description, "parameters": self.parameters,
             "target": {"component_id": self.target_component_id,
                        "component_version": self.target_component_version},
             "config": self.config, "binding_id": self.binding_id,
             "agent_node_id": self.agent_node_id, "object_key": self.object_key,
-        }
+        })
 
     def public(self) -> dict[str, Any]:
-        return {"binding_id": self.binding_id, "name": self.name,
-                "operation": self.operation, "description": self.description,
-                "parameters": self.parameters}
+        return deepcopy({"binding_id": self.binding_id, "name": self.name,
+                         "operation": self.operation, "description": self.description,
+                         "parameters": self.parameters})
 
 
 @dataclass(frozen=True)

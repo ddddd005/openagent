@@ -41,12 +41,13 @@ def node_output(view, owner, port="output"):
                 if item["node_binding_id"] == owner["node_binding_id"])
 
 
-def build_graph(service, *, readers=None, writers=None, object_key=KEY, with_normal=True):
+def build_graph(service, *, readers=None, writers=None, object_key=KEY, with_normal=True,
+                has_initial=True):
     document = graph(service)
     execute = next(item for item in document["nodes"] if item["component_id"] == "agents.execute")
     register = node(service.registry, "tools.variable-register", 401, component_version="2",
                     object_key=object_key, name="score", value_type="integer",
-                    has_initial=True, initial_value=0)
+                    has_initial=has_initial, initial_value=0 if has_initial else None)
     after = node(service.registry, "tools.variable-to-content", 403,
                  object_key=object_key, mode="json")
     after_output = node(service.registry, "tools.output", 404, mode="json")
@@ -182,6 +183,7 @@ def test_variable_tool_bindings_run_read_write_and_reopen(tmp_path, monkeypatch)
         assert session["objects"][KEY]["value"]["value"] == 0
         chain_id, view = _run(service, session)
         assert view["status"] == "succeeded", view["chains"]
+        assert chain_id not in service._tool_frames
         assert view["objects"][KEY]["value"]["value"] == 12
         assert view["objects"][KEY]["revision"] == 5
         assert node_output(view, parts["after"])["value"] == 12
@@ -303,6 +305,23 @@ def test_missing_target_implementation_blocks_start(tmp_path):
                           idempotency_key=str(uuid4()), inputs={"text": "blocked"})
         assert caught.value.reason_code == "tool_binding_target_unavailable"
         assert transport.calls == []
+
+
+def test_upstream_assignment_before_agent_arithmetic(tmp_path):
+    transport = VariableToolTransport([
+        ("score_add", {"value": 2}), ("score_read", {}),
+        ("final_answer", {"answer": {"text": "done"}}),
+    ])
+    with closing(_service(tmp_path / "variable-tools-upstream.sqlite", transport)) as service:
+        ModelDatabaseFixture.write(service, 1)
+        document, _ = build_graph(service, has_initial=False)
+        session = _registered(service, document)
+        assert session["objects"][KEY]["value"]["registered"] is True
+        assert session["objects"][KEY]["value"]["assigned"] is False
+        _, view = _run(service, session)
+        assert view["status"] == "succeeded", view["chains"]
+        assert view["objects"][KEY]["value"]["value"] == 7
+        assert view["objects"][KEY]["revision"] == 4
 
 
 def test_start_prepares_tool_targets_without_business_execution(tmp_path, monkeypatch):

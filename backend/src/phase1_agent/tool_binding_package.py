@@ -36,8 +36,7 @@ _DEFAULT_MEMBER = "59e405d0-debd-4d7a-aa7f-ce6445d72665"
 _UUID = {"type": "string", "pattern":
          "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"}
 _OPERATIONS = ("read", "set", "add", "subtract")
-_ALIAS = {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,57}$"}
-_SCALAR = {"string", "integer", "number", "boolean"}
+_ALIAS = {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,54}$"}
 _OPERATION_VALUE = {
     "set": "Set the variable to a new value.",
     "add": "Add to the current numeric value.",
@@ -89,8 +88,6 @@ def _bind(declaration, item):
     if any(operation in ("add", "subtract") for operation in operations):
         require(numeric, "tool_binding_operation_unavailable",
                 "Arithmetic tools require an integer or number variable")
-        require(value["assigned"], "tool_binding_operation_unavailable",
-                "Arithmetic tools require an assigned numeric variable")
     alias, object_key = declaration["alias"], declaration["object_key"]
     specs = []
     for operation in operations:

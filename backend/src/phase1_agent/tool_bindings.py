@@ -20,7 +20,7 @@ from .tool_binding_contract import (
 from .tools import _model_tool_schema
 
 
-_ALIAS_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]{0,57}$"
+_ALIAS_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]{0,54}$"
 _OPERATIONS = ("read", "set", "add", "subtract")
 
 
