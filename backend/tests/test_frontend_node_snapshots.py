@@ -6,6 +6,7 @@ from copy import deepcopy
 import pytest
 
 from phase1_agent.contract_errors import ContractValidationError
+from phase1_agent.execution_data import RunData
 from phase1_agent.graph_store import GraphRecordStore
 
 from frontend_node_test_support import create as _create, graph as _graph, owner as _owner, save as _save
@@ -24,9 +25,10 @@ def test_automatic_snapshot_is_a_real_postcommit_read_and_independent_copy(tmp_p
         reads = []
         original = service._read_frontend_snapshot
 
-        def observe(repo, *args):
-            assert not repo.store._connection.in_transaction
-            result = original(repo, *args)
+        def observe(data, *args):
+            assert isinstance(data, RunData)
+            assert not hasattr(data, "store") and not hasattr(data, "connection")
+            result = original(data, *args)
             reads.append(deepcopy(result))
             return result
 
@@ -101,10 +103,10 @@ def test_failed_frontend_node_does_not_create_snapshot_cache(tmp_path, monkeypat
         initial = _create(service, graph)
         original = service._save_effects
 
-        def fail_before_apply(repo, sid, document, event):
+        def fail_before_apply(repo, sid, document, event, **kwargs):
             if event["node_binding_id"] == frontends[0]["node_binding_id"]:
                 raise OSError("frontend append settlement interrupted")
-            return original(repo, sid, document, event)
+            return original(repo, sid, document, event, **kwargs)
 
         monkeypatch.setattr(service, "_save_effects", fail_before_apply)
         final = run(service, initial)

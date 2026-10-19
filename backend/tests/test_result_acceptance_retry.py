@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 
 from phase1_agent.contract_errors import ContractValidationError
+from phase1_agent.execution_data import ExecutionRecords
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.graph_http import dispatch_graph
 
@@ -62,8 +63,20 @@ def test_chat_acceptance_failure_reuses_response_and_exact_node_identity(tmp_pat
         assert pending["status"] == "archive_failed", pending
         assert pending["available_actions"] == ["retry_acceptance", "close"]
         prior = service.get_run(pending["workflow_session_id"], chain_id)
+        calls = {}
+
+        def track(name, method):
+            def wrapper(*args, **kwargs):
+                calls[name] = calls.get(name, 0) + 1
+                return method(*args, **kwargs)
+            return wrapper
+
+        for name in ("put_chain", "put_session"):
+            monkeypatch.setattr(ExecutionRecords, name, track(
+                name, getattr(ExecutionRecords, name)))
         final = retry(service, pending)
         assert final["status"] == "succeeded", final
+        assert calls.get("put_chain", 0) > 0 and calls.get("put_session", 0) > 0
         after = service.get_run(final["workflow_session_id"], chain_id)
         assert [run["run_id"] for run in prior["node_runs"]] == [run["run_id"] for run in after["node_runs"]]
         assert len(fixture.calls) == 1 and fixture.closes == 1

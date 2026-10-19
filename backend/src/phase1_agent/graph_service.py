@@ -13,11 +13,12 @@ from uuid import uuid4
 
 from jsonschema import Draft202012Validator
 
-from .contract_json import validate_json_value
+from .contract_json import canonical_bytes, validate_json_value
 from .configuration_data import WorkflowConfigurationData, WorkflowDataManagement
 from .configuration_service import WorkflowConfigurationService
 from .graph_records import graph_record, graph_error, require, uuid_value
 from .graph_store import GraphRecordStore
+from .run_basis import RunBasis
 from .program_variable_store import ProgramVariableStore
 from .preparation_program import validate_program_state
 from .storage import SqliteStore
@@ -161,13 +162,18 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
             # Every accepted run receives its own immutable registry.
             self.registry = registry.detached()
         self._resource_frames = {}
+        # chain id -> RunBasis.  The historical attribute name is kept because
+        # it is the existing per-chain execution map; values are now the whole
+        # bound load result, not a bare registry.
         self._execution_registries = {}
         self._lock = RLock()
-        # Configuration is management-scope: assemble it for the execution
-        # owner and for the management-only service used by definition
-        # commands and reads.
-        self._configuration_data = WorkflowConfigurationData(
-            WorkflowDataManagement(self._store))
+        # Configuration and definition evidence are management-scope data
+        # domains.  They share the data-management entry but keep separate
+        # domain ports and repositories.
+        self._data_management = WorkflowDataManagement(self._store)
+        self._configuration_data = WorkflowConfigurationData(self._data_management)
+        from .definition_data import WorkflowDefinitionData
+        self._definition_data = WorkflowDefinitionData(self._data_management)
         self.configuration_service = WorkflowConfigurationService(self)
         self._executor = (ThreadPoolExecutor(max_workers=1, thread_name_prefix="workflow-graph")
                           if execution_owner else None)
@@ -223,7 +229,50 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                 "package_retired", "Compatibility packages are no longer supported", 409)
         return self._package_loader.load(selected)
 
-    def _document_available(self, repo, document):
+    @property
+    def definition_query(self):
+        """Exact read-only definition query over the active trusted registry."""
+        from .workflow_definitions import WorkflowDefinitionCatalog
+        return WorkflowDefinitionCatalog(self.registry, getattr(self, "_package_manifests", ()))
+
+    def _capture_run_basis(self):
+        """Capture one published load result for a single invocation.
+
+        Registry, package manifests and definition query all come from the
+        same publication point.  This is intentionally transient; execution
+        paths must use this value rather than re-reading the service tables.
+        """
+        from .workflow_definitions import WorkflowDefinitionCatalog
+        with self._lock:
+            registry = self.registry.detached(frozen=True)
+            manifests = deepcopy(getattr(self, "_package_manifests", ()))
+        return RunBasis(registry, WorkflowDefinitionCatalog(registry, manifests))
+
+    def _require_run_basis(self, chain_id):
+        basis = self._execution_registries.get(chain_id)
+        require(isinstance(basis, RunBasis), "run_basis_unavailable",
+                "This invocation has no retained run basis", 409)
+        return basis
+
+    def definition_evidence(self, reference):
+        """Read one exact data-type evidence record through the definition data port."""
+        from .definition_data import require_evidence
+        from .workflow_definitions import definition_reference
+
+        reference = definition_reference("data_type", reference)
+        with self._definition_data.read() as data:
+            return require_evidence(data.type_evidence(
+                reference["scope"], reference["type_id"], reference["schema_version"]), reference)
+
+    def definition_references(self, identity, revision):
+        """Resolve definitions used by one already-persisted fixed workflow revision."""
+        require(type(revision) is int and revision >= 1, "invalid_request",
+                "Definition references require one exact fixed revision")
+        with self._data_management.read_configuration() as data:
+            document = data.fixed_document(identity, revision)
+        return self.definition_query.workflow_references(document)
+
+    def _document_available(self, document):
         if self._package_diagnostics:
             return False
         packages = {row["package_id"]: row["version"] for row in self.registry.package_lock}
@@ -250,7 +299,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
             lambda repo: callback(self._configuration_data.transaction(repo)))
 
     def node_types(self, *, protocol_version=1):
-        catalog = self.registry.catalog()
+        catalog = self.definition_query.node_catalog()
         if protocol_version == 2:
             return {"schema_version": 2, "node_types": catalog, **self.platform_capabilities()}
         require(protocol_version == 1, "invalid_request", "Unknown node catalog protocol")
@@ -279,9 +328,11 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         return self.configuration_service.list_configuration_definitions(
             include_archived=include_archived)
 
-    def _configuration_document(self, repo, identity):
+    def _configuration_document(self, repo, identity, *, registry=None, definitions=None):
         """Compatibility adapter for out-of-batch consumers holding a repo."""
-        return self._configuration_view(self._configuration_data.transaction(repo), identity)
+        return self._configuration_view(
+            self._configuration_data.transaction(repo), identity,
+            registry=registry, definitions=definitions)
 
     def _save_definition(self, repo, document, expected_revision):
         """Compatibility adapter for legacy definition writes inside a repo transaction."""
@@ -304,20 +355,21 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
             expected_edit_sequence=expected_edit_sequence, idempotency_key=idempotency_key,
             confirm_derivation=confirm_derivation)
 
-    def _definition(self, node):
+    def _definition(self, node, *, registry=None):
+        registry = self.registry if registry is None else registry
         try:
-            entry = self.registry.get(node["component_id"], node["component_version"])
+            entry = registry.get(node["component_id"], node["component_version"])
             return entry.definition if entry is not None else None
         except (KeyError, ValueError, AttributeError):
             return None
 
-    def _check_implementations(self, repo, document, plan=None):
+    def _check_implementations(self, document, plan=None, *, registry):
         nodes = {node["node_binding_id"]: node for node in document["nodes"]}
         for identity in (plan.ordered_node_ids if plan is not None else ()):
             node = nodes[identity]
-            entry = self.registry.get(node["component_id"], node["component_version"])
+            entry = registry.get(node["component_id"], node["component_version"])
             require(entry is not None and (entry.executor is not None or entry.executor_ref is not None
-                    and self.registry.executors.get(entry.executor_ref) is not None),
+                    and registry.executors.get(entry.executor_ref) is not None),
                     "graph_missing_node_type", "Node implementation is missing or unavailable", 409,
                     node_id=identity)
 
@@ -333,12 +385,35 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         return {row["node_binding_id"]: deepcopy(row["private_data"]["payload"])
                 for row in repo.rows("node_session", workflow_session_id=sid)}
 
-    def _save_private(self, repo, sid, document, private_states):
+    def _save_private(self, target, sid, document, private_states, *, registry=None):
+        if hasattr(target, "records"):
+            data = target
+            registry = data.registry if registry is None else registry
+            for node_id, value in private_states.items():
+                require(node_id in {node["node_binding_id"] for node in document["nodes"]},
+                        "private_state_owner_mismatch", "Unknown private state owner", 409, node_id=node_id)
+                node = next(node for node in document["nodes"] if node["node_binding_id"] == node_id)
+                definition = self._definition(node, registry=registry)
+                require(definition is not None and definition.private_state_schema is not None,
+                        "private_state_not_declared", "Private state is not declared", 409, node_id=node_id)
+                require(next(Draft202012Validator(definition.private_state_schema).iter_errors(value), None) is None,
+                        "private_state_schema_mismatch", "Private state does not match schema", 409, node_id=node_id)
+                existing = data.records.private_state(sid, node_id)
+                payload = {"owner_component_id": node["component_id"], "schema_version": 1, "payload": value}
+                if existing is not None and canonical_bytes(existing["private_data"]) == canonical_bytes(payload):
+                    continue
+                data.records.put_private_state(graph_record(
+                    "node_session", workflow_session_id=sid, node_binding_id=node_id,
+                    data_version=existing["data_version"] + 1 if existing else 1,
+                    private_data=payload))
+            return
+        repo = target
+        registry = self.registry if registry is None else registry
         nodes = {node["node_binding_id"]: node for node in document["nodes"]}
         for node_id, value in private_states.items():
             require(node_id in nodes, "private_state_owner_mismatch", "Unknown private state owner", 409, node_id=node_id)
             node = nodes[node_id]
-            definition = self._definition(node)
+            definition = self._definition(node, registry=registry)
             require(definition is not None and definition.private_state_schema is not None,
                     "private_state_not_declared", "Private state is not declared", 409, node_id=node_id)
             require(next(Draft202012Validator(definition.private_state_schema).iter_errors(value), None) is None,
@@ -363,7 +438,15 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         own = [row["chain_run_id"] for row in repo.rows("chain_run", workflow_session_id=sid)]
         return list(dict.fromkeys([*snapshot["history_refs"], *own]))
 
-    def _commit(self, repo, session, *, source, history=None):
+    def _commit(self, target, session, *, source, history=None, registry=None):
+        if hasattr(target, "settlement"):
+            snapshot, _ = target.settlement.commit(
+                session, source=source, history=history)
+            self._save_manifest(
+                target, "state_snapshot", snapshot["state_snapshot_id"], session,
+                history=snapshot["history_refs"])
+            return
+        repo = target
         sid = session["workflow_session_id"]
         old = next((row for row in repo.rows("workflow_ref") if row["workflow_session_id"] == sid), None)
         state = ProgramVariableStore(repo.store).current(sid)
@@ -382,7 +465,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         variables.bind("state_snapshot", snapshot["state_snapshot_id"], sid, state["revision"])
         variables.bind("workflow_commit", commit["commit_id"], sid, state["revision"])
         self._save_manifest(repo, "state_snapshot", snapshot["state_snapshot_id"], session,
-                            history=snapshot["history_refs"])
+                            history=snapshot["history_refs"], registry=registry)
 
     def _initialize_session(self, repo, document):
         self._require_definition_active(repo, document["workflow_definition_id"])
@@ -400,7 +483,9 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
     def _new_session(self, repo, document):
         session = self._initialize_session(repo, document)
         self._commit(repo, session, source={"kind": "session_seed", "source": None}, history=[])
-        return self._view(repo, session["workflow_session_id"])
+        return self._view(
+            self._data_management.execution_read(repo, registry=self.registry),
+            session["workflow_session_id"])
 
     def create_session(self, workflow_definition_id, definition_revision, *, idempotency_key):
         def change(repo):
@@ -435,13 +520,16 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
 
     def get_session(self, sid):
         with self._lock, closing(self._store()) as store:
-            return self._view(GraphRecordStore(store), sid)
+            data = self._data_management.execution_read(
+                GraphRecordStore(store), registry=self.registry)
+            return self._view(data, sid)
 
     def list_sessions(self, workflow_definition_id):
         with self._lock, closing(self._store()) as store:
-            repo = GraphRecordStore(store)
-            return [self._view(repo, row["workflow_session_id"])
-                    for row in repo.rows("workflow_session", workflow_definition_id=workflow_definition_id)]
+            data = self._data_management.execution_read(
+                GraphRecordStore(store), registry=self.registry)
+            return [self._view(data, row["workflow_session_id"])
+                    for row in data.records.sessions(workflow_definition_id)]
 
     def get_run(self, sid, chain_id):
         with self._lock, closing(self._store()) as store:
@@ -509,25 +597,26 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                     connection.execute("ROLLBACK")
                 raise
 
-    def _view(self, repo, sid):
-        session = repo.get("workflow_session", workflow_session_id=sid)
-        document = self._document(repo, session["workflow_definition_id"], session["definition_revision"])
-        available = self._document_available(repo, document)
-        chains = repo.rows("chain_run", workflow_session_id=sid)
-        all_chains = {identity: repo.get("chain_run", chain_run_id=identity)
-                      for identity in self._history(repo, sid)}
-        selected = self._selected_chain(repo, sid)
-        runs = repo.rows("node_run", chain_run_id=selected["chain_run_id"]) if selected else []
+    def _view(self, data, sid):
+        session = data.records.session(sid)
+        document = data.configuration.fixed_document(
+            session["workflow_definition_id"], session["definition_revision"])
+        available = self._document_available(document)
+        chains = data.records.chains(sid)
+        history_refs = data.records.history(sid)
+        all_chains = {identity: data.records.chain(identity)
+                      for identity in history_refs}
+        selected = self._selected_chain(data.records, sid)
+        runs = data.records.node_runs(selected["chain_run_id"]) if selected else []
         if selected and (selected["workflow_session_id"] != sid
                          or (selected["workflow_definition_id"], selected["definition_revision"])
                             != (session["workflow_definition_id"], session["definition_revision"])):
-            from .graph_history import history_node_mapping
-            node_mapping = history_node_mapping(repo, sid, selected)
+            node_mapping = data.records.history_node_mapping(sid, selected)
         else:
             node_mapping = {node["node_binding_id"]: node["node_binding_id"] for node in document["nodes"]}
-        outputs = repo.rows("workflow_output", workflow_session_id=sid)
+        outputs = data.records.outputs(sid)
         selected_outputs = {row["output_id"]: row
-                            for row in repo.rows("workflow_output", chain_run_id=selected["chain_run_id"])} if selected else {}
+                            for row in data.records.outputs_for_chain(selected["chain_run_id"])} if selected else {}
         active = next((row for row in chains if row["chain_run_id"] == session["active_chain_run_id"]), None)
         status = active["status"] if active else selected["status"] if selected else "idle"
         actions = ["pause"] if status in ("running", "prepared") else (
@@ -537,7 +626,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                 and active["node_run_ids"][active["next_node_index"]] in self._acceptance_candidates.get(
                     active["chain_run_id"], {}) else ["retry_archive", "close"]) if status == "archive_failed" else
             ["close"] if active and status in ("failed", "recovery_unavailable", "budget_exhausted") else [])
-        retry_permission = (self._failed_retry_permission(repo, active)
+        retry_permission = (self._failed_retry_permission(data, active)
                             if available and active and status == "failed" else None)
         if retry_permission and retry_permission["allowed"]:
             actions.insert(0, "retry_failed_node")
@@ -558,53 +647,78 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                             for port, oid in refs.items()}})
             if retry_permission and run and run["run_id"] == retry_permission["node_run_id"]:
                 nodes[-1]["diagnostic"] = {**(nodes[-1]["diagnostic"] or {}), "failure_retry": retry_permission}
-        data = ProgramVariableStore(repo.store).current(sid)
-        head = self._head(repo, sid)
-        archived = (self._archived(repo, "session", sid)
-                    or self._archived(repo, "definition", session["workflow_definition_id"]))
+        data_state = data.state.variables(sid)
+        head = data.records.head(sid)
+        archived = (data.records.archived("session", sid)
+                    or data.records.archived("definition", session["workflow_definition_id"]))
         available_actions = actions if available or active else []
-        return {**session, **self._session_metadata(repo, sid),
-            "data_revision": data["revision"], "head_revision": head["revision"],
+        return {**session, **data.records.session_metadata(sid),
+            "data_revision": data_state["revision"], "head_revision": head["revision"],
             "head_commit_id": head["head_commit_id"], "status": status,
             "selected_chain_run_id": selected["chain_run_id"] if selected else None,
             "can_submit": active is None and available and not archived,
             "available_actions": available_actions if not archived else [],
             "readonly": not available or archived, "archived": archived,
             "nodes": nodes, "chains": chains, "outputs": outputs,
-            "data": data, "private_states": self._private(repo, sid), "messages": [],
-            "objects": self._objects(repo).current(sid),
-            "history_refs": self._history(repo, sid),
-            "inherited_history": [all_chains[identity] for identity in self._history(repo, sid)
+            "data": data_state, "private_states": data.records.private_states(sid), "messages": [],
+            "objects": data.state.objects(sid),
+            "history_refs": history_refs,
+            "inherited_history": [all_chains[identity] for identity in history_refs
                                   if identity in all_chains and all_chains[identity]["workflow_session_id"] != sid]}
 
-    def _stable(self, repo, sid, expected_revision, expected_data_revision=None, expected_head_revision=None):
-        session = repo.get("workflow_session", workflow_session_id=sid)
-        self._require_session_active(repo, session)
+    def _stable(self, source, sid, expected_revision, expected_data_revision=None,
+                expected_head_revision=None):
+        if hasattr(source, "records"):
+            data = source
+            session = data.records.session(sid)
+            self._require_session_active_in(data.configuration, session)
+            require(session["revision"] == _revision(expected_revision),
+                    "stale_revision", "Session changed", 409)
+            require(session["active_chain_run_id"] is None,
+                    "active_execution_not_copyable", "Session execution is not settled", 409)
+            if expected_data_revision is not None:
+                require(data.state.variables(sid)["revision"]
+                        == _revision(expected_data_revision, zero=True),
+                        "stale_data_revision", "Session data changed", 409)
+            if expected_head_revision is not None:
+                require(data.records.head(sid)["revision"]
+                        == _revision(expected_head_revision),
+                        "stale_head_revision", "Session Head changed", 409)
+            return session
+        session = source.get("workflow_session", workflow_session_id=sid)
+        self._require_session_active(source, session)
         require(session["revision"] == _revision(expected_revision), "stale_revision", "Session changed", 409)
         require(session["active_chain_run_id"] is None, "active_execution_not_copyable", "Session execution is not settled", 409)
         if expected_data_revision is not None:
-            require(ProgramVariableStore(repo.store).current(sid)["revision"] == _revision(expected_data_revision, zero=True),
+            require(ProgramVariableStore(source.store).current(sid)["revision"] == _revision(expected_data_revision, zero=True),
                     "stale_data_revision", "Session data changed", 409)
         if expected_head_revision is not None:
-            require(self._head(repo, sid)["revision"] == _revision(expected_head_revision), "stale_head_revision", "Session Head changed", 409)
+            require(self._head(source, sid)["revision"] == _revision(expected_head_revision), "stale_head_revision", "Session Head changed", 409)
         return session
 
     def start(self, sid, *, expected_revision, idempotency_key, inputs=None):
         self._require_execution_owner()
         request = {"session": sid, "expected_revision": expected_revision, "inputs": inputs if inputs is not None else {}}
         return self._start_run(sid, idempotency_key, request,
-                               lambda repo: self._prepare_run(repo, sid, expected_revision, request["inputs"]))
+                               lambda data, basis: self._prepare_run(
+                                   data, sid, expected_revision, request["inputs"], basis=basis))
 
-    def _prepare_run(self, repo, sid, expected_revision, inputs, *, event=None,
-                     input_overrides=None, chat_request=None):
-        session = self._stable(repo, sid, expected_revision)
+    def _prepare_run(self, data, sid, expected_revision, inputs, *, event=None,
+                     input_overrides=None, chat_request=None, basis):
+        registry = data.registry
+        definitions = basis.definitions
+        session = self._stable(data, sid, expected_revision)
         require(not self._package_diagnostics, "package_missing_dependency",
                 "Restore the saved packages before running workflows", 409)
-        document = self._document(repo, session["workflow_definition_id"], session["definition_revision"])
-        current_configuration = repo.current_configuration(session["workflow_definition_id"])
+        document = data.configuration.fixed_document(
+            session["workflow_definition_id"], session["definition_revision"])
+        current_configuration = data.configuration.current_configuration(
+            session["workflow_definition_id"])
         if (current_configuration is not None
                 and current_configuration["fixed_definition_revision"] == session["definition_revision"]):
-            document = self._configuration_document(repo, session["workflow_definition_id"])
+            document = self._configuration_view(
+                data.configuration, session["workflow_definition_id"],
+                registry=registry, definitions=definitions)
         self._chat_input_overrides(document, {} if input_overrides is None else input_overrides)
         input_error = "graph_event_payload_invalid" if event else "invalid_request"
         require(type(inputs) is dict, input_error, "External inputs must be named")
@@ -613,29 +727,27 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         if not event:
             validate_json_value(inputs)
         from .graph_contracts import GraphCompiler
-        run_registry = self.registry.detached(frozen=True)
-        compiler = GraphCompiler(run_registry)
+        compiler = GraphCompiler(registry)
         plan = (compiler.compile_event(document, event["event_id"], event["schema_version"], external_inputs=inputs)
                 if event else compiler.compile(document, external_inputs=inputs))
-        from .type_contract_store import TypeContractStore
-        TypeContractStore(repo.store).check_registry(self.registry.data_types)
-        self._check_implementations(repo, document, plan)
-        frozen_resources = self._preflight_capabilities(repo, sid, plan)
+        data.type_evidence.check_registry(registry.data_types)
+        self._check_implementations(document, plan, registry=registry)
+        frozen_resources = self._preflight_capabilities(data.records, sid, plan, registry=registry)
         chain_id = _uid()
         runtime_resources = frozen_resources.pop("current_global_resources", {})
         from .content_configuration import CONTENT_RESOURCE_TYPES
         self._resource_frames[chain_id] = {
             node_id: [record for record in records if record["type_id"] not in CONTENT_RESOURCE_TYPES]
             for node_id, records in runtime_resources.items()}
-        self._prepare_public_capabilities(sid, chain_id, plan, runtime_resources)
-        self._execution_registries[chain_id] = run_registry
+        self._prepare_public_capabilities(sid, chain_id, plan, runtime_resources, registry=registry)
+        self._execution_registries[chain_id] = basis
         nodes = {node["node_binding_id"]: node for node in document["nodes"]}
         if not event:
             self._prepare_chat_run(
-                repo, session, document, plan, chain_id, inputs, chat_request=chat_request)
+                data, session, document, plan, chain_id, inputs, chat_request=chat_request)
         run_ids = [_uid() for _ in plan.ordered_node_ids]
         for node_id, run_id in zip(plan.ordered_node_ids, run_ids):
-            repo.put("node_run", graph_record("node_run", profile="node", run_id=run_id,
+            data.records.put_node_run(graph_record("node_run", profile="node", run_id=run_id,
                 workflow_session_id=sid, node_binding_id=node_id, chain_run_id=chain_id,
                 status="prepared", revision=1, input_refs={}, input_values={}, output_refs={}, reads=[], effects=[],
                 config=nodes[node_id]["config"], diagnostic=None,
@@ -646,25 +758,28 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
             node_run_ids=run_ids, completed_nodes=[], next_node_index=0,
             inputs={**inputs, "_workflow_frozen_resources": frozen_resources}, outputs={}, diagnostic=None,
             execution_kind="event" if event else "round", event=event,
-            base_commit_id=self._head(repo, sid)["head_commit_id"])
-        repo.put("chain_run", chain)
+            base_commit_id=data.records.head(sid)["head_commit_id"])
+        data.records.put_chain(chain)
         session["revision"] += 1
         session["active_chain_run_id"] = chain_id
-        repo.put("workflow_session", session)
-        self._save_manifest(repo, "chain_start", chain_id, session, status="prepared")
-        return self._view(repo, sid)
+        data.records.put_session(session)
+        self._save_manifest(data, "chain_start", chain_id, session, status="prepared")
+        return self._view(data, sid)
 
     def _start_run(self, sid, idempotency_key, request, prepare, *, operation="graph.run.start"):
         self._require_execution_owner()
         accepted = []
 
-        def change(repo):
-            response = prepare(repo)
-            accepted.append(response["active_chain_run_id"])
-            return response
-
         with self._lock:
+            basis = self._capture_run_basis()
             previous_frames = set(self._resource_frames)
+
+            def change(repo):
+                data = self._data_management.execution_transaction(repo, basis=basis)
+                response = prepare(data, basis)
+                accepted.append(response["active_chain_run_id"])
+                return response
+
             try:
                 response = self._change(operation, idempotency_key, request, change)
             except BaseException:
@@ -679,37 +794,41 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         chain_id = accepted[0]
         with self._lock:
             if chain_id not in self._futures:
+                basis = self._require_run_basis(chain_id)
                 with closing(self._store()) as store:
-                    chain = GraphRecordStore(store).get("chain_run", chain_run_id=chain_id)
+                    data = self._data_management.execution_read(
+                        GraphRecordStore(store), registry=basis.registry)
+                    chain = data.records.chain(chain_id)
                 if chain["status"] == "prepared":
                     self._futures[chain_id] = self._executor.submit(self._execute, sid, chain_id)
         return response
 
-    def _save_effects(self, repo, sid, document, event):
-        variables = ProgramVariableStore(repo.store)
-        current = variables.current(sid)
+    def _save_effects(self, data, sid, document, event):
+        current = data.state.variables(sid)
         state = validate_program_state(event["state"])
         shared_effect = any(effect["kind"] in ("variable_register", "variable_assign", "shared_write")
                             for effect in event["effects"])
         if not shared_effect:
             event["state"] = current
-        elif not repo.equal({key: value for key, value in current.items() if key != "revision"},
-                          {key: value for key, value in state.items() if key != "revision"}):
+        elif not canonical_bytes({key: value for key, value in current.items() if key != "revision"}) \
+                == canonical_bytes({key: value for key, value in state.items() if key != "revision"}):
             require(current["revision"] == state["revision"], "stale_data_revision", "Concurrent data update conflicts with node effect", 409)
-            saved = variables.write_in_transaction(sid, state, expected_revision=current["revision"],
+            saved = data.state.write_variables(
+                sid, state, expected_revision=current["revision"],
                 key="graph-node-effect:" + event["node_run_id"],
                 request={"run_id": event["node_run_id"], "state": state})["state"]
             event["state"] = saved
         else:
             event["state"] = current
-        self._save_private(repo, sid, document, event["private_states"])
-        return self._objects(repo).apply(sid, node_id=event["node_binding_id"],
-                                        writes=event.get("object_writes", []),
-                                        write_evidence=event.get("write_evidence"))
+        self._save_private(data, sid, document, event["private_states"])
+        return data.state.apply_objects(
+            sid, node_id=event["node_binding_id"],
+            writes=event.get("object_writes", []),
+            write_evidence=event.get("write_evidence"))
 
-    def _settle_node_result(self, repo, sid, chain_id, document, event, run):
+    def _settle_node_result(self, data, sid, chain_id, document, event, run):
         """Stage exact artifacts, writes and receipt-derived outputs in one transaction."""
-        registry = self._execution_registries.get(chain_id, self.registry)
+        registry = data.registry
         node = next(item for item in document["nodes"] if item["node_binding_id"] == run["node_binding_id"])
         entry = registry.get(node["component_id"], node["component_version"])
         ports = {port.port_id: port for port in entry.definition.ports(node["config"])[1]}
@@ -740,16 +859,17 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         def save_outputs(values):
             for port, payload in values.items():
                 checked = registry.validate_content(payload, ports[port].data_type, ports[port].data_schema_version)
-                repo.put("workflow_output", graph_record("workflow_output", output_id=refs[port],
-                    workflow_session_id=sid, chain_run_id=chain_id, run_id=run["run_id"],
+                data.records.put_output(graph_record(
+                    "workflow_output", output_id=refs[port], workflow_session_id=sid,
+                    chain_run_id=chain_id, run_id=run["run_id"],
                     node_binding_id=run["node_binding_id"], port_id=port, payload=checked))
 
         # Only this transaction can see the provisional producer/artifacts.
         # Generic object validators resolve them through their ordinary
         # accepted-producer checks; a rollback removes all provisional rows.
         save_outputs(outputs)
-        repo.put("node_run", run)
-        receipts = self._save_effects(repo, sid, document, event)
+        data.records.put_node_run(run)
+        receipts = self._save_effects(data, sid, document, event)
         if finalize is not None:
             outputs = finalize(deepcopy(outputs), deepcopy(refs), deepcopy(receipts))
         require(type(outputs) is dict and set(outputs) <= set(ports)
@@ -768,19 +888,23 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         event["outputs"] = deepcopy(outputs)
 
     def _node_event(self, sid, chain_id, event):
+        basis = self._require_run_basis(chain_id)
         with self._lock, closing(self._store()) as store:
-            previous_revision = GraphRecordStore(store).get("node_run", run_id=event["node_run_id"])["revision"]
-        def change(repo):
-            chain = repo.get("chain_run", chain_run_id=chain_id)
-            session = repo.get("workflow_session", workflow_session_id=sid)
+            data = self._data_management.execution_read(
+                GraphRecordStore(store), registry=basis.registry)
+            previous_revision = data.records.node_run(event["node_run_id"])["revision"]
+        def change(data):
+            chain = data.records.chain(chain_id)
+            session = data.records.session(sid)
             require(session["active_chain_run_id"] == chain_id and chain["status"] == "running",
                     "execution_owner_changed", "Execution callback owner is no longer active", 409)
-            run = repo.get("node_run", run_id=event["node_run_id"])
+            run = data.records.node_run(event["node_run_id"])
             require(run["node_binding_id"] == event["node_binding_id"] and run["chain_run_id"] == chain_id,
                     "execution_owner_changed", "Node callback owner differs", 409)
             run["status"] = event["event"]
             run["revision"] += 1
-            document = self._document(repo, chain["workflow_definition_id"], chain["definition_revision"])
+            document = data.configuration.fixed_document(
+                chain["workflow_definition_id"], chain["definition_revision"])
             run["input_values"] = ({} if run.get("input_storage") == "references"
                                    else deepcopy(event["inputs"]))
             run["input_refs"] = {}
@@ -824,25 +948,27 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
             run["reads"] = deepcopy(event["reads"])
             run["effects"] = deepcopy(event["effects"])
             if event["event"] == "running":
-                event["state"] = ProgramVariableStore(repo.store).current(sid)
+                event["state"] = data.state.variables(sid)
             elif event["event"] == "succeeded":
-                self._settle_node_result(repo, sid, chain_id, document, event, run)
+                self._settle_node_result(data, sid, chain_id, document, event, run)
             else:
-                event["state"] = ProgramVariableStore(repo.store).current(sid)
+                event["state"] = data.state.variables(sid)
             if event["event"] == "succeeded":
                 chain["outputs"][run["node_binding_id"]] = deepcopy(run["output_refs"])
                 chain["completed_nodes"].append(run["node_binding_id"])
                 chain["next_node_index"] += 1
                 chain["revision"] += 1
-                repo.put("chain_run", chain)
-            repo.put("node_run", run)
+                data.records.put_chain(chain)
+            data.records.put_node_run(run)
             session["revision"] += 1
-            repo.put("workflow_session", session)
-            return {"state": event["state"], "object_states": self._objects(repo).current(sid),
+            data.records.put_session(session)
+            return {"state": event["state"], "object_states": data.state.objects(sid),
                     "output_refs": run["output_refs"], "outputs": event["outputs"]}
         response = self._change("graph.node." + event["event"], event["node_run_id"] + ":" + event["event"] + ":" + str(previous_revision),
             {"session": sid, "chain": chain_id,
-             "event": {key: value for key, value in event.items() if key != "settlement_context"}}, change)
+             "event": {key: value for key, value in event.items() if key != "settlement_context"}},
+            lambda repo: change(self._data_management.execution_transaction(
+                repo, basis=self._require_run_basis(chain_id))))
         event["state"] = response["state"]
         event["object_states"] = response["object_states"]
         event["output_refs"] = response["output_refs"]
@@ -880,11 +1006,13 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                 "Multiple declared services retain results; node-level recovery is unavailable", 409)
         return (lambda: candidates[0].recover_acceptance(context)) if candidates else None
 
-    def _completed_result_matches(self, repo, sid, chain, candidate):
+    def _completed_result_matches(self, target, sid, chain, candidate, *, registry):
         if candidate is None:
             return False
+        data = target if hasattr(target, "records") else self._data_management.execution_read(
+            target, registry=registry)
         result = candidate["result"]
-        session = repo.get("workflow_session", workflow_session_id=sid)
+        session = data.records.session(sid)
         return (result.status == "succeeded" and result.diagnostic is None
                 and candidate["definition"] == (chain["workflow_definition_id"], chain["definition_revision"])
                 and candidate["definition"] == (session["workflow_definition_id"], session["definition_revision"])
@@ -895,45 +1023,37 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                 and [run["node_binding_id"] for run in result.node_runs] == chain["ordered_nodes"]
                 and [run["node_run_id"] for run in result.node_runs] == chain["node_run_ids"]
                 and all(run["event"] == "succeeded" for run in result.node_runs)
-                and all(repo.get("node_run", run_id=identity)["status"] == "succeeded"
-                        and repo.get("node_run", run_id=identity)["output_refs"] == chain["outputs"].get(node_id)
+                and all(data.records.node_run(identity)["status"] == "succeeded"
+                        and data.records.node_run(identity)["output_refs"] == chain["outputs"].get(node_id)
                         for node_id, identity in zip(chain["ordered_nodes"], chain["node_run_ids"]))
                 and candidate["basis"] == {
-                    "state": ProgramVariableStore(repo.store).current(sid),
-                    "private": self._private(repo, sid), "objects": self._objects(repo).current(sid)})
+                    "state": data.state.variables(sid),
+                    "private": data.records.private_states(sid),
+                    "objects": data.state.objects(sid)})
 
-    def _append_success_checkpoint(self, repo, session, registry, *, checkpoint_id=None):
-        from .checkpoint_collection import collect_checkpoint_state
-        from .checkpoint_repository import CheckpointRepository
+    def _append_success_checkpoint(self, data, session, *, checkpoint_id=None):
+        from .checkpoint_collection import collect_checkpoint_state_data
         from .runtime_checkpoints import CHECKPOINT_SCHEMA_VERSION, make_diff
 
         workflow_id = session["workflow_definition_id"]
         session_id = session["workflow_session_id"]
         definition_revision = session["definition_revision"]
-        checkpoints = CheckpointRepository(
-            repo.store._connection,
-            workflow_definition_id=workflow_id,
-            workflow_session_id=session_id,
-            fixed_definition_revision=definition_revision,
-        )
-        state = collect_checkpoint_state(
-            repo, workflow_id, definition_revision, session_id, types=registry.data_types,
-            registry=registry,
-        )
-        previous = checkpoints.latest()
+        document = data.configuration.fixed_document(workflow_id, definition_revision)
+        state = collect_checkpoint_state_data(data, session_id, document)
+        previous = data.settlement.latest_checkpoint(session)
         if previous is None:
             parent_id = None
             state_storage = {"mode": "full", "state": state}
         else:
-            prefix = checkpoints.prefix(previous["checkpoint_id"])
-            parent_state = checkpoints.materialize(previous["checkpoint_id"])
+            prefix = data.settlement.checkpoint_prefix(session, previous["checkpoint_id"])
+            parent_state = data.settlement.materialize_checkpoint(session, previous["checkpoint_id"])
             parent_id = previous["checkpoint_id"]
             state_storage = {
                 "mode": "diff",
                 "base_checkpoint_id": prefix[0]["checkpoint_id"],
                 **make_diff(parent_state, state),
             }
-        checkpoints.insert({
+        data.settlement.insert_checkpoint(session, {
             "schema_version": CHECKPOINT_SCHEMA_VERSION,
             "checkpoint_id": checkpoint_id or _uid(),
             "workflow_definition_id": workflow_id,
@@ -942,52 +1062,66 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
             "parent_checkpoint_id": parent_id,
             "state_storage": state_storage,
         })
-        repo.store._inject("after_checkpoint_write")
+        data.settlement.inject_checkpoint_write()
 
     def _execute(self, sid, chain_id):
         from .graph_contracts import GraphCompiler
         from .graph_execution import execute_graph
         run_ids = {}
+        registry = None
         try:
-            def begin(repo):
-                chain = repo.get("chain_run", chain_run_id=chain_id)
+            def begin(data):
+                chain = data.records.chain(chain_id)
                 require(chain["status"] in ("prepared", "paused", "archive_failed"), "invalid_state", "Execution cannot start", 409)
                 chain["status"] = "running"
                 chain["revision"] += 1
-                repo.put("chain_run", chain)
+                data.records.put_chain(chain)
                 return chain
-            with self._lock, closing(self._store()) as store:
-                existing = GraphRecordStore(store).get("chain_run", chain_run_id=chain_id)
-            chain = self._change("graph.run.begin", chain_id + ":begin:" + str(existing["revision"]),
-                                 {"chain": chain_id, "revision": existing["revision"]}, begin)
+            with self._lock:
+                basis = self._require_run_basis(chain_id)
+                with closing(self._store()) as store:
+                    data = self._data_management.execution_read(
+                        GraphRecordStore(store), registry=basis.registry)
+                    existing = data.records.chain(chain_id)
+            chain = self._change(
+                "graph.run.begin", chain_id + ":begin:" + str(existing["revision"]),
+                {"chain": chain_id, "revision": existing["revision"]},
+                lambda repo: begin(self._data_management.execution_transaction(
+                    repo, basis=basis)))
+            registry = basis.registry
             with self._lock:
                 self._resuming.discard(chain_id)
             with self._lock, closing(self._store()) as store:
                 store._connection.execute("BEGIN")
-                repo = GraphRecordStore(store)
-                document = self._document(repo, chain["workflow_definition_id"], chain["definition_revision"])
+                data = self._data_management.execution_read(
+                    GraphRecordStore(store), registry=basis.registry)
+                document = data.configuration.fixed_document(
+                    chain["workflow_definition_id"], chain["definition_revision"])
                 planned_runs = dict(zip(chain["ordered_nodes"], chain["node_run_ids"]))
                 for node in document["nodes"]:
                     run_id = planned_runs.get(node["node_binding_id"])
                     if run_id is not None:
-                        node["config"] = repo.get("node_run", run_id=run_id)["config"]
-                state = ProgramVariableStore(store).current(sid)
-                private = self._private(repo, sid)
-                objects = self._objects(repo).current(sid)
-                output_records = {row["output_id"]: row for row in repo.rows("workflow_output")}
+                        node["config"] = data.records.node_run(run_id)["config"]
+                state = data.state.variables(sid)
+                private = data.records.private_states(sid)
+                objects = data.state.objects(sid)
+                output_records = {row["output_id"]: row for row in data.records.all_outputs()}
                 outputs = {node_id: {port: output_records[oid]["payload"] for port, oid in refs.items()}
                            for node_id, refs in chain["outputs"].items()}
                 completed_events = [{"event": "succeeded", "node_binding_id": node_id,
                                      "node_run_id": planned_runs[node_id]}
                                     for node_id in chain["completed_nodes"]]
-                chat_contexts = self._chat_execution_contexts(repo, sid, chain_id, document)
-            registry = self._execution_registries.get(chain_id, self.registry)
+                chat_contexts = self._chat_execution_contexts(
+                    data, sid, chain_id, document)
             run_ids = dict(zip(chain["ordered_nodes"], chain["node_run_ids"]))
             retained = self._acceptance_candidates.setdefault(chain_id, {}).get("completed_execution")
             if retained is not None:
                 with self._lock, closing(self._store()) as store:
-                    repo = GraphRecordStore(store)
-                    require(self._completed_result_matches(repo, sid, repo.get("chain_run", chain_run_id=chain_id), retained),
+                    data = self._data_management.execution_read(
+                        GraphRecordStore(store), registry=registry)
+                    require(self._completed_result_matches(
+                                data, sid, data.records.chain(chain_id), retained,
+                                registry=registry),
                             "graph_acceptance_basis_changed", "Completed result state basis changed", 409)
                 result = retained["result"]
             else:
@@ -1002,33 +1136,38 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                     outputs=outputs, node_runs=completed_events, start_index=chain["next_node_index"],
                     should_pause=lambda: chain_id in self._pauses or self._closed,
                     on_node=lambda event: self._node_event(sid, chain_id, event), host=self._host_call,
-                    validate_output_references=self._validate_runtime_references,
+                    validate_output_references=lambda context, references:
+                        self._validate_runtime_references(context, references, registry=registry),
                     runtime_host=self._host_for_chain(chain_id, registry),
                     acceptance_cache=self._acceptance_candidates[chain_id],
                     result_recovery=self._retained_result_recovery,
                     chat_append_contexts=chat_contexts)
                 if result.status == "succeeded":
                     with self._lock, closing(self._store()) as store:
-                        repo = GraphRecordStore(store)
+                        data = self._data_management.execution_read(
+                            GraphRecordStore(store), registry=registry)
                         retained = {"result": deepcopy(result),
                             "definition": (chain["workflow_definition_id"], chain["definition_revision"]),
-                            "basis": {"state": ProgramVariableStore(store).current(sid),
-                                      "private": self._private(repo, sid), "objects": self._objects(repo).current(sid)},
+                            "basis": {"state": data.state.variables(sid),
+                                      "private": data.records.private_states(sid),
+                                      "objects": data.state.objects(sid)},
                             "finish_key": chain_id + ":finish:" + str(chain["revision"])}
-                        require(self._completed_result_matches(repo, sid, repo.get("chain_run", chain_run_id=chain_id), retained),
+                        require(self._completed_result_matches(
+                                    data, sid, data.records.chain(chain_id), retained,
+                                    registry=registry),
                                 "storage_contract_violation", "Completed result differs from accepted execution", 500)
                         self._acceptance_candidates[chain_id]["completed_execution"] = retained
-            def finish(repo):
-                current = repo.get("chain_run", chain_run_id=chain_id)
-                session = repo.get("workflow_session", workflow_session_id=sid)
+            def finish(data):
+                current = data.records.chain(chain_id)
+                session = data.records.session(sid)
                 if result.status == "succeeded":
-                    require(self._completed_result_matches(repo, sid, current, retained),
+                    require(self._completed_result_matches(data, sid, current, retained, registry=registry),
                             "graph_acceptance_basis_changed", "Completed result state basis changed", 409)
                 current["status"] = result.status
                 current["diagnostic"] = result.diagnostic
                 if result.status == "failed":
                     try:
-                        permission = self._capture_failed_retry(repo, current)
+                        permission = self._capture_failed_retry(data, current)
                     except Exception as error:
                         permission = {"allowed": False,
                                       "reason_code": getattr(error, "reason_code", "failed_retry_unavailable"),
@@ -1036,22 +1175,24 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                                       "classification": None}
                     current["diagnostic"] = {**(current["diagnostic"] or {}), "failure_retry": permission}
                 current["revision"] += 1
-                repo.put("chain_run", current)
+                data.records.put_chain(current)
                 session["revision"] += 1
                 if result.status == "succeeded":
                     session["active_chain_run_id"] = None
-                repo.put("workflow_session", session)
+                data.records.put_session(session)
                 if result.status == "succeeded" and current.get("execution_kind", "round") == "round":
                     checkpoint_id = _uid()
-                    self._bind_chat_success(repo, session, chain_id, checkpoint_id)
-                    self._commit(repo, session, source={"kind": "completed_execution", "chain_run_id": chain_id})
-                    self._append_success_checkpoint(repo, session, registry, checkpoint_id=checkpoint_id)
-                self._save_manifest(repo, "chain_end", chain_id, session,
+                    self._bind_chat_success(data, session, chain_id, checkpoint_id)
+                    self._commit(data, session, source={"kind": "completed_execution", "chain_run_id": chain_id})
+                    self._append_success_checkpoint(data, session, checkpoint_id=checkpoint_id)
+                self._save_manifest(data, "chain_end", chain_id, session,
                                     status=result.status)
                 return {"status": result.status}
             self._change("graph.run.finish", retained["finish_key"] if retained is not None
                          else chain_id + ":finish:" + str(chain["revision"]),
-                         {"chain": chain_id, "result": result.status}, finish)
+                         {"chain": chain_id, "result": result.status},
+                         lambda repo: finish(self._data_management.execution_transaction(
+                             repo, basis=self._require_run_basis(chain_id))))
             if result.status == "succeeded":
                 self._refresh_chat_snapshots(sid)
             self._frontend_node_state_changed(sid)
@@ -1068,7 +1209,11 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
             archive_retry = False
             try:
                 def fail(repo):
-                    chain = repo.get("chain_run", chain_run_id=chain_id)
+                    basis = self._execution_registries.get(chain_id)
+                    data = (self._data_management.execution_transaction(repo, basis=basis)
+                            if basis is not None else None)
+                    chain = (data.records.chain(chain_id) if data is not None
+                             else repo.get("chain_run", chain_run_id=chain_id))
                     if chain["status"] in ("succeeded", "closed", "recovery_unavailable", "failed"):
                         return None
                     index = chain["next_node_index"]
@@ -1076,40 +1221,66 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                     result_retry = (index < len(chain["node_run_ids"])
                                     and chain["node_run_ids"][index] in pending
                                     and getattr(exc, "reason_code", None) is None)
-                    completion_retry = (getattr(exc, "reason_code", None) is None
-                                        and self._completed_result_matches(repo, sid, chain, pending.get("completed_execution")))
+                    run_registry = basis.registry if basis is not None else registry
+                    completion_retry = (run_registry is not None
+                                        and getattr(exc, "reason_code", None) is None
+                                        and self._completed_result_matches(
+                                            data if data is not None else repo, sid, chain,
+                                            pending.get("completed_execution"),
+                                            registry=run_registry))
                     retryable = completion_retry or result_retry
                     chain["status"] = "archive_failed" if retryable else "recovery_unavailable"
                     acknowledged_failure = getattr(exc, "reason_code", None) == "result_committed_notification_failed"
                     ambiguous_recovery = getattr(exc, "reason_code", None) == "host_result_recovery_ambiguous"
+                    missing_basis = getattr(exc, "reason_code", None) == "run_basis_unavailable"
                     chain["diagnostic"] = {
-                        "reason_code": ("checkpoint_commit_pending" if completion_retry else
+                        "reason_code": ("run_basis_unavailable" if missing_basis else
+                                        "checkpoint_commit_pending" if completion_retry else
                                         "result_acceptance_pending" if result_retry else
                                         "result_committed_notification_failed" if acknowledged_failure else
                                         "host_result_recovery_ambiguous" if ambiguous_recovery else
                                         "execution_result_unknown"),
-                        "message": ("Completed execution awaits checkpoint commit" if completion_retry else
+                        "message": ("This invocation has no retained run basis" if missing_basis else
+                                    "Completed execution awaits checkpoint commit" if completion_retry else
                                     "Completed result awaits acceptance" if result_retry else
                                     "Node result is committed; local completion notification failed; business replay is unavailable"
                                     if acknowledged_failure else
                                     "Multiple declared services retain results; node-level recovery is unavailable"
                                     if ambiguous_recovery else "Execution could not preserve its completion boundary")}
                     chain["revision"] += 1
-                    repo.put("chain_run", chain)
+                    if data is not None:
+                        data.records.put_chain(chain)
+                    else:
+                        repo.put("chain_run", chain)
                     for identity in chain["node_run_ids"]:
-                        run = repo.get("node_run", run_id=identity)
+                        run = (data.records.node_run(identity) if data is not None
+                               else repo.get("node_run", run_id=identity))
                         if run["status"] == "running":
                             run["status"] = ("archive_failed" if result_retry and identity in pending
                                              else "recovery_unavailable")
                             run["revision"] += 1
-                            repo.put("node_run", run)
-                    session = repo.get("workflow_session", workflow_session_id=sid)
+                            if data is not None:
+                                data.records.put_node_run(run)
+                            else:
+                                repo.put("node_run", run)
+                    session = (data.records.session(sid) if data is not None
+                               else repo.get("workflow_session", workflow_session_id=sid))
                     session["revision"] += 1
-                    repo.put("workflow_session", session)
-                    self._save_manifest(repo, "chain_end", chain_id, session, status=chain["status"])
+                    if data is not None:
+                        data.records.put_session(session)
+                    else:
+                        repo.put("workflow_session", session)
+                    if data is not None:
+                        self._save_manifest(data, "chain_end", chain_id, session,
+                                            status=chain["status"])
+                    else:
+                        self._save_manifest(repo, "chain_end", chain_id, session,
+                                            status=chain["status"], registry=run_registry,
+                                            fallback_manifest=("chain_start", chain_id))
                     return {"archive_retry": retryable}
-                with self._lock, closing(self._store()) as store:
-                    failed_revision = GraphRecordStore(store).get("chain_run", chain_run_id=chain_id)["revision"]
+                with self._lock, self._data_management.read_execution(
+                        registry=registry if registry is not None else self.registry) as data:
+                    failed_revision = data.records.chain(chain_id)["revision"]
                 recovery = self._change("graph.run.unconfirmed", chain_id + ":unknown:" + str(failed_revision),
                                         {"chain": chain_id, "revision": failed_revision}, fail)
                 self._frontend_node_state_changed(sid)
@@ -1125,97 +1296,234 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                     self._acceptance_candidates.pop(chain_id, None)
                     self._failed_retry_candidates.pop(chain_id, None)
 
+    def _control_change_data(self, data, sid, action, expected_revision):
+        session = data.records.session(sid)
+        self._require_session_active_in(data.records, session)
+        require(session["revision"] == _revision(expected_revision),
+                "stale_revision", "Session changed", 409)
+        if action in ("resume", "retry_archive", "retry_acceptance", "retry_failed_node"):
+            require(not self._package_diagnostics, "package_missing_dependency",
+                    "Restore the saved packages before continuing execution", 409)
+        chain_id = session["active_chain_run_id"]
+        require(chain_id is not None, "invalid_state", "No active execution", 409)
+        chain = data.records.chain(chain_id)
+        if action == "pause":
+            require(chain["status"] in ("prepared", "running"),
+                    "invalid_state", "Cannot pause this execution", 409)
+        elif action == "retry_failed_node":
+            require(chain["status"] == "failed" and chain_id in self._futures,
+                    "failed_retry_unavailable",
+                    "No same-process failed invocation is retained", 409)
+            self._prepare_failed_retry(data, chain)
+        elif action in ("resume", "retry_archive", "retry_acceptance"):
+            allowed = (("archive_failed",) if action in ("retry_archive", "retry_acceptance")
+                       else ("paused",))
+            require(chain["status"] in allowed and chain_id in self._futures,
+                    "recovery_unavailable",
+                    "Execution has no same-process continuation", 409)
+            pending = self._acceptance_candidates.get(chain_id, {})
+            index = chain["next_node_index"]
+            has_candidate = (index < len(chain["node_run_ids"])
+                             and chain["node_run_ids"][index] in pending)
+            require(action != "retry_acceptance" or has_candidate,
+                    "recovery_unavailable",
+                    "No retained result exists for this exact invocation", 409)
+            if action == "retry_acceptance":
+                basis = pending[chain["node_run_ids"][index]]["basis"]
+                require(basis["state"] == data.state.variables(sid)
+                        and basis["private"] == data.records.private_states(sid)
+                        and basis["objects"] == data.state.objects(sid),
+                        "graph_acceptance_basis_changed",
+                        "Retained result state basis changed", 409)
+            if action == "retry_archive" and "completed_execution" in pending:
+                require(self._completed_result_matches(
+                            data, sid, chain, pending["completed_execution"],
+                            registry=data.registry),
+                        "graph_acceptance_basis_changed",
+                        "Completed result state basis changed", 409)
+            require(action != "retry_archive" or not has_candidate,
+                    "invalid_state",
+                    "Use the result acceptance action for this invocation", 409)
+            chain["status"] = "prepared"
+            chain["revision"] += 1
+            data.records.put_chain(chain)
+        else:
+            require(chain["status"] in ("failed", "recovery_unavailable", "archive_failed",
+                                        "paused", "budget_exhausted"),
+                    "invalid_state",
+                    "Only settled failures or acknowledged pauses can close", 409)
+            chain["status"] = "closed"
+            chain["revision"] += 1
+            data.records.put_chain(chain)
+            for identity in chain["node_run_ids"]:
+                run = data.records.node_run(identity)
+                if run["status"] not in ("succeeded", "closed"):
+                    run["status"] = "closed"
+                    run["revision"] += 1
+                    data.records.put_node_run(run)
+            session["active_chain_run_id"] = None
+            if chain.get("execution_kind", "round") == "round":
+                self._commit(data, session,
+                             source={"kind": "closed_execution", "chain_run_id": chain_id})
+        session["revision"] += 1
+        data.records.put_session(session)
+        if action == "close":
+            self._save_manifest(data, "chain_end", chain_id, session, status="closed")
+        return self._view(data, sid)
+
+    def _control_change_current(self, repo, sid, action, expected_revision):
+        """Cross-process control keeps the original action-specific diagnostics.
+
+        A released binding has no writable execution data session.  This branch
+        is therefore limited to commands that do not execute a node: pause and
+        close may update the persisted command state, while resume/retry keep
+        their original same-process checks and fail before any node runs.
+        """
+        session = repo.get("workflow_session", workflow_session_id=sid)
+        self._require_session_active(repo, session)
+        require(session["revision"] == _revision(expected_revision),
+                "stale_revision", "Session changed", 409)
+        if action in ("resume", "retry_archive", "retry_acceptance", "retry_failed_node"):
+            require(not self._package_diagnostics, "package_missing_dependency",
+                    "Restore the saved packages before continuing execution", 409)
+        chain_id = session["active_chain_run_id"]
+        require(chain_id is not None, "invalid_state", "No active execution", 409)
+        chain = repo.get("chain_run", chain_run_id=chain_id)
+        if action == "pause":
+            require(chain["status"] in ("prepared", "running"),
+                    "invalid_state", "Cannot pause this execution", 409)
+        elif action == "retry_failed_node":
+            require(chain["status"] == "failed" and chain_id in self._futures,
+                    "failed_retry_unavailable",
+                    "No same-process failed invocation is retained", 409)
+            require(False, "failed_retry_unavailable",
+                    "The failed invocation has no retained run basis", 409)
+        elif action in ("resume", "retry_archive", "retry_acceptance"):
+            allowed = (("archive_failed",) if action in ("retry_archive", "retry_acceptance")
+                       else ("paused",))
+            require(chain["status"] in allowed and chain_id in self._futures,
+                    "recovery_unavailable",
+                    "Execution has no same-process continuation", 409)
+            require(chain_id in self._execution_registries,
+                    "recovery_unavailable",
+                    "Execution has no retained run basis", 409)
+            pending = self._acceptance_candidates.get(chain_id, {})
+            run_registry = self._require_run_basis(chain_id).registry
+            index = chain["next_node_index"]
+            has_candidate = (index < len(chain["node_run_ids"])
+                             and chain["node_run_ids"][index] in pending)
+            require(action != "retry_acceptance" or has_candidate,
+                    "recovery_unavailable",
+                    "No retained result exists for this exact invocation", 409)
+            if action == "retry_acceptance":
+                basis = pending[chain["node_run_ids"][index]]["basis"]
+                require(basis["state"] == ProgramVariableStore(repo.store).current(sid)
+                        and basis["private"] == self._private(repo, sid)
+                        and basis["objects"] == self._objects(
+                            repo, registry=run_registry).current(sid),
+                        "graph_acceptance_basis_changed",
+                        "Retained result state basis changed", 409)
+            if action == "retry_archive" and "completed_execution" in pending:
+                require(self._completed_result_matches(
+                            repo, sid, chain, pending["completed_execution"],
+                            registry=run_registry),
+                        "graph_acceptance_basis_changed",
+                        "Completed result state basis changed", 409)
+            require(action != "retry_archive" or not has_candidate,
+                    "invalid_state",
+                    "Use the result acceptance action for this invocation", 409)
+            chain["status"] = "prepared"
+            chain["revision"] += 1
+            repo.put("chain_run", chain)
+        else:
+            require(chain["status"] in ("failed", "recovery_unavailable", "archive_failed",
+                                        "paused", "budget_exhausted"),
+                    "invalid_state",
+                    "Only settled failures or acknowledged pauses can close", 409)
+            chain["status"] = "closed"
+            chain["revision"] += 1
+            repo.put("chain_run", chain)
+            for identity in chain["node_run_ids"]:
+                run = repo.get("node_run", run_id=identity)
+                if run["status"] not in ("succeeded", "closed"):
+                    run["status"] = "closed"
+                    run["revision"] += 1
+                    repo.put("node_run", run)
+            session["active_chain_run_id"] = None
+            if chain.get("execution_kind", "round") == "round":
+                self._commit(repo, session,
+                             source={"kind": "closed_execution", "chain_run_id": chain_id})
+        session["revision"] += 1
+        repo.put("workflow_session", session)
+        if action == "close":
+            self._save_manifest(repo, "chain_end", chain_id, session, status="closed")
+        return self._view(
+            self._data_management.execution_read(repo, registry=self.registry), sid)
+
     def control(self, sid, *, action, expected_revision, idempotency_key):
         self._require_execution_owner()
         require(action in ("pause", "resume", "close", "retry_archive", "retry_acceptance", "retry_failed_node"),
                 "invalid_request", "Unknown graph control")
         request = {"session": sid, "action": action, "expected_revision": expected_revision}
         accepted = []
-        def change(repo):
-            session = repo.get("workflow_session", workflow_session_id=sid)
-            self._require_session_active(repo, session)
-            require(session["revision"] == _revision(expected_revision), "stale_revision", "Session changed", 409)
-            if action in ("resume", "retry_archive", "retry_acceptance", "retry_failed_node"):
-                require(not self._package_diagnostics, "package_missing_dependency",
-                        "Restore the saved packages before continuing execution", 409)
-            chain_id = session["active_chain_run_id"]
-            require(chain_id is not None, "invalid_state", "No active execution", 409)
-            chain = repo.get("chain_run", chain_run_id=chain_id)
-            if action == "pause":
-                require(chain["status"] in ("prepared", "running"), "invalid_state", "Cannot pause this execution", 409)
-            elif action == "retry_failed_node":
-                require(chain["status"] == "failed" and chain_id in self._futures,
-                        "failed_retry_unavailable", "No same-process failed invocation is retained", 409)
-                self._prepare_failed_retry(repo, chain)
-            elif action in ("resume", "retry_archive", "retry_acceptance"):
-                allowed = ("archive_failed",) if action in ("retry_archive", "retry_acceptance") else ("paused",)
-                require(chain["status"] in allowed and chain_id in self._futures,
-                        "recovery_unavailable", "Execution has no same-process continuation", 409)
-                pending = self._acceptance_candidates.get(chain_id, {})
-                index = chain["next_node_index"]
-                has_candidate = index < len(chain["node_run_ids"]) and chain["node_run_ids"][index] in pending
-                require(action != "retry_acceptance" or has_candidate,
-                        "recovery_unavailable", "No retained result exists for this exact invocation", 409)
-                if action == "retry_acceptance":
-                    basis = pending[chain["node_run_ids"][index]]["basis"]
-                    require(basis["state"] == ProgramVariableStore(repo.store).current(sid)
-                            and basis["private"] == self._private(repo, sid)
-                            and basis["objects"] == self._objects(repo).current(sid),
-                            "graph_acceptance_basis_changed", "Retained result state basis changed", 409)
-                if action == "retry_archive" and "completed_execution" in pending:
-                    require(self._completed_result_matches(repo, sid, chain, pending["completed_execution"]),
-                            "graph_acceptance_basis_changed", "Completed result state basis changed", 409)
-                require(action != "retry_archive" or not has_candidate,
-                        "invalid_state", "Use the result acceptance action for this invocation", 409)
-                chain["status"] = "prepared"
-                chain["revision"] += 1
-                repo.put("chain_run", chain)
-            else:
-                require(chain["status"] in ("failed", "recovery_unavailable", "archive_failed", "paused", "budget_exhausted"),
-                        "invalid_state", "Only settled failures or acknowledged pauses can close", 409)
-                chain["status"] = "closed"
-                chain["revision"] += 1
-                repo.put("chain_run", chain)
-                for identity in chain["node_run_ids"]:
-                    run = repo.get("node_run", run_id=identity)
-                    if run["status"] not in ("succeeded", "closed"):
-                        run["status"] = "closed"
-                        run["revision"] += 1
-                        repo.put("node_run", run)
-                session["active_chain_run_id"] = None
-                if chain.get("execution_kind", "round") == "round":
-                    self._commit(repo, session, source={"kind": "closed_execution", "chain_run_id": chain_id})
-            session["revision"] += 1
-            repo.put("workflow_session", session)
-            if action == "close":
-                self._save_manifest(repo, "chain_end", chain_id, session, status="closed")
-            accepted.append(chain_id)
-            return self._view(repo, sid)
         schedule_resume = False
         with self._lock:
+            # A persisted receipt is authoritative even after the original
+            # execution was settled, so check it before requiring a live basis.
+            with closing(self._store()) as store:
+                replay = store.read_receipt_with_digest("graph.run.control", idempotency_key)
+            if replay is not None:
+                def replay_change(repo):
+                    require(False, "storage_contract_violation",
+                            "A persisted control receipt was not replayed", 500)
+                return self._change("graph.run.control", idempotency_key, request, replay_change)
+
+            with self._data_management.read_execution(registry=self.registry) as probe:
+                probe_session = probe.records.session(sid)
+                active_chain_id = probe_session["active_chain_run_id"]
+            basis = (self._execution_registries.get(active_chain_id)
+                     if active_chain_id is not None else None)
+
             if action == "retry_failed_node":
                 # Resource authorization opens its own storage reader. Perform
                 # it before the write transaction; the basis is checked again
                 # inside that transaction and at actual model dispatch.
-                with closing(self._store()) as store:
-                    replay = store.read_receipt_with_digest("graph.run.control", idempotency_key)
-                    if replay is None:
-                        repo = GraphRecordStore(store)
-                        require(not self._package_diagnostics, "package_missing_dependency",
-                                "Restore the saved packages before retrying workflows", 409)
-                        session = repo.get("workflow_session", workflow_session_id=sid)
-                        require(session["revision"] == _revision(expected_revision),
-                                "stale_revision", "Session changed", 409)
-                        require(session["active_chain_run_id"] is not None,
-                                "failed_retry_unavailable", "No retained failed execution", 409)
-                        chain = repo.get("chain_run", chain_run_id=session["active_chain_run_id"])
-                        require(chain["status"] == "failed", "failed_retry_unavailable",
-                                "No retained failed invocation", 409)
-                        permission = self._failed_retry_permission(repo, chain)
-                        require(permission["allowed"], permission["reason_code"],
-                                "This failed invocation cannot safely restart", 409)
-                        candidate = self._failed_retry_candidates[chain["chain_run_id"]]
-                        self._validate_failed_retry_candidate(chain["chain_run_id"], candidate, authorize=True)
+                registry = basis.registry if basis is not None else self.registry
+                with self._data_management.read_execution(registry=registry) as probe:
+                    require(not self._package_diagnostics, "package_missing_dependency",
+                            "Restore the saved packages before retrying workflows", 409)
+                    session = probe.records.session(sid)
+                    require(session["revision"] == _revision(expected_revision),
+                            "stale_revision", "Session changed", 409)
+                    require(session["active_chain_run_id"] is not None,
+                            "failed_retry_unavailable", "No retained failed execution", 409)
+                    chain = probe.records.chain(session["active_chain_run_id"])
+                    require(chain["status"] == "failed", "failed_retry_unavailable",
+                            "No retained failed invocation", 409)
+                    permission = self._failed_retry_permission(probe, chain)
+                    require(permission["allowed"], permission["reason_code"],
+                            "This failed invocation cannot safely restart", 409)
+                    candidate = self._failed_retry_candidates[chain["chain_run_id"]]
+                    self._validate_failed_retry_candidate(
+                        chain["chain_run_id"], candidate, authorize=True)
+
+            def change(repo):
+                if basis is not None:
+                    data = self._data_management.execution_transaction(repo, basis=basis)
+                    require(data.records.session(sid)["active_chain_run_id"] == active_chain_id,
+                            "invalid_state", "Active execution changed before control", 409)
+                    response = self._control_change_data(
+                        data, sid, action, expected_revision)
+                else:
+                    require(repo.get(
+                        "workflow_session", workflow_session_id=sid
+                    )["active_chain_run_id"] == active_chain_id,
+                        "invalid_state", "Active execution changed before control", 409)
+                    response = self._control_change_current(
+                        repo, sid, action, expected_revision)
+                accepted.append(active_chain_id)
+                return response
+
             response = self._change("graph.run.control", idempotency_key, request, change)
             # Receipt replay observes the original command. Reapplying its
             # in-memory effects could pause a resumed run or dispose its frame.
@@ -1231,8 +1539,9 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                 if action == "retry_failed_node":
                     self._failed_retry_candidates.pop(chain_id, None)
                 self._pauses.discard(chain_id)
-                with closing(self._store()) as store:
-                    current = GraphRecordStore(store).get("chain_run", chain_run_id=chain_id)
+                registry = basis.registry if basis is not None else self.registry
+                with self._data_management.read_execution(registry=registry) as data:
+                    current = data.records.chain(chain_id)
                 if current["status"] == "prepared" and chain_id not in self._resuming:
                     self._resuming.add(chain_id)
                     schedule_resume = True

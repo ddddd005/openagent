@@ -38,23 +38,23 @@ def _commit_path(repo, head_id):
 
 
 class GraphHistory:
-    def _selected_chain(self, repo, sid):
-        session = repo.get("workflow_session", workflow_session_id=sid)
+    def _selected_chain(self, records, sid):
+        session = records.session(sid)
         if session["active_chain_run_id"] is not None:
-            active = repo.get("chain_run", chain_run_id=session["active_chain_run_id"])
+            active = records.chain(session["active_chain_run_id"])
             if active.get("execution_kind", "round") == "round":
                 return active
-        commit_id = self._head(repo, sid)["head_commit_id"]
+        commit_id = records.head(sid)["head_commit_id"]
         seen = set()
         while commit_id is not None:
             require(commit_id not in seen, "storage_contract_violation", "Selected history is cyclic", 500)
             seen.add(commit_id)
-            commit = repo.get("workflow_commit", commit_id=commit_id)
+            commit = records.commit(commit_id)
             source = commit["source"]
             chain_id = source.get("chain_run_id")
             if chain_id is not None:
-                chain = repo.get("chain_run", chain_run_id=chain_id)
-                require(chain_id in self._history(repo, sid), "storage_contract_violation", "Selected execution escaped frozen history", 500)
+                chain = records.chain(chain_id)
+                require(chain_id in records.history(sid), "storage_contract_violation", "Selected execution escaped frozen history", 500)
                 if (chain["workflow_session_id"] == sid
                         and (chain["workflow_definition_id"], chain["definition_revision"])
                             != (session["workflow_definition_id"], session["definition_revision"])

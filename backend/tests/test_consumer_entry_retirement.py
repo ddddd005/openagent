@@ -170,9 +170,12 @@ def _seed_legacy_request(service, operation):
             },
         }
     elif operation == "consumer.run.control":
+        basis = service._capture_run_basis()
         initial = service._change(
             "graph.run.start", str(uuid4()), {"session": sid, "expected_revision": 1, "inputs": {}},
-            lambda repo: service._prepare_run(repo, sid, 1, {}))
+            lambda repo: service._prepare_run(
+                service._data_management.execution_transaction(repo, basis=basis),
+                sid, 1, {}, basis=basis))
         parameters = {
             "session_id": sid, "action": "pause", "expected_revision": initial["revision"], "idempotency_key": key,
         }

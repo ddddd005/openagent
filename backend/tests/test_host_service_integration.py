@@ -15,6 +15,51 @@ from test_graph_service import create, document, edge, node, uid
 from test_host_services import DEFINITION, GRANT, REFERENCE, UppercaseService
 
 
+def test_active_host_service_call_requires_the_retained_run_basis(tmp_path):
+    instances = []
+
+    def register(host):
+        def factory(environment):
+            instance = UppercaseService(environment)
+            instances.append(instance)
+            return instance
+        host.register_service(DEFINITION, factory)
+        host.register_node(NodeDefinition(
+            "sample.missing-basis", "1", "Missing basis", "Sample", {},
+            {"type": "object", "additionalProperties": False},
+            outputs=(NodePort("output", "TEXT", data_schema_version=2),),
+            capabilities=("sample:format",), service_requirements=(GRANT,)),
+            lambda config, inputs, context: _call_without_basis(context))
+
+    holder = {}
+
+    def _call_without_basis(context):
+        holder["service"]._execution_registries.pop(context.chain_run_id, None)
+        return {"output": text_content(context.host_call(
+            "sample:format", "upper", {"text": "must not run"})["text"])}
+
+    package = CapabilityPackage(PackageManifest("sample.missing-basis", "1",
+        dependencies=(PackageDependency("workflow.content", "1.0.0"),
+                      PackageDependency("workflow.tools", "1.0.0")), schema_version=3,
+        exports={"services": [REFERENCE.to_dict()],
+                 "nodes": [{"component_id": "sample.missing-basis", "component_version": "1"}]}), register)
+    with closing(GraphWorkflowService(
+            tmp_path / "missing-basis.sqlite", capability_packages=(package,),
+            enabled_packages={"workflow.content": "1.0.0", "workflow.tools": "1.0.0",
+                              "sample.missing-basis": "1"})) as service:
+        holder["service"] = service
+        work = node(service.registry, "sample.missing-basis", 1801)
+        output = node(service.registry, "tools.output", 1802)
+        initial = create(service, document([work, output], [edge(work, output, 1801)]))
+        started = service.start(
+            initial["workflow_session_id"], expected_revision=initial["revision"],
+            idempotency_key=str(uuid4()))
+        with pytest.raises(Exception) as caught:
+            service.wait(started["active_chain_run_id"])
+        assert caught.value.reason_code == "run_basis_unavailable"
+        assert len(instances) == 1 and instances[0].calls == 0
+
+
 def test_independent_plugin_service_uses_generic_dispatch_and_run_lifecycle(tmp_path):
     instances = []
     peer_business = "other-node-private-business"

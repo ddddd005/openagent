@@ -51,7 +51,7 @@ def test_empty_definition_save_has_no_descriptor_side_effect_and_replays_receipt
     )
 
     assert replay == first
-    assert service._document_available(None, first) is True
+    assert service._document_available(first) is True
     with closing(service._store()) as store:
         assert GraphRecordStore(store).rows("node_definition") == []
 
@@ -76,38 +76,27 @@ def test_unavailable_definition_does_not_hide_active_controls(service, monkeypat
         "node_run_ids": [str(uuid4())],
     }
 
-    class Repo:
-        store = object()
-
-        def get(self, kind, **_kwargs):
-            assert kind == "workflow_session"
-            return session
-
-        def rows(self, kind, **_kwargs):
-            return [chain] if kind == "chain_run" else []
-
-    monkeypatch.setattr(service, "_document", lambda _repo, _identity, _revision: document)
-    monkeypatch.setattr(service, "_history", lambda _repo, _sid: [])
-    monkeypatch.setattr(service, "_selected_chain", lambda _repo, _sid: None)
-    monkeypatch.setattr(service, "_head", lambda _repo, _sid: {
-        "revision": 1,
-        "head_commit_id": str(uuid4()),
-    })
-    monkeypatch.setattr(service, "_session_metadata", lambda _repo, _sid: {})
-    monkeypatch.setattr(service, "_archived", lambda _repo, _kind, _identity: False)
-    monkeypatch.setattr(service, "_private", lambda _repo, _sid: {})
-    monkeypatch.setattr(service, "_objects", lambda _repo: SimpleNamespace(current=lambda _sid: {}))
-    monkeypatch.setattr(service, "_document_available", lambda _repo, _document: False)
-
-    class Variables:
-        def __init__(self, _store):
-            pass
-
-        def current(self, _sid):
-            return {"revision": 0}
-
-    monkeypatch.setattr("phase1_agent.graph_service.ProgramVariableStore", Variables)
-    view = service._view(Repo(), session["workflow_session_id"])
+    data = SimpleNamespace(
+        records=SimpleNamespace(
+            session=lambda _sid: session,
+            chains=lambda _sid: [chain],
+            history=lambda _sid: [],
+            head=lambda _sid: {"revision": 1, "head_commit_id": str(uuid4())},
+            session_metadata=lambda _sid: {},
+            archived=lambda _kind, _identity: False,
+            private_states=lambda _sid: {},
+            node_runs=lambda _chain_id: [],
+            outputs=lambda _sid: [],
+        ),
+        state=SimpleNamespace(
+            variables=lambda _sid: {"revision": 0},
+            objects=lambda _sid: {},
+        ),
+        configuration=SimpleNamespace(fixed_document=lambda _identity, _revision: document),
+    )
+    monkeypatch.setattr(service, "_selected_chain", lambda _records, _sid: None)
+    monkeypatch.setattr(service, "_document_available", lambda _document: False)
+    view = service._view(data, session["workflow_session_id"])
 
     assert view["readonly"] is True
     assert view["can_submit"] is False

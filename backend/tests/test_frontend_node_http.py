@@ -254,8 +254,8 @@ def test_rollback_pushes_only_real_failed_state_and_no_uncommitted_snapshot(tmp_
         binding = owner(graph, frontends[0], initial)
         original = service._save_effects
 
-        def fail_after_cas(repo, sid, document, event):
-            receipts = original(repo, sid, document, event)
+        def fail_after_cas(repo, sid, document, event, **kwargs):
+            receipts = original(repo, sid, document, event, **kwargs)
             if event["node_binding_id"] == frontends[0]["node_binding_id"]:
                 raise OSError("rollback stream write")
             return receipts

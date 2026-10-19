@@ -9,8 +9,9 @@ from .graph_records import graph_error, require
 class GraphResourceHost:
     """Check authorized identities before effects and read content at use time."""
 
-    def _content_dependencies(self, node, *, allow_inputs=False):
-        entry = self.registry.get(node["component_id"], node["component_version"])
+    def _content_dependencies(self, node, *, allow_inputs=False, registry=None):
+        registry = self.registry if registry is None else registry
+        entry = registry.get(node["component_id"], node["component_version"])
         callback = entry.resource_dependencies_declaration
         require(callback is not None or allow_inputs, "graph_resource_dependencies_undeclared",
                 "Resource reads require a trusted dependency declaration", 409, node_id=node["node_binding_id"])
@@ -40,15 +41,17 @@ class GraphResourceHost:
                 identities.append(deepcopy(dependency))
         return identities
 
-    def _preflight_capabilities(self, repo, sid, plan):
+    def _preflight_capabilities(self, records, sid, plan, *, registry=None):
+        registry = self.registry if registry is None else registry
         frozen = {"global_resource_ids": {}, "current_global_resources": {}}
         nodes = {node["node_binding_id"]: node for node in plan.document["nodes"]}
         declared_by_node = {}
         for node_id in plan.ordered_node_ids:
             node, definition = nodes[node_id], plan.definitions[node_id]
             if "resources:read" in definition.capabilities:
-                entry = self.registry.get(node["component_id"], node["component_version"])
-                dependencies = self._content_dependencies(node, allow_inputs=bool(entry.resource_input_ports))
+                entry = registry.get(node["component_id"], node["component_version"])
+                dependencies = self._content_dependencies(
+                    node, allow_inputs=bool(entry.resource_input_ports), registry=registry)
                 for port_id in entry.resource_input_ports:
                     input_ports = {port.port_id: port for port in definition.ports(node["config"])[0]}
                     require(port_id in input_ports and input_ports[port_id].data_type == "GLOBAL_RESOURCE_REF",
@@ -67,13 +70,12 @@ class GraphResourceHost:
                 current_ids = [dependency["reference"] for dependency in dependencies
                                if dependency["kind"] == "global-resource"]
                 try:
-                    resources = self._global_store(repo.store)
-                    current = resources.read_many(current_ids)
+                    current = records.read_global_resources(current_ids)
                     index = 0
                     while index < len(current):
                         record = current[index]
                         index += 1
-                        references = self.registry.data_types.references(
+                        references = registry.data_types.references(
                             record["type_id"], record["data_schema_version"], record["value"], scope="global")
                         for reference in references:
                             require(reference.get("scope") not in ("session", "artifact"),
@@ -84,8 +86,8 @@ class GraphResourceHost:
                                 require(len(current_ids) < 128, "graph_resource_dependency_invalid",
                                         "Global configuration dependency budget exceeded", 409, node_id=node_id)
                                 current_ids.append(deepcopy(reference))
-                                current.extend(resources.read_many([reference]))
-                    entry = self.registry.get(node["component_id"], node["component_version"])
+                                current.extend(records.read_global_resources([reference]))
+                    entry = registry.get(node["component_id"], node["component_version"])
                     if entry.resource_preflight_validator is not None:
                         entry.resource_preflight_validator(deepcopy(node["config"]), deepcopy(current))
                 except Exception as error:
@@ -109,8 +111,15 @@ class GraphResourceHost:
                 "Resource is not declared for this node", 409, node_id=context.node_binding_id)
         from .content_configuration import CONTENT_RESOURCE_TYPES
         if reference["type_id"] in CONTENT_RESOURCE_TYPES:
+            basis = (self._execution_registries.get(context.chain_run_id)
+                     if hasattr(self, "_execution_registries") else None)
+            if hasattr(self, "_execution_registries"):
+                require(basis is not None, "run_basis_unavailable",
+                        "This invocation has no retained run basis", 409)
             with self._lock, closing(self._store()) as store:
-                return deepcopy(self._global_store(store).get(reference))
+                resources = (self._global_store(store, registry=basis.registry)
+                             if basis is not None else self._global_store(store))
+                return deepcopy(resources.get(reference))
         records = self._resource_frames.get(context.chain_run_id, {}).get(context.node_binding_id, [])
         record = next((row for row in records if all(row[key] == reference[key]
                       for key in ("scope", "type_id", "resource_id"))), None)

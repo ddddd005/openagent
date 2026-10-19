@@ -9,6 +9,7 @@ import pytest
 from phase1_agent.capability_packages import CapabilityPackage, PackageDependency, PackageManifest
 from phase1_agent.content_contracts import json_content, text_content
 from phase1_agent.contract_errors import ContractValidationError
+from phase1_agent.execution_data import ExecutionState
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import DataTypeDefinition, ObjectBinding, WriteIntent
@@ -169,6 +170,26 @@ def test_receipts_atomic_multi_write_and_delete_retains_checkpoint(service):
     assert result["head_commit_id"] == view["head_commit_id"]
 
 
+def test_node_object_write_uses_execution_state_port(service, monkeypatch):
+    calls = []
+    original = ExecutionState.apply_objects
+
+    def tracked(self, sid, *, node_id, writes, write_evidence=None):
+        calls.append((sid, node_id, len(writes)))
+        return original(self, sid, node_id=node_id, writes=writes,
+                        write_evidence=write_evidence)
+
+    monkeypatch.setattr(ExecutionState, "apply_objects", tracked)
+    final = run(service, create(service, object_graph(service)))
+    assert final["status"] == "succeeded"
+    assert calls
+    assert final["objects"]["main"]["value"] == {"count": 1}
+    assert final["objects"]["main"]["revision"] == 2
+    with service._data_management.read_execution(registry=service.registry) as data:
+        objects = data.state.objects(final["workflow_session_id"])
+    assert objects["main"]["value"] == {"count": 1}
+
+
 def test_failed_effect_is_rejected_and_has_no_success_checkpoint(service):
     view = create(service, object_graph(service, fail=True))
     head = view["head_commit_id"]
@@ -306,6 +327,28 @@ def test_long_valid_object_identity_has_a_bounded_automatic_operation_key(servic
     doc["object_bindings"][0]["object_key"] = key
     final = run(service, create(service, doc))
     assert final["status"] == "succeeded" and final["objects"][key]["value"] == {"count": 1}
+
+
+def test_independent_execution_reread_reads_objects_commit_and_manifest(service):
+    doc = object_graph(service)
+    final = run(service, create(service, doc))
+    sid = final["workflow_session_id"]
+    chain_id = final["selected_chain_run_id"]
+
+    with service._data_management.read_execution(registry=service.registry) as data:
+        objects = data.state.objects(sid)
+        head = data.records.head(sid)
+        commit = data.records.commit(head["head_commit_id"])
+        start_manifest = data.settlement.manifest("chain_start", chain_id)
+        end_manifest = data.settlement.manifest("chain_end", chain_id)
+
+    assert objects["main"]["value"] == {"count": 1}
+    assert objects["main"]["revision"] == 2
+    assert commit["source"]["kind"] == "completed_execution"
+    assert commit["source"]["chain_run_id"] == chain_id
+    assert start_manifest["objects"]["main"]["revision"] == 1
+    assert end_manifest["status"] == "succeeded"
+    assert end_manifest["objects"]["main"]["revision"] == 2
 
 
 def test_new_workflow_uses_its_own_private_node_permissions_and_empty_data(service):

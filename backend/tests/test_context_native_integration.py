@@ -3,6 +3,7 @@
 from contextlib import closing
 from copy import deepcopy
 from uuid import uuid4
+import inspect
 import json
 
 import pytest
@@ -10,7 +11,11 @@ import pytest
 from phase1_agent.context_contract import EFFECTIVE_CONTEXT_TYPE
 from phase1_agent.contracts import ModelResponse, ModelToolCall
 from phase1_agent.contract_errors import ContractValidationError
+from phase1_agent.execution_data import (
+    ConfigurationReadSession, ExecutionRecords, ExecutionState,
+)
 from phase1_agent.graph_service import GraphWorkflowService
+from phase1_agent.graph_store import GraphRecordStore
 from phase1_agent.host_sdk import ObjectBinding, WriteIntent
 from phase1_agent.session_objects import SessionObjectStore
 from phase1_agent.storage import SqliteStore
@@ -460,6 +465,63 @@ def test_native_graph_middle_depth_reaches_model_and_does_not_persist_material(
         assert frozen == prompt
         assert reopened.get_session(sid)["status"] == "succeeded"
         assert len(fixture.calls) == 3
+
+
+def test_native_host_bridge_uses_limited_execution_ports(tmp_path, monkeypatch):
+    fixture = NativeTransport()
+    counts = {}
+
+    def track(name, method):
+        def wrapper(*args, **kwargs):
+            counts[name] = counts.get(name, 0) + 1
+            return method(*args, **kwargs)
+        return wrapper
+
+    for owner, name in (
+        (ExecutionRecords, "node_run"),
+        (ExecutionRecords, "output"),
+        (ExecutionRecords, "session"),
+        (ExecutionRecords, "chain"),
+        (ExecutionState, "read_object"),
+        (ConfigurationReadSession, "fixed_document"),
+    ):
+        monkeypatch.setattr(owner, name, track(name, getattr(owner, name)))
+    service = GraphWorkflowService(
+        tmp_path / "host-ports.sqlite", public_model_factory=fixture.factory)
+    original_accept = service._data_management.accept_fact
+
+    def accept(*args, **kwargs):
+        counts["accept_fact"] = counts.get("accept_fact", 0) + 1
+        return original_accept(*args, **kwargs)
+
+    monkeypatch.setattr(service._data_management, "accept_fact", accept)
+    direct = []
+    original_get = GraphRecordStore.get
+    forbidden = {
+        "_runtime_input_detail", "_resolve_runtime_input_detail",
+        "_describe_runtime_input_origin", "_artifact_closure",
+        "_document_for_runtime_output", "_authorized_object_artifacts",
+        "_validate_runtime_references", "_resolve_runtime_artifact",
+        "_host_call", "_accept_runtime_fact", "_release_public_capabilities",
+        "_control_hosted_invocation",
+    }
+
+    def tracked(self, kind, **identity):
+        caller = inspect.currentframe().f_back.f_code.co_name
+        if caller in forbidden:
+            direct.append(caller)
+        return original_get(self, kind, **identity)
+
+    monkeypatch.setattr(GraphRecordStore, "get", tracked)
+    with closing(service):
+        ModelDatabaseFixture.write(service, 1)
+        doc, _ = native_graph(service)
+        final = run(service, create(service, doc), "Current request.")
+        assert final["status"] == "succeeded", final["chains"]
+    for name in ("node_run", "output", "session", "chain",
+                 "fixed_document", "accept_fact"):
+        assert counts.get(name, 0) > 0, name
+    assert direct == []
 
 
 def test_context_merge_rejects_stale_candidate_without_replaying_or_adopting(tmp_path):

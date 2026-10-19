@@ -138,9 +138,13 @@ class WorkflowLifecycle:
             session["active_chain_run_id"] = None
             session["revision"] += 1
             repo.put("workflow_session", session)
+            basis = self._execution_registries.get(chain_id)
+            run_registry = basis.registry if basis is not None else None
             if chain.get("execution_kind", "round") == "round":
-                self._commit(repo, session, source={"kind": "closed_execution", "chain_run_id": chain_id})
-            self._save_manifest(repo, "chain_end", chain_id, session, status="closed")
+                self._commit(repo, session, source={"kind": "closed_execution", "chain_run_id": chain_id},
+                             registry=run_registry)
+            self._save_manifest(repo, "chain_end", chain_id, session, status="closed",
+                                registry=run_registry)
 
     def _delete_owned_sessions(self, repo, sessions):
         connection = repo.store._connection

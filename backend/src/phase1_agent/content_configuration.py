@@ -83,12 +83,12 @@ class ContentConfigurationService:
                 "content_resource_type_denied", "Resource is not managed by the content service")
         return identity
 
-    def _resources(self, store):
-        return GlobalResourceStore(store, self._type_registry_factory())
+    def _resources(self, store, *, types=None):
+        return GlobalResourceStore(store, self._type_registry_factory() if types is None else types)
 
-    def get_global_resource(self, identity):
+    def get_global_resource(self, identity, *, types=None):
         with self._lock, closing(self._store_factory()) as store:
-            resources = self._resources(store)
+            resources = self._resources(store, types=types)
             identity = self._identity(identity, resources.types)
             return resources.get(identity)
 

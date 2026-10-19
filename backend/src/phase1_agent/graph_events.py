@@ -1,10 +1,8 @@
 """Declared graph events over the ordinary session execution lifecycle."""
 
-from contextlib import closing
 from copy import deepcopy
 
 from .graph_records import require, uuid_value
-from .graph_store import GraphRecordStore
 from .host_sdk import bounded_name
 
 
@@ -24,10 +22,11 @@ class GraphEvents:
         return self._consumer_scope(repo, sid, workflow_definition_id, definition_revision)
 
     def _event_bindings(self, sid, *, workflow_definition_id, definition_revision, consumer=False):
-        with self._lock, closing(self._store()) as store:
+        with self._lock, self._data_management.read_execution(
+                registry=self.registry) as data:
             self._check_open()
-            repo = GraphRecordStore(store)
-            session, document = self._event_scope(repo, sid, workflow_definition_id, definition_revision)
+            session, document = self._event_scope(
+                data, sid, workflow_definition_id, definition_revision)
             bindings = [deepcopy(row) for row in document.get("event_bindings", [])
                         if not consumer or row["audience"] == "consumer"]
             return {"schema_version": 1, "kind": "workflow.event-bindings",
@@ -46,18 +45,20 @@ class GraphEvents:
                    "expected_revision": expected_revision}
         # Public authorization is current, including on a persisted receipt replay.
         with self._lock:
-            with closing(self._store()) as store:
+            with self._data_management.read_execution(registry=self.registry) as data:
                 self._check_open()
-                _, document = self._event_scope(GraphRecordStore(store), sid,
-                                                workflow_definition_id, definition_revision)
+                _, document = self._event_scope(
+                    data, sid, workflow_definition_id, definition_revision)
                 self._event_binding(document, event_id, event_schema_version)
 
-            def change(repo):
-                _, document = self._event_scope(repo, sid, workflow_definition_id, definition_revision)
+            def change(data, basis):
+                _, document = self._event_scope(
+                    data, sid, workflow_definition_id, definition_revision)
                 binding = self._event_binding(document, event_id, event_schema_version)
                 event = {"event_id": event_id, "schema_version": event_schema_version,
                          "audience": binding["audience"], "idempotency_key": idempotency_key}
-                return self._prepare_run(repo, sid, expected_revision, payload, event=event)
+                return self._prepare_run(
+                    data, sid, expected_revision, payload, event=event, basis=basis)
 
             return self._start_run(sid, idempotency_key, request, change, operation="graph.event.submit")
 
@@ -68,17 +69,18 @@ class GraphEvents:
             payload=payload, expected_revision=expected_revision, idempotency_key=idempotency_key)
 
     def _read_event(self, sid, *, chain_id, consumer=False):
-        with self._lock, closing(self._store()) as store:
+        with self._lock, self._data_management.read_execution(
+                registry=self.registry) as data:
             self._check_open()
-            repo = GraphRecordStore(store)
-            session, current = self._consumer_scope(repo, sid)
-            require(uuid_value(chain_id) and chain_id in self._history(repo, sid),
+            session, current = self._consumer_scope(data, sid)
+            require(uuid_value(chain_id) and chain_id in data.records.history(sid),
                     "not_found", "Event is outside authorized session history", 404)
-            chain = repo.get("chain_run", chain_run_id=chain_id)
+            chain = data.records.chain(chain_id)
             require(chain.get("execution_kind", "round") == "event",
                     "graph_event_not_found", "This execution is not an event", 404)
             event = chain["event"]
-            original = self._document(repo, chain["workflow_definition_id"], chain["definition_revision"])
+            original = data.configuration.fixed_document(
+                chain["workflow_definition_id"], chain["definition_revision"])
             self._event_binding(original, event["event_id"], event["schema_version"], consumer=consumer)
             if consumer:
                 self._event_binding(current, event["event_id"], event["schema_version"], consumer=True)

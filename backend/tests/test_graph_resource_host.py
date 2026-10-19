@@ -267,12 +267,15 @@ class PreflightHost(GraphResourceHost):
         self.records = records
         self.reads = []
 
-    def _global_store(self, store):
+    def _global_store(self, store, *, registry=None):
         def read_many(references):
             self.reads.append(deepcopy(references))
             return [deepcopy(record) for reference in references for record in self.records
                     if identity(record) == reference]
         return SimpleNamespace(read_many=read_many)
+
+    def records_port(self):
+        return SimpleNamespace(read_global_resources=self._global_store(None).read_many)
 
 def inherited_plan(source_dependencies, *, input_type="GLOBAL_RESOURCE_REF"):
     source = {"node_binding_id": uid(10), "component_id": "test.source",
@@ -314,7 +317,7 @@ def test_reference_inheritance_requires_one_declared_current_identity(
     entries, plan = inherited_plan(source_dependencies, input_type=input_type)
     host = PreflightHost(entries, [prompt_record(), prompt_record(scope="workspace")])
     with pytest.raises(ContractValidationError) as failure:
-        host._preflight_capabilities(SimpleNamespace(store=object()), uid(50), plan)
+        host._preflight_capabilities(host.records_port(), uid(50), plan)
     assert failure.value.reason_code == reason
     assert failure.value.diagnostics[0]["node_id"] == uid(11)
 
@@ -338,8 +341,8 @@ def test_current_preflight_validator_receives_detached_current_records():
                                 capabilities=("resources:read",))
     plan = SimpleNamespace(document={"nodes": [node]}, ordered_node_ids=[uid(10)],
                            definitions={uid(10): definition}, input_edges={uid(10): {}})
-    host, repo = PreflightHost(entries, [current]), SimpleNamespace(store=object())
-    frozen = host._preflight_capabilities(repo, uid(50), plan)
+    host = PreflightHost(entries, [current])
+    frozen = host._preflight_capabilities(host.records_port(), uid(50), plan)
     assert frozen == {
         "global_resource_ids": {uid(10): [identity(current)]},
         "current_global_resources": {uid(10): [current]},

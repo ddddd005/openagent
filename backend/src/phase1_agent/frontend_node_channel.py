@@ -198,7 +198,9 @@ class FrontendNodeChannel:
             sid = self._owner["session_id"]
             run, snapshot = None, None
             if sid is not None:
-                view = self._service._view(repo, sid)
+                run_data = self._service._data_management.execution_read(
+                    repo, registry=self._service.registry)
+                view = self._service._view(run_data, sid)
                 pausing = (view["status"] in ("prepared", "running")
                            and view["active_chain_run_id"] in self._service._pauses)
                 run = {
@@ -214,7 +216,7 @@ class FrontendNodeChannel:
                         data_revision=view["data_revision"], head_revision=view["head_revision"],
                         object_revision=view["objects"][node["config"]["object_key"]]["revision"])
                 snapshot = self._service._read_frontend_snapshot(
-                    repo, self._owner["workflow_definition_id"], self._owner["definition_revision"],
+                    run_data, self._owner["workflow_definition_id"], self._owner["definition_revision"],
                     self._owner["node_binding_id"], sid)
         return {
             "schema_version": 1, "kind": "workflow.frontend-node-state",

@@ -167,7 +167,9 @@ def seed_source_history(service, *, count=5):
             repo, session, previous_state, cas,
             types=service.registry.data_types, registry=service.registry)
         service._commit(repo, session, source={"kind": "session_seed", "source": None}, history=[])
-        return service._view(repo, session["workflow_session_id"])
+        return service._view(
+            service._data_management.execution_read(repo, registry=service.registry),
+            session["workflow_session_id"])
 
     source = service._change("test.chat.seed", identity(), {}, seed)
     return source, point_ids

@@ -1,4 +1,9 @@
-"""Editor input discovery does not require a complete executable graph."""
+"""Editor input discovery does not require a complete executable graph.
+
+Definitions are resolved through the unified read-only query.  The category
+access exposes only configuration validation and declared external-input
+hooks; the executor and other implementation bindings stay in registration.
+"""
 
 from copy import deepcopy
 
@@ -6,17 +11,25 @@ from .graph_contracts import GraphCompiler, validate_graph_document
 from .graph_records import require
 
 
-def collect_input_declarations(registry, nodes):
+def _definitions(registry, definitions):
+    if definitions is not None:
+        return definitions
+    from .workflow_definitions import WorkflowDefinitionCatalog
+    return WorkflowDefinitionCatalog(registry)
+
+
+def collect_input_declarations(registry, nodes, *, definitions=None):
+    definitions = _definitions(registry, definitions)
     declarations = {}
     for node in nodes:
         node_id = node["node_binding_id"]
-        entry = registry.get(node["component_id"], node["component_version"])
-        require(entry is not None, "graph_missing_node_type", "Node declaration is unavailable", 409, node_id=node_id)
-        registry.validate_config(entry, node["config"])
-        callback = entry.external_inputs_declaration
-        require(callback is not None or entry.external_inputs_validator is None,
+        access = definitions.node_access(node["component_id"], node["component_version"])
+        require(access is not None, "graph_missing_node_type",
+                "Node declaration is unavailable", 409, node_id=node_id)
+        access.validate_config(node["config"])
+        require(access.can_declare_external_inputs or not access.has_external_inputs_validator,
                 "consumer_input_undeclared", "External inputs have no declaration", 409, node_id=node_id)
-        for value in callback(deepcopy(node["config"])) if callback else []:
+        for value in access.declare_external_inputs(node["config"]):
             require(type(value) is dict and set(value) == {"name", "data_type", "required"}
                     and type(value["name"]) is str and 0 < len(value["name"]) <= 128
                     and value["name"] != "_workflow_frozen_resources"
@@ -41,12 +54,13 @@ def input_diagnostics(error, node_id=None):
             }])]
 
 
-def collect_document_input_declarations(registry, nodes):
+def collect_document_input_declarations(registry, nodes, *, definitions=None):
     declarations, diagnostics = {}, []
+    definitions = _definitions(registry, definitions)
     # Resolve each draft node independently so one broken node does not hide the rest.
     for node in nodes:
         try:
-            values = collect_input_declarations(registry, [node])
+            values = collect_input_declarations(registry, [node], definitions=definitions)
             for value in values:
                 previous = declarations.get(value["name"])
                 if previous and previous["data_type"] != value["data_type"]:
@@ -63,15 +77,18 @@ def collect_document_input_declarations(registry, nodes):
     return list(declarations.values()), diagnostics
 
 
-def editor_input_declarations(registry, document):
+def editor_input_declarations(registry, document, *, definitions=None):
+    definitions = _definitions(registry, definitions)
     document = validate_graph_document(document)
-    declarations, diagnostics = collect_document_input_declarations(registry, document["nodes"])
+    declarations, diagnostics = collect_document_input_declarations(
+        registry, document["nodes"], definitions=definitions)
     required = None
     try:
         plan = GraphCompiler(registry).compile(document)
         nodes = {node["node_binding_id"]: node for node in document["nodes"]}
         required = [value["name"] for value in collect_input_declarations(
-            registry, [nodes[node_id] for node_id in plan.ordered_node_ids]) if value["required"]]
+            registry, [nodes[node_id] for node_id in plan.ordered_node_ids],
+            definitions=definitions) if value["required"]]
     except Exception as error:
         diagnostics.extend(input_diagnostics(error))
     return {"schema_version": 1, "kind": "workflow.input-declarations",

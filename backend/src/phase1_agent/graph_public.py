@@ -17,16 +17,23 @@ class GraphPublic:
                 "workflow_session_id": session["workflow_session_id"],
                 "session_revision": session["revision"]}
 
-    def _consumer_scope(self, repo, sid, identity=None, revision=None):
+    def _consumer_scope(self, source, sid, identity=None, revision=None):
         require(uuid_value(sid), "not_found", "Session not found", 404)
-        session = repo.get("workflow_session", workflow_session_id=sid)
+        if hasattr(source, "records"):
+            session = source.records.session(sid)
+        else:
+            session = source.get("workflow_session", workflow_session_id=sid)
         if identity is not None or revision is not None:
             require(uuid_value(identity) and type(revision) is int and revision >= 1,
                     "invalid_request", "An exact workflow definition is required")
             require(session["workflow_definition_id"] == identity
                     and session["definition_revision"] == revision,
                     "consumer_definition_mismatch", "Session belongs to another definition", 409)
-        return session, self._document(repo, session["workflow_definition_id"], session["definition_revision"])
+        document = (source.configuration.fixed_document(
+            session["workflow_definition_id"], session["definition_revision"])
+            if hasattr(source, "records") else
+            self._document(source, session["workflow_definition_id"], session["definition_revision"]))
+        return session, document
 
     def _consumer_ports(self, repo, node):
         record = repo.maybe("node_definition", component_id=node["component_id"],
@@ -116,20 +123,25 @@ class GraphPublic:
         from .graph_input_declarations import (
             collect_input_declarations, collect_document_input_declarations, input_diagnostics,
         )
+        definitions = getattr(self, "definition_query", None)
         try:
             plan = GraphCompiler(self.registry).compile(document)
             nodes = {node["node_binding_id"]: node for node in document["nodes"]}
-            return collect_input_declarations(self.registry, [nodes[node_id] for node_id in plan.ordered_node_ids]), []
+            return collect_input_declarations(
+                self.registry, [nodes[node_id] for node_id in plan.ordered_node_ids],
+                definitions=definitions), []
         except Exception as error:
-            declarations, _ = collect_document_input_declarations(self.registry, document["nodes"])
+            declarations, _ = collect_document_input_declarations(
+                self.registry, document["nodes"], definitions=definitions)
             inputs = [{key: deepcopy(value[key]) for key in ("name", "data_type", "required", "node_ids")}
                       for value in declarations]
             return inputs, input_diagnostics(error)
 
     def _consumer_view(self, repo, sid):
         session, document = self._consumer_scope(repo, sid)
-        private_view = self._view(repo, sid)
-        chain = self._selected_chain(repo, sid)
+        data = self._data_management.execution_read(repo, registry=self.registry)
+        private_view = self._view(data, sid)
+        chain = self._selected_chain(data.records, sid)
         if private_view.get("readonly"):
             inputs, input_diagnostics = [], (deepcopy(self._package_diagnostics) or [{
                 "reason_code": "workflow_definition_unavailable",
@@ -205,7 +217,9 @@ class GraphPublic:
                 require(run["chain_run_id"] in self._history(repo, sid), "not_found", "Run is outside this session history", 404)
                 chain = repo.get("chain_run", chain_run_id=run["chain_run_id"])
             else:
-                chain = self._selected_chain(repo, sid)
+                chain = self._selected_chain(
+                    self._data_management.execution_read(
+                        repo, registry=self.registry).records, sid)
             result = self._public_observation(repo, sid, document, node_id, port_id, chain, run)
             require(result["availability"] != "unavailable", "output_not_public", "Historical output is not publicly declared", 403)
             return {"schema_version": 1, "kind": "workflow.public-output", **self._consumer_identity(session),

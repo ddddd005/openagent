@@ -150,7 +150,7 @@ class ConfigurationDataSession:
 
 
 class WorkflowDataManagement:
-    """Data-layer intake for defined workflow domains; currently configuration."""
+    """Data-layer intake for defined workflow domains: configuration and definitions."""
 
     def __init__(self, store_factory):
         self._store_factory = store_factory
@@ -158,6 +158,12 @@ class WorkflowDataManagement:
     def configuration_transaction(self, records: "GraphRecordStore") -> ConfigurationDataSession:
         """Bind limited configuration operations to the caller's transaction."""
         return ConfigurationDataSession(ConfigurationRepository(records))
+
+    def definition_transaction(self, records: "GraphRecordStore"):
+        """Bind read-only definition evidence access to the caller's store."""
+        from .definition_data import DefinitionDataSession, DefinitionRepository
+
+        return DefinitionDataSession(DefinitionRepository(records.store))
 
     @contextmanager
     def read_configuration(self):
@@ -173,6 +179,76 @@ class WorkflowDataManagement:
         try:
             yield self.configuration_transaction(GraphRecordStore(store))
         finally:
+            store.close()
+
+    @contextmanager
+    def read_definitions(self):
+        """Open a fresh store for an independent definition-evidence read.
+
+        The same transaction rule as ``read_configuration`` applies.  This is a
+        normal read connection, not a strict read-only SQLite mode.
+        """
+        from .graph_store import GraphRecordStore
+
+        store = self._store_factory()
+        try:
+            yield self.definition_transaction(GraphRecordStore(store))
+        finally:
+            store.close()
+
+    def execution_transaction(self, records: "GraphRecordStore", *, basis):
+        """Bind execution-domain ports to the caller's already-open transaction."""
+        from .execution_data import build_run_data
+
+        require(records.store._connection.in_transaction, "storage_contract_violation",
+                "Execution data requires the caller's open transaction", 500)
+        return build_run_data(records, basis=basis, writable=True)
+
+    def execution_read(self, records: "GraphRecordStore", *, registry):
+        """Bind read-only execution ports; write methods fail closed."""
+        from .execution_data import build_run_data
+
+        require(registry is not None, "run_basis_unavailable",
+                "Execution reads require a definition source", 409)
+        return build_run_data(records, registry=registry, writable=False)
+
+    def accept_fact(self, owner, stream_id, fact):
+        """Accept one runtime fact in its own narrow transaction.
+
+        The owner check and immutable fact insert share ``BEGIN IMMEDIATE``;
+        this is deliberately not the graph command transaction and creates no
+        management idempotency receipt.
+        """
+        from .execution_data import ExecutionFacts
+
+        store = self._store_factory()
+        connection = store._connection
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                receipt = ExecutionFacts(store).accept(owner, stream_id, fact)
+                store._inject("before_runtime_fact_commit")
+                connection.execute("COMMIT")
+                return receipt
+            except BaseException:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+                raise
+        finally:
+            store.close()
+
+    @contextmanager
+    def read_execution(self, *, registry):
+        """Open a fresh store and read transaction for an independent execution read."""
+        from .graph_store import GraphRecordStore
+
+        store = self._store_factory()
+        store._connection.execute("BEGIN")
+        try:
+            yield self.execution_read(GraphRecordStore(store), registry=registry)
+        finally:
+            if store._connection.in_transaction:
+                store._connection.execute("ROLLBACK")
             store.close()
 
 

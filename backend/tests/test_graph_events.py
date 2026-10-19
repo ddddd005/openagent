@@ -4,15 +4,18 @@ from contextlib import closing
 from copy import deepcopy
 from threading import Event
 from uuid import uuid4
+import inspect
 
 import pytest
 
 from phase1_agent.capability_packages import CapabilityPackage, PackageDependency, PackageManifest
 from phase1_agent.content_contracts import text_content
 from phase1_agent.contract_errors import ContractValidationError
+from phase1_agent.execution_data import ConfigurationReadSession, ExecutionRecords
 from phase1_agent.graph_contracts import GraphCompiler, NodeDefinition, NodePort
 from phase1_agent.graph_records import graph_record, validate_graph_bundle, validate_graph_record, validate_graph_transition
 from phase1_agent.graph_service import GraphWorkflowService
+from phase1_agent.graph_store import GraphRecordStore
 from phase1_agent.host_sdk import DataTypeDefinition, ObjectBinding
 from phase1_agent.storage import SqliteStore
 
@@ -388,8 +391,8 @@ def test_event_acceptance_retry_uses_original_result_and_blocks_parallel_submiss
     original = service._save_effects
     attempts = []
 
-    def interrupted(repo, sid, document, event):
-        result = original(repo, sid, document, event)
+    def interrupted(repo, sid, document, event, **kwargs):
+        result = original(repo, sid, document, event, **kwargs)
         if event["node_binding_id"] == doc["nodes"][3]["node_binding_id"]:
             attempts.append(deepcopy(event["object_writes"]))
             if len(attempts) == 1:
@@ -545,3 +548,40 @@ def test_event_baseline_cannot_be_replaced_with_another_sessions_head(event_serv
     event["base_commit_id"] = other["head_commit_id"]
     with pytest.raises(ContractValidationError, match="baseline has another session owner"):
         validate_graph_bundle(forged)
+
+def test_event_submit_and_read_use_execution_ports(event_service, monkeypatch):
+    service, _ = event_service
+    doc = event_document(service)
+    counts = {}
+
+    def track(name, method):
+        def wrapper(*args, **kwargs):
+            counts[name] = counts.get(name, 0) + 1
+            return method(*args, **kwargs)
+        return wrapper
+
+    for owner, name in (
+        (ExecutionRecords, "put_chain"),
+        (ExecutionRecords, "history"),
+        (ConfigurationReadSession, "fixed_document"),
+    ):
+        monkeypatch.setattr(owner, name, track(name, getattr(owner, name)))
+    direct = []
+    original_get = GraphRecordStore.get
+    forbidden = {"_read_event", "_event_bindings", "_submit_event"}
+
+    def tracked(self, kind, **identity):
+        caller = inspect.currentframe().f_back.f_code.co_name
+        if caller in forbidden:
+            direct.append(caller)
+        return original_get(self, kind, **identity)
+
+    monkeypatch.setattr(GraphRecordStore, "get", tracked)
+    accepted = submit(service, create(service, doc), doc)
+    service.wait(accepted["active_chain_run_id"])
+    read = service.read_event(accepted["workflow_session_id"],
+                              chain_id=accepted["active_chain_run_id"])
+    assert read["status"] == "succeeded"
+    for name in ("put_chain", "history", "fixed_document"):
+        assert counts.get(name, 0) > 0, name
+    assert direct == []

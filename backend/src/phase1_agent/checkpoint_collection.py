@@ -6,6 +6,7 @@ from copy import deepcopy
 
 from .chat_contracts import CHAT_CONTEXT_TYPE, CHAT_CONTEXT_SCHEMA_VERSION
 from .context_contract import EFFECTIVE_CONTEXT_TYPE, validate_agent_checkpoint_value
+from .contract_json import canonical_bytes
 from .graph_contracts import NodeRegistry, require
 from .host_sdk import ObjectBinding, TypeRegistry
 from .session_objects import SessionObjectStore
@@ -51,17 +52,12 @@ def _path_projection(config, paths):
     return projected
 
 
-def collect_checkpoint_configuration(
-        repo, workflow_definition_id, fixed_definition_revision, *, registry: NodeRegistry):
-    """Collect fixed node configuration using the current trusted declarations."""
-    _require_transaction(repo)
-    definition, document = _fixed_definition(repo, workflow_definition_id, fixed_definition_revision)
-    require(definition["workflow_definition_id"] == workflow_definition_id
-            and definition["revision"] == fixed_definition_revision,
-            "checkpoint_definition_mismatch", "Fixed checkpoint definition identity differs", 500)
-    require(isinstance(registry, NodeRegistry), "node_definition_management_unavailable",
-            "Trusted node definition management is unavailable", 409)
-
+def _collect_checkpoint_configuration(document, *, registry: NodeRegistry):
+    require(type(document) is dict and isinstance(registry, NodeRegistry)
+            and type(document.get("workflow_definition_id")) is str
+            and type(document.get("revision")) is int,
+            "checkpoint_definition_mismatch",
+            "Checkpoint configuration requires one exact fixed document", 409)
     nodes = {}
     for node in document["nodes"]:
         node_id = node["node_binding_id"]
@@ -86,10 +82,31 @@ def collect_checkpoint_configuration(
             }
 
     return {
-        "workflow_definition_id": workflow_definition_id,
-        "fixed_definition_revision": fixed_definition_revision,
+        "workflow_definition_id": document["workflow_definition_id"],
+        "fixed_definition_revision": document["revision"],
         "nodes": nodes,
     }
+
+
+def collect_checkpoint_configuration(
+        repo, workflow_definition_id, fixed_definition_revision, *, registry: NodeRegistry):
+    """Collect fixed node configuration from a persisted revision.
+
+    Retained for management and historical checkpoint reads; the execution
+    path passes its already-fixed document to
+    ``collect_checkpoint_configuration_document`` instead.
+    """
+    _require_transaction(repo)
+    definition, document = _fixed_definition(repo, workflow_definition_id, fixed_definition_revision)
+    require(definition["workflow_definition_id"] == workflow_definition_id
+            and definition["revision"] == fixed_definition_revision,
+            "checkpoint_definition_mismatch", "Fixed checkpoint definition identity differs", 500)
+    return _collect_checkpoint_configuration(document, registry=registry)
+
+
+def collect_checkpoint_configuration_document(document, *, registry: NodeRegistry):
+    """Collect fixed node configuration from the exact document already in hand."""
+    return _collect_checkpoint_configuration(document, registry=registry)
 
 
 def _checkpoint_bindings(document, exact_type, *, types: TypeRegistry, registry: NodeRegistry):
@@ -236,6 +253,83 @@ def collect_checkpoint_state(repo, workflow_definition_id, fixed_definition_revi
     return {
         "configuration": collect_checkpoint_configuration(
             repo, workflow_definition_id, fixed_definition_revision, registry=registry),
+        "agent_contexts": contexts,
+        "variables": variables,
+        "chat_contexts": chat_contexts,
+    }
+
+
+def collect_agent_contexts_data(
+        document, source_session, *, state, types: TypeRegistry, registry: NodeRegistry):
+    """Collect admitted context values through the execution state read port."""
+    require(isinstance(types, TypeRegistry), "storage_contract_violation",
+            "Agent context collection requires the active session type registry", 500)
+    require(type(document) is dict and type(source_session) is str,
+            "invalid_request", "Agent context collection requires a session id and fixed document")
+    workflow_definition_id = document.get("workflow_definition_id")
+    fixed_definition_revision = document.get("revision")
+    session = state.session(source_session)
+    require(session["workflow_definition_id"] == workflow_definition_id
+            and session["definition_revision"] == fixed_definition_revision,
+            "checkpoint_source_definition_mismatch",
+            "Source session must use the collected fixed definition revision", 409)
+    contexts = {}
+    for object_key, object_binding in sorted(checkpoint_context_bindings(
+            document, types=types, registry=registry).items()):
+        record = state.checkpoint_value(source_session, object_key, object_binding)
+        if record is None or record["deleted"]:
+            continue
+        value = validate_agent_checkpoint_value(record["value"])
+        if value == _EMPTY_AGENT_CONTEXT:
+            continue
+        contexts[object_key] = {"value": value}
+    return contexts
+
+
+def collect_checkpoint_state_data(data, source_session, document):
+    """Compose the success checkpoint from the execution transaction's fixed document."""
+    require(type(document) is dict
+            and type(document.get("workflow_definition_id")) is str
+            and type(document.get("revision")) is int,
+            "checkpoint_source_definition_mismatch",
+            "Checkpoint collection requires one exact fixed document", 409)
+    persisted = data.configuration.fixed_document(
+        document["workflow_definition_id"], document["revision"])
+    require(canonical_bytes(document) == canonical_bytes(persisted),
+            "checkpoint_source_definition_mismatch",
+            "Checkpoint collection document differs from its persisted fixed revision", 409)
+    types = data.registry.data_types
+    registry = data.registry
+    contexts = collect_agent_contexts_data(
+        document, source_session, state=data.state, types=types, registry=registry)
+    variables = {}
+    for key, binding in sorted(checkpoint_variable_bindings(
+            document, types=types, registry=registry).items()):
+        record = data.state.checkpoint_value(source_session, key, binding)
+        require(record is not None and not record["deleted"],
+                "checkpoint_variable_state_unavailable",
+                "An admitted variable item requires its current logical state", 409, object_key=key)
+        value = types.validate(
+            binding.type_id, binding.schema_version, record["value"], scope="session")
+        variables[key] = {
+            "type_id": binding.type_id, "schema_version": binding.schema_version,
+            "value": value,
+        }
+    chat_contexts = {}
+    for key, binding in sorted(checkpoint_chat_bindings(
+            document, types=types, registry=registry).items()):
+        record = data.state.checkpoint_value(source_session, key, binding)
+        require(record is not None and not record["deleted"],
+                "checkpoint_chat_state_unavailable",
+                "An admitted chat item requires its current logical state", 409, object_key=key)
+        value = types.validate(
+            binding.type_id, binding.schema_version, record["value"], scope="session")
+        chat_contexts[key] = {
+            "type_id": binding.type_id, "schema_version": binding.schema_version, "value": value,
+        }
+    return {
+        "configuration": collect_checkpoint_configuration_document(
+            document, registry=registry),
         "agent_contexts": contexts,
         "variables": variables,
         "chat_contexts": chat_contexts,

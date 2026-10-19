@@ -34,7 +34,8 @@ def _completed(service):
     sid = view["workflow_session_id"]
     with closing(SqliteStore(service.database)) as store:
         repo = GraphRecordStore(store)
-        chain = service._selected_chain(repo, sid)
+        data = service._data_management.execution_read(repo, registry=service.registry)
+        chain = service._selected_chain(data.records, sid)
         assert chain["status"] == "succeeded"
         commit = next(row for row in repo.rows("workflow_commit")
                       if row["source"].get("kind") == "completed_execution"

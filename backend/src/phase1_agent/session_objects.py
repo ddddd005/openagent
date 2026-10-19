@@ -46,10 +46,15 @@ def initialize_object_tables(connection) -> None:
 
 
 class SessionObjectStore:
-    def __init__(self, store, types):
+    def __init__(self, store, types, *, type_evidence=None):
         self.store, self.connection, self.types = store, store._connection, types
+        self._type_evidence = type_evidence
 
     def _check_type(self, binding, *, legacy=False, missing=False):
+        if self._type_evidence is not None:
+            return self._type_evidence.check(
+                self.types, binding.type_id, binding.schema_version, "session",
+                allow_legacy=legacy, allow_missing=missing)
         from .type_contract_store import TypeContractStore
         return TypeContractStore(self.store).check(
             self.types, binding.type_id, binding.schema_version, "session",

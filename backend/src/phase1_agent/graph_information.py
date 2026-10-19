@@ -92,7 +92,11 @@ class GraphInformation:
         with closing(self._store()) as store:
             repo = GraphRecordStore(store)
             node = self._information_original_node(repo, owner)
-            registry = self._execution_registries.get(owner["chain_run_id"], self.registry)
+            # This is the registered history reader for executor facts.  A live
+            # invocation keeps the captured basis; after release the historical
+            # reader continues with the current exact registration, as before.
+            basis = self._execution_registries.get(owner["chain_run_id"])
+            registry = basis.registry if basis is not None else self.registry
             entry = registry.get(node["component_id"], node["component_version"])
             require(entry is not None and entry.executor_ref is not None,
                     "information_source_unavailable", "Exact executor fact source is unavailable", 409)
@@ -238,7 +242,15 @@ class GraphInformation:
             self._check_open()
             node = self._information_owner(GraphRecordStore(store), sid, owner)
             definition = InformationBindingStore(store).get(reference, owner, generation)
-            registry = self._execution_registries.get(owner["chain_run_id"], self.registry)
+            basis = self._execution_registries.get(owner["chain_run_id"])
+            if basis is None:
+                require(source_scope == "history", "information_live_unavailable",
+                        "Live source is no longer retained for this invocation", 409)
+                # Historical readers keep their existing exact-binding check
+                # against the current registration; this is not a live fallback.
+                registry = self.registry
+            else:
+                registry = basis.registry
             registration = registry.information_sources.get(reference)
             require(registration is not None, "information_source_unavailable",
                     "Exact information source implementation is unavailable", 409)

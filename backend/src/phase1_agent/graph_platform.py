@@ -9,20 +9,26 @@ from .session_objects import SessionObjectStore, StateManifestStore
 
 
 class GraphPlatform:
-    def _objects(self, repo):
-        return SessionObjectStore(repo.store, self.registry.data_types)
+    def _objects(self, repo, *, registry=None):
+        registry = self.registry if registry is None else registry
+        return SessionObjectStore(repo.store, registry.data_types)
 
-    def _manifests(self, repo):
-        return StateManifestStore(repo.store, self.registry.data_types)
+    def _manifests(self, repo, *, registry=None):
+        # Manifest reads and object-reference projection do not consult the
+        # type catalog.  Keeping types optional lets a failed invocation write
+        # its boundary from persisted evidence without borrowing the current
+        # registry after its run basis was lost.
+        return StateManifestStore(repo.store, None if registry is None else registry.data_types)
 
-    def _resource_identities(self, document):
+    def _resource_identities(self, document, *, registry=None):
+        registry = self.registry if registry is None else registry
         resources = []
         for node in document["nodes"]:
-            entry = self.registry.get(node["component_id"], node["component_version"])
+            entry = registry.get(node["component_id"], node["component_version"])
             if entry is None or entry.resource_dependencies_declaration is None:
                 continue
             try:
-                self.registry.validate_config(entry, node["config"])
+                registry.validate_config(entry, node["config"])
                 dependencies = entry.resource_dependencies_declaration(deepcopy(node["config"]))
             except Exception:
                 # Saving an incomplete, dormant node remains legal. Runtime
@@ -43,16 +49,51 @@ class GraphPlatform:
                     resources.append(identity)
         return resources
 
-    def _save_manifest(self, repo, kind, identity, session, *, history=None, status=None):
+    def _save_manifest(self, source, kind, identity, session, *, history=None, status=None,
+                       registry=None, fallback_manifest=None):
         from .program_variable_store import ProgramVariableStore
+        if hasattr(source, "settlement"):
+            data = source
+            document = data.configuration.fixed_document(
+                session["workflow_definition_id"], session["definition_revision"])
+            if fallback_manifest is not None:
+                source_manifest = data.settlement.manifest(*fallback_manifest)
+                require(source_manifest is not None, "storage_contract_violation",
+                        "The prepared boundary for this execution is missing", 500)
+                package_lock = source_manifest["package_lock"]
+                global_resources = deepcopy(source_manifest["global_resources"])
+            else:
+                registry = data.registry if registry is None else registry
+                package_lock = document.get("package_lock", registry.execution_package_lock)
+                global_resources = self._resource_identities(document, registry=registry)
+            return data.settlement.save_manifest(
+                kind, identity, session,
+                history=(history if history is not None
+                         else data.records.history(session["workflow_session_id"])),
+                status=status, package_lock=package_lock,
+                global_resources=global_resources)
+        repo = source
         document = self._document(repo, session["workflow_definition_id"], session["definition_revision"])
-        return self._manifests(repo).save(
+        if registry is None and fallback_manifest is not None:
+            # The invocation lost its run basis before finishing.  Reuse the
+            # package lock and resource identities already persisted by its
+            # prepared boundary; never recompute them from the current table.
+            prepared = self._manifests(repo).get(*fallback_manifest)
+            require(prepared is not None, "storage_contract_violation",
+                    "The prepared boundary for this execution is missing", 500)
+            package_lock = prepared["package_lock"]
+            global_resources = deepcopy(prepared["global_resources"])
+        else:
+            registry = self.registry if registry is None else registry
+            package_lock = document.get("package_lock", registry.execution_package_lock)
+            global_resources = self._resource_identities(document, registry=registry)
+        return self._manifests(repo, registry=registry).save(
             kind, identity, session=session,
             data_revision=ProgramVariableStore(repo.store).current(session["workflow_session_id"])["revision"],
             node_states=self._private(repo, session["workflow_session_id"]),
             history_refs=history if history is not None else self._history(repo, session["workflow_session_id"]),
-            package_lock=document.get("package_lock", self.registry.execution_package_lock),
-            global_resources=self._resource_identities(document), status=status,
+            package_lock=package_lock,
+            global_resources=global_resources, status=status,
         )
 
     def platform_capabilities(self):
@@ -143,7 +184,8 @@ class GraphPlatform:
             repo.put("workflow_session", session)
             # Editing working state does not manufacture a successful candidate.
             self._save_manifest(repo, "object_edit", idempotency_key + ":" + sid, session, status="state_edit")
-            return {"results": result, "session": self._view(repo, sid)}
+            return {"results": result, "session": self._view(
+                self._data_management.execution_read(repo, registry=self.registry), sid)}
 
         return self._change("graph.objects.update", idempotency_key, request, change)
 
@@ -177,9 +219,10 @@ class GraphPlatform:
             require(result is not None, "manifest_unavailable", "This older record has no object manifest", 404)
             return result
 
-    def _global_store(self, store):
+    def _global_store(self, store, *, registry=None):
         from .global_resources import GlobalResourceStore
-        return GlobalResourceStore(store, self.registry.data_types)
+        registry = self.registry if registry is None else registry
+        return GlobalResourceStore(store, registry.data_types)
 
     def get_global_resource(self, identity):
         from .content_configuration import global_resource_service

@@ -1,28 +1,23 @@
 """Workflow-owned chat operations over registered data and success checkpoints."""
 
-from contextlib import closing
 from copy import deepcopy
 from uuid import uuid4
 
 from .chat_contracts import bind_chat_candidate_checkpoint
 from .checkpoint_collection import (
     checkpoint_chat_bindings, checkpoint_context_bindings, checkpoint_variable_bindings,
-    collect_checkpoint_state,
+    collect_checkpoint_state_data,
 )
 from .checkpoint_loading import validate_checkpoint_configuration_target
 from .checkpoint_repository import CheckpointRepository
 from .contract_json import validate_json_value
 from .graph_records import require
-from .graph_store import GraphRecordStore
 from .runtime_checkpoints import remap_checkpoint_state_chat, remap_checkpoint_storage_chat
 from .workflow_chat_operations import (
     begin_chat_round, plan_chat_continuation, plan_chat_floor_fork,
     plan_chat_reroll, select_chat_candidate,
 )
-from .workflow_chat_runtime import (
-    copy_chat_round_inputs, read_chat_invocations, read_chat_round_inputs,
-    save_chat_invocations, save_chat_round_inputs,
-)
+from .workflow_chat_runtime import copy_chat_round_inputs
 
 
 def _uid():
@@ -30,25 +25,37 @@ def _uid():
 
 
 class WorkflowChatService:
-    def _chat_fixed_document(self, repo, session):
-        return self._document(repo, session["workflow_definition_id"], session["definition_revision"])
+    def _chat_fixed_document(self, source, session):
+        if hasattr(source, "records"):
+            return source.configuration.fixed_document(
+                session["workflow_definition_id"], session["definition_revision"])
+        return self._document(
+            source, session["workflow_definition_id"], session["definition_revision"])
 
-    def _chat_points(self, repo, session):
+    def _chat_points(self, source, session):
+        if hasattr(source, "records"):
+            return source.settlement
         return CheckpointRepository(
-            repo.store._connection, workflow_definition_id=session["workflow_definition_id"],
+            source.store._connection, workflow_definition_id=session["workflow_definition_id"],
             workflow_session_id=session["workflow_session_id"],
             fixed_definition_revision=session["definition_revision"])
 
-    def _chat_bindings(self, document):
+    def _chat_bindings(self, document, *, registry=None):
+        registry = self.registry if registry is None else registry
         return checkpoint_chat_bindings(
-            document, types=self.registry.data_types, registry=self.registry)
+            document, types=registry.data_types, registry=registry)
 
-    def _chat_item(self, repo, session, object_key, *, expected_object_revision=None):
-        document = self._chat_fixed_document(repo, session)
-        bindings = self._chat_bindings(document)
+    def _chat_item(self, source, session, object_key, *, expected_object_revision=None, registry=None):
+        registry = (source.registry if registry is None and hasattr(source, "records")
+                    else self.registry if registry is None else registry)
+        document = self._chat_fixed_document(source, session)
+        bindings = self._chat_bindings(document, registry=registry)
         require(type(object_key) is str and object_key in bindings,
                 "chat_item_unbound", "Chat operations require an exact registered chat item", 409)
-        record = self._objects(repo)._checkpoint_current_value(
+        if hasattr(source, "records"):
+            return source.chat.item(
+                session, object_key, expected_object_revision=expected_object_revision)
+        record = self._objects(source, registry=registry)._checkpoint_current_value(
             session["workflow_session_id"], object_key, bindings[object_key])
         require(record is not None and not record["deleted"],
                 "chat_item_unavailable", "The registered chat item has no current value", 409)
@@ -58,28 +65,35 @@ class WorkflowChatService:
                     "stale_object_revision", "The chat item changed", 409)
         return document, record
 
-    def _chat_operation_basis(self, repo, sid, request):
+    def _chat_operation_basis(self, source, sid, request, *, registry=None):
         for name, minimum in (("expected_session_revision", 1), ("expected_data_revision", 0),
                               ("expected_head_revision", 1), ("expected_object_revision", 1)):
             require(type(request[name]) is int and minimum <= request[name] <= 2**53 - 1,
                     "invalid_request", "Chat operations require exact revision guards")
-        session = self._stable(repo, sid, request["expected_session_revision"],
+        session = self._stable(source, sid, request["expected_session_revision"],
                                request["expected_data_revision"], request["expected_head_revision"])
         document, record = self._chat_item(
-            repo, session, request["object_key"], expected_object_revision=request["expected_object_revision"])
+            source, session, request["object_key"],
+            expected_object_revision=request["expected_object_revision"],
+            registry=registry)
         return session, document, record
 
-    def _write_chat_values(self, repo, session, document, values):
-        current = self._objects(repo).current(session["workflow_session_id"])
+    def _write_chat_values(self, source, session, document, values, *, registry=None):
+        if hasattr(source, "records"):
+            source.chat.write_values(session, document, values)
+            return
+        registry = self.registry if registry is None else registry
+        current = self._objects(source, registry=registry).current(session["workflow_session_id"])
         cas = {key: {field: current[key][field] for field in ("revision", "revision_id")} for key in values}
-        self._objects(repo)._write_chat_operation_values(
-            session["workflow_session_id"], document, values, cas, registry=self.registry)
+        self._objects(source, registry=registry)._write_chat_operation_values(
+            session["workflow_session_id"], document, values, cas, registry=registry)
 
-    def _chat_compute_values(self, document, state):
+    def _chat_compute_values(self, document, state, *, registry=None):
+        registry = self.registry if registry is None else registry
         contexts = checkpoint_context_bindings(
-            document, types=self.registry.data_types, registry=self.registry)
+            document, types=registry.data_types, registry=registry)
         variables = checkpoint_variable_bindings(
-            document, types=self.registry.data_types, registry=self.registry)
+            document, types=registry.data_types, registry=registry)
         require(set(state["agent_contexts"]) <= contexts.keys()
                 and set(state["variables"]) == variables.keys(),
                 "chat_computation_binding_mismatch", "Chat computation must match admitted fixed items", 409)
@@ -93,10 +107,14 @@ class WorkflowChatService:
             values[key] = deepcopy(entry["value"])
         return values
 
-    def _restore_chat_compute(self, repo, session, document, state):
+    def _restore_chat_compute(self, source, session, document, state, *, registry=None):
+        registry = (source.registry if registry is None and hasattr(source, "records")
+                    else self.registry if registry is None else registry)
         if "configuration" in state:
-            validate_checkpoint_configuration_target(state["configuration"], document, registry=self.registry)
-        self._write_chat_values(repo, session, document, self._chat_compute_values(document, state))
+            validate_checkpoint_configuration_target(state["configuration"], document, registry=registry)
+        self._write_chat_values(
+            source, session, document, self._chat_compute_values(document, state, registry=registry),
+            registry=registry)
 
     @staticmethod
     def _chat_input_overrides(document, overrides):
@@ -115,10 +133,12 @@ class WorkflowChatService:
             validate_editable_input_configuration({"text": text}, node_id=node_id)
             target["config"] = {"text": text}
 
-    def _prepare_chat_run(self, repo, session, document, plan, chain_id, inputs, *, chat_request=None):
+    def _prepare_chat_run(self, data, session, document, plan, chain_id, inputs, *,
+                          chat_request=None):
         """Freeze item-specific identities before nodes run, independently of browser launch."""
-        fixed = self._chat_fixed_document(repo, session)
-        bindings = self._chat_bindings(fixed)
+        registry = data.registry
+        fixed = data.chat.fixed_document(session)
+        bindings = data.chat.bindings(fixed)
         nodes = {node["node_binding_id"]: node for node in document["nodes"]}
         participating = {
             key: binding for key, binding in bindings.items()
@@ -131,10 +151,8 @@ class WorkflowChatService:
                     "The requested chat provider is not in this workflow invocation", 409)
         if not participating:
             return
-        current = self._objects(repo).current(session["workflow_session_id"])
-        initial = collect_checkpoint_state(
-            repo, session["workflow_definition_id"], session["definition_revision"],
-            session["workflow_session_id"], types=self.registry.data_types, registry=self.registry)
+        current = data.state.objects(session["workflow_session_id"])
+        initial = collect_checkpoint_state_data(data, session["workflow_session_id"], fixed)
         frozen_overrides = {
             node_id: node["config"]["text"] for node_id, node in nodes.items()
             if node_id in plan.ordered_node_ids
@@ -149,7 +167,7 @@ class WorkflowChatService:
                 metadata = plan_chat_reroll(value, chat_request["round_id"])
             else:
                 continuation = plan_chat_continuation(value)
-                latest = self._chat_points(repo, session).latest() if continuation is None else None
+                latest = data.chat.latest_checkpoint(session) if continuation is None else None
                 base = (continuation["result_checkpoint_id"] if continuation is not None
                         else latest["checkpoint_id"] if latest is not None else None)
                 input_node = nodes.get(node["config"]["input_node_id"])
@@ -160,8 +178,8 @@ class WorkflowChatService:
                     "round_id": _uid(), "base_checkpoint_id": base, "submitted_input": submitted,
                 }
                 values[key] = begin_chat_round(value, **metadata)
-                save_chat_round_inputs(
-                    repo, session["workflow_session_id"], key, metadata["round_id"],
+                data.chat.save_round_inputs(
+                    session["workflow_session_id"], key, metadata["round_id"],
                     inputs=inputs, input_overrides=frozen_overrides,
                     initial_compute_state=(
                         {section: initial[section] for section in ("agent_contexts", "variables")}
@@ -171,34 +189,37 @@ class WorkflowChatService:
                 "chat_computation_basis_conflict",
                 "Participating chat items require different computation checkpoints", 409)
         if values:
-            self._write_chat_values(repo, session, fixed, values)
-        save_chat_invocations(repo, session["workflow_session_id"], chain_id, invocations)
+            data.chat.write_values(session, fixed, values)
+        data.chat.save_invocations(session["workflow_session_id"], chain_id, invocations)
 
-    def _chat_execution_contexts(self, repo, sid, chain_id, document):
-        nodes = {binding.registrar_node_id: key for key, binding in self._chat_bindings(document).items()}
-        invocations = read_chat_invocations(repo, sid, chain_id)
+    def _chat_execution_contexts(self, data, sid, chain_id, document):
+        nodes = {binding.registrar_node_id: key
+                 for key, binding in data.chat.bindings(document).items()}
+        invocations = data.chat.invocations(sid, chain_id)
         return {node_id: invocations[key] for node_id, key in nodes.items() if key in invocations}
 
-    def _bind_chat_success(self, repo, session, chain_id, checkpoint_id):
+    def _bind_chat_success(self, data, session, chain_id, checkpoint_id):
         values = {}
-        document = self._chat_fixed_document(repo, session)
-        for key, metadata in read_chat_invocations(repo, session["workflow_session_id"], chain_id).items():
-            _, record = self._chat_item(repo, session, key)
+        document = data.chat.fixed_document(session)
+        for key, metadata in data.chat.invocations(
+                session["workflow_session_id"], chain_id).items():
+            _, record = data.chat.item(session, key)
             values[key] = bind_chat_candidate_checkpoint(
                 record["value"], round_id=metadata["round_id"], candidate_id=metadata["candidate_id"],
                 checkpoint_id=checkpoint_id)
         if values:
-            self._write_chat_values(repo, session, document, values)
+            data.chat.write_values(session, document, values)
 
     def _refresh_chat_snapshots(self, sid):
-        with self._lock, closing(self._store()) as store:
-            repo = GraphRecordStore(store)
-            session = repo.get("workflow_session", workflow_session_id=sid)
-            document = self._chat_fixed_document(repo, session)
+        with self._lock, self._data_management.read_execution(
+                registry=self.registry) as data:
+            session = data.records.session(sid)
+            document = self._chat_fixed_document(data, session)
             for node in document["nodes"]:
                 if (node["component_id"], node["component_version"]) == ("frontend.node", "2"):
-                    self._read_frontend_snapshot(repo, session["workflow_definition_id"],
-                                                 session["definition_revision"], node["node_binding_id"], sid)
+                    self._read_frontend_snapshot(
+                        data, session["workflow_definition_id"],
+                        session["definition_revision"], node["node_binding_id"], sid)
 
     def chat_submit(self, sid, *, object_key, submitted_input, expected_session_revision,
                     expected_data_revision, expected_head_revision, expected_object_revision,
@@ -213,9 +234,10 @@ class WorkflowChatService:
         require(type(submitted_input) is str, "invalid_request", "Chat submission requires text")
         validate_json_value(request)
 
-        def prepare(repo):
-            session, document, _ = self._chat_operation_basis(repo, sid, request)
-            binding = self._chat_bindings(document)[object_key]
+        def prepare(data, basis):
+            session, document, _ = self._chat_operation_basis(
+                data, sid, request, registry=basis.registry)
+            binding = self._chat_bindings(document, registry=basis.registry)[object_key]
             provider = next(node for node in document["nodes"] if node["node_binding_id"] == binding.registrar_node_id)
             overrides = deepcopy(request["input_overrides"])
             target_id = provider["config"].get("input_node_id", "")
@@ -224,8 +246,9 @@ class WorkflowChatService:
                         "chat_input_mismatch", "Submitted text differs from the bound input projection")
                 overrides[target_id] = submitted_input
             return self._prepare_run(
-                repo, sid, expected_session_revision, request["inputs"], input_overrides=overrides,
-                chat_request={"mode": "submit", "object_key": object_key, "submitted_input": submitted_input})
+                data, sid, expected_session_revision, request["inputs"], input_overrides=overrides,
+                chat_request={"mode": "submit", "object_key": object_key, "submitted_input": submitted_input},
+                basis=basis)
 
         return self._start_run(sid, idempotency_key, request, prepare, operation="graph.chat.submit")
 
@@ -237,22 +260,24 @@ class WorkflowChatService:
             "expected_head_revision": expected_head_revision, "expected_object_revision": expected_object_revision,
         }
 
-        def prepare(repo):
-            session, document, record = self._chat_operation_basis(repo, sid, request)
+        def prepare(data, basis):
+            session, document, record = self._chat_operation_basis(
+                data, sid, request, registry=basis.registry)
             metadata = plan_chat_reroll(record["value"], round_id)
-            frozen = read_chat_round_inputs(repo, sid, object_key, round_id)
+            frozen = data.chat.round_inputs(sid, object_key, round_id)
             require(frozen is not None, "chat_round_inputs_unavailable",
                     "The original round's accepted inputs are unavailable", 409)
             base = metadata["base_checkpoint_id"]
-            state = (self._chat_points(repo, session).materialize(base) if base is not None
+            state = (data.chat.materialize_checkpoint(session, base) if base is not None
                      else frozen["initial_compute_state"])
             require(state is not None, "chat_round_basis_unavailable",
                     "The initial round computation basis is unavailable", 409)
-            self._restore_chat_compute(repo, session, document, state)
+            self._restore_chat_compute(data, session, document, state, registry=basis.registry)
             return self._prepare_run(
-                repo, sid, expected_session_revision, frozen["inputs"],
+                data, sid, expected_session_revision, frozen["inputs"],
                 input_overrides=frozen["input_overrides"],
-                chat_request={"mode": "reroll", "object_key": object_key, "round_id": round_id})
+                chat_request={"mode": "reroll", "object_key": object_key, "round_id": round_id},
+                basis=basis)
 
         return self._start_run(sid, idempotency_key, request, prepare, operation="graph.chat.reroll")
 
@@ -279,7 +304,8 @@ class WorkflowChatService:
                 "round_id": round_id, "candidate_id": candidate_id,
             })
             accepted.append(True)
-            return self._view(repo, sid)
+            return self._view(
+                self._data_management.execution_read(repo, registry=self.registry), sid)
 
         response = self._change("graph.chat.select", idempotency_key, request, change)
         if accepted:

@@ -264,14 +264,39 @@ def classify_configuration_changes(previous, proposed, descriptor_lookup):
 
 
 class WorkflowConfiguration:
-    def _configuration_descriptor(self, node):
-        definition = self.registry.get_definition(node["component_id"], node["component_version"])
-        require(definition is not None, "graph_missing_node_type",
+    def _configuration_descriptor(self, node, *, definitions=None):
+        from .workflow_definitions import WorkflowDefinitionCatalog
+
+        if definitions is None:
+            definitions = getattr(self, "definition_query", None)
+        if definitions is None:
+            definitions = WorkflowDefinitionCatalog(
+                self.registry, getattr(self, "_package_manifests", ()))
+        view = definitions.get("node", {
+            "component_id": node["component_id"],
+            "component_version": node["component_version"],
+        })
+        require(view is not None, "graph_missing_node_type",
                 "Current trusted node definition is unavailable", 409,
                 node_id=node["node_binding_id"])
-        return definition.to_dict()
+        return deepcopy(view["declaration"])
 
-    def _compose_configuration(self, current, fixed_document):
+    def _compose_configuration(self, current, fixed_document, *, registry=None, definitions=None):
+        if definitions is not None:
+            definitions_registry = getattr(definitions, "registry", None)
+            if definitions_registry is not None:
+                if registry is None:
+                    registry = definitions_registry
+                else:
+                    require(definitions_registry is registry, "graph_definition_basis_mismatch",
+                            "Configuration composition requires one definition basis")
+        registry = self.registry if registry is None else registry
+        if definitions is None:
+            definitions = getattr(self, "definition_query", None) if registry is self.registry else None
+        if definitions is None:
+            from .workflow_definitions import WorkflowDefinitionCatalog
+            definitions = WorkflowDefinitionCatalog(
+                registry, getattr(self, "_package_manifests", ()))
         document = deepcopy(fixed_document)
         document["name"] = current["display_name"]
         document["edit_sequence"] = current["edit_sequence"]
@@ -279,7 +304,7 @@ class WorkflowConfiguration:
             identity = node["node_binding_id"]
             presentation = current["node_presentation"][identity]
             node.update(deepcopy(presentation))
-            descriptor = self._configuration_descriptor(node)
+            descriptor = self._configuration_descriptor(node, definitions=definitions)
             declaration = validate_node_configuration(node, descriptor)
             if declaration is not None and node["configuration_policy"]["prompt_mode"] == "adjustable":
                 for field in declaration["fields"]:
@@ -287,13 +312,13 @@ class WorkflowConfiguration:
                 node["config"].update(deepcopy(current["adjustable_config"][identity]))
                 validate_node_configuration(node, descriptor)
         from .graph_contracts import validate_session_item_registrations
-        validate_session_item_registrations(document, self.registry)
+        validate_session_item_registrations(document, registry)
         return document
 
-    def _configuration_view(self, data, identity):
+    def _configuration_view(self, data, identity, *, registry=None, definitions=None):
         current, fixed = data.configuration_view(identity)
         require(current is not None, "not_found", "Current workflow configuration not found", 404)
-        return self._compose_configuration(current, fixed)
+        return self._compose_configuration(current, fixed, registry=registry, definitions=definitions)
 
     def _write_configuration(self, data, document, edit_sequence):
         adjustable = {}

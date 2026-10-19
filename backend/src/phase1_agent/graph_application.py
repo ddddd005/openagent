@@ -133,7 +133,9 @@ class GraphApplication:
 
     def _editor_inputs(self, document):
         from .graph_input_declarations import editor_input_declarations
-        return editor_input_declarations(self._management_service().registry, document)
+        service = self._management_service()
+        return editor_input_declarations(
+            service.registry, document, definitions=getattr(service, "definition_query", None))
 
     def _management_actions(self, session_id):
         service = self._management_service()

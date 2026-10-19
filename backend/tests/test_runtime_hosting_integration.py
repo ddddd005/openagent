@@ -11,6 +11,7 @@ from phase1_agent.capability_packages import (
     CapabilityPackage, PackageDependency, PackageManifest,
 )
 from phase1_agent.content_contracts import text_content
+from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import DataTypeDefinition, HostContractError, ObjectBinding
@@ -217,6 +218,57 @@ def test_paused_run_does_not_pause_an_independent_session_and_close_releases_ori
         assert closed["status"] == "closed" and handles[0].disposes == 1
         assert closed["objects"][OBJECT_KEY]["value"] == {"count": 0}
         assert original_host.active_handle_count == 0 and first_chain not in service._runtime_hosts
+
+
+def test_accept_fact_keeps_its_own_transaction_and_owner_check(tmp_path):
+    entered, proceed, handles = Event(), Event(), []
+    with closing(GraphWorkflowService(
+            tmp_path / "fact-transaction.sqlite",
+            capability_packages=[hosted_package(entered, proceed, handles)],
+            enabled_packages={**DEFAULT_PACKAGES, "sample.hosted-work": "1.0.0"})) as service:
+        initial = create(service, graph(service))
+        chain_id = start(service, initial)
+        try:
+            assert entered.wait(5)
+            context = handles[0].context
+            owner = InvocationOwner(
+                initial["workflow_session_id"], chain_id,
+                context.node_binding_id, context.node_run_id).to_dict()
+            fact = {"fact_id": "manual-fact", "sequence": 0, "phase": "dispatch"}
+
+            def fail_commit(point):
+                if point == "before_runtime_fact_commit":
+                    raise OSError("injected fact commit failure")
+
+            service._fault_injector = fail_commit
+            with pytest.raises(OSError):
+                service._data_management.accept_fact(owner, "test:manual", fact)
+            service._fault_injector = None
+            with closing(service._store()) as store:
+                assert store._connection.execute(
+                    "SELECT COUNT(*) FROM workflow_runtime_facts "
+                    "WHERE node_run_id=? AND stream_id='test:manual'",
+                    (context.node_run_id,)).fetchone()[0] == 0
+                idempotency = store._connection.execute(
+                    "SELECT COUNT(*) FROM idempotency").fetchone()[0]
+            receipt = service._data_management.accept_fact(owner, "test:manual", fact)
+            assert receipt == {"fact_id": "manual-fact"}
+            assert service._data_management.accept_fact(owner, "test:manual", fact) == receipt
+            with closing(service._store()) as store:
+                assert store._connection.execute(
+                    "SELECT COUNT(*) FROM workflow_runtime_facts "
+                    "WHERE node_run_id=? AND stream_id='test:manual'",
+                    (context.node_run_id,)).fetchone()[0] == 1
+                assert store._connection.execute(
+                    "SELECT COUNT(*) FROM idempotency").fetchone()[0] == idempotency
+        finally:
+            proceed.set()
+        service.wait(chain_id)
+        assert service.get_session(initial["workflow_session_id"])["status"] == "succeeded"
+        with pytest.raises(ContractValidationError) as caught:
+            service._data_management.accept_fact(owner, "test:manual", {
+                "fact_id": "late-fact", "sequence": 1, "phase": "result"})
+        assert caught.value.reason_code == "execution_owner_changed"
 
 
 def test_unregistered_ordinary_node_finishes_before_boundary_pause_and_is_not_reexecuted(tmp_path):

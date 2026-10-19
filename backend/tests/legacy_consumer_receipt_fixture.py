@@ -31,9 +31,9 @@ def seed_legacy_consumer_receipt(service, operation, parameters):
                 assert operation == "consumer.event.submit"
                 native = {"session": sid, **arguments}
 
-                def change(repo):
+                def change(data, basis):
                     _, document = service._event_scope(
-                        repo, sid, request["workflow_definition_id"], request["definition_revision"])
+                        data, sid, request["workflow_definition_id"], request["definition_revision"])
                     binding = service._event_binding(
                         document, request["event_id"], request["event_schema_version"], consumer=True)
                     event = {
@@ -41,7 +41,8 @@ def seed_legacy_consumer_receipt(service, operation, parameters):
                         "audience": binding["audience"], "idempotency_key": key,
                     }
                     return service._prepare_run(
-                        repo, sid, request["expected_revision"], request["payload"], event=event)
+                        data, sid, request["expected_revision"], request["payload"],
+                        event=event, basis=basis)
 
                 raw = service._start_run(
                     sid, key, native, change, operation="graph.consumer.event.submit")

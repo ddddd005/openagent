@@ -1,10 +1,8 @@
 """Application wiring for public package capabilities and artifact authority."""
 
-from contextlib import closing
 from copy import deepcopy
 
 from .graph_records import require
-from .graph_store import GraphRecordStore
 from .runtime_fact_store import RuntimeFactStore
 
 
@@ -31,38 +29,54 @@ class GraphRuntimeHost:
             ) if key in event}
             frame.accept_outputs({**published, "workflow_session_id": sid, "chain_run_id": chain_id})
 
+    def _execution_read(self, chain_id):
+        """Bind a live host read to the invocation's retained run basis."""
+        basis = self._require_run_basis(chain_id)
+        return self._data_management.read_execution(registry=basis.registry)
+
+    def _execution_read_current(self, chain_id):
+        """Read-only fallback for explicit diagnostics, cleanup and notifications.
+
+        It must not be used to authorize an active host call or a service
+        invocation: those require the retained basis above.
+        """
+        basis = self._execution_registries.get(chain_id)
+        registry = basis.registry if basis is not None else self.registry
+        return self._data_management.read_execution(registry=registry)
+
     def _resolve_runtime_input(self, context, port):
         return self._resolve_runtime_input_detail(context, port)["value"]
 
-    def _resolve_runtime_input_detail(self, context, port):
+    def _runtime_input_detail(self, data, context, port):
         refs = context.input_artifact_refs(port)
         require(len(refs) == 1, "runtime_input_unbound",
                 "Capability requires one exact accepted input", 409)
-        with self._lock, closing(self._store()) as store:
-            repo = GraphRecordStore(store)
-            run = repo.get("node_run", run_id=context.node_run_id)
-            require(run["input_refs"].get(port) == refs, "runtime_input_unbound",
-                    "Input differs from the accepted invocation binding", 409)
-            output = repo.get("workflow_output", output_id=refs[0]["output_id"])
-            producer = repo.get("node_run", run_id=output["run_id"])
-            require(output["workflow_session_id"] == context.workflow_session_id
-                    and output["chain_run_id"] == context.chain_run_id
-                    and producer["status"] == "succeeded"
-                    and producer["output_refs"].get(output["port_id"]) == output["output_id"],
-                    "runtime_input_unbound", "Input is not accepted in this invocation", 409)
-            return {"value": deepcopy(output["payload"]), "output_id": output["output_id"],
-                    "producer": {"workflow_session_id": output["workflow_session_id"],
-                                 "chain_run_id": output["chain_run_id"],
-                                 "node_binding_id": output["node_binding_id"],
-                                 "node_run_id": output["run_id"]}}
+        run = data.records.node_run(context.node_run_id)
+        require(run["input_refs"].get(port) == refs, "runtime_input_unbound",
+                "Input differs from the accepted invocation binding", 409)
+        output = data.records.output(refs[0]["output_id"])
+        producer = data.records.node_run(output["run_id"])
+        require(output["workflow_session_id"] == context.workflow_session_id
+                and output["chain_run_id"] == context.chain_run_id
+                and producer["status"] == "succeeded"
+                and producer["output_refs"].get(output["port_id"]) == output["output_id"],
+                "runtime_input_unbound", "Input is not accepted in this invocation", 409)
+        return {"value": deepcopy(output["payload"]), "output_id": output["output_id"],
+                "producer": {"workflow_session_id": output["workflow_session_id"],
+                             "chain_run_id": output["chain_run_id"],
+                             "node_binding_id": output["node_binding_id"],
+                             "node_run_id": output["run_id"]}}
+
+    def _resolve_runtime_input_detail(self, context, port):
+        with self._lock, self._execution_read(context.chain_run_id) as data:
+            return self._runtime_input_detail(data, context, port)
 
     def _describe_runtime_input_origin(self, context, port):
         """Describe one exact bound input without granting a selectable run lookup."""
-        with self._lock, closing(self._store()) as store:
-            repo = GraphRecordStore(store)
-            consumer = repo.get("node_run", run_id=context.node_run_id)
-            session = repo.get("workflow_session", workflow_session_id=context.workflow_session_id)
-            chain = repo.get("chain_run", chain_run_id=context.chain_run_id)
+        with self._lock, self._execution_read_current(context.chain_run_id) as data:
+            consumer = data.records.node_run(context.node_run_id)
+            session = data.records.session(context.workflow_session_id)
+            chain = data.records.chain(context.chain_run_id)
             require(consumer["workflow_session_id"] == context.workflow_session_id
                     and consumer["chain_run_id"] == context.chain_run_id
                     and consumer["node_binding_id"] == context.node_binding_id
@@ -70,10 +84,10 @@ class GraphRuntimeHost:
                     and chain["status"] == "running"
                     and session["active_chain_run_id"] == context.chain_run_id,
                     "runtime_origin_owner_mismatch", "Input origin caller is no longer this running invocation", 409)
-            detail = self._resolve_runtime_input_detail(context, port)
-            output = repo.get("workflow_output", output_id=detail["output_id"])
-            producer = repo.get("node_run", run_id=output["run_id"])
-            document = self._document_for_runtime_output(repo, output)
+            detail = self._runtime_input_detail(data, context, port)
+            output = data.records.output(detail["output_id"])
+            producer = data.records.node_run(output["run_id"])
+            document = self._document_for_runtime_output(data, output)
             declaration = next((node for node in document["nodes"]
                                 if node["node_binding_id"] == output["node_binding_id"]), None)
             require(declaration is not None, "storage_contract_violation",
@@ -86,28 +100,9 @@ class GraphRuntimeHost:
     def _accept_runtime_fact(self, owner, fact, stream_id):
         # A fact is its own immutable idempotency record. Avoid copying its
         # body into a management receipt or scanning all historical graphs.
-        with self._lock, closing(self._store()) as store:
+        with self._lock:
             self._check_open()
-            repo, facts = GraphRecordStore(store), RuntimeFactStore(store)
-            try:
-                store._connection.execute("BEGIN IMMEDIATE")
-                session = repo.get("workflow_session", workflow_session_id=owner["workflow_session_id"])
-                chain = repo.get("chain_run", chain_run_id=owner["chain_run_id"])
-                run = repo.get("node_run", run_id=owner["node_run_id"])
-                require(session["active_chain_run_id"] == owner["chain_run_id"]
-                        and chain["status"] == "running"
-                        and run["chain_run_id"] == owner["chain_run_id"]
-                        and run["node_binding_id"] == owner["node_binding_id"]
-                        and run["status"] == "running",
-                        "execution_owner_changed", "Runtime fact owner is no longer running", 409)
-                receipt = facts.accept(owner=owner, stream_id=stream_id, fact=fact)
-                store._inject("before_runtime_fact_commit")
-                store._connection.execute("COMMIT")
-                return receipt
-            except BaseException:
-                if store._connection.in_transaction:
-                    store._connection.execute("ROLLBACK")
-                raise
+            return self._data_management.accept_fact(owner, stream_id, fact)
 
     def _accept_service_fact(self, context, fact, stream_id):
         owner = {"workflow_session_id": context.workflow_session_id,
@@ -183,11 +178,12 @@ class GraphRuntimeHost:
             "consumer_node": self._model_authority_declaration(frame, consumer, grants=True),
         }
 
-    def _prepare_public_capabilities(self, sid, chain_id, plan, resources):
+    def _prepare_public_capabilities(self, sid, chain_id, plan, resources, *, registry=None):
         from .host_services import HostServiceEnvironment, HostServiceRun
+        registry = self.registry if registry is None else registry
         nodes = {node["node_binding_id"]: node for node in plan.document["nodes"]
                  if node["node_binding_id"] in plan.ordered_node_ids}
-        frame = HostServiceRun(self.registry.services, workflow_session_id=sid, chain_run_id=chain_id,
+        frame = HostServiceRun(registry.services, workflow_session_id=sid, chain_run_id=chain_id,
                                nodes=nodes, definitions={key: plan.definitions[key] for key in nodes})
         self._service_runs[chain_id] = frame
 
@@ -211,7 +207,7 @@ class GraphRuntimeHost:
 
             def resolve_artifact(context, artifact):
                 authorize(context)
-                return self._resolve_runtime_artifact(context, artifact)
+                return self._resolve_runtime_artifact(context, artifact, registry=registry)
 
             def accept_fact(context, fact, stream_id):
                 authorize(context)
@@ -220,11 +216,15 @@ class GraphRuntimeHost:
 
             def read_resource(resource):
                 from .host_sdk import ResourceIdentity
+                from .content_configuration import CONTENT_RESOURCE_TYPES
                 live()
                 identity = ResourceIdentity.from_dict(resource).to_dict()
                 require((identity["scope"], identity["type_id"], identity["resource_id"]) in allowed_resources,
                         "graph_resource_dependency_undeclared",
                         "Service resource was not declared in this frozen run", 403)
+                if identity["type_id"] in CONTENT_RESOURCE_TYPES:
+                    return self.content_configuration.get_global_resource(
+                        identity, types=registry.data_types)
                 return self.get_global_resource(identity)
 
             options = {key: value if callable(value) else deepcopy(value)
@@ -234,7 +234,7 @@ class GraphRuntimeHost:
                 from .model_request_resources import ModelRequestResourceReader
                 from .model_request_fact_reader import ModelRequestFactReader
                 options["model_resource_reader"] = ModelRequestResourceReader(
-                    self.database, types=self.registry.data_types,
+                    self.database, types=registry.data_types,
                     load_binding_authority=lambda connection, context, output_id:
                         self._model_binding_authority(frame, connection, context, output_id),
                     source_component=("models.source", "7"))
@@ -254,8 +254,10 @@ class GraphRuntimeHost:
         host = self._runtime_hosts.get(chain_id)
         if host is not None:
             if known_chain is None:
-                with closing(self._store()) as store:
-                    chain = GraphRecordStore(store).get("chain_run", chain_run_id=chain_id)
+                # Cleanup may run after the binding was released; it only
+                # needs the persisted owner/release coordinates.
+                with self._execution_read_current(chain_id) as data:
+                    chain = data.records.chain(chain_id)
             else:
                 chain = known_chain
                 require(chain["chain_run_id"] == chain_id
@@ -299,11 +301,12 @@ class GraphRuntimeHost:
     def _control_hosted_invocation(self, chain_id, action, command_id):
         """Never acquire the host lock while holding the service lock."""
         from .runtime_hosting import InvocationOwner
-        with self._lock, closing(self._store()) as store:
+        with self._lock:
             host = self._runtime_hosts.get(chain_id)
             if host is None:
                 return
-            chain = GraphRecordStore(store).get("chain_run", chain_run_id=chain_id)
+            with self._execution_read_current(chain_id) as data:
+                chain = data.records.chain(chain_id)
             index = chain["next_node_index"]
             if index >= len(chain["node_run_ids"]):
                 return
@@ -321,8 +324,12 @@ class GraphRuntimeHost:
             if getattr(error, "reason_code", None) != "runtime_terminal_invocation":
                 raise
 
-    def _artifact_closure(self, repo, roots):
+    def _artifact_closure(self, data, roots, *, registry=None):
         """Walk registered references; never guess references from business fields."""
+        if not hasattr(data, "records"):
+            data = self._data_management.execution_read(
+                data, registry=registry if registry is not None else self.registry)
+        registry = data.registry if registry is None else registry
         pending = list(roots)
         seen = set()
         while pending:
@@ -333,61 +340,65 @@ class GraphRuntimeHost:
             seen.add(output_id)
             require(len(seen) <= 8192, "runtime_reference_limit",
                     "Artifact reference closure exceeds the runtime limit", 409)
-            output = repo.get("workflow_output", output_id=output_id)
-            producer = repo.get("node_run", run_id=output["run_id"])
+            output = data.records.output(output_id)
+            producer = data.records.node_run(output["run_id"])
             require(producer["status"] == "succeeded"
                     and producer["output_refs"].get(output["port_id"]) == output_id,
                     "runtime_artifact_unaccepted", "Artifact has no accepted producer", 409)
-            original = self._document_for_runtime_output(repo, output)
+            original = self._document_for_runtime_output(data, output)
             node = next(node for node in original["nodes"]
                         if node["node_binding_id"] == output["node_binding_id"])
-            entry = self.registry.get(node["component_id"], node["component_version"])
+            entry = registry.get(node["component_id"], node["component_version"])
             require(entry is not None, "graph_missing_node_type",
                     "Artifact's registered implementation is unavailable", 409)
             port = next(port for port in entry.definition.ports(node["config"])[1]
                         if port.port_id == output["port_id"])
-            pending.extend(self.registry.data_types.references(
+            pending.extend(registry.data_types.references(
                 port.data_type, port.data_schema_version, output["payload"], scope="content"))
         return seen
 
-    def _document_for_runtime_output(self, repo, output):
-        chain = repo.get("chain_run", chain_run_id=output["chain_run_id"])
-        return self._document(repo, chain["workflow_definition_id"], chain["definition_revision"])
+    def _document_for_runtime_output(self, data, output):
+        chain = data.records.chain(output["chain_run_id"])
+        return data.configuration.fixed_document(
+            chain["workflow_definition_id"], chain["definition_revision"])
 
-    def _authorized_object_artifacts(self, repo, context):
+    def _authorized_object_artifacts(self, data, context, *, registry=None):
+        registry = data.registry if registry is None else registry
         roots = []
         for read in context.reads:
             if read.get("kind") != "object_read":
                 continue
-            item = self._objects(repo).read(
+            item = data.state.read_object(
                 context.workflow_session_id, read["object_key"], node_id=context.node_binding_id,
                 revision_id=read["revision_id"],
             )
-            roots.extend(self.registry.data_types.references(
+            roots.extend(registry.data_types.references(
                 item["type_id"], item["schema_version"], item["value"], scope="session"))
-        return self._artifact_closure(repo, roots)
+        return self._artifact_closure(data, roots, registry=registry)
 
-    def _validate_runtime_references(self, context, references):
-        with self._lock, closing(self._store()) as store:
-            repo = GraphRecordStore(store)
+    def _validate_runtime_references(self, context, references, *, registry=None):
+        with self._lock, self._execution_read(context.chain_run_id) as data:
+            registry = data.registry if registry is None else registry
             roots = [{"scope": "artifact", "output_id": ref["output_id"]}
                      for refs in context._input_refs.values() for ref in refs]
-            allowed = self._artifact_closure(repo, roots) | self._authorized_object_artifacts(repo, context)
+            allowed = (self._artifact_closure(data, roots, registry=registry)
+                       | self._authorized_object_artifacts(data, context, registry=registry))
             return all(ref["scope"] != "artifact" or ref["output_id"] in allowed for ref in references)
 
-    def _resolve_runtime_artifact(self, context, reference):
+    def _resolve_runtime_artifact(self, context, reference, *, registry=None):
         from .host_sdk import validate_reference
         reference = validate_reference(reference)
         require(reference["scope"] == "artifact", "runtime_artifact_reference_invalid",
                 "Artifact resolution requires an exact artifact reference")
-        with self._lock, closing(self._store()) as store:
-            repo = GraphRecordStore(store)
+        with self._lock, self._execution_read(context.chain_run_id) as data:
+            registry = data.registry if registry is None else registry
             roots = [{"scope": "artifact", "output_id": ref["output_id"]}
                      for refs in context._input_refs.values() for ref in refs]
-            allowed = self._artifact_closure(repo, roots) | self._authorized_object_artifacts(repo, context)
+            allowed = (self._artifact_closure(data, roots, registry=registry)
+                       | self._authorized_object_artifacts(data, context, registry=registry))
             require(reference["output_id"] in allowed, "runtime_artifact_reference_denied",
                     "Artifact is outside the input and authorized object reference closure", 403)
-            output = repo.get("workflow_output", output_id=reference["output_id"])
+            output = data.records.output(reference["output_id"])
             return {"value": deepcopy(output["payload"]), "output_id": output["output_id"],
                     "producer": {"workflow_session_id": output["workflow_session_id"],
                                  "chain_run_id": output["chain_run_id"],
@@ -396,10 +407,9 @@ class GraphRuntimeHost:
     def _host_call(self, context, capability, operation, payload):
         frame = self._service_runs.get(context.chain_run_id)
         if frame is not None and frame.owns_capability(context, capability):
-            with self._lock, closing(self._store()) as store:
-                repo = GraphRecordStore(store)
-                run = repo.get("node_run", run_id=context.node_run_id)
-                session = repo.get("workflow_session", workflow_session_id=context.workflow_session_id)
+            with self._lock, self._execution_read(context.chain_run_id) as data:
+                run = data.records.node_run(context.node_run_id)
+                session = data.records.session(context.workflow_session_id)
                 require(run["workflow_session_id"] == context.workflow_session_id
                         and run["chain_run_id"] == context.chain_run_id
                         and run["node_binding_id"] == context.node_binding_id
@@ -421,7 +431,8 @@ class GraphRuntimeHost:
         if capability == "artifacts:read" and operation == "resolve-artifact":
             require(type(payload) is dict and set(payload) == {"reference"},
                     "runtime_artifact_reference_invalid", "Artifact resolution requires an exact reference")
-            return self._resolve_runtime_artifact(context, payload["reference"])
+            registry = self._require_run_basis(context.chain_run_id).registry
+            return self._resolve_runtime_artifact(context, payload["reference"], registry=registry)
         if capability == "facts:read" and operation == "read-executor-facts":
             from .runtime_hosting import InvocationOwner
             from .runtime_executor_contracts import ExecutorReference
@@ -432,6 +443,6 @@ class GraphRuntimeHost:
             origin = self._resolve_runtime_input_detail(context, payload["port"])
             require(origin["producer"] == owner, "runtime_fact_reference_denied",
                     "Facts must belong to the exact accepted input producer", 403)
-            with self._lock, closing(self._store()) as store:
-                return RuntimeFactStore(store).executor_facts(owner, reference, payload["fact_ids"])
+            with self._lock, self._execution_read(context.chain_run_id) as data:
+                return data.records.executor_facts(owner, reference, payload["fact_ids"])
         return super()._host_call(context, capability, operation, payload)

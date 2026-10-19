@@ -3,6 +3,7 @@
 from contextlib import closing
 from copy import deepcopy
 from uuid import uuid4
+import inspect
 
 import pytest
 
@@ -11,6 +12,7 @@ from phase1_agent.checkpoint_loading import load_checkpoint_state_in_transaction
 from phase1_agent.content_contracts import text_content
 from phase1_agent.context_contract import EFFECTIVE_CONTEXT_TYPE
 from phase1_agent.contract_errors import ContractValidationError
+from phase1_agent.execution_data import ExecutionChatData
 from phase1_agent.frontend_contracts import FRONTEND_COMMIT_TYPE
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_service import GraphWorkflowService
@@ -91,7 +93,8 @@ def create_with_context(service, graph, value):
         load_checkpoint_state_in_transaction(
             repo, session, state, cas, types=service.registry.data_types, registry=service.registry)
         service._commit(repo, session, source={"kind": "session_seed", "source": None}, history=[])
-        return service._view(repo, sid)
+        return service._view(
+            service._data_management.execution_read(repo, registry=service.registry), sid)
 
     return service._change("test.context-chat.seed", identity(), {}, seed)
 
@@ -105,7 +108,9 @@ def replace_fixture_context(service, session, value):
         stored["revision"] += 1
         repo.put("workflow_session", stored)
         service._commit(repo, stored, source={"kind": "test_context_value"})
-        return service._view(repo, stored["workflow_session_id"])
+        return service._view(
+            service._data_management.execution_read(repo, registry=service.registry),
+            stored["workflow_session_id"])
 
     return service._change("test.context-chat.value", identity(), {"value": value}, change)
 
@@ -242,6 +247,44 @@ def test_success_checkpoint_fault_rolls_back_candidate_binding_and_retries_witho
         frontend["node_binding_id"], final["workflow_session_id"])
     assert snapshot["chat"] == final["objects"]["chat-0"]["value"]
     assert snapshot["basis"]["revision_id"] == final["objects"]["chat-0"]["revision_id"]
+
+
+def test_participating_chat_submit_and_reroll_use_chat_ports(context_chat, monkeypatch):
+    service, graph, _, _ = context_chat
+    counts = {}
+
+    def track(name, method):
+        def wrapper(*args, **kwargs):
+            counts[name] = counts.get(name, 0) + 1
+            return method(*args, **kwargs)
+        return wrapper
+
+    for name in ("save_round_inputs", "save_invocations", "write_values",
+                 "round_inputs", "materialize_checkpoint"):
+        monkeypatch.setattr(ExecutionChatData, name, track(
+            name, getattr(ExecutionChatData, name)))
+    direct = []
+    original_get = GraphRecordStore.get
+    forbidden = {"_chat_operation_basis", "_chat_fixed_document",
+                 "_restore_chat_compute", "_chat_item", "_write_chat_values"}
+
+    def tracked(self, kind, **identity):
+        caller = inspect.currentframe().f_back.f_code.co_name
+        if caller in forbidden:
+            direct.append(caller)
+        return original_get(self, kind, **identity)
+
+    monkeypatch.setattr(GraphRecordStore, "get", tracked)
+    initial = create_with_context(service, graph, deepcopy(EMPTY_CONTEXT))
+    first = submit(service, initial, "first")
+    second = submit(service, first, "second")
+    round_id = second["objects"]["chat-0"]["value"]["rounds"][1]["round_id"]
+    third = reroll(service, second, round_id)
+    assert third["status"] == "succeeded", third["chains"]
+    for name in ("save_round_inputs", "save_invocations", "write_values",
+                 "round_inputs", "materialize_checkpoint"):
+        assert counts.get(name, 0) > 0, name
+    assert direct == []
 
 
 def test_downstream_failure_keeps_pending_chat_candidate_without_claiming_a_success_point(context_chat):
