@@ -1415,34 +1415,6 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
             require(chain_id in self._execution_registries,
                     "recovery_unavailable",
                     "Execution has no retained run basis", 409)
-            pending = self._acceptance_candidates.get(chain_id, {})
-            run_registry = self._require_run_basis(chain_id).registry
-            index = chain["next_node_index"]
-            has_candidate = (index < len(chain["node_run_ids"])
-                             and chain["node_run_ids"][index] in pending)
-            require(action != "retry_acceptance" or has_candidate,
-                    "recovery_unavailable",
-                    "No retained result exists for this exact invocation", 409)
-            if action == "retry_acceptance":
-                basis = pending[chain["node_run_ids"][index]]["basis"]
-                require(basis["state"] == ProgramVariableStore(repo.store).current(sid)
-                        and basis["private"] == self._private(repo, sid)
-                        and basis["objects"] == self._objects(
-                            repo, registry=run_registry).current(sid),
-                        "graph_acceptance_basis_changed",
-                        "Retained result state basis changed", 409)
-            if action == "retry_archive" and "completed_execution" in pending:
-                require(self._completed_result_matches(
-                            repo, sid, chain, pending["completed_execution"],
-                            registry=run_registry),
-                        "graph_acceptance_basis_changed",
-                        "Completed result state basis changed", 409)
-            require(action != "retry_archive" or not has_candidate,
-                    "invalid_state",
-                    "Use the result acceptance action for this invocation", 409)
-            chain["status"] = "prepared"
-            chain["revision"] += 1
-            repo.put("chain_run", chain)
         else:
             require(chain["status"] in ("failed", "recovery_unavailable", "archive_failed",
                                         "paused", "budget_exhausted"),

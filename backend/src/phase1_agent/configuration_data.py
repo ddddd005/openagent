@@ -150,7 +150,8 @@ class ConfigurationDataSession:
 
 
 class WorkflowDataManagement:
-    """Data-layer intake for defined workflow domains: configuration and definitions."""
+    """Data-layer intake for defined workflow domains: configuration, definitions
+    and information-binding acceptance."""
 
     def __init__(self, store_factory):
         self._store_factory = store_factory
@@ -230,6 +231,34 @@ class WorkflowDataManagement:
                 store._inject("before_runtime_fact_commit")
                 connection.execute("COMMIT")
                 return receipt
+            except BaseException:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+                raise
+        finally:
+            store.close()
+
+    def accept_information_bindings(self, owner, generation, definitions) -> None:
+        """Accept durable invocation-source bindings in their own narrow transaction.
+
+        The binding store is constructed first so its existing table exists
+        before ``BEGIN IMMEDIATE``.  One batch commits or rolls back together,
+        the store is always closed, and empty definitions open no store.  This
+        is deliberately not the graph command transaction and creates no
+        management idempotency receipt.
+        """
+        if not definitions:
+            return
+        from .information_binding_data import InformationBindingStore
+
+        store = self._store_factory()
+        connection = store._connection
+        try:
+            bindings = InformationBindingStore(store)
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                bindings.accept(owner, generation, definitions)
+                connection.execute("COMMIT")
             except BaseException:
                 if connection.in_transaction:
                     connection.execute("ROLLBACK")

@@ -347,8 +347,10 @@ def test_fork_rolls_back_after_each_completed_write_stage(tmp_path, monkeypatch)
             original = service._save_manifest
             fired = []
 
-            def save_then_fail(repo, kind, identity, session, *, history=None, status=None):
-                result = original(repo, kind, identity, session, history=history, status=status)
+            def save_then_fail(repo, kind, identity, session, *, history=None, status=None,
+                               registry=None):
+                result = original(repo, kind, identity, session, history=history,
+                                  status=status, registry=registry)
                 if session["workflow_session_id"] != source_id:
                     fired.append("graph_state_manifests")
                     raise RuntimeError("injected after graph_state_manifests")

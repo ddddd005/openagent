@@ -51,8 +51,7 @@ def canonical_texts(messages):
 
 
 def build_graph(service, *, readers=None, writers=None, object_key=KEY, with_normal=True,
-                has_initial=True, list_presentation=None, parameters_presentation=None,
-                legacy=False):
+                has_initial=True, list_presentation=None, parameters_presentation=None):
     document = graph(service)
     execute = next(item for item in document["nodes"] if item["component_id"] == "agents.execute")
     assembly = next(item for item in document["nodes"] if item["component_id"] == "context.assembly")
@@ -66,41 +65,17 @@ def build_graph(service, *, readers=None, writers=None, object_key=KEY, with_nor
                   "operations": ["read", "set", "add", "subtract"]}]
     parts = {"register": register, "after": after, "after_output": after_output,
              "execute": execute, "assembly": assembly}
-    if legacy:
-        loader = node(service.registry, "tool-bindings.variable-tools", 405,
-                      component_version="1", agent_node_id=execute["node_binding_id"],
-                      variables=variables)
-        prompt = node(service.registry, "tool-bindings.tool-prompt", 406, component_version="1",
-                      agent_node_id=execute["node_binding_id"], tool_name="score_read")
-        summary = node(service.registry, "prompts.tool-summary", 407, component_version="2")
-        display_assembly = node(service.registry, "prompts.assembly", 408, component_version="2")
-        prompt_output = node(service.registry, "tools.output", 409, mode="prompt")
-        document["nodes"].extend([register, after, after_output, loader, prompt, summary,
-                                  display_assembly, prompt_output])
-        document["edges"].extend([
-            edge(after, after_output, 1401),
-            edge(prompt, summary, 1402, source_port="tool-descriptions",
-                 target_port="tool-descriptions"),
-            edge(prompt, summary, 1403, source_port="tool-schemas", target_port="tool-schemas"),
-            edge(summary, display_assembly, 1404, source_port="tool-descriptions",
-                 target_port="input", order=0),
-            edge(summary, display_assembly, 1405, source_port="tool-schemas",
-                 target_port="input", order=1),
-            edge(display_assembly, prompt_output, 1406),
-        ])
-        parts.update({"loader": loader, "prompt": prompt, "prompt_output": prompt_output})
-    else:
-        assembly["component_version"] = "6"
-        loader = node(service.registry, "tool-bindings.variable-tools", 405, component_version="2",
-                      agent_node_id=execute["node_binding_id"], variables=variables,
-                      list_presentation=deepcopy(list_presentation or DEFAULT_PRESENTATION),
-                      parameters_presentation=deepcopy(parameters_presentation or DEFAULT_PARAMETERS))
-        document["nodes"].extend([register, after, after_output, loader])
-        document["edges"].extend([
-            edge(after, after_output, 1401),
-            edge(loader, assembly, 1402, source_port="tool_prompt", target_port="tool_prompt"),
-        ])
-        parts["loader"] = loader
+    assembly["component_version"] = "6"
+    loader = node(service.registry, "tool-bindings.variable-tools", 405, component_version="2",
+                  agent_node_id=execute["node_binding_id"], variables=variables,
+                  list_presentation=deepcopy(list_presentation or DEFAULT_PRESENTATION),
+                  parameters_presentation=deepcopy(parameters_presentation or DEFAULT_PARAMETERS))
+    document["nodes"].extend([register, after, after_output, loader])
+    document["edges"].extend([
+        edge(after, after_output, 1401),
+        edge(loader, assembly, 1402, source_port="tool_prompt", target_port="tool_prompt"),
+    ])
+    parts["loader"] = loader
     document["control_edges"] = [control(execute, after)]
     reader_ids = [register["node_binding_id"], execute["node_binding_id"],
                   after["node_binding_id"]]
@@ -489,6 +464,134 @@ def test_tool_prompt_layout_follows_presentations(tmp_path):
         assert texts.index("Read the variable 'score' and return its current value.") > current
 
 
+def test_tool_prompt_layout_changes_only_presentation_not_tools_or_agent_acl(tmp_path):
+    rounds = [
+        ("score_read", {}), ("score_set", {"value": 10}), ("score_add", {"value": 2}),
+        ("score_read", {}), ("final_answer", {"answer": {"text": "done"}}),
+    ] * 2
+    transport = VariableToolTransport(rounds)
+
+    def callable_definitions(call):
+        return {
+            tool["function"]["name"]: tool["function"]["parameters"]
+            for tool in call["tools"]
+        }
+
+    with closing(_service(tmp_path / "layout-capabilities.sqlite", transport)) as service:
+        ModelDatabaseFixture.write(service, 1)
+        before, parts = build_graph(service)
+        middle = deepcopy(before)
+        middle["workflow_definition_id"] = str(uuid4())
+        middle_loader = next(item for item in middle["nodes"]
+                             if item["component_id"] == "tool-bindings.variable-tools")
+        middle_loader["config"]["list_presentation"] = {
+            **DEFAULT_PRESENTATION, "placement": "after", "order": 3,
+        }
+        middle_loader["config"]["parameters_presentation"] = {
+            **DEFAULT_PARAMETERS, "placement": "middle", "depth": 1, "order": 2,
+        }
+        normalized = deepcopy(middle)
+        normalized["workflow_definition_id"] = before["workflow_definition_id"]
+        normalized_loader = next(item for item in normalized["nodes"]
+                                 if item["component_id"] == "tool-bindings.variable-tools")
+        normalized_loader["config"]["list_presentation"] = deepcopy(
+            parts["loader"]["config"]["list_presentation"])
+        normalized_loader["config"]["parameters_presentation"] = deepcopy(
+            parts["loader"]["config"]["parameters_presentation"])
+        assert normalized == before
+
+        agent_id = parts["execute"]["node_binding_id"]
+        loader_id = parts["loader"]["node_binding_id"]
+        base_acl = next(item for item in before["object_bindings"]
+                        if item["object_key"] == KEY)
+        assert agent_id in base_acl["readers"] and agent_id in base_acl["writers"]
+        assert loader_id not in base_acl["readers"] and loader_id not in base_acl["writers"]
+        observed = []
+        for document in (before, middle):
+            binding = next(item for item in document["object_bindings"]
+                           if item["object_key"] == KEY)
+            assert binding == base_acl
+            session = _registered(service, document)
+            calls_before = len(transport.calls)
+            chain_id, view = _run(service, session)
+            assert view["status"] == "succeeded", view["chains"]
+            assert view["objects"][KEY]["value"]["value"] == 12
+            assert view["objects"][KEY]["revision"] == 5
+
+            events = _events(service, view, chain_id)
+            settled = [event["payload"] for event in events
+                       if event["kind"] == "tool_settled"]
+            business_results = [
+                item["message"]["blocks"][0]["content"]
+                for item in settled
+                if isinstance(item["message"]["blocks"][0]["content"], dict)
+                and "value" in item["message"]["blocks"][0]["content"]
+            ]
+            assert [result["value"] for result in business_results] == [5, 10, 12, 12]
+            agent = next(event["payload"] for event in events
+                         if event["kind"] == "agent_result")
+            assert agent["snapshot"]["node_binding_id"] == agent_id
+            declarations = {
+                item["name"]: item["parameters_schema"]
+                for item in agent["snapshot"]["tool_definitions"]
+            }
+            run_calls = transport.calls[calls_before:]
+            assert len(run_calls) == 5
+            assert callable_definitions(run_calls[0]) == declarations
+
+            tool_prompt = node_output(view, parts["loader"], port="tool_prompt")
+            assert tool_prompt["agent_node_id"] == agent_id
+            assert tool_prompt["source"]["anchor_node_id"] == loader_id
+            prompt = node_output(view, parts["assembly"])
+            observed.append({
+                "callables": callable_definitions(run_calls[0]),
+                "messages": canonical_texts(prompt["messages"]),
+                "tool_prompt": tool_prompt,
+            })
+
+        assert set(observed[0]["callables"]) == {
+            "inspect_text", "final_answer", "score_read", "score_set", "score_add",
+            "score_subtract",
+        }
+        assert observed[0]["callables"] == observed[1]["callables"]
+        assert observed[0]["messages"] != observed[1]["messages"]
+        assert observed[0]["tool_prompt"]["list_presentation"] != observed[1]["tool_prompt"][
+            "list_presentation"]
+        assert observed[0]["tool_prompt"]["parameters_presentation"] != observed[1]["tool_prompt"][
+            "parameters_presentation"]
+
+
+@pytest.mark.parametrize("presentation", [
+    {},
+    {
+        "list_presentation": {**DEFAULT_PRESENTATION, "placement": "after", "order": 3},
+        "parameters_presentation": {
+            **DEFAULT_PARAMETERS, "placement": "middle", "depth": 1, "order": 2,
+        },
+    },
+], ids=["before-after", "middle-depth-order"])
+@pytest.mark.parametrize("missing_permission", ["readers", "writers"])
+def test_tool_prompt_layout_does_not_bypass_agent_acl(
+        tmp_path, presentation, missing_permission):
+    transport = VariableToolTransport([])
+    with closing(_service(tmp_path / "layout-acl.sqlite", transport)) as service:
+        ModelDatabaseFixture.write(service, 1)
+        document, parts = build_graph(service, **presentation)
+        agent_id = parts["execute"]["node_binding_id"]
+        binding = next(item for item in document["object_bindings"]
+                       if item["object_key"] == KEY)
+        binding[missing_permission] = [
+            node_id for node_id in binding[missing_permission] if node_id != agent_id
+        ]
+        session = _registered(service, document)
+        with pytest.raises(ContractValidationError) as caught:
+            service.start(
+                session["workflow_session_id"], expected_revision=session["revision"],
+                idempotency_key=str(uuid4()), inputs={"text": "blocked by ACL"})
+        assert caught.value.reason_code == "tool_binding_access_denied"
+        assert transport.calls == []
+
+
 def test_tool_loader_configuration_saves_and_rereads(tmp_path):
     transport = VariableToolTransport([("final_answer", {"answer": {"text": "unused"}})])
     with closing(_service(tmp_path / "registered-loader.sqlite", transport)) as service:
@@ -606,27 +709,3 @@ def test_tool_prompt_for_another_agent_is_rejected_by_its_consumer(tmp_path):
         with pytest.raises(ContractValidationError) as caught:
             agent_computation_input(context, foreign)
         assert caught.value.reason_code == "tool_prompt_agent_mismatch"
-
-
-def test_legacy_two_node_package_and_graph_remain_available(tmp_path):
-    transport = VariableToolTransport([("final_answer", {"answer": {"text": "done"}})])
-    with closing(_service(tmp_path / "legacy-two-node.sqlite", transport)) as service:
-        anchor = service.registry.get("tool-bindings.variable-tools", "1")
-        prompt_node = service.registry.get("tool-bindings.tool-prompt", "1")
-        assert anchor is not None and anchor.executor is None
-        assert anchor.tool_binding is not None
-        assert prompt_node is not None and prompt_node.executor is not None
-        assert ("workflow.tool-bindings", "1.0.0") in {
-            (row["package_id"], row["version"]) for row in service.registry.package_lock}
-        ModelDatabaseFixture.write(service, 1)
-        document, parts = build_graph(service, legacy=True)
-        session = _registered(service, document)
-        chain_id, view = _run(service, session)
-        assert view["status"] == "succeeded", view["chains"]
-        display = node_output(view, parts["prompt_output"])
-        texts = [message["content"] for message in display["assembly"]["messages"]]
-        assert any("Read the variable 'score'" in text for text in texts)
-        agent = next(event["payload"] for event in _events(service, view, chain_id)
-                     if event["kind"] == "agent_result")
-        assert {"score_read", "score_set"} <= {
-            tool["name"] for tool in agent["snapshot"]["tool_definitions"]}

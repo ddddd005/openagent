@@ -1,5 +1,6 @@
 """Exact current project selections without live model calls."""
 
+import json
 from contextlib import closing
 from copy import deepcopy
 from uuid import UUID, uuid4
@@ -84,6 +85,33 @@ def test_fresh_and_reopened_service_respect_exact_current_selection(tmp_path, se
         assert reopened.platform_capabilities()["package_diagnostics"] == []
         assert not hasattr(reopened, "_native_runtime")
     assert saved_selection(path) == persisted
+
+
+def test_tool_prompt_selection_stays_opt_in_until_explicit_configuration(tmp_path):
+    path = tmp_path / "tool-prompts.sqlite"
+    selection = {key: value for key, value in DEFAULT_PACKAGES.items()
+                 if key != "workflow.tool-prompts"}
+    enabled = {**selection, "workflow.tool-prompts": "1.0.0"}
+    with closing(GraphWorkflowService(path, enabled_packages=selection)) as service:
+        lock = {row["package_id"]: row["version"] for row in service.registry.package_lock}
+        assert lock == selected_lock(selection)
+        assert service.registry.get("tool-bindings.variable-tools", "2") is None
+        assert service.registry.get("context.assembly", "6") is None
+    persisted = saved_selection(path)
+    assert json.loads(persisted) == selection
+
+    with closing(GraphWorkflowService(path)) as reopened:
+        lock = {row["package_id"]: row["version"] for row in reopened.registry.package_lock}
+        assert lock == selected_lock(selection)
+        assert reopened.registry.get("tool-bindings.variable-tools", "2") is None
+        assert reopened.registry.get("context.assembly", "6") is None
+        assert saved_selection(path) == persisted
+
+        configured = reopened.configure_capability_packages(enabled)
+        assert configured["package_diagnostics"] == []
+        assert reopened.registry.get("tool-bindings.variable-tools", "2") is not None
+        assert reopened.registry.get("context.assembly", "6") is not None
+        assert json.loads(saved_selection(path)) == enabled
 
 
 @pytest.mark.parametrize("selection", [None, {}, {"workflow.tools": "1.0.0"}, {"workflow.prompts": "1.0.0"}],
