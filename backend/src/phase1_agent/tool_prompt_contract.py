@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
 from .content_contracts import object_schema, presentation_schema, validate_presentation
@@ -20,6 +19,7 @@ from .graph_contracts import require
 from .host_sdk import DataTypeDefinition
 from .prompt_contract import check_prompt_schema
 from .prompt_lifecycle import lifecycle_prompt_content, make_lifecycle_prompt_item
+from .tools import _model_tool_schema
 
 
 TOOL_PROMPT_TYPE = "TOOL_PROMPT"
@@ -74,10 +74,11 @@ def validate_tool_prompt(value) -> dict:
         require(type(entry["parameters"]) is dict, "tool_prompt_invalid",
                 "Tool prompt parameters must remain a structured object schema")
         try:
-            Draft202012Validator.check_schema(entry["parameters"])
-        except SchemaError as exc:
-            raise DiagnosticError("tool_prompt_invalid",
-                                  "Tool prompt parameters are not a valid JSON schema") from exc
+            _model_tool_schema(entry["name"], entry["parameters"])
+        except (SchemaError, TypeError, ValueError) as exc:
+            raise DiagnosticError(
+                "tool_prompt_invalid",
+                "Tool prompt parameters differ from real tool registration rules") from exc
     return deepcopy(value)
 
 

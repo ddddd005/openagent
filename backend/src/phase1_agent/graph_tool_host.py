@@ -51,11 +51,10 @@ class GraphToolHost:
                 "tool_invocation_scope_invalid", "Tool description requires one exact Agent")
         frame = self._tool_frames.get(context.chain_run_id)
         agent_node_id = payload["agent_node_id"]
-        if context.node_binding_id == agent_node_id and (
-                frame is None or agent_node_id not in frame.agent_bindings):
-            return []
         require(frame is not None, "tool_binding_not_prepared",
                 "This invocation has no prepared tool bindings", 409)
+        if context.node_binding_id == agent_node_id and agent_node_id not in frame.agent_bindings:
+            return []
         require(agent_node_id in frame.agent_bindings, "tool_binding_not_found",
                 "The requested Agent has no prepared tool bindings", 409)
         if context.node_binding_id != agent_node_id:
