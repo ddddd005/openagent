@@ -82,6 +82,12 @@ class NodeExecutionContext:
                 "This invocation has no prepared tool bridge", node_id=self.node_binding_id)
         return self._tool_bridge(self, "specs", {"agent_node_id": agent_node_id})
 
+    def bound_tool_prompt(self, agent_node_id: str) -> list[dict]:
+        """Read this loader's own prepared declarations for one Agent in this run."""
+        require(callable(self._tool_bridge), "tool_binding_not_prepared",
+                "This invocation has no prepared tool bridge", node_id=self.node_binding_id)
+        return self._tool_bridge(self, "prompt", {"agent_node_id": agent_node_id})
+
     def invoke_bound_tool(self, *, binding_id: str, operation: str, arguments: dict,
                           tool_call_id: str, tool_execution_id: str) -> dict:
         """Invoke one prepared business tool under the exact kernel identity."""

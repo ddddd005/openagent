@@ -50,6 +50,26 @@ def _check_spec(value, *, operations: list[str]) -> dict:
     return value
 
 
+def _require_source(view, registry) -> tuple[dict, ...]:
+    """Require the exact package evidence frozen with this run basis."""
+
+    source = view.get("source") if type(view) is dict else None
+    require(type(source) is list and bool(source), "tool_binding_source_missing",
+            "Tool binding requires an exact package source")
+    available = {(row["package_id"], row["version"])
+                 for row in getattr(registry, "package_lock", ())}
+    checked = []
+    for item in source:
+        require(type(item) is dict and set(item) == {"package_id", "package_version"}
+                and all(type(item[key]) is str and item[key] for key in item),
+                "tool_binding_source_missing", "Tool binding source identity is invalid")
+        require((item["package_id"], item["package_version"]) in available,
+                "tool_binding_source_missing",
+                "Tool binding source differs from this run's frozen packages", 409)
+        checked.append(deepcopy(item))
+    return tuple(checked)
+
+
 def _check_target(registry, definitions, spec: dict) -> tuple[dict, ...]:
     target = spec["target"]
     entry = registry.get(target["component_id"], target["component_version"])
@@ -75,7 +95,7 @@ def _check_target(registry, definitions, spec: dict) -> tuple[dict, ...]:
             "tool_binding_target_unsupported",
             "Tool binding target requires graph wiring or special settlement")
     registry.validate_config(entry, spec["config"])
-    return tuple(view["source"])
+    return _require_source(view, registry)
 
 
 def prepare_tool_frame(*, data, sid: str, document: dict, plan, registry,
@@ -97,7 +117,7 @@ def prepare_tool_frame(*, data, sid: str, document: dict, plan, registry,
             "component_version": anchor["component_version"]})
         require(anchor_view is not None, "tool_binding_target_unavailable",
                 "Tool binding anchor definition source is unavailable", 409)
-        anchor_source = tuple(deepcopy(anchor_view["source"]))
+        anchor_source = _require_source(anchor_view, registry)
         anchors.append(anchor["node_binding_id"])
         registry.validate_config(entry, anchor["config"])
         validate_config_node_references(entry, anchor, nodes)

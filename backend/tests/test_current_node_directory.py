@@ -24,7 +24,7 @@ def test_default_directory_has_only_current_routes():
     assert versions["agents.execute"] == {"10"}
     assert versions["agents.compaction-policy"] == {"2"}
     assert versions["context.output"] == {"5"}
-    assert versions["context.assembly"] == {"5"}
+    assert versions["context.assembly"] == {"5", "6"}
     assert versions["context.merge"] == {"6"}
     assert versions["frontend.node"] == {"2"}
     assert versions["tools.output"] == {"1"}

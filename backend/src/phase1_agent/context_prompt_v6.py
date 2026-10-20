@@ -9,7 +9,7 @@ from .contract_graph import validate_context_message_history
 from .contract_json import canonical_bytes, validate_json_value
 from .contracts_v2 import validate_record
 from .graph_contracts import require
-from .prompt_contract import _artifact_refs
+from .prompt_contract import _artifact_refs, _source_origins
 from .prompt_depth import (
     LOGICAL_FLOOR_PLACEMENT, logical_floor_materials, uses_logical_floor_placement,
 )
@@ -222,6 +222,13 @@ def agent_computation_input(context, value):
     prompt = validate_native_context_prompt(record["value"])
     require(prompt["context"]["owner"]["workflow_session_id"] == context.workflow_session_id,
             "context_session_mismatch", "Prompt belongs to another workflow session")
+    for item in prompt["items"]:
+        for source in _source_origins(item["source"]):
+            if source.get("kind") != "bound_tool":
+                continue
+            require(source.get("agent_node_id") == context.node_binding_id,
+                    "tool_prompt_agent_mismatch",
+                    "Tool prompt material belongs to another Agent")
     return {
         "messages": deepcopy(prompt["messages"]),
         "layout": deepcopy(prompt["layout"]),

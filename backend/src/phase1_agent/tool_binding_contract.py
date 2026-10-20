@@ -16,17 +16,32 @@ from typing import Any, Callable
 
 @dataclass(frozen=True)
 class ToolBindingAdapter:
-    """Business-side adapter for one load-anchor node type."""
+    """Business-side adapter for one tool loading node type.
+
+    A declaration-only node may omit ``prompt_output``.  An executing loading
+    node must declare its single structured prompt port so the registry can
+    reject arbitrary working nodes that merely claim to load tools.
+    """
 
     normalize: Callable[[dict[str, Any]], list[dict[str, Any]]]
     bind: Callable[[dict[str, Any], dict[str, Any]], list[dict[str, Any]]]
     call: Callable[[dict[str, Any], dict[str, Any]], tuple[dict[str, Any], dict[str, Any]]]
     result: Callable[[dict[str, Any], dict[str, Any], dict[str, Any]], dict[str, Any]]
+    prompt_output: tuple[str, str, int] | None = None
+    agent_config_field: str = "agent_node_id"
 
     def __post_init__(self) -> None:
         if not all(callable(getattr(self, name, None)) for name in (
                 "normalize", "bind", "call", "result")):
             raise TypeError("A tool binding adapter requires four callable stages")
+        if not (type(self.agent_config_field) is str and self.agent_config_field):
+            raise TypeError("A tool binding adapter requires its Agent config field")
+        if self.prompt_output is not None and not (
+                type(self.prompt_output) is tuple and len(self.prompt_output) == 3
+                and type(self.prompt_output[0]) is str and self.prompt_output[0]
+                and type(self.prompt_output[1]) is str and self.prompt_output[1]
+                and type(self.prompt_output[2]) is int and self.prompt_output[2] > 0):
+            raise TypeError("A tool prompt output requires an exact port, type and schema version")
 
 
 @dataclass(frozen=True)

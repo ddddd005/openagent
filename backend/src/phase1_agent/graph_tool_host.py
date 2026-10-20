@@ -39,6 +39,8 @@ class GraphToolHost:
     def _tool_bridge(self, context, operation, payload):
         if operation == "specs":
             return self._bound_tool_specs(context, payload)
+        if operation == "prompt":
+            return self._bound_tool_prompt(context, payload)
         if operation == "invoke":
             return self._invoke_bound_tool(context, payload)
         raise graph_error("tool_invocation_scope_invalid", "Unknown tool bridge operation", 400)
@@ -65,6 +67,28 @@ class GraphToolHost:
             self._require_tool_owner(data, context)
         return [tool.public() for binding in frame.bindings_for(agent_node_id)
                 for tool in binding.tools]
+
+    def _bound_tool_prompt(self, context, payload):
+        require(type(payload) is dict and set(payload) == {"agent_node_id"}
+                and type(payload["agent_node_id"]) is str,
+                "tool_invocation_scope_invalid", "Tool prompt requires one exact Agent")
+        agent_node_id = payload["agent_node_id"]
+        frame = self._tool_frames.get(context.chain_run_id)
+        require(frame is not None, "tool_binding_not_prepared",
+                "This invocation has no prepared tool bindings", 409)
+        require(context.node_binding_id in frame.anchors, "tool_binding_access_denied",
+                "Only a declared tool loader may describe prepared tools", 403)
+        require(frame.descriptors.get(context.node_binding_id) == agent_node_id,
+                "tool_binding_access_denied",
+                "This loader is not declared for that Agent", 403)
+        basis = self._require_run_basis(context.chain_run_id)
+        with self._lock, self._data_management.read_execution(registry=basis.registry) as data:
+            self._require_tool_owner(data, context)
+        specs = [tool.public() for binding in frame.bindings_for(agent_node_id)
+                 if binding.anchor_node_id == context.node_binding_id for tool in binding.tools]
+        require(bool(specs), "tool_binding_not_found",
+                "This loader prepared no tools for its Agent", 409)
+        return specs
 
     def _invoke_bound_tool(self, context, payload):
         require(type(payload) is dict and set(payload) == {

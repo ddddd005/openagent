@@ -62,6 +62,22 @@ def _assembly(config, inputs, context):
         source_output_refs=context.input_artifact_refs("materials"))}
 
 
+def _assembly_v6(config, inputs, context):
+    from .context_prompt_v6 import assemble_native_context_prompt
+    from .tool_prompt_contract import tool_prompt_materials, validate_tool_prompt
+    _validate(context, inputs["view"])
+    materials = list(inputs.get("materials", []))
+    if "tool_prompt" in inputs:
+        materials.append(tool_prompt_materials(
+            validate_tool_prompt(inputs["tool_prompt"]),
+            node_binding_id=context.node_binding_id))
+    return {"output": assemble_native_context_prompt(
+        materials, inputs["view"], inputs["current_input"],
+        context_ref=_exact_input(context, "view"), current_input_ref=_exact_input(context, "current_input"),
+        source_output_refs=[*context.input_artifact_refs("materials"),
+                            *context.input_artifact_refs("tool_prompt")])}
+
+
 def _merge_legacy(config, inputs, context):
     from .agent_executor import resolve_input
     from .agent_receipt_contract import validate_agent_receipts
@@ -273,3 +289,22 @@ def register_native_context(host):
                               model_service_requirement(
                                   "model-facts:read", "read-model-request-facts"))),
         _merge, settlement_builder=settle_native_merge)
+
+
+def register_native_context_v6(host):
+    """Register the assembly that also consumes one paired tool prompt."""
+
+    from .tool_prompt_contract import TOOL_PROMPT_SCHEMA_VERSION, TOOL_PROMPT_TYPE
+
+    view = NodePort("view", "CONTEXT_VIEW", data_schema_version=5)
+    host.register_node(NodeDefinition(
+        "context.assembly", "6", "Native context assembly", "Context", {}, object_schema({}),
+        inputs=(view,
+                NodePort("materials", "PROMPT_MATERIALS", multiple=True, required=False),
+                NodePort("tool_prompt", TOOL_PROMPT_TYPE,
+                         data_schema_version=TOOL_PROMPT_SCHEMA_VERSION, required=False),
+                NodePort("current_input", "TEXT", data_schema_version=2)),
+        outputs=(NodePort("output", "PROMPT", data_schema_version=6),),
+        capabilities=("context:validate", "artifacts:read"), input_storage="references",
+        service_requirements=(native_service_requirement("context:validate", "validate-context"),)),
+        _assembly_v6)

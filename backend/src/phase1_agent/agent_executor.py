@@ -36,6 +36,8 @@ def _agent_tools(tools, bound=()):
     else:
         registered = tuple(final if tool.name == final.name else tool for tool in registered)
     combined = (*registered, *tuple(bound))
+    require(len(combined) <= 120, "agent_tool_budget_exceeded",
+            "Agent tool set exceeds the bounded model tool budget")
     if bound:
         names = [tool.name for tool in combined]
         require(len(names) == len(set(names)), "agent_tool_conflict",

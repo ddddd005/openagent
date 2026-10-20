@@ -517,10 +517,6 @@ class NodeRegistry:
                 "Failed retry validator must be callable")
         require(tool_binding is None or isinstance(tool_binding, ToolBindingAdapter), "graph_invalid_type",
                 "Tool binding declaration must be a trusted adapter")
-        require(tool_binding is None or executor is None and executor_ref is None
-                and definition.execution_class == "non_working",
-                "graph_invalid_type",
-                "Tool binding anchors must be non-working declarations without an executor")
         declared_fields = set()
         for reference in definition.config_node_references:
             require(type(reference) is dict
@@ -535,6 +531,41 @@ class NodeRegistry:
                             for target in reference["target_types"]),
                     "graph_invalid_type", "Config node reference declarations are invalid")
             declared_fields.add(reference["config_field"])
+        if tool_binding is not None:
+            require(any(reference["config_field"] == tool_binding.agent_config_field
+                        and reference["multiple"] is False
+                        for reference in definition.config_node_references),
+                    "graph_invalid_type",
+                    "A tool loader requires one exact Agent configuration reference")
+            if executor is None and executor_ref is None:
+                require(definition.execution_class == "non_working"
+                        and not definition.inputs and not definition.outputs
+                        and not definition.port_modes
+                        and not definition.service_requirements
+                        and not definition.object_accesses,
+                        "graph_invalid_type",
+                        "A tool binding anchor is a non-working declaration without ports or state")
+            else:
+                require(definition.execution_class == "working" and executor is not None
+                        and executor_ref is None,
+                        "graph_invalid_type",
+                        "An executing tool loader requires its native executor")
+                require(tool_binding.prompt_output is not None, "graph_invalid_type",
+                        "An executing tool loader requires one structured prompt output")
+                port_id, data_type, schema_version = tool_binding.prompt_output
+                require(definition.outputs == (NodePort(
+                            port_id, data_type, data_schema_version=schema_version),)
+                        and not definition.inputs and not definition.port_modes
+                        and not definition.service_requirements
+                        and not definition.object_accesses
+                        and not definition.capabilities
+                        and settlement_builder is None
+                        and not definition.provided_session_item_types
+                        and external_inputs_declaration is None
+                        and resource_dependencies_declaration is None
+                        and not resource_input_ports,
+                        "graph_invalid_type",
+                        "An executing tool loader exposes one structured prompt output only")
         for access in definition.object_accesses:
             require(type(access) is dict and set(access) == {
                 "config_field", "multiple", "access", "type_id", "schema_version",
