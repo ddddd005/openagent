@@ -195,7 +195,8 @@ class ExecutionState:
     def __init__(self, records: ExecutionRecords, *, type_evidence, writable: bool):
         self._records = records
         self._store = records._records.store
-        self._types = records.registry.data_types
+        registry = records.registry
+        self._types = registry.data_types if registry is not None else None
         self._type_evidence = type_evidence
         self._writable = writable
 
@@ -301,16 +302,22 @@ class ExecutionSettlement:
         require(self._writable, "storage_contract_violation",
                 "This execution read session is not writable", 500)
 
+    def _manifest_types(self):
+        # The manifest projection never consults the type catalog; a released
+        # basis has no retained registry to offer.
+        registry = self._records.registry
+        return registry.data_types if registry is not None else None
+
     def manifest(self, kind: str, identity: str) -> dict | None:
         return StateManifestStore(
-            self._store, self._records.registry.data_types).get(kind, identity)
+            self._store, self._manifest_types()).get(kind, identity)
 
     def save_manifest(self, kind: str, identity: str, session: dict, *, history: list[str],
                       status: str | None, package_lock: list[dict],
                       global_resources: list[dict]) -> dict:
         self._write()
         return StateManifestStore(
-            self._store, self._records.registry.data_types).save(
+            self._store, self._manifest_types()).save(
                 kind, identity, session=session,
                 data_revision=self._state.variables(session["workflow_session_id"])["revision"],
                 node_states=self._records.private_states(session["workflow_session_id"]),
@@ -508,3 +515,101 @@ def build_run_data(records: GraphRecordStore, *, basis=None, registry=None,
     chat = ExecutionChatData(record_port, state, configuration, settlement,
                              writable=writable)
     return RunData(record_port, state, settlement, evidence, configuration, chat)
+
+
+class ExecutionBoundaryRecords:
+    """Exact invocation-state reads and end-boundary state writes.
+
+    The session exists only for a released invocation whose ``RunBasis`` is no
+    longer retained.  It deliberately exposes no registry, generic record
+    access, object/variable writes or continuation: callers receive the exact
+    session/chain/run identities they persisted and may write back only those
+    records' status fields.
+    """
+
+    def __init__(self, records: ExecutionRecords, *, writable: bool):
+        self._records = records
+        self._writable = writable
+
+    def _write(self):
+        require(self._writable, "storage_contract_violation",
+                "This execution boundary read session is not writable", 500)
+
+    def session(self, sid: str) -> dict:
+        return self._records.session(sid)
+
+    def chain(self, chain_id: str) -> dict:
+        return self._records.chain(chain_id)
+
+    def node_run(self, run_id: str) -> dict:
+        return self._records.node_run(run_id)
+
+    def history(self, sid: str) -> list[str]:
+        return self._records.history(sid)
+
+    def put_session(self, value: dict) -> None:
+        self._write()
+        self._records.put_session(value)
+
+    def put_chain(self, value: dict) -> None:
+        self._write()
+        self._records.put_chain(value)
+
+    def put_node_run(self, value: dict) -> None:
+        self._write()
+        self._records.put_node_run(value)
+
+
+class ExecutionBoundarySettlement:
+    """Boundary manifest and commit persistence with resolved evidence only."""
+
+    def __init__(self, settlement: ExecutionSettlement, *, writable: bool):
+        self._settlement = settlement
+        self._writable = writable
+
+    def _write(self):
+        require(self._writable, "storage_contract_violation",
+                "This execution boundary read session is not writable", 500)
+
+    def manifest(self, kind: str, identity: str) -> dict | None:
+        return self._settlement.manifest(kind, identity)
+
+    def save_manifest(self, kind: str, identity: str, session: dict, *, history: list[str],
+                      status: str | None, package_lock: list[dict],
+                      global_resources: list[dict]) -> dict:
+        self._write()
+        return self._settlement.save_manifest(
+            kind, identity, session, history=history, status=status,
+            package_lock=package_lock, global_resources=global_resources)
+
+    def commit(self, session: dict, *, source: dict, history: list[str] | None = None):
+        self._write()
+        return self._settlement.commit(session, source=source, history=history)
+
+
+@dataclass(frozen=True)
+class RunBoundary:
+    """Released-basis boundary bundle; no executor, types, resources or replay."""
+
+    records: ExecutionBoundaryRecords
+    settlement: ExecutionBoundarySettlement
+    configuration: ConfigurationReadSession
+
+
+def build_run_boundary(records: GraphRecordStore, *, writable: bool = True) -> RunBoundary:
+    """Assemble the released-basis bundle behind the data-management entry.
+
+    The normal ``build_run_data`` path keeps requiring a real ``RunBasis``; this
+    bundle only serves the explicit unconfirmed-close boundary.  Manifests are
+    persisted from resolved evidence supplied by the caller, so the projection
+    never consults a current service registry.
+    """
+    record_port = ExecutionRecords(records, registry=None, writable=writable)
+    evidence = ExecutionTypeEvidence(records.store, writable=False)
+    state = ExecutionState(record_port, type_evidence=evidence, writable=writable)
+    settlement = ExecutionSettlement(record_port, state, writable=writable)
+    configuration = ConfigurationReadSession(
+        ConfigurationDataSession(ConfigurationRepository(records)))
+    return RunBoundary(ExecutionBoundaryRecords(record_port, writable=writable),
+                       ExecutionBoundarySettlement(settlement, writable=writable),
+                       configuration)

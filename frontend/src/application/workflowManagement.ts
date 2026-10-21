@@ -1,7 +1,7 @@
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import {
-  readGraphCatalogDetails, readGraphDefinition, readGraphDefinitions,
-  readGraphRun, readGraphSession, readGraphSessions,
+  readDefinitionSummaries, readGraphCatalogDetails, readGraphDefinition, readGraphDefinitions,
+  readGraphRun, readGraphSession, readGraphSessions, readSessionSummaries,
 } from "../adapters/workflowGraphApi";
 import {
   graphClone, graphSignature, type GraphCommand, type GraphEntry, type GraphSession,
@@ -25,7 +25,9 @@ export const workflowManagementQueries = {
   catalog: readGraphCatalogDetails,
   definition: readGraphDefinition,
   definitions: readGraphDefinitions,
+  definitionSummaries: readDefinitionSummaries,
   sessions: readGraphSessions,
+  sessionSummaries: readSessionSummaries,
   session: readGraphSession,
   run: readGraphRun,
   registrations: readGraphRegistrations,

@@ -66,6 +66,19 @@ class ConfigurationRepository:
             (kind, identity)).fetchone()
         return bool(row and row["archived"])
 
+    def management_record(self, kind: str, identity: str) -> dict | None:
+        row = self._records.store._connection.execute(
+            "SELECT archived FROM workflow_management WHERE object_kind=? AND object_id=?",
+            (kind, identity)).fetchone()
+        return None if row is None else {"archived": bool(row["archived"])}
+
+    def has_definition_revision(self, identity: str) -> bool:
+        row = self._records.store._connection.execute(
+            "SELECT 1 FROM records WHERE record_type='workflow_definition_revision' "
+            "AND json_valid(payload) AND json_extract(payload,'$.workflow_definition_id')=? LIMIT 1",
+            (identity,)).fetchone()
+        return row is not None
+
     def save_fixed_revision(self, document: dict, expected_revision: int) -> dict:
         """Write one fixed revision and its node projections through ``repo.put``.
 
@@ -106,6 +119,29 @@ class ConfigurationRepository:
     def save_current_configuration(self, value: dict) -> None:
         self._records.put_current_configuration(value)
 
+    def _require_transaction(self) -> None:
+        require(self._records.store._connection.in_transaction, "storage_contract_violation",
+                "Configuration deletion requires the caller's transaction", 500)
+
+    def delete_definition_revisions(self, identity: str) -> None:
+        """Delete exactly this workflow's fixed revisions and node bindings.
+
+        The intent takes only the exact workflow identity; it exposes no table,
+        record type or filter.  The caller keeps its original command
+        transaction, so the removal commits or rolls back with the lifecycle
+        command that asked for it.
+        """
+        self._require_transaction()
+        self._records.store._connection.execute(
+            "DELETE FROM records WHERE record_type IN ('workflow_definition_revision','node_binding') "
+            "AND json_extract(payload,'$.workflow_definition_id')=?", (identity,))
+
+    def delete_current_configuration(self, identity: str) -> None:
+        """Delete exactly this workflow's current covering row."""
+        self._require_transaction()
+        self._records.store._connection.execute(
+            "DELETE FROM workflow_current_configuration WHERE workflow_definition_id=?", (identity,))
+
 
 class ConfigurationDataSession:
     """Limited configuration-domain port bound to an existing transaction."""
@@ -134,6 +170,12 @@ class ConfigurationDataSession:
     def archived(self, kind: str, identity: str) -> bool:
         return self._access.archived(kind, identity)
 
+    def management_record(self, kind: str, identity: str) -> dict | None:
+        return self._access.management_record(kind, identity)
+
+    def has_definition_revision(self, identity: str) -> bool:
+        return self._access.has_definition_revision(identity)
+
     def configuration_view(self, identity: str) -> tuple[dict | None, dict | None]:
         """Return the current covering row and its exact fixed document."""
         current = self._access.current_configuration(identity)
@@ -147,6 +189,12 @@ class ConfigurationDataSession:
 
     def save_current_configuration(self, value: dict) -> None:
         self._access.save_current_configuration(value)
+
+    def delete_definition_revisions(self, identity: str) -> None:
+        self._access.delete_definition_revisions(identity)
+
+    def delete_current_configuration(self, identity: str) -> None:
+        self._access.delete_current_configuration(identity)
 
 
 class WorkflowDataManagement:
@@ -197,6 +245,28 @@ class WorkflowDataManagement:
         finally:
             store.close()
 
+    @contextmanager
+    def read_directory(self):
+        """Open one fresh read transaction for a consistent directory view.
+
+        The narrow directory projection runs entirely inside this transaction on
+        the one fresh ``SqliteStore`` connection; the transaction is rolled back
+        (the projection never writes) and the connection always closes.  A second
+        store must not be opened inside a caller's command transaction, so this
+        is only used by the independent summary responses.
+        """
+        from .workflow_directory import WorkflowDirectoryRead
+
+        store = self._store_factory()
+        connection = store._connection
+        connection.execute("BEGIN")
+        try:
+            yield WorkflowDirectoryRead(connection)
+        finally:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            store.close()
+
     def execution_transaction(self, records: "GraphRecordStore", *, basis):
         """Bind execution-domain ports to the caller's already-open transaction."""
         from .execution_data import build_run_data
@@ -212,6 +282,34 @@ class WorkflowDataManagement:
         require(registry is not None, "run_basis_unavailable",
                 "Execution reads require a definition source", 409)
         return build_run_data(records, registry=registry, writable=False)
+
+    def execution_boundary_transaction(self, records: "GraphRecordStore"):
+        """Bind released-basis boundary persistence to the caller's transaction.
+
+        The normal ``execution_transaction`` keeps requiring a real ``RunBasis``;
+        this separate port only serves the explicit unconfirmed-close boundary
+        and never falls back to the normal execution interfaces.
+        """
+        from .execution_data import build_run_boundary
+
+        require(records.store._connection.in_transaction, "storage_contract_violation",
+                "Execution data requires the caller's open transaction", 500)
+        return build_run_boundary(records)
+
+    @contextmanager
+    def read_execution_boundary(self):
+        """Open a fresh read transaction for exact unconfirmed-state reads."""
+        from .execution_data import build_run_boundary
+        from .graph_store import GraphRecordStore
+
+        store = self._store_factory()
+        store._connection.execute("BEGIN")
+        try:
+            yield build_run_boundary(GraphRecordStore(store), writable=False)
+        finally:
+            if store._connection.in_transaction:
+                store._connection.execute("ROLLBACK")
+            store.close()
 
     def accept_fact(self, owner, stream_id, fact):
         """Accept one runtime fact in its own narrow transaction.

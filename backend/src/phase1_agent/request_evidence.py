@@ -50,12 +50,17 @@ def validate_evidence_owner(owner_kind, owner_id):
 
 
 def validate_evidence_request(operation, idempotency_key, request, *, stored=False):
-    from .graph_application_contracts import COMMANDS, RETIRED_RECEIPT_COMMANDS, validate_parameters
+    from .graph_application_contracts import (
+        COMMANDS, RETIRED_RECEIPT_COMMANDS, STORED_EVIDENCE_COMMANDS, validate_parameters,
+    )
     from .frontend_node_evidence import (
         FRONTEND_NODE_EVIDENCE_OPERATIONS, validate_frontend_node_evidence_request,
     )
     # Old records retain their exact contract without reopening evidence writes.
-    declarations = (*COMMANDS, *RETIRED_RECEIPT_COMMANDS) if stored else COMMANDS
+    # Stored-only contracts keep decoding legacy evidence whose executable
+    # receipt contract has been retired.
+    declarations = ((*COMMANDS, *RETIRED_RECEIPT_COMMANDS, *STORED_EVIDENCE_COMMANDS)
+                    if stored else COMMANDS)
     spec = next((item for item in declarations if item.name == operation), None)
     private = operation in FRONTEND_NODE_EVIDENCE_OPERATIONS.values()
     require(private or spec is not None and not operation.startswith("request-evidence.")

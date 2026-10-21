@@ -1,12 +1,51 @@
-"""Lazily expose independent management and the graph execution coordinator."""
+"""Project base runtime: lazily expose management and the graph execution coordinator."""
 
 from pathlib import Path
 from threading import RLock
 
+from .project_support import (
+    EXECUTION_ROLE,
+    MANAGEMENT_ROLE,
+    ProjectDefinitionManagement,
+    ProjectExecutionManagement,
+    ProjectStorageEnvironment,
+    require_matching_database,
+)
+
 
 class WorkflowHost:
-    def __init__(self, database_path):
+    """Assemble, acquire and hold the project base runtime and workflow services.
+
+    The host owns the storage environment shared by the workflow management and
+    execution entries, the project definition management and the thin execution
+    acquisition organization.  Service construction stays lazily inside this
+    class; the host is the lifecycle owner of the services it creates.
+
+    The host owns no workflow-internal construction path: on the first
+    acquisition of a role it asks the project definition management for the
+    declared trusted binding of the workflow source, re-checks the declared
+    environment and then creates the service along that binding.  Direct
+    construction of the workflow services by trusted callers is unchanged.
+
+    ``capability_source`` is only a trusted-local composition/test injection
+    seam for the workflow source itself; it is never a string entrypoint, module
+    path or dynamic import, and an injected source still passes the same
+    declaration validation and binding acquisition.
+    """
+
+    def __init__(self, database_path, *, environment=None, capability_source=None):
         self.database = Path(database_path).resolve()
+        if environment is None:
+            environment = ProjectStorageEnvironment(self.database)
+        else:
+            require_matching_database(self.database, environment)
+        self.environment = environment
+        self.definitions = ProjectDefinitionManagement(capability_source)
+        self.execution_management = ProjectExecutionManagement(
+            management_entry=lambda: self._management_dispatch_entry(),
+            execution_entry=lambda: self.graph_service,
+            lifecycle_entry=lambda: self._lifecycle_service(),
+        )
         self._lock = RLock()
         self._graph = None
         self._management_graph = None
@@ -62,12 +101,22 @@ class WorkflowHost:
         return global_resource_service(self, identity["type_id"]).delete_global_resource(
             identity, expected_sequence=expected_sequence, idempotency_key=idempotency_key)
 
+    def _acquire_role(self, role):
+        """Create one workflow service along its declared trusted local binding."""
+        binding = self.definitions.require_role_binding(
+            role, database=self.database, environment=self.environment)
+        service = binding.factory(database=self.database, environment=self.environment)
+        if service is None:
+            from .contract_errors import DiagnosticError
+            raise DiagnosticError("capability_binding_invalid",
+                                  "Trusted workflow access binding produced no service", status=409)
+        return service
+
     @property
     def graph_service(self):
         with self._lock:
             if self._graph is None:
-                from .graph_service import GraphWorkflowService
-                self._graph = GraphWorkflowService(self.database)
+                self._graph = self._acquire_role(EXECUTION_ROLE)
             return self._graph
 
     @property
@@ -76,9 +125,13 @@ class WorkflowHost:
             if self._graph is not None:
                 return self._graph
             if self._management_graph is None:
-                from .graph_service import GraphManagementService
-                self._management_graph = GraphManagementService(self.database)
+                self._management_graph = self._acquire_role(MANAGEMENT_ROLE)
             return self._management_graph
+
+    def _management_dispatch_entry(self):
+        """Existing management dispatch target: the acquired execution entry or this host."""
+        with self._lock:
+            return self._graph if self._graph is not None else self
 
     def _lifecycle_service(self):
         return self._graph if self._graph is not None else self.graph_management_service

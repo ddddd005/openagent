@@ -153,19 +153,6 @@ class WorkflowChatOperations:
             "expected_object_revision": expected_object_revision, "idempotency_key": idempotency_key,
         }
 
-    def submit(
-        self, session_id, *, object_key, submitted_input, expected_session_revision,
-        expected_data_revision, expected_head_revision, expected_object_revision,
-        idempotency_key, inputs=None, input_overrides=None,
-    ):
-        return self._service.chat_submit(
-            session_id, submitted_input=submitted_input,
-            inputs={} if inputs is None else deepcopy(inputs),
-            input_overrides={} if input_overrides is None else deepcopy(input_overrides),
-            **self._guards(
-                object_key, expected_session_revision, expected_data_revision,
-                expected_head_revision, expected_object_revision, idempotency_key))
-
     def reroll(
         self, session_id, *, object_key, round_id, expected_session_revision,
         expected_data_revision, expected_head_revision, expected_object_revision, idempotency_key,

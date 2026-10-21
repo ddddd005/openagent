@@ -12,6 +12,7 @@ from phase1_agent.graph_application_contracts import COMMANDS, QUERIES
 from phase1_agent.graph_http import dispatch_graph
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import WriteIntent
+from phase1_agent.server import management_request
 from legacy_consumer_receipt_fixture import seed_legacy_consumer_receipt
 
 from test_graph_service import create, gate_graph, service, text_graph
@@ -217,13 +218,15 @@ def test_resource_receipts_are_identity_only_and_fresh_queries_read_current_head
     app.command("resource.save", {"record": changed, "expected_sequence": 1, "idempotency_key": str(uuid4())})
     assert app.command("resource.save", original) == first
     assert app.query("resource.read", {"identity": reference}) == changed
-    assert dispatch_graph(service, "POST", "/api/graph/resources/list", {}) == (200, [changed])
+    assert dispatch_graph(service, "POST", "/api/graph/queries", {
+        "operation": "resource.list", "parameters": {}}) == (200, [changed])
     assert "application-original" not in repr(first["receipt"])
     deleted = app.command("resource.delete", {"identity": reference, "expected_sequence": 2,
                                              "idempotency_key": str(uuid4())})
     assert deleted["receipt"]["accepted"]["deleted"]
     assert app.query("resource.read", {"identity": reference}) is None
-    assert dispatch_graph(service, "POST", "/api/graph/resources/list", {}) == (200, [])
+    assert dispatch_graph(service, "POST", "/api/graph/queries", {
+        "operation": "resource.list", "parameters": {}}) == (200, [])
 
 
 def test_rest_http_routes_use_application_command_and_query(service, monkeypatch):
@@ -281,11 +284,31 @@ def test_http_envelopes_preserve_original_identity_and_consumer_scope(tmp_path):
         assert not hasattr(host, "_legacy") and not hasattr(host.graph_service, "_native_runtime")
 
 
-@pytest.mark.parametrize("path", ["/api/graph/resources/list", "/api/graph/resources/read"])
-def test_platform_post_queries_still_require_an_object_body(service, path):
+@pytest.mark.parametrize("path", ["/api/graph/registrations/list", "/api/graph/packages/configure"])
+def test_platform_post_routes_still_require_an_object_body(service, path):
     with pytest.raises(ContractValidationError) as failure:
         dispatch_graph(service, "POST", path, None)
     assert failure.value.reason_code == "invalid_request"
+
+
+@pytest.mark.parametrize("path", [
+    "/api/graph/resources/read", "/api/graph/resources/list",
+    "/api/graph/resources/save", "/api/graph/resources/delete",
+])
+def test_retired_platform_resource_routes_reject_without_application_dispatch(
+        service, monkeypatch, path):
+    # The old workbench resource coordinates remain management-only for service
+    # selection, but no platform route dispatches them any more.
+    assert management_request("POST", path, {}) is True
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("a retired platform resource route entered application dispatch")
+
+    monkeypatch.setattr(GraphApplication, "command", forbidden)
+    monkeypatch.setattr(GraphApplication, "query", forbidden)
+    with pytest.raises(ContractValidationError) as failure:
+        dispatch_graph(service, "POST", path, {})
+    assert failure.value.reason_code == "not_found"
 
 
 def test_bound_consumer_application_cannot_be_upgraded_through_http(service):

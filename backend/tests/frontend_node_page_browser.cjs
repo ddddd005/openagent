@@ -13,7 +13,8 @@ const urls = value => { const part = ownerPath(value); return {
   page_url: origin + "/frontend-node/" + part + "/", channel_url: origin + "/api/graph/frontend-nodes/" + part + "/channel",
   events_url: origin + "/api/graph/frontend-nodes/" + part + "/events",
 }; };
-const report = { errors: [], unexpected: [], operations: [], scenarios: [], layouts: [] };
+const report = { errors: [], unexpected: [], operations: [], scenarios: [], layouts: [],
+  staticRequests: [] };
 const workflows = new Map([[id(1), { text: "正式输入", edit_sequence: 1, policy: "adjustable" }]]);
 const sessions = new Map(), receipts = new Map(), pending = new Map();
 let losePatch = false, createdCount = 0, startCount = 0, browser;
@@ -110,15 +111,16 @@ async function screenshot(page, name) {
     try {
       assert.equal(url.origin, origin, "No external network is allowed");
       if (!url.pathname.startsWith("/api/")) {
+        report.staticRequests.push(url.pathname);
         let file;
         if (url.pathname.startsWith("/frontend-node/")) file = path.join(root, "static/frontend-node.html");
         else if (url.pathname.startsWith("/static/frontend-node")) file = path.join(root, "static", path.basename(url.pathname));
-        else if (url.pathname === "/tavern/vendor/lucide/lucide.min.js") file = path.join(root, "tavern/frontend/vendor/lucide/lucide.min.js");
-        else if (["/tavern/assets/assistant.png", "/tavern/assets/user-default.png"].includes(url.pathname))
-          file = path.join(root, "tavern/frontend/assets", path.basename(url.pathname));
+        else if (url.pathname.startsWith("/static/assets/")) file = path.join(root, "static", "assets", path.basename(url.pathname));
+        else if (url.pathname.startsWith("/static/vendor/lucide/")) file = path.join(root, "static", "vendor", "lucide", path.basename(url.pathname));
         else throw new Error("Unexpected static path " + url.pathname);
         return await route.fulfill({ path: file, contentType: file.endsWith(".js") ? "text/javascript"
-          : file.endsWith(".css") ? "text/css" : file.endsWith(".png") ? "image/png" : "text/html" });
+          : file.endsWith(".css") ? "text/css" : file.endsWith(".png") ? "image/png"
+          : file.endsWith(".svg") ? "image/svg+xml" : "text/html" });
       }
       assert.ok(url.pathname.startsWith("/api/graph/frontend-nodes/"), "No generic graph API");
       if (url.pathname.endsWith("/entry")) {
@@ -440,6 +442,11 @@ async function screenshot(page, name) {
   const beforeClose = report.operations.length;
   await page.goto("about:blank");
   assert.equal(report.operations.length, beforeClose);
+  assert.ok(report.staticRequests.every(pathname => pathname.startsWith("/frontend-node/")
+    || pathname.startsWith("/static/")), "Only the node page and project static assets are requested");
+  for (const pathname of ["/static/vendor/lucide/lucide.min.js", "/static/assets/assistant-avatar.svg",
+    "/static/assets/user-avatar.svg"])
+    assert.ok(report.staticRequests.includes(pathname), "Project-owned asset is used: " + pathname);
   assert.deepEqual(report.errors, []); assert.deepEqual(report.unexpected, []);
   fs.writeFileSync(path.join(output, "page-report.json"), JSON.stringify(report, null, 2));
   await browser.close();

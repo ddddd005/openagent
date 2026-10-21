@@ -246,11 +246,7 @@ def test_both_sources_share_edit_sequence_current_row_and_frozen_receipts(servic
         transaction_entries.append(operation)
         return native_change(operation, key, request, callback)
 
-    def forbidden_public_patch(**arguments):
-        pytest.fail("frontend-node patch used the public narrow-patch entry")
-
     monkeypatch.setattr(service, "_configuration_change", counted_change)
-    monkeypatch.setattr(service, "patch_node_configuration", forbidden_public_patch)
     node_e_key = "node-save-e-" + str(uuid4())
     e_saved = bound.patch_input("E", expected_edit_sequence=5, idempotency_key=node_e_key)
     assert e_saved["outcome"] == "saved" and e_saved["edit_sequence"] == 6

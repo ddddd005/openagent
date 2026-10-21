@@ -63,11 +63,13 @@ describe("backend-authoritative workspace initialization", () => {
     expect(persistence.status).toBe("ready");
     expect(persistence.legacyRequests).toEqual([{
       key: `${id}:${command.body.idempotency_key}`, workflowId: id, command,
-      legacy_action: null, basis: { definitionId: id, savedRevision: 0, sessionId: null }, status: "pending",
+      legacy_action: null, basis: { definitionId: id, savedRevision: 0, sessionId: null },
+      status: "retired", result: "旧整图保存入口已退役；原保存回执不可再核实，原记录保留",
     }]);
     expect(useWorkflowGraphStore().storeSnapshot().entries).toEqual({});
     expect(JSON.stringify(persistence.legacyRequests)).not.toContain("untouched editor input");
     expect(await persistence.save()).toBe(false);
+    expect(await persistence.verifyLegacyRequest(persistence.legacyRequests[0]!.key)).toBe(false);
     expect(await backend.ports.read(record.address)).toEqual(record);
     expect(backend.ports.save).toHaveBeenCalledOnce();
     expect(backend.ports.receipt).not.toHaveBeenCalled();

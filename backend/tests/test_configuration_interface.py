@@ -104,10 +104,6 @@ def test_frontend_node_patch_uses_same_business_and_data_interfaces(service, mon
     bound, graph, _, _ = prepared(service)
     calls.clear()
 
-    def nested(*args, **kwargs):
-        pytest.fail("frontend patch must not open another configuration transaction")
-
-    monkeypatch.setattr(service, "patch_node_configuration", nested)
     result = bound.patch_input("B", expected_edit_sequence=1, idempotency_key="interface-patch")
 
     assert result["outcome"] == "saved" and result["edit_sequence"] == 2

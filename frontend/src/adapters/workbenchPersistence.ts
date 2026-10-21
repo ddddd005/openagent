@@ -55,7 +55,7 @@ export interface LegacyPendingCommand {
   command: GraphCommand;
   legacy_action: "extend_budget" | null;
   basis: { definitionId: string; savedRevision: number; sessionId: string | null };
-  status: "pending" | "checking" | "verified" | "unknown";
+  status: "pending" | "checking" | "verified" | "unknown" | "retired";
   result?: string;
   error?: string;
 }
@@ -163,6 +163,9 @@ export function readLegacyWorkbenchEvidence(value: unknown): LegacyWorkbenchEvid
       continue;
     }
     const command = graphClone(rawEntry.pending);
+    // The whole-graph save receipt contract is retired: keep the frozen original
+    // request in place but never present it as a verifiable request again.
+    const retiredSave = command.action === "save";
     result.pending.push({
       key: `${workflowId}:${command.body.idempotency_key}`,
       workflowId,
@@ -170,7 +173,10 @@ export function readLegacyWorkbenchEvidence(value: unknown): LegacyWorkbenchEvid
       legacy_action: command.action === "extend_budget" ? "extend_budget" : null,
       basis: { definitionId: document.workflow_definition_id,
         savedRevision: Number(rawEntry.saved_revision), sessionId: sessionId as string | null },
-      status: "pending",
+      status: retiredSave ? "retired" : "pending",
+      ...(retiredSave
+        ? { result: "旧整图保存入口已退役；原保存回执不可再核实，原记录保留" }
+        : {}),
     });
   }
   return result;

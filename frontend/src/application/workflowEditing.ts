@@ -1,20 +1,13 @@
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import { graphClone, graphSignature, isGraphDocument,
-  type GraphCommand, type GraphDocument, type GraphEntry, type GraphSession } from "../domain/workflowGraph";
+  type GraphDocument, type GraphEntry, type GraphSession } from "../domain/workflowGraph";
 import type { WorkflowTarget } from "./workflowManagement";
 
 export interface WorkflowEditingPorts {
   entry(workflowId: string): GraphEntry | undefined;
-  isDraft(workflowId: string): boolean;
   canEdit(workflowId: string): boolean;
   observedSession(sessionId: string): GraphSession | undefined;
   acceptDraft(workflowId: string, document: GraphDocument): void;
-  stageCopy(sourceId: string, targetId: string, document: GraphDocument, baseline: GraphDocument, copying: boolean): void;
-  open(workflowId: string): void;
-  persist?(): boolean | Promise<boolean>;
-  dispatch(workflowId: string, command: GraphCommand): Promise<unknown>;
-  copying(active: boolean): void;
-  report(failure: unknown): void;
 }
 export function createWorkflowEditing(ports: WorkflowEditingPorts) {
   function edit({ workflowId }: WorkflowTarget, change: (document: GraphDocument) => boolean) {
@@ -31,24 +24,5 @@ export function createWorkflowEditing(ports: WorkflowEditingPorts) {
     ports.acceptDraft(workflowId, graphClone(next));
     return workflowId;
   }
-  function copy({ workflowId }: WorkflowTarget) {
-    const entry = ports.entry(workflowId);
-    if (!entry || !ports.canEdit(workflowId)) return null;
-    const view = entry.session_id ? ports.observedSession(entry.session_id) : null;
-    if (entry.session_id && (!view || !view.can_submit
-      || ["prepared", "running", "pausing", "paused"].includes(view.status)))
-      throw new WorkbenchApiError("unavailable", "当前会话未稳定，不能复制工作流");
-    if (view)
-      throw new WorkbenchApiError("unavailable", "会话复制写入暂不可用；未创建副本或提交请求");
-    const next = graphClone(entry.document);
-    const targetId = crypto.randomUUID();
-    next.workflow_definition_id = targetId;
-    next.revision = 1;
-    next.name = `${next.name}（副本）`;
-    const baseline = graphClone({ ...entry.document, workflow_definition_id: targetId, revision: 1, name: next.name });
-    ports.stageCopy(workflowId, targetId, graphClone(next), baseline, false);
-    ports.open(targetId);
-    return targetId;
-  }
-  return { edit, copy };
+  return { edit };
 }

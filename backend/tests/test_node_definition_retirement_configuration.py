@@ -292,8 +292,7 @@ def test_missing_current_type_fails_without_legacy_fallback_or_writes(management
         return original_maybe(repository, kind, **identity)
 
     monkeypatch.setattr(GraphRecordStore, "maybe", track_descriptor_read)
-    monkeypatch.setattr(management_service.registry, "get_definition",
-                        lambda component_id, component_version: None)
+    monkeypatch.setattr(management_service, "registry", NodeRegistry())
 
     with pytest.raises(ContractValidationError) as error:
         management_service.get_definition(workflow_id)
@@ -411,8 +410,10 @@ def test_same_version_declaration_updates_are_visible_without_rewriting_fixed_re
     observed = []
     original_descriptor = management_service._configuration_descriptor
 
-    def capture_descriptor(node):
-        descriptor = original_descriptor(node)
+    def capture_descriptor(node, *, definitions=None):
+        assert definitions is not None
+        assert definitions.registry is management_service.registry
+        descriptor = original_descriptor(node, definitions=definitions)
         observed.append((descriptor["checkpoint_save"], descriptor["execution_class"]))
         return descriptor
 

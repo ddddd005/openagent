@@ -5,7 +5,10 @@ from copy import deepcopy
 from threading import Event
 from uuid import uuid4
 
+import pytest
+
 from phase1_agent.content_contracts import text_content
+from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.graph_contracts import GraphCompiler, NodeDefinition, NodePort
 from phase1_agent.graph_service import GraphWorkflowService
 
@@ -35,11 +38,14 @@ def _create(service, graph):
 
 
 def _patch_text(service, graph, entry, text):
-    return service.patch_node_configuration(
-        workflow_definition_id=graph["workflow_definition_id"],
-        node_binding_id=entry["node_binding_id"],
-        component_id="tools.editable-input", component_version="1",
-        changes={"text": text}, expected_edit_sequence=graph["edit_sequence"],
+    """Change the saved text through the workbench's complete-document entry."""
+    document = deepcopy(service.get_definition(graph["workflow_definition_id"]))
+    target = next(item for item in document["nodes"]
+                  if item["node_binding_id"] == entry["node_binding_id"])
+    target["config"] = {**target["config"], "text": text}
+    return service.update_definition(
+        document, workflow_definition_id=graph["workflow_definition_id"],
+        expected_edit_sequence=document["edit_sequence"],
         idempotency_key=str(uuid4()),
     )
 
@@ -81,22 +87,16 @@ def test_prepared_input_stays_frozen_while_next_round_uses_new_saved_text(tmp_pa
         )
         try:
             assert entered.wait(5), "editable input execution did not reach gate"
-            saved = _patch_text(service, graph, source, "B")
-            assert saved["outcome"] == "saved"
-            assert saved["changed_categories"] == ["adjustable"]
-            assert saved["definition_revision"] == graph["revision"]
+            # G21: a new complete save is rejected while the run is unfinished.
+            # The former intent "save new adjustable text while the prepared run
+            # is in flight" is replaced; the save happens after the run settles,
+            # and the next prepared round then reads the new text.
+            with pytest.raises(ContractValidationError) as rejected:
+                _patch_text(service, graph, source, "B")
+            assert rejected.value.reason_code == "configuration_run_locked"
             assert service.get_definition(graph["workflow_definition_id"])["nodes"][1]["config"] == {
-                "text": "B",
+                "text": "A",
             }
-            with closing(service._store()) as store:
-                frozen = store._connection.execute(
-                    "SELECT json_extract(payload,'$.config.text') FROM records "
-                    "WHERE record_type='node_run' "
-                    "AND json_extract(payload,'$.chain_run_id')=? "
-                    "AND json_extract(payload,'$.node_binding_id')=?",
-                    (started["active_chain_run_id"], source["node_binding_id"]),
-                ).fetchone()[0]
-                assert frozen == "A"
         finally:
             release.set()
             service.wait(started["active_chain_run_id"])
@@ -104,6 +104,22 @@ def test_prepared_input_stays_frozen_while_next_round_uses_new_saved_text(tmp_pa
         assert first["status"] == "succeeded", first["chains"]
         assert _output(first, source) == text_content("A")
         assert _output(first, output) == text_content("A")
+        with closing(service._store()) as store:
+            frozen = store._connection.execute(
+                "SELECT json_extract(payload,'$.config.text') FROM records "
+                "WHERE record_type='node_run' "
+                "AND json_extract(payload,'$.chain_run_id')=? "
+                "AND json_extract(payload,'$.node_binding_id')=?",
+                (started["active_chain_run_id"], source["node_binding_id"]),
+            ).fetchone()[0]
+            assert frozen == "A"
+        saved = _patch_text(service, graph, source, "B")
+        assert saved["outcome"] == "saved"
+        assert saved["changed_categories"] == ["adjustable"]
+        assert saved["definition_revision"] == graph["revision"]
+        assert service.get_definition(graph["workflow_definition_id"])["nodes"][1]["config"] == {
+            "text": "B",
+        }
         second = run(service, first)
         assert second["status"] == "succeeded", second["chains"]
         assert _output(second, source) == text_content("B")

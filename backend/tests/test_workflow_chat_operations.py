@@ -162,16 +162,13 @@ def test_missing_round_or_foreign_candidate_is_rejected_without_mutating_value()
     assert value == before and plan_chat_continuation(empty_chat_context()) is None
 
 
-def test_independent_facade_forwards_exact_guards_and_copies_only_input_arguments():
+def test_independent_facade_forwards_exact_guards():
     calls = []
 
     class Service:
         def __getattr__(self, name):
             def invoke(*args, **parameters):
                 calls.append((name, args, deepcopy(parameters)))
-                if "inputs" in parameters:
-                    parameters["inputs"].clear()
-                    parameters["input_overrides"].clear()
                 return {"accepted": name}
             return invoke
 
@@ -182,16 +179,12 @@ def test_independent_facade_forwards_exact_guards_and_copies_only_input_argument
         "expected_data_revision": 0, "expected_head_revision": 2,
         "expected_object_revision": 4, "idempotency_key": "original",
     }
-    inputs, overrides = {"text": "external"}, {_id(): "frozen"}
-    operations.submit(session_id, submitted_input="user", inputs=inputs, input_overrides=overrides, **guards)
     round_id, candidate_id = _id(), _id()
     operations.reroll(session_id, round_id=round_id, **guards)
     operations.select(session_id, round_id=round_id, candidate_id=candidate_id, **guards)
     operations.fork_floor(session_id, round_id=round_id, **guards)
-    assert inputs == {"text": "external"} and len(overrides) == 1
-    assert [call[0] for call in calls] == ["chat_submit", "chat_reroll", "chat_select", "chat_fork_floor"]
+    assert [call[0] for call in calls] == ["chat_reroll", "chat_select", "chat_fork_floor"]
     assert all(call[1] == (session_id,) and all(
         call[2][field] == expected for field, expected in guards.items()) for call in calls)
-    assert calls[0][2]["submitted_input"] == "user"
-    assert calls[1][2]["round_id"] == calls[3][2]["round_id"] == round_id
-    assert calls[2][2]["candidate_id"] == candidate_id
+    assert calls[0][2]["round_id"] == calls[2][2]["round_id"] == round_id
+    assert calls[1][2]["candidate_id"] == candidate_id

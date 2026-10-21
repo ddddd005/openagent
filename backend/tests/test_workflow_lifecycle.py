@@ -8,7 +8,9 @@ from uuid import UUID, uuid4
 import pytest
 
 from phase1_agent.checkpoint_repository import CheckpointRepository, initialize_checkpoint_tables
+from phase1_agent.configuration_data import ConfigurationDataSession
 from phase1_agent.contract_errors import ContractValidationError
+from phase1_agent.execution_data import ConfigurationReadSession
 from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_http import dispatch_graph
 from phase1_agent.graph_records import graph_record
@@ -240,6 +242,124 @@ def test_delete_workflow_is_targeted_and_original_receipt_does_not_restore_it(se
         service.get_definition(doc["workflow_definition_id"])
     with pytest.raises(ContractValidationError):
         service.get_session(view["workflow_session_id"])
+
+
+def test_definition_delete_uses_configuration_data_intents_in_the_original_transaction(service, monkeypatch):
+    """Q6: the configuration-owned rows are removed through the config data port."""
+    doc = text_graph(service.registry)
+    _save_configuration(service, doc)
+    identity = doc["workflow_definition_id"]
+    session = service.create_session(identity, 1, idempotency_key=str(uuid4()))
+    other = {**text_graph(service.registry), "name": "Other workflow"}
+    _save_configuration(service, other)
+    other_identity = other["workflow_definition_id"]
+    with closing(SqliteStore(service.database)) as store:
+        connection = store._connection
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            for owner, marker in ((identity, "delete"), (other_identity, "keep")):
+                connection.execute(
+                    "INSERT INTO local_editor_drafts VALUES(?,?,?,?,?,?,?)",
+                    ("draft-" + marker, "management", "workbench", owner, None, 1,
+                     '{"schema_version":1,"value":{"marker":"' + marker + '"}}'))
+                connection.execute("INSERT INTO workflow_management VALUES(?,?,?)",
+                                   ("definition", owner, 0))
+            connection.execute("COMMIT")
+        except BaseException:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+
+    calls = []
+    original_revisions = ConfigurationDataSession.delete_definition_revisions
+    original_current = ConfigurationDataSession.delete_current_configuration
+
+    def delete_revisions(self, value):
+        calls.append(("revisions", value,
+                      self._access._records.store._connection.in_transaction))
+        return original_revisions(self, value)
+
+    def delete_current(self, value):
+        connection = self._access._records.store._connection
+        drafts = connection.execute(
+            "SELECT COUNT(*) FROM local_editor_drafts WHERE workflow_definition_id=?",
+            (value,)).fetchone()[0]
+        calls.append(("current", value, connection.in_transaction, drafts))
+        return original_current(self, value)
+
+    monkeypatch.setattr(ConfigurationDataSession, "delete_definition_revisions", delete_revisions)
+    monkeypatch.setattr(ConfigurationDataSession, "delete_current_configuration", delete_current)
+    request = {"identity": identity, "expected_revision": 1, "idempotency_key": str(uuid4())}
+    application = GraphApplication(service)
+    result = application.command("definition.delete", request)
+    assert result["result"]["deleted"] is True
+    assert application.command("definition.delete", request) == result
+    # Both intents ran once on the exact workflow identity, inside the original
+    # delete transaction, and the unchanged local draft cleanup stayed between
+    # the two configuration data operations.
+    assert calls == [("revisions", identity, True), ("current", identity, True, 0)]
+
+    with closing(SqliteStore(service.database)) as store:
+        connection = store._connection
+        for statement, parameters in (
+                ("SELECT COUNT(*) FROM records WHERE record_type IN "
+                 "('workflow_definition_revision','node_binding') "
+                 "AND json_extract(payload,'$.workflow_definition_id')=?", (identity,)),
+                ("SELECT COUNT(*) FROM workflow_current_configuration "
+                 "WHERE workflow_definition_id=?", (identity,)),
+                ("SELECT COUNT(*) FROM local_editor_drafts WHERE workflow_definition_id=?",
+                 (identity,)),
+                ("SELECT COUNT(*) FROM workflow_management "
+                 "WHERE object_kind='definition' AND object_id=?", (identity,))):
+            assert connection.execute(statement, parameters).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM records WHERE record_type IN "
+            "('workflow_definition_revision','node_binding') "
+            "AND json_extract(payload,'$.workflow_definition_id')=?",
+            (other_identity,)).fetchone()[0] > 0
+        for statement, parameters in (
+                ("SELECT COUNT(*) FROM workflow_current_configuration "
+                 "WHERE workflow_definition_id=?", (other_identity,)),
+                ("SELECT COUNT(*) FROM local_editor_drafts WHERE workflow_definition_id=?",
+                 (other_identity,)),
+                ("SELECT COUNT(*) FROM workflow_management "
+                 "WHERE object_kind='definition' AND object_id=?", (other_identity,))):
+            assert connection.execute(statement, parameters).fetchone()[0] == 1
+    with pytest.raises(ContractValidationError) as removed:
+        service.get_session(session["workflow_session_id"])
+    assert removed.value.reason_code == "not_found"
+
+
+def test_configuration_delete_intents_require_the_caller_transaction(service):
+    identity = str(uuid4())
+    with closing(service._store()) as store:
+        data = service._configuration_data.transaction(GraphRecordStore(store))
+        for name in ("delete_definition_revisions", "delete_current_configuration"):
+            with pytest.raises(ContractValidationError) as failure:
+                getattr(data, name)(identity)
+            assert failure.value.reason_code == "storage_contract_violation"
+            assert failure.value.status_code == 500
+    for name in ("delete_definition_revisions", "delete_current_configuration"):
+        assert not hasattr(ConfigurationReadSession, name)
+    assert not hasattr(ConfigurationDataSession, "delete")
+
+
+def test_session_delete_does_not_use_definition_configuration_intents(service, monkeypatch):
+    doc = text_graph(service.registry)
+    view = create(service, doc)
+    calls = []
+
+    def forbidden(self, value):
+        calls.append(value)
+        raise AssertionError("session deletion must not remove definition configuration")
+
+    monkeypatch.setattr(ConfigurationDataSession, "delete_definition_revisions", forbidden)
+    monkeypatch.setattr(ConfigurationDataSession, "delete_current_configuration", forbidden)
+    result = service.delete_session(view["workflow_session_id"],
+                                    expected_revision=view["revision"],
+                                    idempotency_key=str(uuid4()))
+    assert result["deleted"] is True
+    assert calls == []
 
 
 def test_archive_waits_for_target_stop_and_does_not_block_other_workflow(service):

@@ -9,7 +9,8 @@ const graph = useWorkflowGraphStore();
 const workspace = useWorkspaceStore();
 const metadata = useSessionMetadata(), name = ref("");
 const selectedMetadata = computed(() => graph.session ? metadata.forSession(graph.session.workflow_session_id) : null);
-watch(() => graph.sessions[workspace.activeWorkflowId] ?? [], sessions => {
+const sessionRows = computed(() => graph.sessionRows[workspace.activeWorkflowId] ?? []);
+watch(sessionRows, sessions => {
   for (const session of sessions) metadata.forSession(session.workflow_session_id).observe({
     schema_version: 1, kind: "workflow.session-metadata",
     workflow_definition_id: session.workflow_definition_id, workflow_session_id: session.workflow_session_id,
@@ -43,7 +44,7 @@ async function abandonNameRequest() {
   if (target) await target.abandon(window.confirm("归档并解除原会话名称请求的锁定？这不会撤销已发生的保存，也不会重新提交。"));
 }
 const showArchived = ref(false);
-const listedSessions = computed(() => (graph.sessions[workspace.activeWorkflowId] ?? [])
+const listedSessions = computed(() => sessionRows.value
   .filter(row => showArchived.value || !row.archived));
 async function manageSession(action: "archive" | "delete") {
   const sessionId = graph.session?.workflow_session_id;

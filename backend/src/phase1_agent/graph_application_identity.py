@@ -44,8 +44,8 @@ def native_command_request(operation, parameters):
     }
     name = aliases.get(operation, operation)
     native_operations = {
-        "definition.save": "graph.definition.save",
         "definition.update": "graph.definition.update",
+        "definition.copy": "graph.definition.copy",
         "definition.archive": "graph.definition.archive",
         "definition.delete": "graph.definition.delete",
         "session.create": "graph.session.create",
@@ -177,6 +177,11 @@ def application_accepted_result(result):
             "outcome", "source_workflow_definition_id", "workflow_definition_id",
             "definition_revision", "edit_sequence", "source_has_effective_session",
             "changed_categories", "node_id_map", "session_id")}
+    if result.get("kind") == "workflow.configuration-copy-result":
+        return {field: deepcopy(result[field]) for field in (
+            "outcome", "source_workflow_definition_id", "source_definition_revision",
+            "source_edit_sequence", "workflow_definition_id", "definition_revision",
+            "edit_sequence", "session_id")}
     if set(result) == {"reference", "display_name", "metadata_sequence"}:
         return deepcopy(result)
     source = result.get("session", result)

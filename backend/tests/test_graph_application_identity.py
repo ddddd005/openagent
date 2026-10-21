@@ -27,8 +27,6 @@ def fingerprint(value):
 
 
 @pytest.mark.parametrize("operation,parameters,native_operation,normalized", [
-    ("definition.save", {"document": {"revision": 1}, "expected_revision": 0},
-     "graph.definition.save", {"document": {"revision": 1}, "expected_revision": 0}),
     ("session.create", {"workflow_definition_id": DEFINITION, "definition_revision": 1},
      "graph.session.create", {"workflow_definition_id": DEFINITION, "definition_revision": 1}),
     ("consumer.session.create", {"workflow_definition_id": DEFINITION, "definition_revision": 1},
@@ -116,6 +114,15 @@ def test_resource_normalization_keeps_its_separate_native_digest_profile(operati
         "table": "global_resource_receipts", "operation": normalized["operation"],
         "key": KEY, "request_digest": content_digest(normalized),
     }
+
+
+def test_retired_definition_save_has_no_application_identity_mapping():
+    parameters = {"document": {"revision": 1}, "expected_revision": 0, "idempotency_key": KEY}
+    assert native_command_request("definition.save", parameters) is None
+    assert application_command_identity("definition.save", "management", parameters) is None
+    assert native_command_request("definition.update", {
+        "workflow_definition_id": DEFINITION, "document": {}, "expected_edit_sequence": 0,
+        "idempotency_key": KEY}) is not None
 
 
 def test_application_origin_does_not_collapse_optional_shape_or_consumer_scope():

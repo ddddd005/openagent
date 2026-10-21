@@ -20,8 +20,9 @@ from dataclasses import dataclass
 from typing import Callable
 from uuid import uuid4
 
-from .contract_errors import require, uuid4_string
+from .contract_errors import require, uuid4_string, uuid_value
 from .contract_json import canonical_bytes
+from .host_sdk import bounded_name
 from .configuration_mutations import (
     configuration_mutation_rule, validate_editable_input_configuration,
 )
@@ -368,6 +369,22 @@ class WorkflowConfiguration:
         require(confirm_derivation is None or type(confirm_derivation) is bool, "invalid_request",
                 "Derivation confirmation must be boolean")
 
+    @staticmethod
+    def _require_no_unfinished_run(data, workflow_definition_id):
+        """G21: user configuration edits stay locked while a run is unfinished.
+
+        Occupancy is read from the caller's configuration-data transaction: a
+        persisted ``workflow_session`` still holding ``active_chain_run_id``
+        belongs to a run that has neither succeeded nor been explicitly closed.
+        The rule is scoped to the workflow definition identity and needs the
+        persisted sessions only, so a process restart does not unlock a run.
+        """
+        unfinished = any(session.get("active_chain_run_id") is not None
+                         for session in data.definition_sessions(workflow_definition_id))
+        require(not unfinished, "configuration_run_locked",
+                "Configuration cannot change while a workflow run is unfinished", 409,
+                workflow_definition_id=workflow_definition_id)
+
     def _save_configuration_update(self, data, document, *, workflow_definition_id, expected_edit_sequence,
                                    confirm_derivation):
         from .graph_contracts import validate_graph_document, validate_session_item_registrations
@@ -383,6 +400,7 @@ class WorkflowConfiguration:
                 "invalid_request", "Document edit sequence differs from its editing basis")
         proposed.pop("edit_sequence", None)
         self._require_definition_active_in(data, workflow_definition_id)
+        self._require_no_unfinished_run(data, workflow_definition_id)
         current = data.current_configuration(workflow_definition_id)
         require((current["edit_sequence"] if current else 0) == expected_edit_sequence,
                 "stale_edit_sequence", "Workflow configuration changed", 409)
@@ -445,4 +463,89 @@ class WorkflowConfiguration:
             "source_has_effective_session": effective, "changed_categories": categories,
             "node_id_map": {node["node_binding_id"]: node["node_binding_id"] for node in actual["nodes"]},
             "session_id": None, "document": actual,
+        }
+
+    def copy_configuration(self, data, *, source_workflow_definition_id,
+                           expected_source_definition_revision,
+                           expected_source_edit_sequence,
+                           target_workflow_definition_id, target_name):
+        """Copy one formal current configuration into a brand-new workflow identity.
+
+        This runs inside the caller's existing command transaction (the shared
+        atomic configuration command envelope already replayed/checked the native
+        receipt).  It reads the source current configuration and its exact fixed
+        revision in that same transaction, verifies the source versions and that
+        the target identity has no formal record, then writes a deep-copied
+        document with the target identity, name, ``revision=1`` and
+        ``edit_sequence=1``.  It never updates, locks or pauses the source, never
+        requires an effective session and never copies sessions, runs,
+        checkpoints or variable values.
+
+        G-A is decided (2026-10-21): an archived formal source is allowed.  The
+        source is only read, so its archive state is not a gate; the source must
+        still have a current configuration.  The result shape carries no extra
+        archive field.
+        """
+        from .graph_contracts import validate_graph_document, validate_session_item_registrations
+
+        require(uuid_value(source_workflow_definition_id)
+                and uuid_value(target_workflow_definition_id)
+                and source_workflow_definition_id != target_workflow_definition_id,
+                "invalid_request", "Copy source and target must be distinct workflow identities")
+        require(type(expected_source_definition_revision) is int
+                and 1 <= expected_source_definition_revision <= MAX_EDIT_SEQUENCE,
+                "invalid_request", "Copy source definition revision is invalid")
+        require(type(expected_source_edit_sequence) is int
+                and 1 <= expected_source_edit_sequence <= MAX_EDIT_SEQUENCE,
+                "invalid_request", "Copy source edit sequence is invalid")
+        require(bounded_name(target_name), "invalid_request",
+                "Copy target name must be a bounded name")
+
+        current, fixed = data.configuration_view(source_workflow_definition_id)
+        if current is None:
+            # A physically deleted source has no formal fixed revision either.
+            # A legacy fixed-only item is not a formal copy source: never read a
+            # historical fixed document to fabricate a current configuration.
+            require(data.has_definition_revision(source_workflow_definition_id),
+                    "not_found", "Source workflow definition not found", 404)
+            require(False, "graph_configuration_missing",
+                    "Copy requires the source current configuration", 409)
+        require(current["fixed_definition_revision"] == expected_source_definition_revision,
+                "stale_revision", "Source workflow definition changed", 409)
+        require(current["edit_sequence"] == expected_source_edit_sequence,
+                "stale_edit_sequence", "Source workflow configuration changed", 409)
+
+        # The target must not exist in any formal form, so the copy can never
+        # silently overwrite or take over an existing definition.
+        require(not data.definition_revisions(target_workflow_definition_id),
+                "graph_definition_conflict", "Target workflow definition already exists", 409)
+        require(data.current_configuration(target_workflow_definition_id) is None,
+                "graph_definition_conflict", "Target workflow definition already exists", 409)
+        require(data.management_record("definition", target_workflow_definition_id) is None,
+                "graph_definition_conflict", "Target workflow definition already has a management record", 409)
+
+        proposed = self._compose_configuration(current, fixed)
+        proposed["workflow_definition_id"] = target_workflow_definition_id
+        proposed["revision"] = 1
+        proposed["name"] = target_name
+        proposed.pop("edit_sequence", None)
+        proposed = validate_graph_document(proposed)
+        require(proposed["schema_version"] == 3, "graph_invalid_document",
+                "Configuration copies require graph document schema 3")
+        validate_session_item_registrations(proposed, self.registry)
+        for node in proposed["nodes"]:
+            validate_node_configuration(node, self._configuration_descriptor(node))
+        data.save_fixed_revision(proposed, 0)
+        self._write_configuration(data, proposed, 1)
+        actual = self._configuration_view(data, target_workflow_definition_id)
+        return {
+            "schema_version": 1, "kind": "workflow.configuration-copy-result", "outcome": "copied",
+            "source_workflow_definition_id": source_workflow_definition_id,
+            "source_definition_revision": expected_source_definition_revision,
+            "source_edit_sequence": expected_source_edit_sequence,
+            "workflow_definition_id": target_workflow_definition_id,
+            "definition_revision": 1, "edit_sequence": 1, "session_id": None,
+            "node_id_map": {node["node_binding_id"]: node["node_binding_id"]
+                            for node in actual["nodes"]},
+            "document": actual,
         }

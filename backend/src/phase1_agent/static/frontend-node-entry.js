@@ -17,6 +17,7 @@
     frontend_node_request_unknown: "原请求仍待核实，未重新发送。",
     frontend_node_input_basis_changed: "正式输入已被其他页面修改，当前编辑未自动改基。",
     frontend_node_result_mismatch: "返回结果与原请求不一致，原请求保留待核实。",
+    configuration_run_locked: "该工作流有未结束的运行，运行期间不能修改配置；请先结束并关闭该运行。",
     frontend_node_start_unavailable: "当前会话不可启动新一轮。",
     frontend_node_pause_unavailable: "当前会话不可请求暂停。",
     frontend_node_resume_unavailable: "当前会话不可继续本轮。",
@@ -45,7 +46,7 @@
     const body = document.createElement("div"), heading = document.createElement("div");
     const name = document.createElement("h2"), order = document.createElement("small"), content = document.createElement("pre");
     article.className = "message"; article.dataset.entryId = entryId;
-    image.src = role === "user" ? "/tavern/assets/user-default.png" : "/tavern/assets/assistant.png";
+    image.src = role === "user" ? "/static/assets/user-avatar.svg" : "/static/assets/assistant-avatar.svg";
     image.alt = ""; heading.className = "message-head"; name.textContent = roleLabels[role];
     order.textContent = orderText; content.textContent = text;
     heading.append(name, order); body.append(heading, content); article.append(image, body);

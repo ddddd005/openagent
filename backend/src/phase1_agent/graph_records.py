@@ -453,6 +453,16 @@ def validate_graph_transition(kind: str, previous: dict | None, value: dict) -> 
     }.get(kind)
     retry_transition = (kind == "chain_run" and previous["schema_version"] == 5
                         and previous["status"] == "failed" and value["status"] == "prepared")
+    # G12: a settled chain may receive one post-commit diagnostic annotation
+    # (notification results) in its existing diagnostic field.  This is not a
+    # lifecycle transition: the status, progress, outputs and every other
+    # business fact stay byte-identical, only revision and diagnostic change.
+    diagnostic_only = (
+        kind == "chain_run"
+        and value["status"] == previous["status"]
+        and value.get("diagnostic") != previous.get("diagnostic")
+        and all(value.get(key) == previous.get(key)
+                for key in ("completed_nodes", "next_node_index", "outputs")))
     if retry_transition:
         mutable = mutable | {"node_run_ids", "node_run_attempts"}
         index = previous["next_node_index"]
@@ -481,7 +491,8 @@ def validate_graph_transition(kind: str, previous: dict | None, value: dict) -> 
                        "budget_exhausted": {"closed", "recovery_unavailable"},
                        "archive_failed": {"prepared", "running", "closed", "recovery_unavailable"},
                        "failed": {"closed"}, "recovery_unavailable": {"closed"}}
-        require(retry_transition or value["status"] in transitions.get(previous["status"], set()),
+        require(retry_transition or diagnostic_only
+                or value["status"] in transitions.get(previous["status"], set()),
                 "storage_contract_violation", "Invalid graph lifecycle transition", 500)
         if kind == "chain_run":
             require(value["completed_nodes"][:len(previous["completed_nodes"])] == previous["completed_nodes"],

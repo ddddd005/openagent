@@ -21,7 +21,7 @@ from .graph_store import GraphRecordStore
 from .run_basis import RunBasis
 from .program_variable_store import ProgramVariableStore
 from .preparation_program import validate_program_state
-from .storage import SqliteStore
+from .project_support import ProjectStorageEnvironment, require_matching_database
 from .graph_public import GraphPublic
 from .graph_history import GraphHistory
 from .graph_platform import GraphPlatform
@@ -38,6 +38,8 @@ from .content_configuration import ContentConfigurationService
 from .workflow_lifecycle import WorkflowLifecycle
 from .workflow_configuration import WorkflowConfiguration
 from .workflow_chat_service import WorkflowChatService
+from .notification_results import (
+    CommittedNotificationError, public_diagnostic_failure, run_notification_stages)
 
 
 def _uid() -> str:
@@ -78,21 +80,28 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                            GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost,
                            GraphToolHost, GraphFrontendNodes, GraphResourceHost, GraphPlatform, GraphPublic,
                            GraphHistory):
-    def __init__(self, database_path: str | Path, *, registry=None, fault_injector=None,
+    def __init__(self, database_path: str | Path, *, environment=None, registry=None,
+                 fault_injector=None,
                  capability_packages=(), enabled_packages=None, trusted_package_entrypoints=(),
                  public_model_factory=None, credential_protector=None, provider_discovery_client_factory=None):
         self._initialize_service(
-            database_path, registry=registry, fault_injector=fault_injector,
+            database_path, environment=environment, registry=registry, fault_injector=fault_injector,
             capability_packages=capability_packages, enabled_packages=enabled_packages,
             trusted_package_entrypoints=trusted_package_entrypoints,
             public_model_factory=public_model_factory, credential_protector=credential_protector,
             provider_discovery_client_factory=provider_discovery_client_factory, execution_owner=True)
 
-    def _initialize_service(self, database_path: str | Path, *, registry=None, fault_injector=None,
+    def _initialize_service(self, database_path: str | Path, *, environment=None, registry=None,
+                            fault_injector=None,
                             capability_packages=(), enabled_packages=None, trusted_package_entrypoints=(),
                             public_model_factory=None, credential_protector=None,
                             provider_discovery_client_factory=None, execution_owner):
         self.database = Path(database_path).resolve()
+        if environment is None:
+            environment = ProjectStorageEnvironment(self.database)
+        else:
+            require_matching_database(self.database, environment)
+        self.environment = environment
         self.database.parent.mkdir(parents=True, exist_ok=True)
         self._execution_owner = execution_owner
         self._lease = _GraphLease(self.database) if execution_owner else None
@@ -218,7 +227,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                 raise
 
     def _store(self):
-        return SqliteStore(self.database, fault_injector=self._fault_injector)
+        return self.environment.open_store(fault_injector=self._fault_injector)
 
     def _check_open(self):
         require(not self._closed, "service_closed", "Graph service is closed", 409)
@@ -332,6 +341,29 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         return self.configuration_service.list_configuration_definitions(
             include_archived=include_archived)
 
+    def definition_summaries(self, *, include_archived=False):
+        """Thin management entry for the narrow definition directory."""
+        return self.configuration_service.definition_summaries(
+            include_archived=include_archived)
+
+    def session_summaries(self, workflow_definition_id, *, include_archived=False):
+        """Thin management entry for the narrow session directory."""
+        return self.configuration_service.session_summaries(
+            workflow_definition_id, include_archived=include_archived)
+
+    def copy_definition(self, *, source_workflow_definition_id,
+                        expected_source_definition_revision,
+                        expected_source_edit_sequence,
+                        target_workflow_definition_id, target_name,
+                        idempotency_key):
+        """Thin management entry for the formal configuration copy command."""
+        return self.configuration_service.copy_definition(
+            source_workflow_definition_id=source_workflow_definition_id,
+            expected_source_definition_revision=expected_source_definition_revision,
+            expected_source_edit_sequence=expected_source_edit_sequence,
+            target_workflow_definition_id=target_workflow_definition_id,
+            target_name=target_name, idempotency_key=idempotency_key)
+
     def _configuration_document(self, repo, identity, *, registry=None, definitions=None):
         """Compatibility adapter for out-of-batch consumers holding a repo."""
         return self._configuration_view(
@@ -347,15 +379,6 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                           idempotency_key, confirm_derivation=None):
         return self.configuration_service.update_definition(
             document, workflow_definition_id=workflow_definition_id,
-            expected_edit_sequence=expected_edit_sequence, idempotency_key=idempotency_key,
-            confirm_derivation=confirm_derivation)
-
-    def patch_node_configuration(self, *, workflow_definition_id, node_binding_id, component_id,
-                                 component_version, changes, expected_edit_sequence, idempotency_key,
-                                 confirm_derivation=None):
-        return self.configuration_service.patch_node_configuration(
-            workflow_definition_id=workflow_definition_id, node_binding_id=node_binding_id,
-            component_id=component_id, component_version=component_version, changes=changes,
             expected_edit_sequence=expected_edit_sequence, idempotency_key=idempotency_key,
             confirm_derivation=confirm_derivation)
 
@@ -442,13 +465,14 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         own = [row["chain_run_id"] for row in repo.rows("chain_run", workflow_session_id=sid)]
         return list(dict.fromkeys([*snapshot["history_refs"], *own]))
 
-    def _commit(self, target, session, *, source, history=None, registry=None):
+    def _commit(self, target, session, *, source, history=None, registry=None,
+                fallback_manifest=None):
         if hasattr(target, "settlement"):
             snapshot, _ = target.settlement.commit(
                 session, source=source, history=history)
             self._save_manifest(
                 target, "state_snapshot", snapshot["state_snapshot_id"], session,
-                history=snapshot["history_refs"])
+                history=snapshot["history_refs"], fallback_manifest=fallback_manifest)
             return
         repo = target
         sid = session["workflow_session_id"]
@@ -469,7 +493,8 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         variables.bind("state_snapshot", snapshot["state_snapshot_id"], sid, state["revision"])
         variables.bind("workflow_commit", commit["commit_id"], sid, state["revision"])
         self._save_manifest(repo, "state_snapshot", snapshot["state_snapshot_id"], session,
-                            history=snapshot["history_refs"], registry=registry)
+                            history=snapshot["history_refs"], registry=registry,
+                            fallback_manifest=fallback_manifest)
 
     def _initialize_session(self, repo, document):
         self._require_definition_active(repo, document["workflow_definition_id"])
@@ -1074,6 +1099,12 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
     def _execute(self, sid, chain_id):
         from .graph_contracts import GraphCompiler
         from .graph_execution import execute_graph
+        # A resumed or retried invocation supersedes the previous invocation's
+        # reported outcome.  Only the latest invocation of this chain may be
+        # raised by wait(); a reporting error from an earlier pause must not
+        # survive a successful continuation.
+        with self._lock:
+            self._execution_errors.pop(chain_id, None)
         run_ids = {}
         registry = None
         try:
@@ -1196,14 +1227,35 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                 self._save_manifest(data, "chain_end", chain_id, session,
                                     status=result.status)
                 return {"status": result.status}
-            self._change("graph.run.finish", retained["finish_key"] if retained is not None
-                         else chain_id + ":finish:" + str(chain["revision"]),
+            finish_key = (retained["finish_key"] if retained is not None
+                          else chain_id + ":finish:" + str(chain["revision"]))
+            self._change("graph.run.finish", finish_key,
                          {"chain": chain_id, "result": result.status},
                          lambda repo: finish(self._data_management.execution_transaction(
                              repo, basis=self._require_run_basis(chain_id))))
+            # Business settlement is already committed.  Local notifications are
+            # a separate stage: their failure is recorded in the existing chain
+            # diagnostic field and reported to the waiter as a structured
+            # committed-result error, without rewriting the business result.
+            stages = []
             if result.status == "succeeded":
-                self._refresh_chat_snapshots(sid)
-            self._frontend_node_state_changed(sid)
+                stages.append(("chat_snapshot", lambda: self._refresh_chat_snapshots(sid)))
+            stages.append(("frontend_node_state", lambda: self._frontend_node_state_changed(sid)))
+            notifications, notification_failure = run_notification_stages(stages)
+            try:
+                diagnostic_recorded, diagnostic_error = self._record_round_notification(
+                    chain_id, sid, result.status, notifications,
+                    key=finish_key + ":notifications")
+            except BaseException as error:
+                diagnostic_recorded = False
+                diagnostic_error = public_diagnostic_failure(error)
+            if notification_failure is not None or not diagnostic_recorded:
+                with self._lock:
+                    self._execution_errors[chain_id] = CommittedNotificationError(
+                        chain_id=chain_id, workflow_session_id=sid,
+                        business_status=result.status, notifications=notifications,
+                        diagnostic_recorded=diagnostic_recorded,
+                        diagnostic_error=diagnostic_error)
             if result.status == "succeeded" or result.status == "failed" and chain_id not in self._failed_retry_candidates:
                 with self._lock:
                     self._release_public_capabilities(sid, chain_id)
@@ -1220,8 +1272,13 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                     basis = self._execution_registries.get(chain_id)
                     data = (self._data_management.execution_transaction(repo, basis=basis)
                             if basis is not None else None)
-                    chain = (data.records.chain(chain_id) if data is not None
-                             else repo.get("chain_run", chain_run_id=chain_id))
+                    # A released basis has no writable execution session.  The
+                    # unconfirmed-close boundary binds to this same transaction
+                    # and never becomes a normal execution or continuation port.
+                    boundary = (None if data is not None
+                                else self._data_management.execution_boundary_transaction(repo))
+                    records = data.records if data is not None else boundary.records
+                    chain = records.chain(chain_id)
                     if chain["status"] in ("succeeded", "closed", "recovery_unavailable", "failed"):
                         return None
                     index = chain["next_node_index"]
@@ -1256,39 +1313,31 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                                     "Multiple declared services retain results; node-level recovery is unavailable"
                                     if ambiguous_recovery else "Execution could not preserve its completion boundary")}
                     chain["revision"] += 1
-                    if data is not None:
-                        data.records.put_chain(chain)
-                    else:
-                        repo.put("chain_run", chain)
+                    records.put_chain(chain)
                     for identity in chain["node_run_ids"]:
-                        run = (data.records.node_run(identity) if data is not None
-                               else repo.get("node_run", run_id=identity))
+                        run = records.node_run(identity)
                         if run["status"] == "running":
                             run["status"] = ("archive_failed" if result_retry and identity in pending
                                              else "recovery_unavailable")
                             run["revision"] += 1
-                            if data is not None:
-                                data.records.put_node_run(run)
-                            else:
-                                repo.put("node_run", run)
-                    session = (data.records.session(sid) if data is not None
-                               else repo.get("workflow_session", workflow_session_id=sid))
+                            records.put_node_run(run)
+                    session = records.session(sid)
                     session["revision"] += 1
-                    if data is not None:
-                        data.records.put_session(session)
-                    else:
-                        repo.put("workflow_session", session)
+                    records.put_session(session)
                     if data is not None:
                         self._save_manifest(data, "chain_end", chain_id, session,
                                             status=chain["status"])
                     else:
-                        self._save_manifest(repo, "chain_end", chain_id, session,
-                                            status=chain["status"], registry=run_registry,
+                        # The released basis reuses this chain's prepared
+                        # boundary evidence.  Neither the current service
+                        # registry nor the lost invocation's registry supplies
+                        # the end manifest's package lock or resources.
+                        self._save_manifest(boundary, "chain_end", chain_id, session,
+                                            status=chain["status"],
                                             fallback_manifest=("chain_start", chain_id))
                     return {"archive_retry": retryable}
-                with self._lock, self._data_management.read_execution(
-                        registry=registry if registry is not None else self.registry) as data:
-                    failed_revision = data.records.chain(chain_id)["revision"]
+                with self._lock, self._data_management.read_execution_boundary() as boundary_read:
+                    failed_revision = boundary_read.records.chain(chain_id)["revision"]
                 recovery = self._change("graph.run.unconfirmed", chain_id + ":unknown:" + str(failed_revision),
                                         {"chain": chain_id, "revision": failed_revision}, fail)
                 self._frontend_node_state_changed(sid)
@@ -1303,6 +1352,39 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                     self._execution_registries.pop(chain_id, None)
                     self._acceptance_candidates.pop(chain_id, None)
                     self._failed_retry_candidates.pop(chain_id, None)
+
+    def _record_round_notification(self, chain_id, sid, business_status, notifications, *, key):
+        """Record post-commit notification results in the existing chain diagnostic.
+
+        The write is a separate narrow transaction after the business settlement;
+        it neither changes the business status nor rewrites outputs, commit,
+        checkpoint or the end manifest.  A recording failure is reported to the
+        caller instead of pretending the notifications succeeded.
+        """
+        request = {"chain": chain_id, "business_status": business_status,
+                   "notifications": deepcopy(notifications)}
+
+        def record(repo):
+            chain = repo.get("chain_run", chain_run_id=chain_id)
+            if chain["status"] != business_status:
+                return {"recorded": False, "reason": "chain_state_changed"}
+            diagnostic = deepcopy(chain.get("diagnostic") or {})
+            diagnostic["round_notifications"] = {
+                "business_status": business_status, "business_committed": True,
+                "notifications": deepcopy(notifications),
+            }
+            chain["diagnostic"] = diagnostic
+            chain["revision"] += 1
+            repo.put("chain_run", chain)
+            return {"recorded": True}
+
+        try:
+            result = self._change("graph.run.notifications", key, request, record)
+        except BaseException as error:
+            return False, public_diagnostic_failure(error)
+        if not result or result.get("recorded") is not True:
+            return False, str((result or {}).get("reason") or "notification_diagnostic_unrecorded")
+        return True, None
 
     def _control_change_data(self, data, sid, action, expected_revision):
         session = data.records.session(sid)
@@ -1379,16 +1461,18 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
             self._save_manifest(data, "chain_end", chain_id, session, status="closed")
         return self._view(data, sid)
 
-    def _control_change_current(self, repo, sid, action, expected_revision):
+    def _control_change_current(self, boundary, repo, sid, action, expected_revision):
         """Cross-process control keeps the original action-specific diagnostics.
 
         A released binding has no writable execution data session.  This branch
         is therefore limited to commands that do not execute a node: pause and
         close may update the persisted command state, while resume/retry keep
-        their original same-process checks and fail before any node runs.
+        their original same-process checks and fail before any node runs.  Close
+        manifests reuse the closed chain's prepared boundary instead of the
+        current service registry.
         """
-        session = repo.get("workflow_session", workflow_session_id=sid)
-        self._require_session_active(repo, session)
+        session = boundary.records.session(sid)
+        self._require_session_active_in(boundary.configuration, session)
         require(session["revision"] == _revision(expected_revision),
                 "stale_revision", "Session changed", 409)
         if action in ("resume", "retry_archive", "retry_acceptance", "retry_failed_node"):
@@ -1396,7 +1480,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                     "Restore the saved packages before continuing execution", 409)
         chain_id = session["active_chain_run_id"]
         require(chain_id is not None, "invalid_state", "No active execution", 409)
-        chain = repo.get("chain_run", chain_run_id=chain_id)
+        chain = boundary.records.chain(chain_id)
         if action == "pause":
             require(chain["status"] in ("prepared", "running"),
                     "invalid_state", "Cannot pause this execution", 409)
@@ -1422,21 +1506,23 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                     "Only settled failures or acknowledged pauses can close", 409)
             chain["status"] = "closed"
             chain["revision"] += 1
-            repo.put("chain_run", chain)
+            boundary.records.put_chain(chain)
             for identity in chain["node_run_ids"]:
-                run = repo.get("node_run", run_id=identity)
+                run = boundary.records.node_run(identity)
                 if run["status"] not in ("succeeded", "closed"):
                     run["status"] = "closed"
                     run["revision"] += 1
-                    repo.put("node_run", run)
+                    boundary.records.put_node_run(run)
             session["active_chain_run_id"] = None
             if chain.get("execution_kind", "round") == "round":
-                self._commit(repo, session,
-                             source={"kind": "closed_execution", "chain_run_id": chain_id})
+                self._commit(boundary, session,
+                             source={"kind": "closed_execution", "chain_run_id": chain_id},
+                             fallback_manifest=("chain_start", chain_id))
         session["revision"] += 1
-        repo.put("workflow_session", session)
+        boundary.records.put_session(session)
         if action == "close":
-            self._save_manifest(repo, "chain_end", chain_id, session, status="closed")
+            self._save_manifest(boundary, "chain_end", chain_id, session, status="closed",
+                                fallback_manifest=("chain_start", chain_id))
         return self._view(
             self._data_management.execution_read(repo, registry=self.registry), sid)
 
@@ -1495,12 +1581,11 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                     response = self._control_change_data(
                         data, sid, action, expected_revision)
                 else:
-                    require(repo.get(
-                        "workflow_session", workflow_session_id=sid
-                    )["active_chain_run_id"] == active_chain_id,
-                        "invalid_state", "Active execution changed before control", 409)
+                    boundary = self._data_management.execution_boundary_transaction(repo)
+                    require(boundary.records.session(sid)["active_chain_run_id"] == active_chain_id,
+                            "invalid_state", "Active execution changed before control", 409)
                     response = self._control_change_current(
-                        repo, sid, action, expected_revision)
+                        boundary, repo, sid, action, expected_revision)
                 accepted.append(active_chain_id)
                 return response
 
@@ -1576,8 +1661,8 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
 class GraphManagementService(GraphWorkflowService):
     """Management operations over the shared graph domain without execution ownership."""
 
-    def __init__(self, database_path: str | Path):
-        self._initialize_service(database_path, execution_owner=False)
+    def __init__(self, database_path: str | Path, *, environment=None):
+        self._initialize_service(database_path, environment=environment, execution_owner=False)
         self._provider_configuration = None
         self._content_configuration = None
 

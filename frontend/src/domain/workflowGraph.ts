@@ -220,6 +220,8 @@ export interface GraphEntry {
   pending: GraphCommand | null;
   rejected_copy?: GraphCommand;
   saved_document?: GraphDocument;
+  /** Formal fixed revision exists but no current configuration: read-only display. */
+  fixed_only?: boolean;
   diagnostics?: GraphDiagnostic[];
   external_inputs?: Record<string, unknown>;
   state_mappings?: { source_node_id: string; target_node_id: string; action: "copy" | "reset" }[];

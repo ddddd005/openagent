@@ -1,14 +1,23 @@
-import { computed, provide } from "vue";
+import { computed, provide, watch } from "vue";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { useWorkspaceStore } from "../stores/workspace";
+import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 import { createWorkbenchFrontendHost } from "../application/workflowFrontendPackage";
 import { workbenchFrontendHostKey } from "../application/workbenchFrontendHost";
 import { workflowFrontendSdkKey } from "../plugins/workflowFrontendSdk";
 import { createNodeConfigurationAccess } from "../application/workflowNodeConfiguration";
 import { createWorkflowConfigurationApplication } from "../application/workflowConfiguration";
 
-export function useWorkbenchFrontendHost() {
+/** Workflow-owned frontend assembly called once by the project's common ancestor.
+ *
+ * It creates the shared extension host and configuration application, provides
+ * them to both the sidebar and the main region, then starts the workflow
+ * directory read, the first activation and the configuration readiness path.
+ * The project shell only calls this entry; it owns no second assembly.
+ */
+export function useWorkflowFrontendHost() {
   const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
+  const persistence = useWorkbenchPersistenceStore();
   const host = createWorkbenchFrontendHost(() => graph.frontendExtensions, () => graph.packageLock);
   const configuration = createWorkflowConfigurationApplication({ extensions: () => host.extensions.value });
   graph.installWorkflowConfigurationApplication(configuration);
@@ -27,5 +36,13 @@ export function useWorkbenchFrontendHost() {
       patch: request => graph.patchNodeConfiguration(request),
     }),
   });
+  // Assembly precedes the directory read, the first activation and any
+  // configuration command: both watchers are registered after the provides.
+  watch(() => persistence.ready, ready => {
+    if (ready) void graph.loadDefinitions().then(() => persistence.selectLoadedWorkflow());
+  }, { immediate: true });
+  watch(() => [persistence.ready, workspace.activeWorkflowId] as const, ([ready, workflowId]) => {
+    if (ready && workflowId) void graph.activate(workflowId);
+  }, { immediate: true });
   return host;
 }

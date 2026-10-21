@@ -9,6 +9,7 @@ import GraphSessions from "./GraphSessions.vue";
 import { createSessionMetadata, sessionMetadataKey } from "../application/sessionMetadata";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import { graphClone, type GraphSession } from "../domain/workflowGraph";
+import { sessionSummaryFromView } from "../domain/workflowDirectory";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { useWorkspaceStore } from "../stores/workspace";
 import type { SessionMetadata, SessionMetadataSaveRequest } from "../adapters/sessionMetadataApi";
@@ -56,7 +57,7 @@ async function mount() {
     workflow_definition_id: id, definition_revision: 1, name: "Original", metadata_sequence: 0,
     revision: 5, data_revision: 0, head_revision: 2, status: "idle", can_submit: true,
     nodes: [], chains: [], outputs: [], data: { revision: 0, values: {} }, archived: false };
-  graph.entries[id].session_id = sid; graph.views[sid] = view; graph.sessions[id] = [view];
+  graph.entries[id].session_id = sid; graph.views[sid] = view; graph.sessionRows[id] = [sessionSummaryFromView(view)];
   let saved: SessionMetadata = { schema_version: 1, kind: "workflow.session-metadata",
     workflow_definition_id: id, workflow_session_id: sid, name: "Original", metadata_sequence: 0 };
   let pending: string | null = null, unknown = false;
@@ -123,7 +124,7 @@ describe("session formal name editing", () => {
     const f = await mount(), input = label(f.root, "会话名称");
     (input.props["onUpdate:modelValue"] as (text: string) => void)("Typing"); await flush();
     f.graph.views[f.sid] = { ...f.graph.views[f.sid]!, revision: 6 };
-    f.graph.sessions[f.id] = [f.graph.views[f.sid]!]; await flush();
+    f.graph.sessionRows[f.id] = [sessionSummaryFromView(f.graph.views[f.sid]!)]; await flush();
     expect(label(f.root, "会话名称").value).toBe("Typing");
     expect(f.save).not.toHaveBeenCalled();
     const source = readFileSync(new URL("GraphSessions.vue", import.meta.url), "utf8");

@@ -17,6 +17,7 @@ from phase1_agent.execution_data import (
     ExecutionSettlement,
     ExecutionState,
     ExecutionTypeEvidence,
+    RunBoundary,
     RunData,
 )
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
@@ -63,6 +64,70 @@ def test_run_data_exposes_only_named_sessions_and_requires_the_open_transaction(
                 assert isinstance(port, expected)
         finally:
             store._connection.execute("ROLLBACK")
+
+
+def test_run_boundary_is_separate_from_the_normal_basis_port(service):
+    with closing(service._store()) as store:
+        with pytest.raises(ContractValidationError) as closed:
+            service._data_management.execution_boundary_transaction(GraphRecordStore(store))
+        assert closed.value.reason_code == "storage_contract_violation"
+        store._connection.execute("BEGIN")
+        try:
+            with pytest.raises(ContractValidationError) as no_basis:
+                service._data_management.execution_transaction(
+                    GraphRecordStore(store), basis=None)
+            assert no_basis.value.reason_code == "run_basis_unavailable"
+            with pytest.raises(ContractValidationError) as no_registry:
+                service._data_management.execution_read(GraphRecordStore(store), registry=None)
+            assert no_registry.value.reason_code == "run_basis_unavailable"
+            boundary = service._data_management.execution_boundary_transaction(
+                GraphRecordStore(store))
+            assert {item.name for item in fields(RunBoundary)} == {
+                "records", "settlement", "configuration"}
+            for name in ("registry", "store", "connection", "repo", "atomic", "get", "put",
+                         "rows", "state", "type_evidence", "chat"):
+                assert not hasattr(boundary, name)
+            for name in ("store", "connection", "repo", "atomic", "get", "put", "rows",
+                         "read_global_resources", "put_output", "put_snapshot", "put_commit",
+                         "put_ref", "put_private_state"):
+                assert not hasattr(boundary.records, name)
+            for name in ("check_registry", "insert_checkpoint", "inject_checkpoint_write",
+                         "latest_checkpoint", "materialize_checkpoint", "checkpoint_prefix"):
+                assert not hasattr(boundary.settlement, name)
+            for name in ("save_fixed_revision", "save_current_configuration",
+                         "delete_definition_revisions", "delete_current_configuration"):
+                assert not hasattr(boundary.configuration, name)
+            for name in ("session", "chain", "node_run", "history",
+                         "put_session", "put_chain", "put_node_run"):
+                assert hasattr(boundary.records, name)
+            for name in ("manifest", "save_manifest", "commit"):
+                assert hasattr(boundary.settlement, name)
+        finally:
+            store._connection.execute("ROLLBACK")
+
+
+def test_read_execution_boundary_allows_exact_reads_but_write_methods_fail_closed(service):
+    doc = text_graph(service.registry)
+    session = create(service, doc)
+    final = graph_run(service, session)
+    chain_id = final["selected_chain_run_id"]
+    with service._data_management.read_execution_boundary() as boundary:
+        stored = boundary.records.session(session["workflow_session_id"])
+        chain = boundary.records.chain(chain_id)
+        assert stored["workflow_session_id"] == session["workflow_session_id"]
+        assert chain["chain_run_id"] == chain_id
+        assert boundary.records.history(session["workflow_session_id"]) == final["history_refs"]
+        with pytest.raises(ContractValidationError) as chain_write:
+            boundary.records.put_chain(chain)
+        assert chain_write.value.reason_code == "storage_contract_violation"
+        with pytest.raises(ContractValidationError) as commit:
+            boundary.settlement.commit(stored, source={"kind": "probe"})
+        assert commit.value.reason_code == "storage_contract_violation"
+        with pytest.raises(ContractValidationError) as manifest_write:
+            boundary.settlement.save_manifest(
+                "chain_end", chain_id, stored, history=[], status="closed",
+                package_lock=[], global_resources=[])
+        assert manifest_write.value.reason_code == "storage_contract_violation"
 
 
 def test_normal_round_uses_records_settlement_evidence_configuration_and_chat(

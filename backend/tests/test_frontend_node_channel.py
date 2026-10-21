@@ -8,6 +8,7 @@ import pytest
 
 from phase1_agent.contract_errors import ContractValidationError, DiagnosticError
 from phase1_agent.frontend_node_channel import FrontendNodeChannel
+from phase1_agent.frontend_node_operations import FrontendNodeOperations
 from phase1_agent.graph_contracts import NodeDefinition
 from phase1_agent.graph_service import GraphWorkflowService
 
@@ -53,12 +54,10 @@ def counts(service):
 
 
 def test_initial_state_reads_current_input_without_creating_a_session(service):
-    channel, owner, graph, messages, _ = prepared(service)
-    changed = service.patch_node_configuration(
-        workflow_definition_id=graph["workflow_definition_id"],
-        node_binding_id=messages[0]["node_binding_id"], component_id="tools.editable-input", component_version="1",
-        changes={"text": "  current\r\n"}, expected_edit_sequence=1, idempotency_key="outside-input-edit",
-    )
+    channel, owner, graph, _, _ = prepared(service)
+    bound = FrontendNodeOperations(service).bind(**owner)
+    changed = bound.patch_input(
+        "  current\r\n", expected_edit_sequence=1, idempotency_key="outside-input-edit")
     assert changed["definition_revision"] == graph["revision"]
     assert service.get_definition(graph["workflow_definition_id"], 1)["nodes"][0]["config"]["text"] != "  current\r\n"
     before = counts(service)

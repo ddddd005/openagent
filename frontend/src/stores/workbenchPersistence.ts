@@ -96,7 +96,7 @@ export const useWorkbenchPersistenceStore = defineStore("workbench-persistence",
 
   async function verifyLegacyRequest(key: string) {
     const request = legacyRequests.value.find(row => row.key === key);
-    if (!request || request.status === "checking") return false;
+    if (!request || request.status === "checking" || request.status === "retired") return false;
     request.status = "checking";
     request.error = undefined;
     try {

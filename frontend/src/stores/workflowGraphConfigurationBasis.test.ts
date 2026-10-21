@@ -112,12 +112,14 @@ describe("workflow configuration basis re-read and late directory responses", ()
     });
     graph.installWorkflowConfigurationApplication(application);
     stubGraphApplicationFetch(vi.fn(async (path: string) => {
-      if (path === "/api/graph/definitions")
-        return new Response(JSON.stringify([{ document: bDocument, archived: false }]));
+      if (path === `/api/graph/definitions/${initial.id}`)
+        return new Response(JSON.stringify(bDocument));
       if (path === `/api/graph/definitions/${initial.id}/revisions/1`)
         return new Response(JSON.stringify(initial.aDocument));
       if (path === `/api/graph/definitions/${initial.id}/sessions`)
         return new Response(JSON.stringify([]));
+      if (path === "/api/graph/definitions")
+        return new Response(JSON.stringify([{ document: bDocument, archived: false }]));
       throw new Error(`Unexpected re-read request: ${path}`);
     }));
 
@@ -125,6 +127,9 @@ describe("workflow configuration basis re-read and late directory responses", ()
     const workspace = useWorkspaceStore();
     workspace.openWorkflow(initial.id);
     await vi.waitFor(() => expect(application.selection.value?.workflowId).toBe(initial.id));
+    // Opening the workflow is what reads the formal current; the directory row alone
+    // must not create an editor entry.
+    expect(graph.entries[initial.id]).toBeUndefined();
     await graph.activate(initial.id);
     await application.forWorkflow(initial.id).initialize();
 
@@ -206,6 +211,10 @@ describe("workflow configuration basis re-read and late directory responses", ()
     released.resolve(true);
     expect(await loading).toBe(true);
 
+    // A late directory row only updates the directory projection. It must not bypass
+    // the single configuration acceptance path to replace the already accepted B.
+    const workspaceRow = useWorkspaceStore().workflows.find(row => row.id === id);
+    expect(workspaceRow?.title).toBe("A");
     const entry = graph.entries[id]!, current = application.current.value;
     // The late row is stale by edit_sequence; both accepted readers stay on B.
     expect(entry.document.revision).toBe(1);

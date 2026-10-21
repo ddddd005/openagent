@@ -560,7 +560,7 @@ describe("workflow configuration store wiring", () => {
     expect(graph.entries[targetId]!.session_id).toBeNull();
     expect(graph.entries[targetId]!.session_document).toBeUndefined();
     expect(graph.history[targetId]).toEqual({ past: [], future: [] });
-    expect(graph.sessions[targetId]).toBeUndefined();
+    expect(graph.sessionRows[targetId]).toBeUndefined();
     expect(graph.views[sessionId]).toEqual(idleSession(document, sessionId));
     expect(Object.keys(graph.entries).sort()).toEqual([workflowId, targetId].sort());
   });

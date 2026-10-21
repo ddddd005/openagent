@@ -206,10 +206,15 @@ def test_http_handler_dispatches_management_without_binding_a_socket_or_graph(tm
         return responses[-1]
 
     prompt = prompt_record()
-    assert dispatch("/api/graph/resources/save", {
-        "record": prompt, "expected_sequence": 0, "idempotency_key": str(uuid4())})[0] == 200
+    assert dispatch("/api/graph/commands", {
+        "operation": "resource.save",
+        "parameters": {"record": prompt, "expected_sequence": 0, "idempotency_key": str(uuid4())},
+    })[0] == 200
     assert dispatch("/api/graph/queries", {
         "operation": "resource.read", "parameters": {"identity": reference(prompt)}}) == (200, prompt)
+    for retired in ("read", "list", "save", "delete"):
+        status, error = dispatch("/api/graph/resources/" + retired, {})
+        assert status == 404 and error["error"] == "not_found"
     provider = provider_record()
     body = {"identity": reference(provider), "expected_sequence": 0,
             "credential_ref": "local:" + str(uuid4()), "expected_generation": 0,

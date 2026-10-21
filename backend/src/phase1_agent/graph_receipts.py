@@ -235,6 +235,45 @@ def _configuration_result(parameters, result):
                    and result["definition_revision"] == submitted["revision"] + ("fixed" in categories))
 
 
+def _copy_result(parameters, result):
+    """Validate one persisted formal-copy result from its request alone.
+
+    The read proves the frozen acceptance evidence only: it never requires the
+    current source/target rows to still exist, never re-reads the source version
+    and never rebuilds any data.  It checks the fixed result shape, the requested
+    identities/versions/name, the initial revision/edit counters, the empty
+    session fact and the identity node mapping, then structurally validates the
+    persisted formal document.
+    """
+    from .graph_contracts import drop_retired_document_fields, validate_graph_document
+
+    _check(type(result) is dict and set(result) == {
+        "schema_version", "kind", "outcome", "source_workflow_definition_id",
+        "source_definition_revision", "source_edit_sequence", "workflow_definition_id",
+        "definition_revision", "edit_sequence", "session_id", "node_id_map", "document",
+    } and type(result["schema_version"]) is int and result["schema_version"] == 1
+        and result["kind"] == "workflow.configuration-copy-result"
+        and result["outcome"] == "copied")
+    source = parameters["source_workflow_definition_id"]
+    target = parameters["target_workflow_definition_id"]
+    _check(result["source_workflow_definition_id"] == source and uuid_value(target)
+           and result["workflow_definition_id"] == target
+           and _integer(result["source_definition_revision"], 1)
+           and result["source_definition_revision"] == parameters["expected_source_definition_revision"]
+           and _integer(result["source_edit_sequence"], 1)
+           and result["source_edit_sequence"] == parameters["expected_source_edit_sequence"]
+           and _integer(result["definition_revision"], 1) and result["definition_revision"] == 1
+           and _integer(result["edit_sequence"], 1) and result["edit_sequence"] == 1
+           and result["session_id"] is None)
+    document = validate_graph_document(drop_retired_document_fields(result["document"]))
+    _check(document["workflow_definition_id"] == target
+           and document["revision"] == result["definition_revision"]
+           and document.get("edit_sequence") == result["edit_sequence"]
+           and document["name"] == parameters["target_name"])
+    identities = {node["node_binding_id"]: node["node_binding_id"] for node in document["nodes"]}
+    _check(type(result["node_id_map"]) is dict and _same(result["node_id_map"], identities))
+
+
 def _lifecycle_result(operation, parameters, result):
     kind, action = operation.split(".")
     fields = {
@@ -299,10 +338,8 @@ def _validate_result(operation, parameters, result, connection=None):
     if operation.startswith("resource."):
         _resource_result(operation, parameters, result)
         return
-    if operation == "definition.save":
-        _check(_same(result, parameters["document"]) and uuid_value(result.get("workflow_definition_id"))
-               and _integer(result.get("revision"), 1)
-               and result["revision"] == parameters["expected_revision"] + 1)
+    if operation == "definition.copy":
+        _copy_result(parameters, result)
         return
     if operation == "definition.update":
         _configuration_result(parameters, result)

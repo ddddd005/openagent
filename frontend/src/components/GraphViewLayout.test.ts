@@ -46,8 +46,8 @@ describe("ordinary graph view layout declarations", () => {
     expect(declarations("ModelSourceFields.vue", "label")).toMatchObject({ "min-width": "0" });
   });
   it("wraps pending banners while keeping their explicit commands readable", () => {
-    expect(declarations("../App.vue", ".model-pending-banner")).toMatchObject({ "flex-wrap": "wrap" });
-    expect(declarations("../App.vue", ".model-pending-banner span")).toMatchObject({
+    expect(declarations("WorkflowWorkspace.vue", ".model-pending-banner")).toMatchObject({ "flex-wrap": "wrap" });
+    expect(declarations("WorkflowWorkspace.vue", ".model-pending-banner span")).toMatchObject({
       "min-width": "0", "overflow-wrap": "anywhere",
     });
   });

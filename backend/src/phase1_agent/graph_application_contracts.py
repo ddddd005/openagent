@@ -51,6 +51,10 @@ COMMANDS = (
     operation("definition.update", "update_definition",
               ("workflow_definition_id", "document", "expected_edit_sequence", "idempotency_key"),
               ("confirm_derivation",)),
+    operation("definition.copy", "copy_definition",
+              ("source_workflow_definition_id", "expected_source_definition_revision",
+               "expected_source_edit_sequence", "target_workflow_definition_id",
+               "target_name", "idempotency_key")),
     operation("definition.archive", "archive_definition",
               ("identity", "expected_revision", "idempotency_key")),
     operation("definition.delete", "delete_definition",
@@ -112,9 +116,18 @@ RETIRED_RECEIPT_COMMANDS = (
               ("variables", "shared"), session=True),
     operation("draft.save", "save_draft",
               ("address", "format_version", "value", "expected_sequence", "idempotency_key")),
+)
+
+# Stored-only legacy decoding. Historical request-evidence rows must keep their
+# exact original contract so an owner's mixed evidence can still be read after
+# the executable receipt contract is retired. These specs are never dispatchable,
+# discoverable or receipt-readable.
+STORED_EVIDENCE_COMMANDS = (
     operation("definition.save", "save_definition",
               ("document", "expected_revision", "idempotency_key"), status=201),
 )
+# Historical definition.save evidence was written on the empty revision 0 basis.
+_STORED_ZERO_REVISION_NAMES = frozenset({"definition.save"})
 
 QUERIES = (
     operation("request-evidence.read", "read_evidence", ("owner_kind", "owner_id")),
@@ -135,9 +148,12 @@ QUERIES = (
     operation("catalog.node-types", "node_types", optional=("protocol_version",)),
     operation("platform", "platform_capabilities"),
     operation("definition.list", "list_definitions", optional=("include_archived",)),
+    operation("definition.summaries", "definition_summaries", optional=("include_archived",)),
     operation("definition.read", "get_definition", ("identity",), ("revision",)),
     operation("definition.inputs", "_editor_inputs", ("document",)),
     operation("definition.sessions", "list_sessions", ("workflow_definition_id",)),
+    operation("session.summaries", "session_summaries",
+              ("workflow_definition_id",), ("include_archived",)),
     operation("session.read", "get_session", session=True),
     operation("session.actions", "_management_actions", session=True),
     operation("run.read", "get_run", ("chain_id",), session=True),
@@ -170,6 +186,39 @@ QUERIES = (
     operation("output.history", "public_output_history",
               ("workflow_definition_id", "definition_revision", "node_id", "port_id"), session=True),
 )
+
+
+# Internal service-authority classification. This is not a discovery contract:
+# none of it enters describe(). Application dispatch and the HTTP management
+# selector read the same source, so one command list is not extended without the
+# other. Unknown names classify as management so an unregistered command is
+# rejected on the lightweight path before execution authority exists.
+LIFECYCLE_COMMANDS = frozenset({
+    "definition.archive", "definition.delete", "session.archive", "session.delete",
+})
+MANAGEMENT_COMMANDS = frozenset({
+    "definition.update", "definition.copy", "session.create", "object.write",
+    "session.metadata.update", "checkpoint.fork",
+})
+MANAGEMENT_OPERATION_PREFIXES = (
+    "provider.", "credential.", "resource.", "content.metadata.", "request-evidence.",
+)
+_EXECUTION_COMMANDS = frozenset({
+    "run.start", "event.submit", "run.control", "packages.configure",
+})
+
+
+def application_operation_authority(name):
+    """Return the owning service authority for one application operation name."""
+    if type(name) is not str:
+        return "management"
+    if name in LIFECYCLE_COMMANDS:
+        return "lifecycle"
+    if name in MANAGEMENT_COMMANDS or name.startswith(MANAGEMENT_OPERATION_PREFIXES):
+        return "management"
+    if name in _EXECUTION_COMMANDS:
+        return "execution"
+    return "management"
 
 
 def validate_parameters(spec, parameters, *, stored_evidence=False):
@@ -226,7 +275,7 @@ def validate_parameters(spec, parameters, *, stored_evidence=False):
         if field.endswith("revision"):
             if spec.name == "definition.read" and field == "revision" and value is None:
                 continue
-            minimum = 0 if field == "expected_data_revision" or spec.name == "definition.save" else 1
+            minimum = 0 if field == "expected_data_revision" or spec.name in _STORED_ZERO_REVISION_NAMES else 1
             require(type(value) is int and minimum <= value <= 2**53 - 1,
                     "invalid_request", "Invalid graph revision")
         if field == "idempotency_key":
@@ -237,8 +286,22 @@ def validate_parameters(spec, parameters, *, stored_evidence=False):
     if spec.name in ("definition.read", "definition.archive", "definition.delete",
                      "consumer.definition", "consumer.sessions"):
         require(uuid_value(parameters["identity"]), "not_found", "Definition not found", 404)
-    if spec.name == "definition.list" and "include_archived" in parameters:
+    if spec.name in ("definition.list", "definition.summaries", "session.summaries") \
+            and "include_archived" in parameters:
         require(type(parameters["include_archived"]) is bool, "invalid_request", "Archive filter is invalid")
+    if spec.name == "definition.copy":
+        source = parameters["source_workflow_definition_id"]
+        target = parameters["target_workflow_definition_id"]
+        require(uuid_value(source) and uuid_value(target) and source != target,
+                "invalid_request", "Copy source and target must be distinct workflow identities")
+        require(type(parameters["expected_source_definition_revision"]) is int
+                and 1 <= parameters["expected_source_definition_revision"] <= 2**53 - 1,
+                "invalid_request", "Copy source definition revision is invalid")
+        require(type(parameters["expected_source_edit_sequence"]) is int
+                and 1 <= parameters["expected_source_edit_sequence"] <= 2**53 - 1,
+                "invalid_request", "Copy source edit sequence is invalid")
+        require(bounded_name(parameters["target_name"]), "invalid_request",
+                "Copy target name must be a bounded name")
     if "mappings" in parameters:
         require(type(parameters["mappings"]) is list, "invalid_request", "Mappings must be an array")
     if "inputs" in parameters:

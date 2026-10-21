@@ -5,8 +5,11 @@ from copy import deepcopy
 from threading import Event
 from uuid import uuid4
 
+import pytest
+
 from phase1_agent.chat_contracts import CHAT_CONTEXT_TYPE
 from phase1_agent.content_contracts import text_content
+from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.frontend_node_operations import FrontendNodeOperations
 from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
@@ -93,20 +96,13 @@ def test_prepared_run_and_public_output_keep_the_saved_configuration(tmp_path):
             source_node = next(entry for entry in changed["nodes"]
                                if entry["node_binding_id"] == source["node_binding_id"])
             source_node["config"]["text"] = "B"
-            saved, _ = _save_graph(app, changed, created["edit_sequence"])
-            assert saved["edit_sequence"] == 2
-            assert saved["definition_revision"] == 1
-            assert saved["changed_categories"] == ["adjustable"]
-            with closing(service._store()) as store:
-                frozen = store._connection.execute(
-                    "SELECT json_extract(payload,'$.config.text') FROM records "
-                    "WHERE record_type='node_run' AND json_extract(payload,'$.chain_run_id')=? "
-                    "AND json_extract(payload,'$.node_binding_id')=?",
-                    (started["active_chain_run_id"], source["node_binding_id"]),
-                ).fetchone()[0]
-            assert frozen == "A"
-            assert _text(service.get_definition(graph["workflow_definition_id"]),
-                         source["node_binding_id"]) == "B"
+            # G21: the prepared/active run locks user configuration edits.  The
+            # former intent "save adjustable text while the run is in flight"
+            # is replaced by the approved rule; the save happens after the run.
+            with pytest.raises(ContractValidationError) as rejected:
+                _save_graph(app, changed, created["edit_sequence"])
+            assert rejected.value.reason_code == "configuration_run_locked"
+            assert service.get_definition(graph["workflow_definition_id"])["edit_sequence"] == 1
         finally:
             release.set()
             service.wait(started["active_chain_run_id"])
@@ -115,6 +111,20 @@ def test_prepared_run_and_public_output_keep_the_saved_configuration(tmp_path):
         assert first["status"] == "succeeded", first["chains"]
         assert _output(first, source) == text_content("A")
         assert _output(first, output) == text_content("A")
+        with closing(service._store()) as store:
+            frozen = store._connection.execute(
+                "SELECT json_extract(payload,'$.config.text') FROM records "
+                "WHERE record_type='node_run' AND json_extract(payload,'$.chain_run_id')=? "
+                "AND json_extract(payload,'$.node_binding_id')=?",
+                (started["active_chain_run_id"], source["node_binding_id"]),
+            ).fetchone()[0]
+        assert frozen == "A"
+        saved, _ = _save_graph(app, changed, created["edit_sequence"])
+        assert saved["edit_sequence"] == 2
+        assert saved["definition_revision"] == 1
+        assert saved["changed_categories"] == ["adjustable"]
+        assert _text(service.get_definition(graph["workflow_definition_id"]),
+                     source["node_binding_id"]) == "B"
         first_outputs = app.query("output.list", {"session_id": view["workflow_session_id"]})
         observed = _observation(first_outputs, output["node_binding_id"])
         assert observed["availability"] == "produced"
@@ -206,20 +216,16 @@ def test_bound_frontend_patch_is_the_value_consumed_by_the_prepared_run(tmp_path
                 "session_id": view["workflow_session_id"],
             }
             bound = FrontendNodeOperations(service).bind(**owner)
-            patched = bound.patch_input(
-                "B", expected_edit_sequence=1, idempotency_key="runtime-node-page")
-            assert patched["outcome"] == "saved", patched
-            assert patched["edit_sequence"] == 2
-            assert patched["definition_revision"] == 1
-            assert _text(patched["document"], source["node_binding_id"]) == "B"
-            with closing(service._store()) as store:
-                frozen = store._connection.execute(
-                    "SELECT json_extract(payload,'$.config.text') FROM records "
-                    "WHERE record_type='node_run' AND json_extract(payload,'$.chain_run_id')=? "
-                    "AND json_extract(payload,'$.node_binding_id')=?",
-                    (started["active_chain_run_id"], source["node_binding_id"]),
-                ).fetchone()[0]
-            assert frozen == "A"
+            # G21: the node-page narrow patch is a new user configuration
+            # submission, so it is rejected while the prepared/active run is
+            # unfinished.  It is accepted after the run settles and is then
+            # consumed by the next prepared round.
+            with pytest.raises(ContractValidationError) as rejected:
+                bound.patch_input(
+                    "B", expected_edit_sequence=1, idempotency_key="runtime-node-page")
+            assert rejected.value.reason_code == "configuration_run_locked"
+            assert _text(service.get_definition(graph["workflow_definition_id"]),
+                         source["node_binding_id"]) == "A"
         finally:
             release.set()
             service.wait(started["active_chain_run_id"])
@@ -228,6 +234,22 @@ def test_bound_frontend_patch_is_the_value_consumed_by_the_prepared_run(tmp_path
         assert first["status"] == "succeeded", first["chains"]
         assert _output(first, source) == text_content("A")
         assert _output(first, output) == text_content("A")
+        with closing(service._store()) as store:
+            frozen = store._connection.execute(
+                "SELECT json_extract(payload,'$.config.text') FROM records "
+                "WHERE record_type='node_run' AND json_extract(payload,'$.chain_run_id')=? "
+                "AND json_extract(payload,'$.node_binding_id')=?",
+                (started["active_chain_run_id"], source["node_binding_id"]),
+            ).fetchone()[0]
+        assert frozen == "A"
+
+        bound = FrontendNodeOperations(service).bind(**owner)
+        patched = bound.patch_input(
+            "B", expected_edit_sequence=1, idempotency_key="runtime-node-page-after-run")
+        assert patched["outcome"] == "saved", patched
+        assert patched["edit_sequence"] == 2
+        assert patched["definition_revision"] == 1
+        assert _text(patched["document"], source["node_binding_id"]) == "B"
         first_outputs = app.query("output.list", {"session_id": view["workflow_session_id"]})
         assert _observation(first_outputs, output["node_binding_id"])["payload"] == text_content("A")
 

@@ -10,7 +10,6 @@ from .checkpoint_collection import (
 )
 from .checkpoint_loading import validate_checkpoint_configuration_target
 from .checkpoint_repository import CheckpointRepository
-from .contract_json import validate_json_value
 from .graph_records import require
 from .runtime_checkpoints import remap_checkpoint_state_chat, remap_checkpoint_storage_chat
 from .workflow_chat_operations import (
@@ -172,8 +171,6 @@ class WorkflowChatService:
                         else latest["checkpoint_id"] if latest is not None else None)
                 input_node = nodes.get(node["config"]["input_node_id"])
                 submitted = (input_node["config"]["text"] if input_node is not None else None)
-                if targeted:
-                    submitted = chat_request["submitted_input"]
                 metadata = {
                     "round_id": _uid(), "base_checkpoint_id": base, "submitted_input": submitted,
                 }
@@ -220,37 +217,6 @@ class WorkflowChatService:
                     self._read_frontend_snapshot(
                         data, session["workflow_definition_id"],
                         session["definition_revision"], node["node_binding_id"], sid)
-
-    def chat_submit(self, sid, *, object_key, submitted_input, expected_session_revision,
-                    expected_data_revision, expected_head_revision, expected_object_revision,
-                    idempotency_key, inputs=None, input_overrides=None):
-        request = {
-            "session": sid, "object_key": object_key, "submitted_input": submitted_input,
-            "expected_session_revision": expected_session_revision, "expected_data_revision": expected_data_revision,
-            "expected_head_revision": expected_head_revision, "expected_object_revision": expected_object_revision,
-            "inputs": {} if inputs is None else deepcopy(inputs),
-            "input_overrides": {} if input_overrides is None else deepcopy(input_overrides),
-        }
-        require(type(submitted_input) is str, "invalid_request", "Chat submission requires text")
-        validate_json_value(request)
-
-        def prepare(data, basis):
-            session, document, _ = self._chat_operation_basis(
-                data, sid, request, registry=basis.registry)
-            binding = self._chat_bindings(document, registry=basis.registry)[object_key]
-            provider = next(node for node in document["nodes"] if node["node_binding_id"] == binding.registrar_node_id)
-            overrides = deepcopy(request["input_overrides"])
-            target_id = provider["config"].get("input_node_id", "")
-            if target_id:
-                require(target_id not in overrides or overrides[target_id] == submitted_input,
-                        "chat_input_mismatch", "Submitted text differs from the bound input projection")
-                overrides[target_id] = submitted_input
-            return self._prepare_run(
-                data, sid, expected_session_revision, request["inputs"], input_overrides=overrides,
-                chat_request={"mode": "submit", "object_key": object_key, "submitted_input": submitted_input},
-                basis=basis)
-
-        return self._start_run(sid, idempotency_key, request, prepare, operation="graph.chat.submit")
 
     def chat_reroll(self, sid, *, object_key, round_id, expected_session_revision,
                     expected_data_revision, expected_head_revision, expected_object_revision, idempotency_key):

@@ -246,19 +246,20 @@ describe("workflow application coordination", () => {
     graph.undo(); expect(graph.document).toEqual(current);
   });
 
-  it("refuses a session copy against its exact source without touching the displayed workflow", async () => {
-    const { graph, id, current, old } = await fixture();
+  it("keeps the retired editor clone out of the application and leaves the displayed workflow untouched", async () => {
+    const { graph, id, current } = await fixture();
     useWorkspaceStore().markWorkflowSaved(id);
     const displayed = graph.createWorkflow();
-    const fetcher = vi.fn().mockRejectedValue(new Error("lost copy receipt"));
+    const fetcher = vi.fn();
     stubGraphApplicationFetch(fetcher);
-    graph.editing.edit({ workflowId: id }, document => {
-      document.nodes = graphClone(old.nodes); return true;
-    });
-    const edited = graphClone(graph.entries[id].document);
+    expect("copy" in graph.editing).toBe(false);
     const before = graphClone(graph.storeSnapshot()), count = useWorkspaceStore().workflows.length;
-    expect(() => graph.editing.copy({ workflowId: id })).toThrow("会话复制写入暂不可用");
-    expect(graph.entries[id].document).toEqual(edited);
+    // Without a formal current the narrow copy channel refuses; it never clones the
+    // editor memory document and never touches the displayed workflow.
+    expect(await graph.copyWorkflow(id)).toBeNull();
+    expect(useWorkbenchNoticesStore().error).toMatchObject({ kind: "rejected" });
+    expect(useWorkbenchNoticesStore().error?.reason).toContain("正式 current");
+    expect(graph.entries[id].document).toEqual(current);
     expect(graph.entries[id].saved_document).toEqual(current);
     expect(useWorkspaceStore().activeWorkflowId).toBe(displayed);
     expect(graph.storeSnapshot()).toEqual(before);

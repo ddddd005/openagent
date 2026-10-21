@@ -9,6 +9,7 @@ import pytest
 from phase1_agent.chat_contracts import CHAT_CONTEXT_TYPE
 from phase1_agent.content_contracts import text_content
 from phase1_agent.contract_errors import ContractValidationError
+from phase1_agent.frontend_node_operations import FrontendNodeOperations
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.host_sdk import ObjectBinding
@@ -91,8 +92,19 @@ def settle(service, started):
 
 
 def submit(service, view, text):
-    return settle(service, WorkflowChatOperations(service).submit(
-        view["workflow_session_id"], submitted_input=text, **guards(view)))
+    """Submit one round through the current entry: node-page patch_input, then start."""
+    definition = service.get_definition(view["workflow_definition_id"])
+    frontend = next(node for node in definition["nodes"] if node["component_id"] == "frontend.node")
+    bound = FrontendNodeOperations(service).bind(
+        workflow_definition_id=view["workflow_definition_id"],
+        definition_revision=view["definition_revision"],
+        node_binding_id=frontend["node_binding_id"],
+        session_id=view["workflow_session_id"])
+    bound.patch_input(
+        text, expected_edit_sequence=definition["edit_sequence"], idempotency_key=str(uuid4()))
+    started = bound.start(expected_session_revision=view["revision"], idempotency_key=str(uuid4()))
+    assert started["outcome"] == "succeeded", started
+    return settle(service, started["start_result"])
 
 
 def reroll(service, view, round_id):
@@ -140,6 +152,9 @@ def test_five_rolls_keep_fixed_initial_basis_and_store_real_success_points(tmp_p
             assert detail["value"]["schema_version"] == 2 and "chat_append_context" not in detail
         configuration = service.get_definition(graph["workflow_definition_id"])
         assert next(item for item in configuration["nodes"]
+                    if item["node_binding_id"] == source["node_binding_id"])["config"]["text"] == "original"
+        fixed = service.get_definition(graph["workflow_definition_id"], graph["revision"])
+        assert next(item for item in fixed["nodes"]
                     if item["node_binding_id"] == source["node_binding_id"])["config"]["text"] == "draft"
 
 

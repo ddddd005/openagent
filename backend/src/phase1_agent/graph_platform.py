@@ -3,6 +3,7 @@
 from contextlib import closing
 from copy import deepcopy
 
+from .contract_errors import ContractValidationError, DiagnosticError
 from .graph_records import require
 from .graph_store import GraphRecordStore
 from .session_objects import SessionObjectStore, StateManifestStore
@@ -49,20 +50,79 @@ class GraphPlatform:
                     resources.append(identity)
         return resources
 
+    @staticmethod
+    def _unreadable_boundary(error):
+        """Convert a boundary decode failure into the documented storage error.
+
+        Persisted evidence that cannot be decoded is a storage contract failure,
+        not caller input; a plain ``ContractValidationError`` would be mapped to
+        400 by the HTTP boundary instead of the promised 500 classification.
+        """
+        return DiagnosticError(
+            "storage_contract_violation",
+            "The prepared boundary for this execution is unreadable", status=500)
+
+    def _prepared_boundary(self, source, fallback_manifest, session):
+        """Resolve the prepared boundary a released invocation may reuse.
+
+        A released basis has no current definition to read and may only finish
+        from the prepared evidence written by this exact chain.  The manifest
+        therefore has to identify this session/definition/revision and expose
+        the original package lock and resource identities unchanged; anything
+        else is a contract violation, never a boundary to commit.
+        """
+        require(bool(fallback_manifest)
+                and fallback_manifest[0] == "chain_start",
+                "storage_contract_violation",
+                "The prepared boundary for this execution is not a chain start", 500)
+        if hasattr(source, "settlement"):
+            try:
+                manifest = source.settlement.manifest(*fallback_manifest)
+            except ContractValidationError as error:
+                raise self._unreadable_boundary(error) from error
+        else:
+            try:
+                manifest = self._manifests(source).get(*fallback_manifest)
+            except ContractValidationError as error:
+                raise self._unreadable_boundary(error) from error
+        require(manifest is not None, "storage_contract_violation",
+                "The prepared boundary for this execution is missing", 500)
+        require(type(manifest) is dict
+                and manifest.get("envelope_version") == 1
+                and manifest.get("kind") == "workflow.state-manifest",
+                "storage_contract_violation",
+                "The prepared boundary for this execution is not a state manifest", 500)
+        require(
+            manifest.get("workflow_session_id") == session["workflow_session_id"]
+            and manifest.get("workflow_definition_id") == session["workflow_definition_id"]
+            and manifest.get("definition_revision") == session["definition_revision"],
+            "storage_contract_violation",
+            "The prepared boundary for this execution belongs to another execution", 500)
+        package_lock = manifest.get("package_lock")
+        require(type(package_lock) is list and all(
+            type(item) is dict and type(item.get("package_id")) is str
+            and type(item.get("version")) is str
+            for item in package_lock),
+            "storage_contract_violation",
+            "The prepared boundary for this execution has a damaged package lock", 500)
+        global_resources = manifest.get("global_resources")
+        require(type(global_resources) is list
+                and all(type(item) is dict for item in global_resources),
+                "storage_contract_violation",
+                "The prepared boundary for this execution has damaged global resources", 500)
+        return package_lock, deepcopy(global_resources)
+
     def _save_manifest(self, source, kind, identity, session, *, history=None, status=None,
                        registry=None, fallback_manifest=None):
         from .program_variable_store import ProgramVariableStore
         if hasattr(source, "settlement"):
             data = source
-            document = data.configuration.fixed_document(
-                session["workflow_definition_id"], session["definition_revision"])
             if fallback_manifest is not None:
-                source_manifest = data.settlement.manifest(*fallback_manifest)
-                require(source_manifest is not None, "storage_contract_violation",
-                        "The prepared boundary for this execution is missing", 500)
-                package_lock = source_manifest["package_lock"]
-                global_resources = deepcopy(source_manifest["global_resources"])
+                package_lock, global_resources = self._prepared_boundary(
+                    data, fallback_manifest, session)
             else:
+                document = data.configuration.fixed_document(
+                    session["workflow_definition_id"], session["definition_revision"])
                 registry = data.registry if registry is None else registry
                 package_lock = document.get("package_lock", registry.execution_package_lock)
                 global_resources = self._resource_identities(document, registry=registry)
@@ -73,17 +133,15 @@ class GraphPlatform:
                 status=status, package_lock=package_lock,
                 global_resources=global_resources)
         repo = source
-        document = self._document(repo, session["workflow_definition_id"], session["definition_revision"])
         if registry is None and fallback_manifest is not None:
             # The invocation lost its run basis before finishing.  Reuse the
             # package lock and resource identities already persisted by its
             # prepared boundary; never recompute them from the current table.
-            prepared = self._manifests(repo).get(*fallback_manifest)
-            require(prepared is not None, "storage_contract_violation",
-                    "The prepared boundary for this execution is missing", 500)
-            package_lock = prepared["package_lock"]
-            global_resources = deepcopy(prepared["global_resources"])
+            package_lock, global_resources = self._prepared_boundary(
+                repo, fallback_manifest, session)
         else:
+            document = self._document(repo, session["workflow_definition_id"],
+                                      session["definition_revision"])
             registry = self.registry if registry is None else registry
             package_lock = document.get("package_lock", registry.execution_package_lock)
             global_resources = self._resource_identities(document, registry=registry)

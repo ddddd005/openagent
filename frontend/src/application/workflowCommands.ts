@@ -1,6 +1,6 @@
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import {
-  graphClone, graphSignature, isGraphDocument, isGraphSession,
+  graphClone, isGraphDocument, isGraphSession,
   graphObject, graphUuid, type GraphCommand, type GraphDocument, type GraphEntry, type GraphSession, type GraphManagementResult,
 } from "../domain/workflowGraph";
 import { newerGraphObservation } from "../domain/graphObservation";
@@ -29,13 +29,8 @@ function unknown(reason: string): never {
 async function readReceipt(value: unknown, request: GraphCommand,
   basis: { definitionId: string; savedRevision: number; sessionId: string | null },
   ports: Pick<GraphCommandPorts, "readDefinition" | "observedSession">): Promise<GraphReceipt> {
-  if (request.action === "save") {
-    if (!isGraphDocument(value) || value.workflow_definition_id !== basis.definitionId
-      || value.revision !== Number(request.body.expected_revision) + 1
-      || graphSignature(value) !== graphSignature(request.body.document as GraphDocument))
-      unknown("定义保存回执不匹配");
-    return { kind: "definition", document: value };
-  }
+  if (request.action === "save")
+    unknown("旧整图保存回执核实已退役，原记录保留");
   if (["definition-archive", "definition-delete", "session-archive", "session-delete"].includes(request.action)) {
     const session = request.action.startsWith("session-"), deleted = request.action.endsWith("-delete");
     if (!graphObject(value) || Object.keys(value).length !== (session ? 7 : 6)

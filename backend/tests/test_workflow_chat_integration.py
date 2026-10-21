@@ -14,6 +14,7 @@ from phase1_agent.context_contract import EFFECTIVE_CONTEXT_TYPE
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.execution_data import ExecutionChatData
 from phase1_agent.frontend_contracts import FRONTEND_COMMIT_TYPE
+from phase1_agent.frontend_node_operations import FrontendNodeOperations
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.graph_store import GraphRecordStore
@@ -132,8 +133,20 @@ def settle(service, started):
 
 
 def submit(service, session, text="submitted"):
-    return settle(service, service.chat_submit(
-        session["workflow_session_id"], submitted_input=text, **guards(session)))
+    """Submit one round through the current entry: node-page patch_input, then start."""
+    definition = service.get_definition(session["workflow_definition_id"])
+    frontend = next(node for node in definition["nodes"] if node["component_id"] == "frontend.node")
+    bound = FrontendNodeOperations(service).bind(
+        workflow_definition_id=session["workflow_definition_id"],
+        definition_revision=session["definition_revision"],
+        node_binding_id=frontend["node_binding_id"],
+        session_id=session["workflow_session_id"])
+    bound.patch_input(
+        text, expected_edit_sequence=definition["edit_sequence"], idempotency_key=identity())
+    started = bound.start(
+        expected_session_revision=session["revision"], idempotency_key=identity())
+    assert started["outcome"] == "succeeded", started
+    return settle(service, started["start_result"])
 
 
 def reroll(service, session, round_id):
@@ -249,7 +262,7 @@ def test_success_checkpoint_fault_rolls_back_candidate_binding_and_retries_witho
     assert snapshot["basis"]["revision_id"] == final["objects"]["chat-0"]["revision_id"]
 
 
-def test_participating_chat_submit_and_reroll_use_chat_ports(context_chat, monkeypatch):
+def test_participating_chat_round_start_and_reroll_use_chat_ports(context_chat, monkeypatch):
     service, graph, _, _ = context_chat
     counts = {}
 

@@ -261,17 +261,29 @@ def test_edit_after_run_preparation_does_not_change_that_run_config(tmp_path, mo
             prepared_prompt = next(item for item in prepared["node_runs"]
                                    if item["node_binding_id"] == prompt["node_binding_id"])
             assert prepared_prompt["config"]["text"] == "prepared B"
-            updated = _update_prompt_text(
-                service, adjustable_b["document"], adjustable_b["edit_sequence"],
-                "current C", "step26-prepared-config-after-run-start",
-            )
-            assert updated["outcome"] == "saved"
-            assert updated["definition_revision"] == saved["definition_revision"]
+            # G21: the prepared run locks new user configuration submissions,
+            # so the former "edit while prepared, keep this run frozen" intent
+            # becomes "reject the edit now; it is accepted after the run and
+            # never rewrites this run's frozen prepared configuration".
+            with pytest.raises(ContractValidationError) as rejected:
+                _update_prompt_text(
+                    service, adjustable_b["document"], adjustable_b["edit_sequence"],
+                    "current C", "step26-prepared-config-after-run-start",
+                )
+            assert rejected.value.reason_code == "configuration_run_locked"
+            assert service.get_definition(graph["workflow_definition_id"])["nodes"][0]["config"][
+                "text"] == "prepared B"
         finally:
             release.set()
             service.wait(chain_id)
 
         completed = service.get_session(source["workflow_session_id"])
+        after = _update_prompt_text(
+            service, adjustable_b["document"], adjustable_b["edit_sequence"],
+            "current C", "step26-prepared-config-after-run-end",
+        )
+        assert after["outcome"] == "saved"
+        assert after["definition_revision"] == saved["definition_revision"]
         detail = service.get_run(completed["workflow_session_id"], chain_id)
         completed_prompt = next(item for item in detail["node_runs"]
                                 if item["node_binding_id"] == prompt["node_binding_id"])
@@ -348,9 +360,10 @@ def test_fork_rolls_back_after_each_completed_write_stage(tmp_path, monkeypatch)
             fired = []
 
             def save_then_fail(repo, kind, identity, session, *, history=None, status=None,
-                               registry=None):
+                               registry=None, fallback_manifest=None):
                 result = original(repo, kind, identity, session, history=history,
-                                  status=status, registry=registry)
+                                  status=status, registry=registry,
+                                  fallback_manifest=fallback_manifest)
                 if session["workflow_session_id"] != source_id:
                     fired.append("graph_state_manifests")
                     raise RuntimeError("injected after graph_state_manifests")

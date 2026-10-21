@@ -263,12 +263,10 @@ class WorkflowLifecycle:
                     self._delete_owned_sessions(repo, sessions)
                     if kind == "definition":
                         connection = repo.store._connection
-                        connection.execute(
-                            "DELETE FROM records WHERE record_type IN ('workflow_definition_revision','node_binding') "
-                            "AND json_extract(payload,'$.workflow_definition_id')=?", (identity,))
+                        configuration = self._configuration_data.transaction(repo)
+                        configuration.delete_definition_revisions(identity)
                         connection.execute("DELETE FROM local_editor_drafts WHERE workflow_definition_id=?", (identity,))
-                        connection.execute(
-                            "DELETE FROM workflow_current_configuration WHERE workflow_definition_id=?", (identity,))
+                        configuration.delete_current_configuration(identity)
                         connection.execute(
                             "DELETE FROM workflow_management WHERE object_kind='definition' AND object_id=?",
                             (identity,))

@@ -8,9 +8,7 @@ rules or storage details.
 
 from __future__ import annotations
 
-from copy import deepcopy
-
-from .contract_errors import require
+from .contract_errors import require, uuid_value
 
 
 class WorkflowConfigurationService:
@@ -34,32 +32,6 @@ class WorkflowConfigurationService:
                 data, document, workflow_definition_id=workflow_definition_id,
                 expected_edit_sequence=expected_edit_sequence,
                 confirm_derivation=confirm_derivation))
-
-    def patch_node_configuration(self, *, workflow_definition_id, node_binding_id, component_id,
-                                 component_version, changes, expected_edit_sequence,
-                                 idempotency_key, confirm_derivation=None):
-        service = self._service
-        changes = deepcopy(changes)
-        request = {
-            "workflow_definition_id": workflow_definition_id, "node_binding_id": node_binding_id,
-            "component_id": component_id, "component_version": component_version, "changes": changes,
-            "expected_edit_sequence": expected_edit_sequence,
-        }
-        if confirm_derivation is not None:
-            request["confirm_derivation"] = confirm_derivation
-
-        def change(data):
-            return service._patch_node_configuration(
-                data, workflow_definition_id=workflow_definition_id,
-                node_binding_id=node_binding_id, component_id=component_id,
-                component_version=component_version, changes=changes,
-                expected_edit_sequence=expected_edit_sequence,
-                confirm_derivation=confirm_derivation)
-
-        # The public narrow patch keeps its existing receipt operation and has
-        # no production caller outside tests in this batch.
-        return service._configuration_change(
-            "graph.configuration.patch-node", idempotency_key, request, change)
 
     def patch_exact_configuration(self, data, *, workflow_definition_id, node_binding_id,
                                   component_id, component_version, changes,
@@ -103,3 +75,56 @@ class WorkflowConfigurationService:
                     "archived": archived,
                 })
             return result
+
+    def definition_summaries(self, *, include_archived=False):
+        """Narrow formal-definition directory rows in one consistent read."""
+        require(type(include_archived) is bool, "invalid_request",
+                "Archive filter must be boolean")
+        service = self._service
+        with service._lock:
+            service._check_open()
+            with service._data_management.read_directory() as directory:
+                return directory.definition_summaries(
+                    include_archived=include_archived)
+
+    def session_summaries(self, workflow_definition_id, *, include_archived=False):
+        """Narrow formal-session directory rows of one definition."""
+        require(uuid_value(workflow_definition_id), "invalid_request",
+                "Graph identity must be canonical UUID4")
+        require(type(include_archived) is bool, "invalid_request",
+                "Archive filter must be boolean")
+        service = self._service
+        with service._lock:
+            service._check_open()
+            with service._data_management.read_directory() as directory:
+                return directory.session_summaries(
+                    workflow_definition_id, include_archived=include_archived)
+
+    def copy_definition(self, *, source_workflow_definition_id,
+                        expected_source_definition_revision,
+                        expected_source_edit_sequence,
+                        target_workflow_definition_id, target_name,
+                        idempotency_key):
+        """Dispatch one formal configuration copy through the shared transaction.
+
+        The original request is exactly the five caller-owned fields; the native
+        receipt hashes them before the source is read, so a replay returns the
+        persisted result without re-reading source or target.
+        """
+        service = self._service
+        request = {
+            "source_workflow_definition_id": source_workflow_definition_id,
+            "expected_source_definition_revision": expected_source_definition_revision,
+            "expected_source_edit_sequence": expected_source_edit_sequence,
+            "target_workflow_definition_id": target_workflow_definition_id,
+            "target_name": target_name,
+        }
+        return service._configuration_change(
+            "graph.definition.copy", idempotency_key, request,
+            lambda data: service.copy_configuration(
+                data,
+                source_workflow_definition_id=source_workflow_definition_id,
+                expected_source_definition_revision=expected_source_definition_revision,
+                expected_source_edit_sequence=expected_source_edit_sequence,
+                target_workflow_definition_id=target_workflow_definition_id,
+                target_name=target_name))

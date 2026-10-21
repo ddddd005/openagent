@@ -82,7 +82,8 @@ def test_current_platform_and_empty_definition_reject_retired_migration(tmp_path
         status, platform = request(port, "GET", "/api/graph/platform")
         assert status == 200 and platform["package_diagnostics"] == []
         assert "workflow.compat" not in {row["package_id"] for row in platform["package_lock"]}
-        assert request(port, "POST", "/api/graph/resources/list", {}) == (200, [])
+        assert request(port, "POST", "/api/graph/queries", {
+            "operation": "resource.list", "parameters": {}}) == (200, [])
         assert request(port, "GET", "/api/model-configurations/provider")[0] == 404
         assert request(port, "GET", "/api/global-content")[0] == 404
         assert not hasattr(host, "_legacy") and not hasattr(host.graph_service, "_native_runtime")

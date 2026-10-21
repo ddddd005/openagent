@@ -1,4 +1,4 @@
-import { graphReceiptReadResponse, stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
+import { stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useWorkflowGraphStore } from "./workflowGraph";
@@ -6,6 +6,7 @@ import { useWorkspaceStore } from "./workspace";
 import { useWorkbenchPersistenceStore } from "./workbenchPersistence";
 import { useWorkbenchNoticesStore } from "./workbenchNotices";
 import { graphClone, newGraph, type GraphDocument, type GraphNodeType, type GraphSession } from "../domain/workflowGraph";
+import { sessionSummaryFromView } from "../domain/workflowDirectory";
 import { graphWorkbenchStorage } from "../testUtils/graphWorkbenchStorage";
 import { memoryLocalDraftStorage } from "../testUtils/localDraftStorage";
 import { installDebtCleanupEvidence } from "../testUtils/debtCleanupEvidence";
@@ -23,12 +24,6 @@ function deferred<T>() {
   return { promise, resolve };
 }
 const response = (value: unknown) => new Response(JSON.stringify(value));
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value)
-    .sort(([a], [b]) => a.localeCompare(b)).map(([key, row]) => [key, canonical(row)]));
-  return value;
-}
 function memory() {
   const workspace = useWorkspaceStore();
   return graphWorkbenchStorage({ graph: useWorkflowGraphStore().storeSnapshot(), catalog: workspace.workflows,
@@ -59,36 +54,24 @@ afterEach(() => {
   vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals();
 });
 describe("reviewed graph receipt and operation races", () => {
-  it("verifies canonical lost-save receipts without installing or clearing old evidence", async () => {
+  it("never treats a frozen whole-graph save request as verifiable evidence", async () => {
     const { graph, id } = await setup();
     graph.entries[id].session_id = null;
-    graph.entries[id].document.nodes.push({ node_binding_id: crypto.randomUUID(), component_id: "external.test",
-      component_version: "1", title: "plugin", position: { x: 1, y: 2 },
-      config: { z: "retained", nested: { z: 3, a: [false, 1, "1"] } } });
     const saved = graphClone(graph.entries[id].saved_document);
     const request = createGraphCommand("/api/graph/definitions", {
       document: { ...graphClone(graph.document!), revision: 2 }, expected_revision: 1,
     }, "save");
     graph.entries[id].pending = graphClone(request);
-    expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(false);
-    const calls: unknown[] = [];
-    let invalid = true;
-    stubGraphApplicationFetch( vi.fn(async (path, init) => {
-      if (path === "/api/graph/receipts/read") {
-        const envelope = JSON.parse(init.body), body = envelope.parameters; calls.push(body);
-        const receipt = graphClone(body.document);
-        if (invalid) receipt.nodes[0].config.z = "foreign content";
-        return graphReceiptReadResponse(envelope.operation, body, canonical(receipt) as Record<string, unknown>);
-      }
+    const fetcher = vi.fn(async (path: string) => {
+      expect(path).not.toBe("/api/graph/receipts/read");
       return response([]);
-    }));
+    });
+    stubGraphApplicationFetch(fetcher);
     await graph.reconcile(id);
     expect(graph.pending).toEqual(request);
-    invalid = false; await graph.reconcile(id);
-    expect(calls).toEqual([request.body, request.body]);
-    expect(graph.pending).toEqual(request); expect(graph.entries[id].saved_revision).toBe(1);
+    expect(graph.entries[id].saved_revision).toBe(1);
     expect(graph.entries[id].saved_document).toEqual(saved);
-    expect(graph.receiptChecks[id]).toContain("pending 证据保留");
+    expect(fetcher.mock.calls.some(([path]) => path === "/api/graph/receipts/read")).toBe(false);
   });
 
   it("blocks start during selection while preserving only read-only workbench preferences", async () => {
@@ -228,22 +211,23 @@ describe("reviewed graph receipt and operation races", () => {
     expect(paths).toEqual([`/api/graph/definitions/${b}/sessions`, `/api/graph/sessions/${bView.workflow_session_id}`]);
   });
 
-  it("keeps session rows current when the detail read settles after the directory read", async () => {
+  it("keeps directory summary rows separate from a detail read that settles later", async () => {
     const { graph, id, current } = await setup("running");
     const other = view(graph.document!);
-    graph.sessions[id] = [current, other];
+    const summaries = [sessionSummaryFromView(current), sessionSummaryFromView(other)];
     const completed = { ...current, status: "succeeded", revision: 2, can_submit: true };
     stubGraphApplicationFetch(vi.fn(async path => response(path.endsWith("/sessions")
-      ? [current, other] : completed)));
+      ? summaries : completed)));
     await graph.refresh(id);
     expect(graph.session).toEqual(completed);
-    expect(graph.sessions[id]).toEqual([completed, other]);
-    expect(graph.sessions[id][0]).toBe(graph.session);
+    // Directory rows stay summary projections; they never become full views.
+    expect(graph.sessionRows[id]).toEqual(summaries);
     stubGraphApplicationFetch(vi.fn(async path => response(path.endsWith("/sessions")
-      ? [current, other] : current)));
+      ? summaries : current)));
     await graph.refresh(id);
-    expect(graph.sessions[id][0]).toEqual(completed);
-    expect(graph.sessions[id][0]).toBe(graph.session);
+    expect(graph.session).toEqual(completed);
+    expect(graph.sessionRows[id]).toEqual(summaries);
+    expect(graph.views[current.workflow_session_id]).toEqual(completed);
   });
 
   it("reads final run permissions once after the active poll reaches a settled status", async () => {
@@ -265,7 +249,7 @@ describe("reviewed graph receipt and operation races", () => {
       `/api/graph/definitions/${id}/sessions`, `/api/graph/sessions/${current.workflow_session_id}`,
     ]);
     expect(graph.session).toEqual(settled);
-    expect(graph.sessions[id][0]).toBe(graph.session);
+    expect(graph.sessionRows[id]).toEqual([sessionSummaryFromView(current)]);
     expect(graph.session?.available_actions).toContain("retry_failed_node");
     await vi.advanceTimersByTimeAsync(1050);
     expect(detailReads).toBe(2);

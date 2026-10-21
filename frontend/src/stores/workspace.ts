@@ -2,6 +2,7 @@ import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 import { graphClone } from "../domain/workflowGraph";
 import type { WorkspaceViewToken, WorkspaceWorkflow } from "../domain/workspace";
+import type { WorkflowDefinitionSummary } from "../domain/workflowDirectory";
 
 export const useWorkspaceStore = defineStore("workspace", () => {
   const workflows = ref<WorkspaceWorkflow[]>([]);
@@ -40,6 +41,45 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     workflow.nodeCount = nodeCount;
     return true;
   }
+  /** Replace the formal directory projection with summary rows.
+   *
+   * Only formal summary rows are projected here. Local drafts, pending copies and
+   * rows whose deletion is still being verified are retained untouched; a
+   * directory refresh never turns a summary into an editor entry or removes an
+   * original request that is still waiting for verification.
+   */
+  function applyDefinitionSummaries(rows: readonly WorkflowDefinitionSummary[]) {
+    for (const row of rows) {
+      const existing = workflows.value.find(item => item.id === row.workflow_definition_id);
+      if (existing) {
+        if (existing.deleted || existing.copyPending) continue;
+        if (existing.state !== "draft") existing.title = row.display_name;
+        existing.nodeCount = existing.state === "draft" ? existing.nodeCount : row.node_count;
+        // Archiving is one-way in the workflow domain: a stale directory row may
+        // not clear an archive flag confirmed by a management receipt.
+        existing.archived = existing.archived === true || row.archived;
+        existing.state = existing.state === "draft" ? "draft" : "saved";
+        existing.fixedDefinitionRevision = row.fixed_definition_revision;
+        existing.editSequence = row.edit_sequence;
+        existing.hasCurrentConfiguration = row.has_current_configuration;
+        existing.sessionCount = row.session_count;
+        existing.fromSummary = true;
+        continue;
+      }
+      workflows.value.push({
+        id: row.workflow_definition_id, title: row.display_name, description: "",
+        nodeCount: row.node_count, state: "saved", archived: row.archived,
+        fixedDefinitionRevision: row.fixed_definition_revision, editSequence: row.edit_sequence,
+        hasCurrentConfiguration: row.has_current_configuration, sessionCount: row.session_count,
+        fromSummary: true,
+      });
+    }
+  }
+  /** Formal directory count; drafts, unconfirmed copies and deletion-pending rows are excluded. */
+  function formalWorkflowCount(includeArchived = false) {
+    return workflows.value.filter(row => row.state === "saved" && !row.deleted && !row.copyPending
+      && (includeArchived || !row.archived)).length;
+  }
   function setCopyPending(id: string, pending: boolean) {
     const workflow = workflows.value.find(row => row.id === id);
     if (!workflow) return false;
@@ -51,6 +91,15 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     if (!workflow) return false;
     workflow.archived = archived;
     workflow.deleted = deleted;
+    return true;
+  }
+  /** Record the accepted formal current counters on the directory row. */
+  function setWorkflowCurrent(id: string, fixedDefinitionRevision: number, editSequence: number) {
+    const workflow = workflows.value.find(row => row.id === id);
+    if (!workflow) return false;
+    workflow.fixedDefinitionRevision = fixedDefinitionRevision;
+    workflow.editSequence = editSequence;
+    workflow.hasCurrentConfiguration = true;
     return true;
   }
   function markWorkflowSaved(id: string, title?: string) {
@@ -85,6 +134,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   }
   return { workflows, selectedWorkflowId, activeWorkflowId, activeWorkflow, viewVersion,
     interactionMode, currentViewToken, isCurrentView, selectWorkflow, openWorkflow,
-    registerGraphWorkflow, updateWorkflowProjection, setCopyPending, setWorkflowManagement, markWorkflowSaved, markWorkflowDraft, removeWorkflow,
+    registerGraphWorkflow, updateWorkflowProjection, applyDefinitionSummaries, formalWorkflowCount,
+    setCopyPending, setWorkflowManagement, setWorkflowCurrent, markWorkflowSaved, markWorkflowDraft, removeWorkflow,
     restoreCatalog, initializeFreshWorkspace };
 });

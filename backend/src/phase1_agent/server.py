@@ -37,6 +37,11 @@ _STATIC_FILES = {
         "frontend-node-client.js", "frontend-node-host.js", "frontend-node-entry.js",
     )},
     "/static/frontend-node.css": ("frontend-node.css", "text/css; charset=utf-8"),
+    "/static/vendor/lucide/lucide.min.js": (
+        "vendor/lucide/lucide.min.js", "text/javascript; charset=utf-8"),
+    "/static/vendor/lucide/LICENSE": ("vendor/lucide/LICENSE", "text/plain; charset=utf-8"),
+    **{f"/static/assets/{name}": (f"assets/{name}", "image/svg+xml; charset=utf-8")
+       for name in ("user-avatar.svg", "assistant-avatar.svg")},
 }
 _TAVERN_STATIC_FILES = {
     "/tavern/source/index.html": ("index.html", "text/plain; charset=utf-8"),
@@ -149,7 +154,7 @@ def management_request(method, path, data):
         "/api/graph/consumer/commands", "/api/graph/consumer/queries",
     ):
         return False
-    from .graph_application_contracts import COMMANDS, QUERIES
+    from .graph_application_contracts import application_operation_authority
     if type(data) is not dict or set(data) != {"operation", "parameters"}:
         return True
     operation = data["operation"]
@@ -157,13 +162,7 @@ def management_request(method, path, data):
         return True
     if path.endswith("/queries"):
         return True
-    operations = COMMANDS if path.endswith("/commands") else QUERIES
-    return (operation.startswith(("provider.", "credential.", "resource.", "content.metadata.", "request-evidence."))
-            or operation in {
-                "definition.update", "definition.archive", "definition.delete",
-                "session.create", "session.metadata.update",
-                "session.archive", "session.delete", "object.write", "checkpoint.fork",
-            } or operation not in {item.name for item in operations})
+    return application_operation_authority(operation) != "execution"
 
 
 class LocalHTTPServer(ThreadingHTTPServer):
@@ -179,11 +178,17 @@ class _RequestError(Exception):
 
 def create_server(service: Any, port: int = 8765, *, graph_service=None,
                   workbench_dist: str | Path | None = None) -> ThreadingHTTPServer:
-    """Bind only to IPv4 loopback; pages and receipt reads do not initialize a runtime."""
+    """Bind only to IPv4 loopback; pages and receipt reads do not initialize a runtime.
+
+    The server borrows a caller-provided host, workflow service or injected
+    object and never closes it.  Objects the compatibility branch creates for a
+    foreign service are owned by this server and are closed in ``server_close``.
+    """
     workbench_files = _workbench_files(workbench_dist)
     graph_services = [graph_service]
     management_services = [None]
     graph_owned = [False]
+    management_host_owned = [False]
     graph_lock = RLock()
     from .frontend_node_connections import FrontendNodeConnections
     from .frontend_node_http import FrontendNodeHTTP
@@ -196,7 +201,7 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
         with graph_lock:
             if graph_services[0] is None:
                 if isinstance(service, WorkflowHost):
-                    graph_services[0] = service.graph_service
+                    graph_services[0] = service.execution_management.execution_entry()
                 elif isinstance(service, GraphWorkflowService):
                     graph_services[0] = service
                 else:
@@ -213,8 +218,13 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
             if management_services[0] is None:
                 from .graph_service import GraphWorkflowService
                 from .workflow_host import WorkflowHost
-                management_services[0] = (service if isinstance(service, (WorkflowHost, GraphWorkflowService))
-                                          else WorkflowHost(service.database))
+                if isinstance(service, WorkflowHost):
+                    management_services[0] = service.execution_management.management_entry()
+                elif isinstance(service, GraphWorkflowService):
+                    management_services[0] = service
+                else:
+                    management_services[0] = WorkflowHost(service.database)
+                    management_host_owned[0] = True
             return management_services[0]
 
     def get_frontend_node_service(execution):
@@ -235,6 +245,9 @@ def create_server(service: Any, port: int = 8765, *, graph_service=None,
             if graph_owned[0] and graph_services[0] is not None:
                 graph_services[0].close()
                 graph_owned[0] = False
+            if management_host_owned[0] and management_services[0] is not None:
+                management_services[0].close()
+                management_host_owned[0] = False
 
         @property
         def frontend_node_connections(self):

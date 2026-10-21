@@ -34,10 +34,6 @@ def dispatch_platform(service, method, path, data):
     if method == "GET" and path == prefix + "/platform":
         return _query(application, "platform")
     global_routes = {
-        "/resources/read": ("query", "resource.read"),
-        "/resources/list": ("query", "resource.list"),
-        "/resources/save": ("command", "resource.save"),
-        "/resources/delete": ("command", "resource.delete"),
         "/packages/configure": ("command", "packages.configure"),
         "/registrations/list": ("query", "registration.list"),
     }

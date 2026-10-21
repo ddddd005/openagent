@@ -10,7 +10,6 @@ import pytest
 
 from phase1_agent.contract_json import canonical_bytes, loads_strict
 from phase1_agent.graph_application import GraphApplication
-from phase1_agent.graph_application_identity import bind_application_command
 from phase1_agent.graph_contracts import NodeDefinition, NodePort
 from phase1_agent.graph_receipts import read_graph_application_receipt
 from phase1_agent.graph_service import GraphWorkflowService
@@ -18,7 +17,9 @@ from phase1_agent.host_sdk import WriteIntent
 from phase1_agent.contract_errors import ContractValidationError
 from legacy_consumer_receipt_fixture import seed_legacy_consumer_receipt
 from test_graph_resource_host import prompt_record
-from test_graph_service import create, document, edge, node, run, service, text_graph
+from test_graph_service import (
+    create, document, edge, node, run, save_definition_fixture, service, text_graph,
+)
 from test_graph_session_objects import object_graph, task_package
 
 
@@ -50,16 +51,9 @@ def roundtrip(app, operation, parameters):
 
 
 def initial(app, doc, *, consumer=False):
-    parameters = {"document": deepcopy(doc), "expected_revision": 0,
-                  "idempotency_key": str(uuid4())}
-    with bind_application_command("definition.save", "management", parameters):
-        native_request = {"document": parameters["document"],
-                          "expected_revision": parameters["expected_revision"]}
-        result = app._service._change(
-            "graph.definition.save", parameters["idempotency_key"], native_request,
-            lambda repo: app._service._save_definition(repo, parameters["document"], 0))
-    frozen = read_graph_application_receipt(app._service.database, "definition.save", parameters)
-    assert frozen["outcome"] == "matched" and frozen["result"] == result == doc
+    # The retired definition.save application contract is no longer seeded; the
+    # native definition rows only need to exist for the current session receipts.
+    save_definition_fixture(app._service, doc)
     owner = app.for_consumer() if consumer else app
     return roundtrip(owner, "consumer.session.create" if consumer else "session.create", {
         "workflow_definition_id": doc["workflow_definition_id"], "definition_revision": 1,

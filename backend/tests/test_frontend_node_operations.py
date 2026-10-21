@@ -218,7 +218,7 @@ def test_bound_snapshot_reads_actual_accepted_messages_and_none_session_is_rejec
 
 
 def test_start_create_and_start_have_separate_native_receipts_and_no_replay_dispatch(service, monkeypatch):
-    bound, graph, _, _ = prepared(service)
+    bound, _, _, _ = prepared(service)
     first = bound.start(idempotency_key="new-start")
     assert first["outcome"] == "succeeded" and first["failure_phase"] is None
     created, started = first["create_result"], first["start_result"]
@@ -226,10 +226,7 @@ def test_start_create_and_start_have_separate_native_receipts_and_no_replay_disp
     assert started["workflow_session_id"] == created["workflow_session_id"]
     assert started["active_chain_run_id"] is not None
     service.wait(started["active_chain_run_id"])
-    service.patch_node_configuration(
-        workflow_definition_id=bound.workflow_definition_id, node_binding_id=graph["nodes"][0]["node_binding_id"],
-        component_id="tools.editable-input", component_version="1", changes={"text": "later"},
-        expected_edit_sequence=1, idempotency_key="later-input")
+    bound.patch_input("later", expected_edit_sequence=1, idempotency_key="later-input")
     monkeypatch.setattr(service, "create_session", lambda *args, **kwargs: pytest.fail("recreated session"))
     monkeypatch.setattr(service, "start", lambda *args, **kwargs: pytest.fail("restarted session"))
     monkeypatch.setattr(service, "_document", lambda *args: pytest.fail("replay reread binding"))

@@ -4,6 +4,7 @@ import { WorkbenchApiError } from "../adapters/workbenchApi";
 import { requestEvidencePorts } from "../adapters/requestEvidenceApi";
 import { workflowManagementQueries } from "../application/workflowManagement";
 import { graphClone, isGraphDocument, type GraphDocument, type GraphSession } from "../domain/workflowGraph";
+import { sessionSummaryFromView } from "../domain/workflowDirectory";
 import { memoryRequestEvidence } from "../testUtils/requestEvidence";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkspaceStore } from "./workspace";
@@ -193,7 +194,7 @@ describe("workflow management requests installed in the graph store", () => {
     graph.entries[id].session_id = target.workflow_session_id;
     graph.views[target.workflow_session_id] = target;
     graph.views[sibling.workflow_session_id] = sibling;
-    graph.sessions[id] = [target, sibling];
+    graph.sessionRows[id] = [target, sibling].map(sessionSummaryFromView);
     const { send } = transport();
     vi.spyOn(workflowManagementQueries, "session").mockResolvedValue(target);
     send.mockResolvedValue(managementResult(document, "delete", target.workflow_session_id, target.revision));
@@ -209,7 +210,7 @@ describe("workflow management requests installed in the graph store", () => {
     expect(graph.entries[id].session_id).toBeNull();
     expect(graph.views[target.workflow_session_id]).toBeUndefined();
     expect(graph.views[sibling.workflow_session_id]).toEqual(sibling);
-    expect(graph.sessions[id]).toEqual([sibling]);
+    expect(graph.sessionRows[id]).toEqual([sibling].map(sessionSummaryFromView));
   });
 
   it("does not expose the retired session data write wrapper", async () => {
@@ -251,7 +252,7 @@ describe("workflow management requests installed in the graph store", () => {
     expect(storedEvidence("session.create", first.id).resolution).toBe("verified");
     expect(reopened.entries[first.id].session_id).toBeNull();
     expect(reopened.session).toBeNull();
-    expect(reopened.sessions[first.id]).toContainEqual(created);
+    expect(reopened.sessionRows[first.id]).toContainEqual(sessionSummaryFromView(created));
   });
 
   it("binds a late create receipt to its source workflow without changing another page or session", async () => {
@@ -276,7 +277,7 @@ describe("workflow management requests installed in the graph store", () => {
     expect(await creating).toBe(true);
 
     expect(source.graph.entries[source.id].session_id).toBeNull();
-    expect(source.graph.sessions[source.id]).toContainEqual(created);
+    expect(source.graph.sessionRows[source.id]).toContainEqual(sessionSummaryFromView(created));
     expect(source.graph.entries[other.id].session_id).toBe(otherSession.workflow_session_id);
     expect(source.workspace.activeWorkflowId).toBe(other.id);
     expect(source.graph.session?.workflow_session_id).toBe(otherSession.workflow_session_id);

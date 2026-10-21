@@ -61,16 +61,21 @@ describe("legacy graph command retirement", () => {
 
   it("reconciles an exact old pending command by receipt read only, without accepting or clearing it", async () => {
     const document = newGraph("Frozen workflow");
-    const entry: GraphEntry = { document, saved_revision: 0, session_id: null, pending: null };
-    const command = createGraphCommand("/api/graph/definitions", {
-      document: graphClone(document), expected_revision: 0,
-    }, "save");
+    const definitionId = document.workflow_definition_id;
+    const entry: GraphEntry = { document, saved_revision: 1, session_id: null, pending: null };
+    const command = createGraphCommand(`/api/graph/definitions/${definitionId}/archive`, {
+      identity: definitionId, expected_revision: 1,
+    }, "definition-archive");
     entry.pending = graphClone(command);
     const before = graphClone(entry);
-    const ports = commandPorts({ readReceipt: vi.fn(async () => graphClone(document)) });
+    const result = {
+      schema_version: 1, kind: "workflow.definition-management", workflow_definition_id: definitionId,
+      revision: 1, archived: true, deleted: false,
+    };
+    const ports = commandPorts({ readReceipt: vi.fn(async () => graphClone(result)) });
 
     await expect(dispatchGraphCommand(entry, command, ports, true))
-      .resolves.toEqual({ kind: "definition", document });
+      .resolves.toEqual({ kind: "management", result });
 
     expect(ports.readReceipt).toHaveBeenCalledOnce();
     expect(ports.readReceipt).toHaveBeenCalledWith(command.path, command.body);
@@ -80,7 +85,7 @@ describe("legacy graph command retirement", () => {
     expect(entry).toEqual(before);
   });
 
-  it("rejects direct definition.save transport before fetch", async () => {
+  it("rejects direct whole-graph save transport and receipt reads before fetch", async () => {
     const fetcher = vi.fn();
     vi.stubGlobal("fetch", fetcher);
 
@@ -88,7 +93,43 @@ describe("legacy graph command retirement", () => {
       document: newGraph("Retired save"), expected_revision: 0, idempotency_key: crypto.randomUUID(),
     })).rejects.toMatchObject({ kind: "unavailable", code: "graph_definition_save_retired" });
 
+    await expect(readGraphReceipt("/api/graph/definitions", {
+      document: newGraph("Retired save"), expected_revision: 0, idempotency_key: crypto.randomUUID(),
+    })).rejects.toMatchObject({ kind: "unavailable", code: "graph_definition_save_retired" });
+
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("marks a frozen whole-graph save request as retired evidence without a verify path", () => {
+    const document = newGraph("Legacy save");
+    const workflowId = document.workflow_definition_id;
+    const pending: GraphCommand = {
+      path: "/api/graph/definitions",
+      body: { document: graphClone(document), expected_revision: 0, idempotency_key: crypto.randomUUID() },
+      action: "save",
+    };
+    const value = {
+      schemaVersion: 7, kind: "graph-workbench", revision: 1, savedAt: "2026-10-14T00:00:00Z",
+      activeWorkflowId: workflowId, selectedWorkflowId: workflowId,
+      graph: { schema_version: 1, entries: { [workflowId]: {
+        document, saved_revision: 0, session_id: null, pending: graphClone(pending),
+      } } },
+    };
+    const before = graphClone(value);
+
+    const evidence = readLegacyWorkbenchEvidence(value);
+
+    expect(evidence.pending).toEqual([{
+      key: `${workflowId}:${pending.body.idempotency_key}`,
+      workflowId,
+      command: pending,
+      legacy_action: null,
+      basis: { definitionId: workflowId, savedRevision: 0, sessionId: null },
+      status: "retired",
+      result: "旧整图保存入口已退役；原保存回执不可再核实，原记录保留",
+    }]);
+    expect(evidence.unreadablePending).toBe(0);
+    expect(value).toEqual(before);
   });
 
   it("rejects direct session.copy transport while keeping exact receipt reads available", async () => {

@@ -14,15 +14,16 @@ export function graphApplicationQuery(operation: string, parameters: Record<stri
   return workbenchRequest("/api/graph/queries", { body: { operation, parameters: graphClone(parameters) }, readOnly: true });
 }
 
-// Preserve persisted outbox coordinates for receipt reads without reopening retired writes.
+// Preserve persisted outbox coordinates for current operations; retired writes
+// stay rejected before any transport while exact old receipts remain readable.
 function graphRequestOperation(path: string, body: Record<string, unknown>, receiptOnly = false) {
   if (Object.prototype.hasOwnProperty.call(body, "session_id"))
     throw new WorkbenchApiError("unknown", "原请求包含与路径重复的会话目标，保留原请求");
-  if (path === "/api/graph/definitions" && !receiptOnly)
-    throw new WorkbenchApiError("unavailable", "旧整图发布入口已退役；正式保存暂不可用，未提交新请求",
+  if (path === "/api/graph/definitions")
+    throw new WorkbenchApiError("unavailable",
+      "旧整图保存入口已退役；原保存回执不可再核实，原记录保留",
       undefined, "graph_definition_save_retired");
   const roots: Record<string, string> = {
-    "/api/graph/definitions": "definition.save",
     "/api/graph/definitions/update": "definition.update",
     "/api/graph/sessions": "session.create",
     "/api/graph/resources/save": "resource.save",

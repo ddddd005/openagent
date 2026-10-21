@@ -12,10 +12,11 @@ import { memoryRequestEvidence } from "../testUtils/requestEvidence";
 import { requestEvidencePorts } from "../adapters/requestEvidenceApi";
 
 vi.mock("./WorkbenchSidebar.vue", () => ({ default: { render: () => null } }));
+vi.mock("./WorkflowWorkspace.vue", () => ({ default: { render: () => null } }));
 vi.mock("./GraphRunControls.vue", () => ({ default: { render: () => null } }));
 vi.mock("./GraphWorkbench.vue", () => ({ default: { render: () => null } }));
 vi.mock("./GraphSessions.vue", () => ({ default: { render: () => null } }));
-vi.mock("../composables/useWorkbenchFrontendHost", () => ({ useWorkbenchFrontendHost: () => {} }));
+vi.mock("../composables/useWorkflowFrontendHost", () => ({ useWorkflowFrontendHost: () => {} }));
 let pinia: Pinia;
 beforeEach(() => { pinia = createPinia(); setActivePinia(pinia); vi.stubGlobal("fetch", vi.fn()); });
 afterEach(() => { disposePinia(pinia); vi.unstubAllGlobals(); vi.restoreAllMocks(); });

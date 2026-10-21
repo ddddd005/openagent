@@ -1,6 +1,7 @@
 """The private client calls the real node channel without an HTTP service."""
 
 from contextlib import closing
+from copy import deepcopy
 import json
 from pathlib import Path
 from queue import Empty, Queue
@@ -17,6 +18,16 @@ from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.graph_store import GraphRecordStore
 
 from frontend_node_test_support import graph as _graph, save as _save
+
+
+def current_input_text(service, graph, messages):
+    document = deepcopy(service.get_definition(graph["workflow_definition_id"]))
+    target = next(node for node in document["nodes"]
+                  if node["node_binding_id"] == messages[0]["node_binding_id"])
+    target["config"]["text"] = "current B"
+    return service.update_definition(
+        document, workflow_definition_id=graph["workflow_definition_id"],
+        expected_edit_sequence=document["edit_sequence"], idempotency_key=str(uuid4()))
 
 
 def _run_bridge(service, node, owner, mode, *, fail_patch_ack=False, after_reply=None):
@@ -96,13 +107,7 @@ def test_client_to_real_channel_saves_input_then_runs_and_reads_stored_messages(
     with closing(GraphWorkflowService(tmp_path / "channel-client.sqlite")) as service:
         graph, messages, frontends = _graph(service, bound=True)
         graph = _save(service, graph)
-        service.patch_node_configuration(
-            workflow_definition_id=graph["workflow_definition_id"],
-            node_binding_id=messages[0]["node_binding_id"],
-            component_id="tools.editable-input", component_version="1",
-            changes={"text": "current B"}, expected_edit_sequence=1,
-            idempotency_key=str(uuid4()),
-        )
+        current_input_text(service, graph, messages)
         owner = {
             "workflow_definition_id": graph["workflow_definition_id"], "definition_revision": 1,
             "node_binding_id": frontends[0]["node_binding_id"], "session_id": None,
@@ -140,13 +145,7 @@ def test_client_to_real_channel_modifies_input_without_starting_workflow(tmp_pat
     with closing(GraphWorkflowService(tmp_path / "channel-client-modify.sqlite")) as service:
         graph, messages, frontends = _graph(service, bound=True)
         graph = _save(service, graph)
-        service.patch_node_configuration(
-            workflow_definition_id=graph["workflow_definition_id"],
-            node_binding_id=messages[0]["node_binding_id"],
-            component_id="tools.editable-input", component_version="1",
-            changes={"text": "current B"}, expected_edit_sequence=1,
-            idempotency_key=str(uuid4()),
-        )
+        current_input_text(service, graph, messages)
         owner = {
             "workflow_definition_id": graph["workflow_definition_id"], "definition_revision": 1,
             "node_binding_id": frontends[0]["node_binding_id"], "session_id": None,

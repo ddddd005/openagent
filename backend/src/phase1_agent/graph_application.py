@@ -2,21 +2,13 @@
 
 from copy import deepcopy
 
-from .graph_application_contracts import COMMANDS, QUERIES, validate_parameters
+from .graph_application_contracts import (
+    COMMANDS, QUERIES, application_operation_authority, validate_parameters,
+)
 from .graph_application_identity import (
     application_accepted_result, application_command_receipt, bind_application_command,
 )
 from .graph_records import require
-
-
-_MANAGEMENT_COMMANDS = {
-    "definition.update", "session.create",
-    "object.write",
-    "session.metadata.update", "checkpoint.fork",
-}
-_LIFECYCLE_COMMANDS = {
-    "definition.archive", "definition.delete", "session.archive", "session.delete",
-}
 
 
 class GraphApplication:
@@ -90,10 +82,12 @@ class GraphApplication:
         return callback(*positional, **arguments)
 
     def _invocation_service(self, spec):
-        if spec.name in _LIFECYCLE_COMMANDS:
-            return self._service
-        if spec.name in _MANAGEMENT_COMMANDS or spec.name in self._queries:
+        authority = application_operation_authority(spec.name)
+        # Queries keep their existing management-service read path first.
+        if spec.name in self._queries or authority == "management":
             return self._management_service()
+        if authority == "lifecycle":
+            return self._service
         return getattr(self._service, "graph_service", self._service)
 
     def _management_service(self):

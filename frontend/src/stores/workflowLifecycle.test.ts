@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, disposePinia, setActivePinia, type Pinia } from "pinia";
 import { graphReceiptReadResponse, stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
 import { graphClone, isGraphSession, newGraph, type GraphDocument, type GraphSession } from "../domain/workflowGraph";
+import { sessionSummaryFromView } from "../domain/workflowDirectory";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkspaceStore } from "./workspace";
 import { useWorkbenchNoticesStore } from "./workbenchNotices";
@@ -49,24 +50,30 @@ function deferred<T>() {
 }
 
 describe("object-scoped workflow lifecycle", () => {
-  it("reads backend definitions including archives without losing an independent local draft", async () => {
+  it("reads the directory summaries including archives without creating entries or losing an independent local draft", async () => {
     const { graph, workspace, id } = await fixture(), local = graph.createWorkflow();
     graph.document!.name = "Unpublished user edit";
     const archived = newGraph("Archived backend graph");
+    const calls: string[] = [];
     stubGraphApplicationFetch(vi.fn(async path => {
+      calls.push(path);
       expect(path).toBe("/api/graph/definitions");
       return json([{ document: archived, archived: true }]);
     }));
     expect(await graph.loadDefinitions()).toBe(true);
-    expect(workspace.workflows.find(row => row.id === archived.workflow_definition_id)?.archived).toBe(true);
-    expect(graph.entries[archived.workflow_definition_id].saved_document).toEqual(archived);
+    const row = workspace.workflows.find(item => item.id === archived.workflow_definition_id);
+    expect(row).toMatchObject({ title: "Archived backend graph", archived: true, state: "saved",
+      nodeCount: 0, hasCurrentConfiguration: false, editSequence: null, fromSummary: true });
+    // A summary refresh must not fake a detailed configuration entry.
+    expect(graph.entries[archived.workflow_definition_id]).toBeUndefined();
     expect(graph.entries[local].document.name).toBe("Unpublished user edit");
     expect(graph.entries[id]).toBeDefined();
+    expect(calls).toEqual(["/api/graph/definitions"]);
   });
   it("archives a running definition directly without publishing or flushing unrelated forms", async () => {
     const { graph, workspace, id, document } = await fixture(), view = session(document);
     graph.entries[id].session_id = view.workflow_session_id;
-    graph.views[view.workflow_session_id] = view; graph.sessions[id] = [view];
+    graph.views[view.workflow_session_id] = view; graph.sessionRows[id] = [view].map(sessionSummaryFromView);
     graph.document!.name = "Unpublished retained edit"; workspace.markWorkflowDraft(id);
     const paths: string[] = [];
     stubGraphApplicationFetch(vi.fn(async (path, options) => {
@@ -108,10 +115,10 @@ describe("object-scoped workflow lifecycle", () => {
   });
   it("deletes only the selected definition and its local session/history projections", async () => {
     const { graph, workspace, id, document } = await fixture(), owned = session(document);
-    graph.views[owned.workflow_session_id] = owned; graph.sessions[id] = [owned];
+    graph.views[owned.workflow_session_id] = owned; graph.sessionRows[id] = [owned].map(sessionSummaryFromView);
     const otherId = graph.createWorkflow(), other = graphClone(graph.entries[otherId]);
     const otherView = session(other.document);
-    graph.views[otherView.workflow_session_id] = otherView; graph.sessions[otherId] = [otherView];
+    graph.views[otherView.workflow_session_id] = otherView; graph.sessionRows[otherId] = [otherView].map(sessionSummaryFromView);
     stubGraphApplicationFetch(vi.fn(async (path, options) => {
       expect(path).toBe(`/api/graph/definitions/${id}/delete`);
       expect(JSON.parse(options.body)).toMatchObject({ identity: id, expected_revision: 1 });
@@ -119,7 +126,7 @@ describe("object-scoped workflow lifecycle", () => {
     }));
     expect(await graph.manageWorkflow(id, "delete")).toBe(true);
     expect(graph.entries[id]).toBeUndefined(); expect(graph.history[id]).toBeUndefined();
-    expect(graph.views[owned.workflow_session_id]).toBeUndefined(); expect(graph.sessions[id]).toBeUndefined();
+    expect(graph.views[owned.workflow_session_id]).toBeUndefined(); expect(graph.sessionRows[id]).toBeUndefined();
     expect(graph.entries[otherId]).toEqual(other); expect(graph.views[otherView.workflow_session_id]).toEqual(otherView);
     expect(workspace.workflows.map(row => row.id)).toEqual([otherId]);
   });
@@ -212,7 +219,7 @@ describe("object-scoped workflow lifecycle", () => {
   });
   it("archives a running session and keeps the resulting selected session read-only", async () => {
     const { graph, id, document } = await fixture(), view = session(document), sid = view.workflow_session_id;
-    graph.entries[id].session_id = sid; graph.views[sid] = view; graph.sessions[id] = [view];
+    graph.entries[id].session_id = sid; graph.views[sid] = view; graph.sessionRows[id] = [view].map(sessionSummaryFromView);
     const archived = { ...view, archived: true, readonly: true, can_submit: false, available_actions: [] };
     const calls: string[] = [];
     stubGraphApplicationFetch(vi.fn(async path => {
@@ -232,13 +239,13 @@ describe("object-scoped workflow lifecycle", () => {
     const { graph, id, document } = await fixture(), target = session(document), sibling = session(document);
     graph.entries[id].session_id = target.workflow_session_id;
     graph.views[target.workflow_session_id] = target; graph.views[sibling.workflow_session_id] = sibling;
-    graph.sessions[id] = [target, sibling];
+    graph.sessionRows[id] = [target, sibling].map(sessionSummaryFromView);
     stubGraphApplicationFetch(vi.fn(async path => json(path.endsWith("/delete")
       ? result(id, "delete", target.workflow_session_id) : target)));
     expect(await graph.manageSession(target.workflow_session_id, "delete")).toBe(true);
     expect(graph.entries[id].session_id).toBeNull(); expect(graph.entries[id].saved_revision).toBe(1);
     expect(graph.views[target.workflow_session_id]).toBeUndefined();
-    expect(graph.sessions[id]).toEqual([sibling]); expect(graph.views[sibling.workflow_session_id]).toEqual(sibling);
+    expect(graph.sessionRows[id]).toEqual([sibling].map(sessionSummaryFromView)); expect(graph.views[sibling.workflow_session_id]).toEqual(sibling);
   });
   it("stores deletion evidence independently and leaves the legacy workbench record unwritten", async () => {
     const backend = memoryLocalDraftStorage(), persistence = useWorkbenchPersistenceStore();

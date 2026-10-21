@@ -3,6 +3,8 @@ import { graphApplicationQuery } from "./workflowApplicationApi";
 import { isFrontendExtension } from "../domain/frontendExtensions";
 import { graphObject, isGraphCatalog, isGraphDocument, isGraphSession, isGraphPackageLock, type GraphDocument,
   graphUuid, type GraphNodeType, type GraphDataType, type GraphSession, type GraphRunDetail } from "../domain/workflowGraph";
+import { isWorkflowDefinitionSummary, isWorkflowSessionSummary,
+  type WorkflowDefinitionSummary, type WorkflowSessionSummary } from "../domain/workflowDirectory";
 
 export async function readGraphCatalogDetails() {
   const response = await graphApplicationQuery("catalog.node-types", { protocol_version: 2 });
@@ -42,6 +44,27 @@ export async function readGraphDefinitions(includeArchived = true): Promise<{ do
     throw new WorkbenchApiError("unavailable", "工作流目录身份或格式无效");
   return value;
 }
+/** Lightweight formal workflow directory. Rows are never configuration documents. */
+export async function readDefinitionSummaries(includeArchived = false): Promise<WorkflowDefinitionSummary[]> {
+  const value = await graphApplicationQuery("definition.summaries", { include_archived: includeArchived });
+  if (!Array.isArray(value) || !value.every(isWorkflowDefinitionSummary)
+    || new Set(value.map(row => row.workflow_definition_id)).size !== value.length)
+    throw new WorkbenchApiError("unavailable", "工作流目录摘要身份或格式无效");
+  return value;
+}
+/** Lightweight formal session directory for one workflow. */
+export async function readSessionSummaries(workflowDefinitionId: string,
+  includeArchived = false): Promise<WorkflowSessionSummary[]> {
+  const value = await graphApplicationQuery("session.summaries", {
+    workflow_definition_id: workflowDefinitionId, include_archived: includeArchived,
+  });
+  if (!Array.isArray(value) || !value.every(row => isWorkflowSessionSummary(row)
+    && row.workflow_definition_id === workflowDefinitionId)
+    || new Set(value.map(row => row.workflow_session_id)).size !== value.length)
+    throw new WorkbenchApiError("unavailable", "工作流会话摘要身份或格式无效");
+  return value;
+}
+
 export async function readGraphSessions(definitionId: string): Promise<GraphSession[]> {
   const value = await graphApplicationQuery("definition.sessions", { workflow_definition_id: definitionId });
   if (!Array.isArray(value) || !value.every(session => isGraphSession(session, definitionId)))

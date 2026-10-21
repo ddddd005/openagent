@@ -527,7 +527,7 @@ def test_cold_v1_receipts_survive_registry_retirement_without_dispatch(tmp_path,
             dispatches.append((args, kwargs))
             pytest.fail("A receipt-only request entered frontend or workflow business dispatch")
 
-        for method in ("patch_node_configuration", "start", "control", "fork_checkpoint", "_execute"):
+        for method in ("start", "control", "fork_checkpoint", "_execute"):
             monkeypatch.setattr(manager, method, forbid_dispatch)
         monkeypatch.setattr(
             "phase1_agent.frontend_node_evidence.FrontendNodeEvidenceAdapter.execute", forbid_dispatch)

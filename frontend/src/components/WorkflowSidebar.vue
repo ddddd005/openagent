@@ -1,20 +1,15 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import { Archive, ArrowRight, Circle, File, Plus, RefreshCw, Trash2, Workflow } from "lucide-vue-next";
 import { useWorkspaceStore } from "../stores/workspace";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
-import { useWorkbenchPersistenceStore } from "../stores/workbenchPersistence";
 import GraphSessions from "./GraphSessions.vue";
 
 const workspace = useWorkspaceStore();
 const graph = useWorkflowGraphStore();
-const persistence = useWorkbenchPersistenceStore();
 const showArchived = ref(false), navigationError = ref("");
 const listedWorkflows = computed(() => workspace.workflows.filter(row => !row.deleted && (showArchived.value || !row.archived)));
-watch(() => persistence.ready, ready => {
-  if (ready && typeof window !== "undefined")
-    void graph.loadDefinitions().then(() => persistence.selectLoadedWorkflow());
-}, { immediate: true });
+const formalCount = computed(() => workspace.formalWorkflowCount(showArchived.value));
 async function manageWorkflow(id: string, action: "archive" | "delete") {
   const message = action === "archive"
     ? "归档此工作流并停止所属运行？归档数据仅供查看，不能恢复执行。"
@@ -30,7 +25,10 @@ function leaveEditor(change: () => void) {
   navigationError.value = "";
   change();
 }
-function nodeCount(workflowId: string) { return graph.entries[workflowId]?.document.nodes.length ?? 0; }
+function nodeCount(workflowId: string) {
+  const workflow = workspace.workflows.find(row => row.id === workflowId);
+  return workflow?.nodeCount ?? 0;
+}
 function openWorkflow(id: string) { leaveEditor(() => workspace.openWorkflow(id)); }
 </script>
 
@@ -38,7 +36,7 @@ function openWorkflow(id: string) { leaveEditor(() => workspace.openWorkflow(id)
   <section class="workbench-workflow-panel" aria-labelledby="workflow-heading">
     <header class="workbench-panel-heading">
       <h1 id="workflow-heading">工作流</h1>
-      <span class="workbench-workflow-count">{{ listedWorkflows.length }}</span>
+      <span class="workbench-workflow-count">{{ formalCount }}</span>
       <button class="workbench-tool-button" type="button" title="刷新工作流目录" aria-label="刷新工作流目录"
         :disabled="graph.definitionsLoading" @click="graph.loadDefinitions()"><RefreshCw :size="14" /></button>
       <button class="workbench-tool-button" type="button" title="显示已归档工作流" aria-label="显示已归档工作流"

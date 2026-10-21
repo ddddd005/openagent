@@ -2,12 +2,15 @@ from contextlib import closing
 from copy import deepcopy
 import importlib.util
 from pathlib import Path
+import sqlite3
 from uuid import uuid4
 
 import pytest
 
 from phase1_agent.contract_errors import ContractValidationError
+from phase1_agent.contract_json import canonical_bytes
 from phase1_agent.graph_application import GraphApplication
+from phase1_agent.graph_application_identity import application_command_digest
 from phase1_agent.graph_receipts import read_graph_application_receipt
 from phase1_agent.request_evidence import RequestEvidenceService
 from phase1_agent.storage import SqliteStore
@@ -168,3 +171,76 @@ def test_evidence_failure_rolls_back_and_reset_preserves_all_resolutions(tmp_pat
     report = reset.reset_development_database(workspace)
     assert report["after"]["pending_commands"] == 0
     assert report["evidence_counts"][str(database.resolve())]["pending_commands"] == 3
+
+
+def _stored_definition_save_row(resolution, *, owner_kind, owner_id, document=None):
+    request = {"document": {"workflow_definition_id": str(uuid4()), "revision": 1, "nodes": []}
+               if document is None else document,
+               "expected_revision": 0, "idempotency_key": str(uuid4())}
+    return (resolution, {
+        "operation": "definition.save", "idempotency_key": request["idempotency_key"],
+        "owner_kind": owner_kind, "owner_id": owner_id, "request": request,
+        "request_digest": application_command_digest("definition.save", request),
+    })
+
+
+def _insert_evidence_rows(database, records):
+    with closing(sqlite3.connect(database, isolation_level=None)) as connection:
+        for resolution, record in records:
+            connection.execute(
+                "INSERT INTO pending_commands VALUES(?,?,?,?,?,?,?)",
+                (record["operation"], record["idempotency_key"], record["owner_kind"],
+                 record["owner_id"], canonical_bytes(record["request"]).decode("utf-8"),
+                 record["request_digest"], resolution),
+            )
+
+
+def test_stored_definition_save_evidence_decodes_after_receipt_contract_retirement(tmp_path):
+    path = tmp_path / "legacy-definition-save-evidence.sqlite"
+    service = RequestEvidenceService(path)
+    assert service.read_evidence("workbench", "mixed-owner") == []
+    mixed_owner = {"owner_kind": "workbench", "owner_id": "mixed-owner"}
+    legacy = [
+        _stored_definition_save_row("verified", **mixed_owner),
+        _stored_definition_save_row("archived", **mixed_owner),
+    ]
+    _insert_evidence_rows(path, legacy)
+    # A current, writable evidence record shares the same owner with the frozen
+    # definition.save history; the mixed read must decode both.
+    current_request = resource_request()
+    current = service.write_evidence(
+        "resource.save", current_request["idempotency_key"], "workbench", "mixed-owner",
+        current_request)
+    stored = service.read_evidence(**mixed_owner)
+    assert [row["resolution"] for row in stored] == ["verified", "archived", "pending"]
+    assert stored[0]["request"] == legacy[0][1]["request"]
+    assert stored[1]["request"] == legacy[1][1]["request"]
+    assert stored[2] == current
+
+    legacy_pending = _stored_definition_save_row(
+        "pending", owner_kind="workbench", owner_id="legacy-pending-owner")
+    _insert_evidence_rows(path, [legacy_pending])
+    pending = service.read_evidence("workbench", "legacy-pending-owner")
+    assert len(pending) == 1 and pending[0]["resolution"] == "pending"
+    assert pending[0]["request"] == legacy_pending[1]["request"]
+
+    # New executable evidence for the retired operation stays rejected while the
+    # stored decode above keeps working.
+    with pytest.raises(ContractValidationError) as error:
+        service.write_evidence(
+            "definition.save", str(uuid4()), "workbench", "new-owner",
+            {"document": {"workflow_definition_id": str(uuid4()), "revision": 1, "nodes": []},
+             "expected_revision": 0, "idempotency_key": str(uuid4())})
+    assert error.value.reason_code == "invalid_request"
+
+    # Genuine corruption is reported, not skipped as an unreadable extra row.
+    corrupt = deepcopy(legacy[1][1]["request"])
+    corrupt["expected_revision"] = 1
+    with closing(sqlite3.connect(path, isolation_level=None)) as connection:
+        connection.execute(
+            "UPDATE pending_commands SET request_json=? WHERE operation='definition.save' AND idempotency_key=?",
+            (canonical_bytes(corrupt).decode("utf-8"), legacy[1][1]["idempotency_key"]),
+        )
+    with pytest.raises(ContractValidationError) as corrupt_error:
+        service.read_evidence(**mixed_owner)
+    assert corrupt_error.value.reason_code == "storage_contract_violation"

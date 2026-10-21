@@ -10,6 +10,7 @@ import pytest
 
 from phase1_agent.capability_registry import create_package_registry
 from phase1_agent.content_contracts import text_content
+from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.execution_data import (
     ConfigurationReadSession,
     ExecutionRecords,
@@ -41,6 +42,11 @@ def _track(monkeypatch, calls, owner, *names):
 def _output_payload(session, entry):
     return next(item["outputs"]["output"] for item in session["nodes"]
                 if item["node_binding_id"] == entry["node_binding_id"])
+
+
+def _text(definition, node_id):
+    return next(entry["config"]["text"] for entry in definition["nodes"]
+                if entry["node_binding_id"] == node_id)
 
 
 def _observation(view, node_id, port_id="output"):
@@ -334,10 +340,29 @@ def test_pause_then_saved_configuration_does_not_change_the_resumed_round(servic
     paused = service.get_session(sid)
     assert paused["status"] == "paused", paused["chains"]
 
+    # G21: a paused run still belongs to the same unfinished invocation, so a
+    # new configuration submission is rejected.  The former intent "save
+    # adjustable text while paused, then resume the same round" is replaced;
+    # the save happens after the run is explicitly closed, and the next round
+    # reads the new text.
     changed = deepcopy(saved["document"])
     changed_source = next(entry for entry in changed["nodes"]
                           if entry["node_binding_id"] == source["node_binding_id"])
     changed_source["config"]["text"] = "B"
+    with pytest.raises(ContractValidationError) as rejected:
+        service.update_definition(
+            changed, workflow_definition_id=graph["workflow_definition_id"],
+            expected_edit_sequence=saved["edit_sequence"], idempotency_key=str(uuid4()))
+    assert rejected.value.reason_code == "configuration_run_locked"
+    assert _text(service.get_definition(graph["workflow_definition_id"]),
+                 source["node_binding_id"]) == "A"
+
+    closed = service.control(
+        sid, action="close", expected_revision=paused["revision"],
+        idempotency_key=str(uuid4()))
+    assert closed["active_chain_run_id"] is None
+    settled = service.get_session(sid)
+    assert settled["status"] == "closed", settled["chains"]
     updated = service.update_definition(
         changed, workflow_definition_id=graph["workflow_definition_id"],
         expected_edit_sequence=saved["edit_sequence"], idempotency_key=str(uuid4()))
@@ -345,24 +370,15 @@ def test_pause_then_saved_configuration_does_not_change_the_resumed_round(servic
     assert updated["definition_revision"] == 1
     assert updated["changed_categories"] == ["adjustable"]
 
-    resumed = service.control(
-        sid, action="resume", expected_revision=paused["revision"],
-        idempotency_key=str(uuid4()))
-    assert resumed["active_chain_run_id"] == chain_id
-    service.wait(chain_id)
-    first = service.get_session(sid)
-    assert first["status"] == "succeeded", first["chains"]
-    assert _output_payload(first, source) == text_content("A")
-    assert _output_payload(first, output) == text_content("A")
-    assert len(executions) == 1
-
     second_start = service.start(
-        sid, expected_revision=first["revision"], idempotency_key=str(uuid4()))
+        sid, expected_revision=service.get_session(sid)["revision"], idempotency_key=str(uuid4()))
     service.wait(second_start["active_chain_run_id"])
     second = service.get_session(sid)
     assert second["status"] == "succeeded", second["chains"]
     assert _output_payload(second, source) == text_content("B")
     assert _output_payload(second, output) == text_content("B")
+    # The closed first round ran exactly once; the fresh round runs once more.
+    assert len(executions) == 2
 
 
 def test_independent_workflow_operations_start_uses_execution_ports(service, monkeypatch):
