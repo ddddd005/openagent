@@ -169,6 +169,7 @@ Agent 执行节点会登记自己的 `workflow.effective-context@4` 会话数据
 
 ## 进一步阅读
 
+- [Agent 上下文与前端对话示例](../examples/workflows/agent-context-chat/README.md)：11 节点配置及已完成的上下文绑定。
 - [快速启动](QUICKSTART.md)：本机安装、环境和启动。
 - [会话预加载数据](SESSION_PRELOADS.md)：类型、初值、权限及历史恢复规则。
 - [手工工作流包](WORKFLOW_PACKAGES.md)：明确装载节点与 Agent 工具的高级路径。

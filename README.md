@@ -24,6 +24,7 @@ OpenAgent 是一个面向本机开发的 Agent 工作流工作台。它借鉴 Co
 ## 开始使用与扩展
 
 - [使用手册](docs/USER-GUIDE.md)：工作流、配置、会话与运行操作。
+- [示例工作流](examples/workflows/agent-context-chat/README.md)：已完成上下文绑定的 Agent 与前端对话基础图。
 - [快速启动](docs/QUICKSTART.md)：环境准备和本机启动步骤。启动脚本不会自动安装依赖。
 - [Vibe Coding 手册](docs/VIBE-CODING.md)：面向开发模型的架构、沟通约定与扩展步骤。
 - [工作流包](docs/WORKFLOW_PACKAGES.md)：手动放置、显式启用节点和工具扩展。
@@ -48,6 +49,7 @@ backend/                    Python Runtime、工作流服务与测试
 frontend/                   Vue 工作台与前端测试
 scripts/                    启动和本地服务辅助脚本
 docs/                       使用、开发与专项说明
+examples/workflows/         配置示例工作流
 examples/workflow-packages/ 可手动放置的本地包示例
 vendor/smolagents/          第三方来源归档
 ```

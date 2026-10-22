@@ -1,0 +1,384 @@
+{
+  "control_edges": [],
+  "edges": [
+    {
+      "edge_id": "99e42e94-8695-4474-b13c-4decc571bc1f",
+      "order": 0,
+      "source_node_id": "50015fc5-0660-4f1a-97a4-71cbc4b7e9c0",
+      "source_port_id": "output",
+      "target_node_id": "8ed34a0f-1760-4c1e-8dba-c9327e330707",
+      "target_port_id": "input"
+    },
+    {
+      "edge_id": "01fe572b-fac8-4f5a-b6b6-9a3077028226",
+      "order": 1,
+      "source_node_id": "1a180bde-91c3-44aa-9226-5324669556bc",
+      "source_port_id": "output",
+      "target_node_id": "8ed34a0f-1760-4c1e-8dba-c9327e330707",
+      "target_port_id": "input"
+    },
+    {
+      "edge_id": "9161f56c-59be-44bb-823f-f6d5ddaebcde",
+      "order": 0,
+      "source_node_id": "30b27e80-bfcd-4ea0-9fcd-e69906aa6b1c",
+      "source_port_id": "output",
+      "target_node_id": "8341fd16-35e7-418d-9330-3711e12553c5",
+      "target_port_id": "current_input"
+    },
+    {
+      "edge_id": "179e0a43-d0fd-4bdb-95fd-3836fd116acd",
+      "order": 0,
+      "source_node_id": "4a0690e3-020b-46d6-b4c2-ceae88db1e88",
+      "source_port_id": "output",
+      "target_node_id": "8341fd16-35e7-418d-9330-3711e12553c5",
+      "target_port_id": "view"
+    },
+    {
+      "edge_id": "29bb765f-a7aa-463c-b6e7-6a1fb9d2b47d",
+      "order": 0,
+      "source_node_id": "8ed34a0f-1760-4c1e-8dba-c9327e330707",
+      "source_port_id": "output",
+      "target_node_id": "8341fd16-35e7-418d-9330-3711e12553c5",
+      "target_port_id": "materials"
+    },
+    {
+      "edge_id": "70b54fb8-ee65-41d9-9bf9-8a4a36eeb063",
+      "order": 0,
+      "source_node_id": "8341fd16-35e7-418d-9330-3711e12553c5",
+      "source_port_id": "output",
+      "target_node_id": "40e3f908-0043-4111-97af-eb319da5777f",
+      "target_port_id": "prompt"
+    },
+    {
+      "edge_id": "33e62563-bcfd-46f5-890f-845114d4d309",
+      "order": 0,
+      "source_node_id": "8cbd7c98-f5de-4a41-8427-de10482471d8",
+      "source_port_id": "output",
+      "target_node_id": "40e3f908-0043-4111-97af-eb319da5777f",
+      "target_port_id": "model"
+    },
+    {
+      "edge_id": "7dc652bc-3519-4ae5-b8a1-58484fae1534",
+      "order": 0,
+      "source_node_id": "40e3f908-0043-4111-97af-eb319da5777f",
+      "source_port_id": "receipts",
+      "target_node_id": "806f7a0d-cdf7-42ee-87e8-686aa3b3b980",
+      "target_port_id": "receipts"
+    },
+    {
+      "edge_id": "f328fa3e-18b8-498c-8575-b2750892227d",
+      "order": 0,
+      "source_node_id": "4a0690e3-020b-46d6-b4c2-ceae88db1e88",
+      "source_port_id": "output",
+      "target_node_id": "806f7a0d-cdf7-42ee-87e8-686aa3b3b980",
+      "target_port_id": "view"
+    },
+    {
+      "edge_id": "7ae85883-3050-49cf-9ac5-c5a132559da4",
+      "order": 0,
+      "source_node_id": "40e3f908-0043-4111-97af-eb319da5777f",
+      "source_port_id": "result",
+      "target_node_id": "faddaf8d-cfb1-4e48-8f06-90073ba5c4df",
+      "target_port_id": "content"
+    },
+    {
+      "edge_id": "411afefa-d8d6-403a-9d8a-3f7e2823f513",
+      "order": 0,
+      "source_node_id": "30de4aba-38b1-4dd9-b80a-7d9d87ba8566",
+      "source_port_id": "output",
+      "target_node_id": "40e3f908-0043-4111-97af-eb319da5777f",
+      "target_port_id": "compaction_policy"
+    }
+  ],
+  "name": "Agent 上下文与前端对话示例",
+  "nodes": [
+    {
+      "component_id": "tools.editable-input",
+      "component_version": "1",
+      "config": {
+        "text": ""
+      },
+      "configuration_policy": {
+        "prompt_mode": "adjustable",
+        "schema_version": 1
+      },
+      "node_binding_id": "30b27e80-bfcd-4ea0-9fcd-e69906aa6b1c",
+      "position": {
+        "x": -424.3415444985291,
+        "y": 286.9490652859432
+      },
+      "title": "可编辑输入"
+    },
+    {
+      "component_id": "frontend.node",
+      "component_version": "2",
+      "config": {
+        "input_node_id": "30b27e80-bfcd-4ea0-9fcd-e69906aa6b1c",
+        "object_key": "item/f07c0bc4-c267-4f92-9c7b-dbc6f6205739",
+        "role": "assistant"
+      },
+      "configuration_policy": {
+        "prompt_mode": "fixed",
+        "schema_version": 1
+      },
+      "node_binding_id": "faddaf8d-cfb1-4e48-8f06-90073ba5c4df",
+      "position": {
+        "x": 1222.2372203129398,
+        "y": 315.53796427257333
+      },
+      "title": "前端节点"
+    },
+    {
+      "component_id": "agents.execute",
+      "component_version": "10",
+      "config": {},
+      "configuration_policy": {
+        "prompt_mode": "fixed",
+        "schema_version": 1
+      },
+      "node_binding_id": "40e3f908-0043-4111-97af-eb319da5777f",
+      "position": {
+        "x": 791.3333333333334,
+        "y": 280.72222222222223
+      },
+      "title": "Agent execution"
+    },
+    {
+      "component_id": "context.output",
+      "component_version": "5",
+      "config": {
+        "object_key": "item/42256f1f-f23b-4bf2-bcd1-809b52805ea6"
+      },
+      "configuration_policy": {
+        "prompt_mode": "fixed",
+        "schema_version": 1
+      },
+      "node_binding_id": "4a0690e3-020b-46d6-b4c2-ceae88db1e88",
+      "position": {
+        "x": -426.1538847395268,
+        "y": -166.86761933612587
+      },
+      "title": "Native context output"
+    },
+    {
+      "component_id": "context.assembly",
+      "component_version": "5",
+      "config": {},
+      "configuration_policy": {
+        "prompt_mode": "fixed",
+        "schema_version": 1
+      },
+      "node_binding_id": "8341fd16-35e7-418d-9330-3711e12553c5",
+      "position": {
+        "x": 502.4187885730724,
+        "y": 103.9684496952699
+      },
+      "title": "Native context assembly"
+    },
+    {
+      "component_id": "context.merge",
+      "component_version": "6",
+      "config": {
+        "object_key": "item/42256f1f-f23b-4bf2-bcd1-809b52805ea6"
+      },
+      "configuration_policy": {
+        "prompt_mode": "fixed",
+        "schema_version": 1
+      },
+      "node_binding_id": "806f7a0d-cdf7-42ee-87e8-686aa3b3b980",
+      "position": {
+        "x": 1113.1029154941157,
+        "y": 2.026709000903665
+      },
+      "title": "Merge accepted Agent context"
+    },
+    {
+      "component_id": "prompts.item",
+      "component_version": "3",
+      "config": {
+        "compaction": "never",
+        "id": "59e405d0-debd-4d7a-aa7f-ce6445d72665",
+        "lifecycle": "per_request",
+        "metadata": {},
+        "presentation": {
+          "depth": null,
+          "enabled": true,
+          "order": 0,
+          "placement": "before",
+          "role": "system"
+        },
+        "text": ""
+      },
+      "configuration_policy": {
+        "prompt_mode": "fixed",
+        "schema_version": 1
+      },
+      "node_binding_id": "50015fc5-0660-4f1a-97a4-71cbc4b7e9c0",
+      "position": {
+        "x": -425.5286260923242,
+        "y": -13.574654953287066
+      },
+      "title": "提示词条目 · 生命周期"
+    },
+    {
+      "component_id": "prompts.item",
+      "component_version": "3",
+      "config": {
+        "compaction": "never",
+        "id": "59e405d0-debd-4d7a-aa7f-ce6445d72665",
+        "lifecycle": "per_request",
+        "metadata": {},
+        "presentation": {
+          "depth": null,
+          "enabled": true,
+          "order": 0,
+          "placement": "before",
+          "role": "system"
+        },
+        "text": ""
+      },
+      "configuration_policy": {
+        "prompt_mode": "fixed",
+        "schema_version": 1
+      },
+      "node_binding_id": "1a180bde-91c3-44aa-9226-5324669556bc",
+      "position": {
+        "x": -425.6413878239819,
+        "y": 138.0296651612938
+      },
+      "title": "提示词条目 · 生命周期"
+    },
+    {
+      "component_id": "prompts.summary",
+      "component_version": "2",
+      "config": {},
+      "configuration_policy": {
+        "prompt_mode": "fixed",
+        "schema_version": 1
+      },
+      "node_binding_id": "8ed34a0f-1760-4c1e-8dba-c9327e330707",
+      "position": {
+        "x": 8.814987992976398,
+        "y": 114.1022924653469
+      },
+      "title": "提示词汇总 · 生命周期"
+    },
+    {
+      "component_id": "models.source",
+      "component_version": "7",
+      "config": {
+        "reference": {
+          "envelope_version": 1,
+          "scope": "workspace",
+          "type_id": "workflow.model-profile",
+          "resource_id": "7be319b8-30bd-4674-b7bf-d1cf54a1a111"
+        }
+      },
+      "configuration_policy": {
+        "prompt_mode": "fixed",
+        "schema_version": 1
+      },
+      "node_binding_id": "8cbd7c98-f5de-4a41-8427-de10482471d8",
+      "position": {
+        "x": 199.92152427113473,
+        "y": 296.74254920326695
+      },
+      "title": "Model source"
+    },
+    {
+      "component_id": "agents.compaction-policy",
+      "component_version": "2",
+      "config": {
+        "enabled": true,
+        "keep_depth": 2,
+        "summary_prompt": ""
+      },
+      "configuration_policy": {
+        "prompt_mode": "fixed",
+        "schema_version": 1
+      },
+      "node_binding_id": "30de4aba-38b1-4dd9-b80a-7d9d87ba8566",
+      "position": {
+        "x": 197.84155443700018,
+        "y": 448.699423274752
+      },
+      "title": "上下文精简策略"
+    }
+  ],
+  "object_bindings": [
+    {
+      "object_key": "item/f07c0bc4-c267-4f92-9c7b-dbc6f6205739",
+      "owner_node_id": null,
+      "readers": [
+        "faddaf8d-cfb1-4e48-8f06-90073ba5c4df"
+      ],
+      "registrar_node_id": "faddaf8d-cfb1-4e48-8f06-90073ba5c4df",
+      "schema_version": 1,
+      "scope": "shared",
+      "type_id": "workflow.chat-context",
+      "writers": [
+        "faddaf8d-cfb1-4e48-8f06-90073ba5c4df"
+      ]
+    },
+    {
+      "object_key": "item/42256f1f-f23b-4bf2-bcd1-809b52805ea6",
+      "owner_node_id": null,
+      "readers": [
+        "4a0690e3-020b-46d6-b4c2-ceae88db1e88",
+        "806f7a0d-cdf7-42ee-87e8-686aa3b3b980"
+      ],
+      "registrar_node_id": "40e3f908-0043-4111-97af-eb319da5777f",
+      "schema_version": 4,
+      "scope": "shared",
+      "type_id": "workflow.effective-context",
+      "writers": [
+        "806f7a0d-cdf7-42ee-87e8-686aa3b3b980"
+      ]
+    }
+  ],
+  "package_lock": [
+    {
+      "package_id": "workflow.agents",
+      "version": "1.0.0"
+    },
+    {
+      "package_id": "workflow.content",
+      "version": "1.0.0"
+    },
+    {
+      "package_id": "workflow.context",
+      "version": "1.0.0"
+    },
+    {
+      "package_id": "workflow.frontend-business",
+      "version": "1.0.0"
+    },
+    {
+      "package_id": "workflow.models",
+      "version": "1.0.0"
+    },
+    {
+      "package_id": "workflow.prompts",
+      "version": "1.0.0"
+    },
+    {
+      "package_id": "workflow.tavern",
+      "version": "1.2.0"
+    },
+    {
+      "package_id": "workflow.tool-bindings",
+      "version": "1.0.0"
+    },
+    {
+      "package_id": "workflow.tool-prompts",
+      "version": "1.0.0"
+    },
+    {
+      "package_id": "workflow.tools",
+      "version": "1.0.0"
+    }
+  ],
+  "revision": 1,
+  "schema_version": 3,
+  "workflow_definition_id": "68a836bb-859e-48fc-8e24-a1b416d9f307"
+}
