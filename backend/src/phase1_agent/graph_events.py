@@ -4,6 +4,47 @@ from copy import deepcopy
 
 from .graph_records import require, uuid_value
 from .host_sdk import bounded_name
+from .notification_results import ROUND_NOTIFICATION_FAILURE
+
+_EVENT_ATTENTION_MESSAGE = "Event execution requires attention"
+
+
+def _public_event_diagnostic(diagnostic) -> dict | None:
+    """Project a stored chain diagnostic to the public event-read diagnostic.
+
+    A successful post-commit notification record is durable evidence, not an
+    execution failure: it is omitted from the public projection only when the
+    business result succeeded, the record is marked committed and every local
+    notification stage succeeded.  Any other stored diagnostic stays a failure
+    signal; a failed notification stage is reported under the committed
+    notification reason code.  The persisted chain diagnostic is never cleared
+    or rewritten by a read.
+    """
+    if not diagnostic:
+        return None
+    if type(diagnostic) is not dict:
+        return {"reason_code": "event_failed", "message": _EVENT_ATTENTION_MESSAGE}
+    record = diagnostic.get("round_notifications")
+    residual = {key: value for key, value in diagnostic.items() if key != "round_notifications"}
+    if residual:
+        reason = residual.get("reason_code")
+        if not (isinstance(reason, str) and reason):
+            reason = residual.get("code")
+        return {"reason_code": reason if isinstance(reason, str) and reason else "event_failed",
+                "message": _EVENT_ATTENTION_MESSAGE}
+    if type(record) is not dict:
+        return {"reason_code": "event_failed", "message": _EVENT_ATTENTION_MESSAGE}
+    notifications = record.get("notifications")
+    if (record.get("business_committed") is True
+            and record.get("business_status") == "succeeded"
+            and isinstance(notifications, list) and notifications
+            and all(type(row) is dict and row.get("outcome") == "succeeded"
+                    for row in notifications)):
+        return None
+    if record.get("business_status") == "succeeded":
+        return {"reason_code": ROUND_NOTIFICATION_FAILURE,
+                "message": _EVENT_ATTENTION_MESSAGE}
+    return {"reason_code": "event_failed", "message": _EVENT_ATTENTION_MESSAGE}
 
 
 class GraphEvents:
@@ -84,7 +125,7 @@ class GraphEvents:
             self._event_binding(original, event["event_id"], event["schema_version"], consumer=consumer)
             if consumer:
                 self._event_binding(current, event["event_id"], event["schema_version"], consumer=True)
-            diagnostic = chain["diagnostic"]
+            diagnostic = _public_event_diagnostic(chain["diagnostic"])
             return {"schema_version": 1, "kind": "workflow.event-run",
                     **self._consumer_identity(session),
                     "source": {key: chain[key] for key in (
@@ -92,8 +133,7 @@ class GraphEvents:
                     "chain_run_id": chain_id, "execution_kind": "event", "event": deepcopy(event),
                     **{key: deepcopy(chain[key]) for key in (
                         "status", "revision", "targets", "ordered_nodes", "completed_nodes", "next_node_index")},
-                    "diagnostic": ({"reason_code": diagnostic.get("reason_code", diagnostic.get("code", "event_failed")),
-                                    "message": "Event execution requires attention"} if diagnostic else None)}
+                    "diagnostic": diagnostic}
 
     def read_event(self, sid, *, chain_id):
         return self._read_event(sid, chain_id=chain_id)

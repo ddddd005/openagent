@@ -592,12 +592,15 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="本机工作流页面")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--database", required=True)
+    parser.add_argument("--workflow-package-root", type=Path,
+                        help="Directory of manually extracted workflow packages")
     parser.add_argument("--workbench-dist", type=Path,
                         help="Serve a production build at /workbench/ on the same loopback origin")
     args = parser.parse_args(argv)
     from .workflow_host import WorkflowHost
 
-    service = WorkflowHost(database_path=args.database)
+    service = WorkflowHost(database_path=args.database,
+                           workflow_package_root=args.workflow_package_root)
     try:
         try:
             server = create_server(service, port=args.port, workbench_dist=args.workbench_dist)

@@ -6,6 +6,7 @@ import base64
 from .contract_json import canonical_bytes, loads_strict, validate_json_value
 from .contract_errors import ContractValidationError
 from .graph_records import graph_error, require
+from .result_acceptance import persistence_boundary
 
 
 class RuntimeFactStore:
@@ -50,11 +51,12 @@ class RuntimeFactStore:
         ).fetchone()["last_sequence"]
         require(fact["sequence"] in (0, 1) if previous is None else fact["sequence"] == previous + 1,
                 "runtime_fact_sequence", "Runtime facts must be accepted in sequence", 409)
-        self.connection.execute(
-            "INSERT INTO workflow_runtime_facts VALUES(?,?,?,?,?,?,?)",
-            (fact["fact_id"], *coordinates, stream_id, fact["sequence"], encoded),
-        )
-        self.store._inject("after_runtime_fact_write")
+        with persistence_boundary("fact_acceptance"):
+            self.connection.execute(
+                "INSERT INTO workflow_runtime_facts VALUES(?,?,?,?,?,?,?)",
+                (fact["fact_id"], *coordinates, stream_id, fact["sequence"], encoded),
+            )
+            self.store._inject("after_runtime_fact_write")
         return {"fact_id": fact["fact_id"]}
 
     def list(self, chain_id, *, node_run_id=None):

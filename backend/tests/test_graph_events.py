@@ -17,6 +17,7 @@ from phase1_agent.graph_records import graph_record, validate_graph_bundle, vali
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.graph_store import GraphRecordStore
 from phase1_agent.host_sdk import DataTypeDefinition, ObjectBinding
+from phase1_agent.notification_results import CommittedNotificationError
 from phase1_agent.storage import SqliteStore
 
 from test_graph_service import create, document, edge, node, run
@@ -309,6 +310,7 @@ def test_management_event_overview_preserves_scope_without_private_state(event_s
     assert submit(service, initial, doc) == result
     overview = service.read_event(sid, chain_id=chain_id)
     assert overview["status"] == "succeeded" and overview["execution_kind"] == "event"
+    assert overview["diagnostic"] is None
     assert {"inputs", "outputs", "objects", "node_runs", "state_manifests", "private_states"}.isdisjoint(overview)
     assert overview["source"] == {
         "workflow_definition_id": doc["workflow_definition_id"], "definition_revision": doc["revision"],
@@ -382,6 +384,95 @@ def test_active_event_status_and_controls_keep_round_selection_and_block_new_eve
     assert complete["head_commit_id"] == round_view["head_commit_id"]
     assert complete["objects"]["main"]["value"] == {"count": 2}
     assert [name for name, _ in harness.calls] == ["source", "apply"]
+
+
+def test_event_read_omits_successful_notification_record_but_keeps_persisted_record(event_service):
+    service, harness = event_service
+    doc = event_document(service)
+    initial = create(service, doc)
+    sid = initial["workflow_session_id"]
+    accepted = submit(service, initial, doc)
+    chain_id = accepted["active_chain_run_id"]
+    service.wait(chain_id)
+    overview = service.read_event(sid, chain_id=chain_id)
+    assert overview["status"] == "succeeded"
+    # The successful notification record is durable storage evidence, not a
+    # public execution failure.
+    assert overview["diagnostic"] is None
+    persisted = service.get_run(sid, chain_id)["chain"]["diagnostic"]
+    record = persisted["round_notifications"]
+    assert record["business_committed"] is True and record["business_status"] == "succeeded"
+    assert [(row["stage"], row["outcome"]) for row in record["notifications"]] == [
+        ("chat_snapshot", "succeeded"), ("frontend_node_state", "succeeded")]
+    # Reading is side-effect free: the persisted record is unchanged.
+    assert service.get_run(sid, chain_id)["chain"]["diagnostic"] == persisted
+    database = service.database
+    service.close()
+    with closing(GraphWorkflowService(database, capability_packages=(harness.package(),))) as restored:
+        assert restored.read_event(sid, chain_id=chain_id) == overview
+        assert restored.get_run(sid, chain_id)["chain"]["diagnostic"] == persisted
+
+
+def test_event_read_keeps_failure_diagnostic_for_failed_business(event_service):
+    service, harness = event_service
+    doc = event_document(service, fail=True)
+    initial = create(service, doc)
+    sid = initial["workflow_session_id"]
+    accepted = submit(service, initial, doc)
+    chain_id = accepted["active_chain_run_id"]
+    service.wait(chain_id)
+    overview = service.read_event(sid, chain_id=chain_id)
+    assert overview["status"] == "failed"
+    # A real business failure must remain a public failure signal; it must not
+    # be cleared together with a successful notification record.
+    assert overview["diagnostic"] is not None
+    assert set(overview["diagnostic"]) == {"reason_code", "message"}
+    assert isinstance(overview["diagnostic"]["reason_code"], str) and overview["diagnostic"]["reason_code"]
+    assert overview["diagnostic"]["message"] == "Event execution requires attention"
+    chain = service.get_run(sid, chain_id)["chain"]
+    assert chain["status"] == "failed"
+    assert chain["diagnostic"]["round_notifications"]["business_status"] == "failed"
+    database = service.database
+    service.close()
+    with closing(GraphWorkflowService(database, capability_packages=(harness.package(),))) as restored:
+        assert restored.read_event(sid, chain_id=chain_id) == overview
+
+
+def test_event_read_reports_failed_notification_without_clearing_business_success(
+        event_service, monkeypatch):
+    service, harness = event_service
+    doc = event_document(service)
+    initial = create(service, doc)
+    sid = initial["workflow_session_id"]
+
+    def fail_snapshot(execution_sid):
+        raise RuntimeError("event notification probe failure")
+
+    monkeypatch.setattr(service, "_refresh_chat_snapshots", fail_snapshot)
+    accepted = submit(service, initial, doc)
+    chain_id = accepted["active_chain_run_id"]
+    with pytest.raises(CommittedNotificationError) as raised:
+        service.wait(chain_id)
+    assert raised.value.reason_code == "round_committed_notification_failed"
+    overview = service.read_event(sid, chain_id=chain_id)
+    assert overview["status"] == "succeeded"
+    assert overview["diagnostic"] == {
+        "reason_code": "round_committed_notification_failed",
+        "message": "Event execution requires attention"}
+    chain = service.get_run(sid, chain_id)["chain"]
+    assert chain["status"] == "succeeded"
+    record = chain["diagnostic"]["round_notifications"]
+    assert record["business_status"] == "succeeded"
+    assert [(row["stage"], row["outcome"]) for row in record["notifications"]] == [
+        ("chat_snapshot", "failed"), ("frontend_node_state", "not_executed")]
+    # The durable notification record is retained exactly; only the public
+    # projection changes.
+    assert service.get_run(sid, chain_id)["chain"]["diagnostic"] == chain["diagnostic"]
+    database = service.database
+    service.close()
+    with closing(GraphWorkflowService(database, capability_packages=(harness.package(),))) as restored:
+        assert restored.read_event(sid, chain_id=chain_id) == overview
+        assert restored.get_run(sid, chain_id)["chain"]["diagnostic"] == chain["diagnostic"]
 
 
 def test_event_acceptance_retry_uses_original_result_and_blocks_parallel_submission(event_service, monkeypatch):

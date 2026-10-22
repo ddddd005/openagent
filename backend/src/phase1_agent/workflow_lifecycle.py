@@ -226,6 +226,7 @@ class WorkflowLifecycle:
         execution_chains = set()
         known_chains = {}
         with self._lock, closing(self._store()) as store:
+            self._check_open()
             repo = GraphRecordStore(store)
             if store.read_receipt(operation, key) is not None:
                 return self._change(operation, key, request, lambda target: None)

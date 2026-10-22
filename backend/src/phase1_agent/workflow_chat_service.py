@@ -6,6 +6,7 @@ from uuid import uuid4
 from .chat_contracts import bind_chat_candidate_checkpoint
 from .checkpoint_collection import (
     checkpoint_chat_bindings, checkpoint_context_bindings, checkpoint_variable_bindings,
+    checkpoint_preloaded_bindings,
     collect_checkpoint_state_data,
 )
 from .checkpoint_loading import validate_checkpoint_configuration_target
@@ -93,8 +94,11 @@ class WorkflowChatService:
             document, types=registry.data_types, registry=registry)
         variables = checkpoint_variable_bindings(
             document, types=registry.data_types, registry=registry)
+        preloads = checkpoint_preloaded_bindings(
+            document, types=registry.data_types, registry=registry)
         require(set(state["agent_contexts"]) <= contexts.keys()
-                and set(state["variables"]) == variables.keys(),
+                and set(state["variables"]) == variables.keys()
+                and set(state.get("preloaded_items", {})) == preloads.keys(),
                 "chat_computation_binding_mismatch", "Chat computation must match admitted fixed items", 409)
         empty_context = {"messages": [], "layout": [], "accepted_delta_ids": [], "generation": 0}
         values = {key: deepcopy(state["agent_contexts"].get(key, {"value": empty_context})["value"])
@@ -104,6 +108,12 @@ class WorkflowChatService:
             require((entry["type_id"], entry["schema_version"]) == (binding.type_id, binding.schema_version),
                     "chat_computation_binding_mismatch", "Chat variable has another exact type", 409)
             values[key] = deepcopy(entry["value"])
+        for key, binding in preloads.items():
+            entry = state["preloaded_items"][key]
+            require((entry["type_id"], entry["schema_version"]) == (binding.type_id, binding.schema_version),
+                    "chat_computation_binding_mismatch", "Chat preload has another exact type", 409)
+            values[key] = registry.data_types.validate(
+                binding.type_id, binding.schema_version, entry["value"], scope="session")
         return values
 
     def _restore_chat_compute(self, source, session, document, state, *, registry=None):
@@ -179,7 +189,8 @@ class WorkflowChatService:
                     session["workflow_session_id"], key, metadata["round_id"],
                     inputs=inputs, input_overrides=frozen_overrides,
                     initial_compute_state=(
-                        {section: initial[section] for section in ("agent_contexts", "variables")}
+                        {section: initial[section] for section in
+                         ("agent_contexts", "variables", "preloaded_items") if section in initial}
                         if base is None else None))
             invocations[key] = {**metadata, "candidate_id": _uid()}
         require(len({metadata["base_checkpoint_id"] for metadata in invocations.values()}) <= 1,
@@ -288,7 +299,22 @@ class WorkflowChatService:
         state = (source_points.materialize(checkpoint_id) if logical_state is None else deepcopy(logical_state))
         document = self._chat_fixed_document(repo, source)
         validate_checkpoint_configuration_target(state["configuration"], document, registry=self.registry)
-        target = self._initialize_session(repo, document)
+        from .session_preloads import session_preload_bindings
+        preload_bindings = session_preload_bindings(document, self.registry.data_types)
+        historical_values = {}
+        for key, binding in preload_bindings.items():
+            section = ("variables" if (binding.type_id, binding.schema_version) ==
+                       ("workflow.variable", 1) else "preloaded_items")
+            entry = state.get(section, {}).get(key)
+            require(type(entry) is dict
+                    and (entry.get("type_id"), entry.get("schema_version")) ==
+                    (binding.type_id, binding.schema_version),
+                    "checkpoint_target_preload_binding_mismatch",
+                    "Fork requires each exact historical preload value", 409, object_key=key)
+            historical_values[key] = self.registry.data_types.validate(
+                binding.type_id, binding.schema_version, entry["value"], scope="session")
+        target = self._initialize_session(
+            repo, document, preloaded_values=historical_values if preload_bindings else None)
         point_map = {point["checkpoint_id"]: _uid() for point in prefix}
         target_points = self._chat_points(repo, target)
         for point in prefix:
@@ -309,7 +335,8 @@ class WorkflowChatService:
             })
         state = remap_checkpoint_state_chat(state, point_map)
         current = self._objects(repo).current(target["workflow_session_id"])
-        keys = set().union(*(state[section] for section in ("agent_contexts", "variables", "chat_contexts")))
+        keys = set().union(*(state.get(section, {}) for section in
+                             ("agent_contexts", "variables", "chat_contexts", "preloaded_items")))
         cas = {key: {field: current[key][field] for field in ("revision", "revision_id")} for key in keys}
         from .checkpoint_loading import load_checkpoint_state_in_transaction
         load_checkpoint_state_in_transaction(
@@ -337,6 +364,8 @@ class WorkflowChatService:
             state = points.materialize(planned["copy_through_checkpoint_id"])
             selected = points.materialize(planned["selected_checkpoint_id"])
             state["agent_contexts"], state["variables"] = selected["agent_contexts"], selected["variables"]
+            if "preloaded_items" in selected:
+                state["preloaded_items"] = deepcopy(selected["preloaded_items"])
             state["chat_contexts"][object_key]["value"] = planned["chat_context"]
             return self._fork_checkpoint_state(
                 repo, session, planned["copy_through_checkpoint_id"], logical_state=state)

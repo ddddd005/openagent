@@ -164,7 +164,6 @@ def test_sdk_retry_setting_is_explicit_and_legacy_default_remains_one():
            call("inspect_text", '{"text":"y"}', "same")),),
     (batch(call("inspect_text", '{"text":"x","text":"y"}')),),
     (batch(call("inspect_text", '{"text":NaN}')),),
-    (batch(call("inspect_text", '{"text":12}')),),
     (batch(call("inspect_text", '{"text":"x"}'), call("final_answer", '{"answer":{}}', "f")),),
     (batch(call("inspect_text", '{"text":"x"}', "repeat")),
      batch(call("inspect_text", '{"text":"y"}', "repeat"))),

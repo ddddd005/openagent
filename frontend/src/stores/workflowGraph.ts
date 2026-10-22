@@ -26,6 +26,10 @@ import { isWorkflowConfigurationCopyRequest, isWorkflowConfigurationCopyResult,
 import type { WorkflowNodeConfigurationRequest, WorkflowNodeConfigurationResult } from "../plugins/workflowFrontendSdk";
 import { syncVariableRegistrationEvent, variableRegistrationTarget } from "../domain/workflowVariableRegistration";
 import { sessionSummaryFromView, type WorkflowSessionSummary } from "../domain/workflowDirectory";
+import { sessionPreloadsIssue } from "../domain/sessionPreloads";
+import type { GraphObjectBinding } from "../domain/workflowGraph";
+import { evidenceCoordinate, isRequestEvidenceRecord, readPendingWorkflowEvidence, requestEvidencePorts,
+  type PendingRequestEvidence, type RequestEvidenceCursor } from "../adapters/requestEvidenceApi";
 
 type WorkflowConfigurationApplication = ReturnType<typeof createWorkflowConfigurationApplication>;
 type ConfigurationHistoryAction = "edit" | "undo" | "redo" | "none";
@@ -115,10 +119,16 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   });
   const configurationSubmitting = ref<Record<string, boolean>>({});
   const configurationApplicationVersion = ref(0);
+  const discoveredRequests = ref<PendingRequestEvidence[]>([]);
+  const pendingDiscoveryBusy = ref(false), pendingDiscoveryError = ref("");
+  const pendingDiscoveryCursor = ref<RequestEvidenceCursor | null>(null);
+  const recoveryErrors = ref<Record<string, string>>({});
+  const recoveryBusy = ref<Record<string, boolean>>({});
   let configurationApplication: WorkflowConfigurationApplication | null = null;
   let copyApplication: WorkflowConfigurationCopyApplication | null = null;
   type CopyChannel = ReturnType<WorkflowConfigurationCopyApplication["forSource"]>;
   const copyChannels = new Map<string, CopyChannel>();
+  const copySubmitting = new Set<string>();
   const copyInitializedSources = new Set<string>();
   const copyOpenTokens = new Map<string, { targetId: string;
     token: ReturnType<typeof workspace.currentViewToken> }>();
@@ -151,6 +161,24 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     || !!workspace.activeWorkflow.archived || !!workspace.activeWorkflow.deleted
     || !!session.value?.archived);
   const locked = computed(() => controlLocked.value || !!session.value?.readonly);
+  /** Configuration copy reads the formal saved current only.
+   *
+   * Workflow/session archive and read-only state belong to editing and execution,
+   * not to copy: an archived source keeps its formal current (G-A allows it), and
+   * the selected session has no part in the copy request.  Draft, fixed-only,
+   * remotely deleted, pending and already-pending-copy sources stay blocked.
+   */
+  const copyLocked = computed(() => {
+    copyVersion.value; // channel state refs and lazily restored channels invalidate the gate
+    const id = workspace.activeWorkflowId, workflow = workspace.activeWorkflow;
+    const channel = copyChannels.get(id.toLowerCase());
+    return !id || !entries.value[id] || fixedOnly.value || workflow.state !== "saved"
+      || !!workflow.deleted || !!workflow.copyPending
+      || !!entries.value[id]?.pending
+      || !!workspace.workflows.some(row => row.copyPending && row.sourceId === id)
+      || !!channel?.busy.value || !!channel?.pending.value || !!channel?.locked.value
+      || !!busy.value || applicationBusy.value;
+  });
   const primaryAction = computed(() => ["running", "prepared", "pausing"].includes(session.value?.status ?? "") ? "pause"
     : session.value?.available_actions?.includes("resume") || session.value?.status === "paused" ? "resume" : "start");
   const statusLabel = computed(() => busy.value ? "提交中" : primaryAction.value === "pause" ? "暂停"
@@ -266,13 +294,16 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     try {
       const rows = await management.queries.definitionSummaries(true);
       if (!alive || generation !== mutationGeneration) return false;
+      // A formal row that is listed but withheld from this projection is only older
+      // than an already accepted current; it must not be treated as a deletion.
+      const listed = new Set(rows.map(row => row.workflow_definition_id));
       // An opened workflow keeps its accepted basis. A directory row older than the
       // accepted current must not roll the visible projection back.
       workspace.applyDefinitionSummaries(rows.filter(row => {
         const accepted = configurationApplication?.accepted(row.workflow_definition_id);
         if (!accepted) return true;
         return row.edit_sequence !== null && row.edit_sequence >= accepted.edit_sequence;
-      }));
+      }), { retainMissing: workflowId => listed.has(workflowId) });
       selectConfigurationBasis();
       return true;
     } catch (failure) { report(failure, "读取工作流目录"); return false; }
@@ -567,10 +598,14 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     });
   }
   function configurationPendingRequests() {
-    return Object.keys(entries.value).flatMap(workflowId => {
+    configurationApplicationVersion.value;
+    return [...new Set([...Object.keys(entries.value), ...discoveredRequests.value
+      .filter(row => row.owner_kind === "workflow-configuration").map(row => row.owner_id)])].flatMap(workflowId => {
       if (!configurationApplication) return [];
       const request = configurationApplication.forWorkflow(workflowId);
-      return request.pending.value ? [{ workflowId, error: request.error.value, busy: request.busy.value }] : [];
+      return request.pending.value && !request.busy.value
+        ? [{ workflowId, error: request.error.value, busy: request.busy.value, progress: request.progress.value,
+          requestKey: request.pending.value.idempotency_key }] : [];
     });
   }
   async function reconcileConfiguration(workflowId: string) {
@@ -645,10 +680,13 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
     }
   }
   function managementPendingRequests() {
-    return Object.keys(entries.value).flatMap(workflowId => {
+    return [...new Set([...Object.keys(entries.value), ...discoveredRequests.value
+      .filter(row => row.owner_kind === "workflow-management").map(row => row.owner_id)])].flatMap(workflowId => {
       const request = managementRequests.forWorkflow(workflowId);
-      return request.pending.value || request.error.value ? [{ workflowId, error: request.error.value,
-        busy: request.busy.value, pending: !!request.pending.value }] : [];
+      return !request.busy.value && (request.pending.value || request.error.value) ? [{ workflowId, error: request.error.value,
+        busy: request.busy.value, pending: !!request.pending.value, progress: request.progress.value,
+        requestKey: String(request.pending.value?.parameters.idempotency_key ?? ""),
+        requestOperation: request.pending.value?.operation ?? "" }] : [];
     });
   }
   const guardedManagementActions = new Set([
@@ -905,6 +943,20 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
   }
   /** Formal configuration copy from the saved current; selection and editor state do not matter. */
   async function copyWorkflow(id = workspace.activeWorkflowId): Promise<string | null> {
+    const sourceId = id.toLowerCase();
+    if (copySubmitting.has(sourceId)) {
+      notices.notify("unknown", "该来源的配置复制正在提交，请等待当前请求结束", "复制工作流");
+      return null;
+    }
+    const existingChannel = copyChannels.get(sourceId);
+    if (existingChannel && (existingChannel.busy.value || existingChannel.pending.value
+      || existingChannel.locked.value)) {
+      notices.notify(existingChannel.pending.value ? "unknown" : "rejected",
+        existingChannel.pending.value ? "该来源已有待核实的配置复制请求，不能提交新复制"
+          : "该来源的配置复制正在提交，未提交新复制", "复制工作流");
+      return null;
+    }
+    copySubmitting.add(sourceId);
     try {
       const entry = entries.value[id];
       if (!entry) {
@@ -955,7 +1007,8 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       report(failure, "复制工作流");
       return null;
     } finally {
-      copyOpenTokens.delete(id.toLowerCase());
+      copySubmitting.delete(sourceId);
+      copyOpenTokens.delete(sourceId);
       bumpCopyVersion();
     }
   }
@@ -983,18 +1036,106 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       return false;
     } finally { bumpCopyVersion(); }
   }
-  /** Pending/error copy rows for the workflow region banner; creates the owner channel lazily. */
+  /** Unresolved copy rows; normal submissions stay quiet while in flight. */
   function copyPendingRequests() {
     copyVersion.value;
     const activeId = workspace.activeWorkflowId;
     if (graphUuid(activeId) && entries.value[activeId] && !copyInitializedSources.has(activeId.toLowerCase()))
       void restoreCopyChannel(activeId);
     return [...copyChannels.entries()].flatMap(([sourceId, channel]) => {
-      if (!channel.pending.value && !channel.busy.value && !channel.error.value) return [];
+      if (channel.busy.value || !channel.pending.value && !channel.error.value) return [];
       return [{ workflowId: sourceId,
         title: workspace.workflows.find(row => row.id === sourceId)?.title ?? sourceId,
-        error: channel.error.value, busy: channel.busy.value, pending: !!channel.pending.value }];
+        error: channel.error.value, busy: channel.busy.value, pending: !!channel.pending.value,
+        progress: channel.progress.value, requestKey: channel.pending.value?.idempotency_key ?? "" }];
     });
+  }
+  function supportedDiscoveredRequest(row: PendingRequestEvidence) {
+    return graphUuid(row.owner_id) && (row.owner_kind === "workflow-configuration" && row.operation === "definition.update"
+      || row.owner_kind === "workflow-configuration-copy" && row.operation === "definition.copy"
+      || row.owner_kind === "workflow-management" && new Set(["definition.archive", "definition.delete",
+        "session.create", "session.archive", "session.delete", "session.data.update", "run.start", "run.control",
+        "event.submit"]).has(row.operation));
+  }
+  function discoveredRequestBusy(row: PendingRequestEvidence) {
+    if (recoveryBusy.value[evidenceCoordinate(row)]) return true;
+    if (!supportedDiscoveredRequest(row)) return false;
+    if (row.owner_kind === "workflow-configuration")
+      return !!configurationApplication?.forWorkflow(row.owner_id).busy.value
+        || !!configurationSubmitting.value[row.owner_id];
+    if (row.owner_kind === "workflow-configuration-copy")
+      return copyChannels.get(row.owner_id)?.busy.value === true || copySubmitting.has(row.owner_id);
+    return managementRequests.forWorkflow(row.owner_id).busy.value;
+  }
+  function discoveredPendingRequests() {
+    return discoveredRequests.value.filter(row => {
+      if (discoveredRequestBusy(row)) return false;
+      if (!supportedDiscoveredRequest(row)) return true;
+      if (row.owner_kind === "workflow-configuration")
+        return configurationApplication?.forWorkflow(row.owner_id).settledRequestKey.value !== row.idempotency_key;
+      if (row.owner_kind === "workflow-configuration-copy")
+        return copyChannels.get(row.owner_id)?.completed.value?.idempotency_key !== row.idempotency_key;
+      return managementRequests.forWorkflow(row.owner_id).completed.value?.parameters.idempotency_key !== row.idempotency_key;
+    });
+  }
+  async function discoverPendingRequests(more = false) {
+    if (pendingDiscoveryBusy.value || more && !pendingDiscoveryCursor.value) return false;
+    pendingDiscoveryBusy.value = true; pendingDiscoveryError.value = "";
+    try {
+      const page = await readPendingWorkflowEvidence({ limit: 50,
+        ...(more && pendingDiscoveryCursor.value ? { cursor: pendingDiscoveryCursor.value } : {}) });
+      const rows = more ? [...discoveredRequests.value, ...page.items] : page.items;
+      discoveredRequests.value = [...new Map(rows.map(row => [evidenceCoordinate(row), row])).values()];
+      pendingDiscoveryCursor.value = page.next_cursor;
+      return true;
+    } catch (cause) {
+      pendingDiscoveryError.value = cause instanceof Error ? cause.message : "工作流原请求发现失败";
+      return false;
+    } finally { pendingDiscoveryBusy.value = false; }
+  }
+  /** Discovery is a coordinate hint. Re-read the current exact owner before touching its channel. */
+  async function reconcileDiscoveredRequest(row: PendingRequestEvidence) {
+    const identity = evidenceCoordinate(row);
+    if (!supportedDiscoveredRequest(row) || discoveredRequestBusy(row)) return false;
+    recoveryBusy.value[identity] = true; recoveryErrors.value[identity] = "";
+    try {
+      const records = await requestEvidencePorts.read(row.owner_kind, row.owner_id);
+      const pending = records.filter(record => record.resolution === "pending");
+      if (pending.length !== 1 || !isRequestEvidenceRecord(pending[0])
+        || evidenceCoordinate(pending[0]) !== identity || pending[0].request_digest !== row.request_digest)
+        throw new WorkbenchApiError("unknown", "摘要与当前原请求坐标不同；未核实或结案，请刷新原请求列表");
+      let done = false;
+      if (row.owner_kind === "workflow-configuration") {
+        if (!configurationApplication) throw new WorkbenchApiError("unavailable", "工作流配置应用尚未就绪");
+        const channel = configurationApplication.forWorkflow(row.owner_id);
+        await channel.initialize(true);
+        if (!channel.pending.value || !channel.matchesEvidence(row))
+          throw new WorkbenchApiError("unknown", "当前配置原请求已变化，未核实或结案");
+        await channel.reconcile({ acceptResult: false });
+        done = true;
+      } else if (row.owner_kind === "workflow-configuration-copy") {
+        const channel = copyChannel(row.owner_id);
+        await channel.reloadPending();
+        if (!channel.pending.value || !channel.matchesEvidence(row))
+          throw new WorkbenchApiError("unknown", "当前配置复制原请求已变化，未核实或结案");
+        done = await channel.reconcile();
+      } else {
+        const channel = managementRequests.forWorkflow(row.owner_id);
+        await channel.reloadPending();
+        if (!channel.pending.value || !channel.matchesEvidence(row))
+          throw new WorkbenchApiError("unknown", "当前管理原请求已变化，未核实或结案");
+        done = await channel.reconcile({ acceptResult: false });
+      }
+      if (!done) throw new WorkbenchApiError("unknown", row.owner_kind === "workflow-configuration-copy"
+        ? copyChannel(row.owner_id).error.value : managementRequests.forWorkflow(row.owner_id).error.value);
+      discoveredRequests.value = discoveredRequests.value.filter(value => evidenceCoordinate(value) !== identity);
+      notices.publish({ id: `recovery:${identity}`, severity: "success", title: "原请求已核实",
+        reason: "原业务回执已匹配，证据已结案；当前目录可独立刷新。", requestId: row.idempotency_key });
+      return true;
+    } catch (cause) {
+      recoveryErrors.value[identity] = cause instanceof Error ? cause.message : "原请求仍待核实";
+      return false;
+    } finally { delete recoveryBusy.value[identity]; bumpCopyVersion(); }
   }
   /** Optional injection used by tests or a workflow-owned assembly; the store otherwise
    * lazily creates exactly one default application instance. */
@@ -1098,6 +1239,10 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
           ...binding, readers: binding.readers.filter(id => !ids.has(id)),
           writers: binding.writers.filter(id => !ids.has(id)),
         }));
+        if (doc.session_preloads) {
+          const keys = new Set(doc.object_bindings.map(binding => binding.object_key));
+          doc.session_preloads = doc.session_preloads.filter(entry => keys.has(entry.object_key));
+        }
       }
       return true;
     });
@@ -1217,10 +1362,18 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
             const key = `private/${crypto.randomUUID()}`;
             privateBindings.push({ ...graphClone(binding), object_key: key, owner_node_id: owner,
               readers: binding.readers.length ? [owner] : [], writers: binding.writers.length ? [owner] : [] });
+            const preload = doc.session_preloads?.find(entry => entry.object_key === binding.object_key);
+            if (preload) doc.session_preloads!.push({ object_key: key, value: graphClone(preload.value) });
             const copy = nodes.find(node => node.node_binding_id === owner)!;
             if (copy.config.object_key === binding.object_key) copy.config.object_key = key;
             if (Array.isArray(copy.config.object_keys)) copy.config.object_keys = copy.config.object_keys
               .map(existing => existing === binding.object_key ? key : existing);
+            for (const access of typeFor(copy)?.object_accesses ?? []) {
+              const value = copy.config[access.config_field];
+              if (access.multiple && Array.isArray(value))
+                copy.config[access.config_field] = value.map(existing => existing === binding.object_key ? key : existing);
+              else if (value === binding.object_key) copy.config[access.config_field] = key;
+            }
             return binding;
           }
           return { ...binding, readers: [...binding.readers, ...binding.readers.filter(id => mapping.has(id)).map(id => mapping.get(id)!)],
@@ -1278,9 +1431,49 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       notices.notify("rejected", "对象绑定须包含唯一键、确切类型版本和有效的节点权限；私有对象仅允许所有者访问", "会话对象绑定");
       return null;
     }
+    const issue = document.value.session_preloads
+      ? sessionPreloadsIssue(value, document.value.session_preloads, dataTypes.value) : null;
+    if (issue) { notices.notify("rejected", issue, "会话对象绑定"); return null; }
     return editable(workspace.activeWorkflowId, doc => {
       prepareGraphEdit(doc);
       doc.object_bindings = graphClone(value); return true;
+    });
+  }
+  function setSessionPreload(binding: GraphObjectBinding, value: unknown, previousKey?: string) {
+    const current = document.value;
+    if (!current || editorLocked.value) return null;
+    if (!isGraphJsonValue(value)) {
+      notices.notify("rejected", "初值必须是有效 JSON。", "会话预加载数据"); return null;
+    }
+    if (previousKey !== undefined && binding.object_key !== previousKey) {
+      notices.notify("rejected", "已创建预加载项的对象键不可修改。", "会话预加载数据"); return null;
+    }
+    const previous = previousKey ? current.session_preloads?.find(entry => entry.object_key === previousKey) : null;
+    if (previousKey && !previous || (current.object_bindings ?? []).some(item =>
+      item.object_key === binding.object_key && item.object_key !== previousKey)) {
+      notices.notify("rejected", "对象键已存在或原预加载项已变化。", "会话预加载数据"); return null;
+    }
+    const bindings = [...(current.object_bindings ?? []).filter(item => item.object_key !== previousKey), graphClone(binding)];
+    const preloads = [...(current.session_preloads ?? []).filter(item => item.object_key !== previousKey),
+      { object_key: binding.object_key, value: graphClone(value) }];
+    const issue = !isGraphObjectBindings(bindings, current.nodes) ? "请检查对象键与节点权限。"
+      : sessionPreloadsIssue(bindings, preloads, dataTypes.value);
+    if (issue) { notices.notify("rejected", issue, "会话预加载数据"); return null; }
+    return editable(workspace.activeWorkflowId, doc => {
+      prepareGraphEdit(doc);
+      doc.schema_version = 3;
+      for (const node of doc.nodes) node.configuration_policy ??= { schema_version: 1, prompt_mode: "fixed" };
+      doc.object_bindings = bindings; doc.session_preloads = preloads;
+      return true;
+    });
+  }
+  function removeSessionPreload(key: string) {
+    if (!document.value?.session_preloads?.some(entry => entry.object_key === key)) return null;
+    return editable(workspace.activeWorkflowId, doc => {
+      prepareGraphEdit(doc);
+      doc.session_preloads = doc.session_preloads!.filter(entry => entry.object_key !== key);
+      doc.object_bindings = doc.object_bindings!.filter(binding => binding.object_key !== key);
+      return true;
     });
   }
   async function refresh(id = workspace.activeWorkflowId) {
@@ -1545,12 +1738,15 @@ export const useWorkflowGraphStore = defineStore("workflow-graph", () => {
       { source_node_id: nodeId, target_node_id: nodeId, action: "reset" }];
   }
   return { entries, catalog, frontendExtensions, packageLock, executionPackageLock, dataTypes, catalogLoading, catalogError, definitionsLoading, sessionRows, views, history, busy, receiptChecks, active, document,
-    fixedOnly, session, pending, locked, controlLocked, editorLocked, primaryAction, statusLabel, selectedNodeIds, selectedEdgeId, canUndo, canRedo, setEventBindings, submitEvent, registrationTarget, submitVariableRegistration,
+    fixedOnly, session, pending, locked, copyLocked, controlLocked, editorLocked, primaryAction, statusLabel, selectedNodeIds, selectedEdgeId, canUndo, canRedo, setEventBindings, submitEvent, registrationTarget, submitVariableRegistration,
     isGeneric, createWorkflow, typeFor, loadCatalog, setPersistenceGuard, storeSnapshot, restoreSnapshot,
     saveWorkflow, loadDefinitions, ensureDefinitionEntry, manageWorkflow, manageSession, copyWorkflow, renameWorkflow, refreshPublishedRevision, addNode, patchNode,
     patchNodeConfiguration, patchNodeConfigurationPolicy, moveNodes, connect, removeSelection, reorderEdge, undo, duplicateSelection,
-    replaceNode, setControlDependencies, setObjectBindings,
+    replaceNode, setControlDependencies, setObjectBindings, setSessionPreload, removeSessionPreload,
     activate, refresh, createSession, selectSession, submitPrimary, reconcile, canRetryRejectedCopy, retryRejectedCopy, discardDraft, discardRejectedCopy, closeRun, setInputs, resetPrivateState, submitAgentAction,
     management, editing, installWorkflowConfigurationApplication, configurationPendingRequests, reconcileConfiguration,
-    managementPendingRequests, copyPendingRequests, reconcileCopy, installWorkflowConfigurationCopyApplication };
+    managementPendingRequests, copyPendingRequests, reconcileCopy, installWorkflowConfigurationCopyApplication,
+    discoveredRequests, pendingDiscoveryBusy, pendingDiscoveryError, pendingDiscoveryCursor, recoveryErrors,
+    discoverPendingRequests, reconcileDiscoveredRequest, discoveredRequestBusy, supportedDiscoveredRequest,
+    discoveredPendingRequests };
 });

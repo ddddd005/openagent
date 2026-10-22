@@ -377,7 +377,9 @@ class ExecutionSettlement:
 
     def inject_checkpoint_write(self) -> None:
         self._write()
-        self._store._inject("after_checkpoint_write")
+        from .result_acceptance import persistence_boundary
+        with persistence_boundary("round_acceptance"):
+            self._store._inject("after_checkpoint_write")
 
 
 class ConfigurationReadSession:

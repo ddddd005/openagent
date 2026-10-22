@@ -36,9 +36,14 @@ export interface GraphDocument {
   nodes: GraphNode[];
   edges: GraphEdge[];
   object_bindings?: GraphObjectBinding[];
+  session_preloads?: GraphSessionPreload[];
   package_lock?: { package_id: string; version: string }[];
   control_edges?: GraphControlEdge[];
   event_bindings?: GraphEventBinding[];
+}
+export interface GraphSessionPreload {
+  object_key: string;
+  value: unknown;
 }
 export interface GraphEventBinding {
   event_id: string;
@@ -320,6 +325,18 @@ export function isGraphObjectBindings(value: unknown, nodes?: GraphNode[]): valu
   return Array.isArray(value) && value.length <= 1024 && value.every(binding => isGraphObjectBinding(binding, ids))
     && new Set(value.map(binding => binding.object_key)).size === value.length;
 }
+export function isGraphSessionPreloads(value: unknown, bindings: GraphObjectBinding[]): value is GraphSessionPreload[] {
+  if (!Array.isArray(value) || value.length > 1024) return false;
+  const keys = new Set<string>();
+  return value.every(item => {
+    if (!graphObject(item) || Object.keys(item).length !== 2
+      || !Object.hasOwn(item, "object_key") || !Object.hasOwn(item, "value")
+      || typeof item.object_key !== "string" || keys.has(item.object_key) || !isGraphJsonValue(item.value)) return false;
+    const binding = bindings.find(binding => binding.object_key === item.object_key);
+    if (!binding || Object.hasOwn(binding, "default_value") || binding.registrar_node_id != null) return false;
+    keys.add(item.object_key); return true;
+  });
+}
 function graphBudget(value: unknown) {
   return graphObject(value) && positive(value.max_model_requests) && positive(value.max_model_attempts)
     && ["model_requests", "attempts", "accepted_messages"].every(key => value[key] === undefined || nonnegative(value[key]));
@@ -408,7 +425,7 @@ export function defaultGraphConfigurationPolicy(definition: GraphNodeType): Grap
 function isGraphSchema3Document(value: Record<string, unknown>): boolean {
   if (!isGraphJsonValue(value) || !graphStorageStrings(value)
     || !graphExactKeys(value, ["schema_version", "workflow_definition_id", "revision", "name", "nodes", "edges", "object_bindings"],
-      ["edit_sequence", "package_lock", "control_edges", "event_bindings"])
+      ["edit_sequence", "package_lock", "control_edges", "event_bindings", "session_preloads"])
     || !canonicalGraphUuid(value.workflow_definition_id) || !positive(value.revision)
     || Object.hasOwn(value, "edit_sequence") && !nonnegative(value.edit_sequence)
     || typeof value.name !== "string" || !graphStorageText(value.name.trim())
@@ -440,6 +457,7 @@ function isGraphSchema3Document(value: Record<string, unknown>): boolean {
     edges.add(edge.edge_id); return true;
   })) return false;
   if (!graphStorageObjectBindings(value.object_bindings, ids)) return false;
+  if (Object.hasOwn(value, "session_preloads") && !isGraphSessionPreloads(value.session_preloads, value.object_bindings)) return false;
   if (Object.hasOwn(value, "package_lock") && (!Array.isArray(value.package_lock) || value.package_lock.length > 256
     || !value.package_lock.every(item => graphObject(item) && graphExactKeys(item, ["package_id", "version"])
       && graphStorageName(item.package_id) && graphStorageName(item.version))
@@ -458,6 +476,7 @@ function isGraphSchema3Document(value: Record<string, unknown>): boolean {
 export function isGraphDocument(value: unknown): value is GraphDocument {
   if (graphObject(value) && value.schema_version === 3) return isGraphSchema3Document(value);
   if (!graphObject(value) || value.schema_version !== 1 && value.schema_version !== 2 || !graphUuid(value.workflow_definition_id)
+    || Object.hasOwn(value, "session_preloads")
     || !positive(value.revision) || typeof value.name !== "string"
     || !Array.isArray(value.nodes) || !Array.isArray(value.edges)
     || value.nodes.length > 1024 || value.edges.length > 8192) return false;

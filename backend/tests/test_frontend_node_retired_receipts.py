@@ -244,9 +244,9 @@ def save_graph(service, graph):
 def allow_test_fixture_binding(monkeypatch, fixture_service):
     original = BoundFrontendNodeOperations._require_binding
 
-    def require_binding(self, access, *, current=False):
+    def require_binding(self, access, *, current=False, registry=None):
         if self._service is not fixture_service:
-            return original(self, access, current=current)
+            return original(self, access, current=current, registry=registry)
         data = self._binding_data(access)
         document = data.fixed_document(
             self.workflow_definition_id, self.definition_revision)
@@ -254,10 +254,11 @@ def allow_test_fixture_binding(monkeypatch, fixture_service):
                      if item["node_binding_id"] == self.node_binding_id), None)
         assert node is not None
         if (node["component_id"], node["component_version"]) != ("frontend.node", "1"):
-            return original(self, access, current=current)
-        entry = self._service.registry.get("frontend.node", "1")
+            return original(self, access, current=current, registry=registry)
+        registry = self._service.registry if registry is None else registry
+        entry = registry.get("frontend.node", "1")
         assert entry is not None
-        self._service.registry.validate_config(entry, node["config"])
+        registry.validate_config(entry, node["config"])
         binding = next(item for item in document["object_bindings"]
                        if item["object_key"] == node["config"]["object_key"])
         assert binding["type_id"] == "workflow.frontend-state"

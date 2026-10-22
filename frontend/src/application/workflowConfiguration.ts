@@ -1,6 +1,6 @@
 import { computed, readonly, ref, shallowReactive, shallowRef } from "vue";
-import { requestEvidencePorts, isRequestEvidenceRecord,
-  type RequestEvidencePorts, type RequestEvidenceRecord } from "../adapters/requestEvidenceApi";
+import { requestEvidencePorts, isRequestEvidenceRecord, confirmCurrentPendingEvidence, confirmEvidenceForResolution,
+  evidenceCoordinate, type PendingRequestEvidence, type RequestEvidencePorts, type RequestEvidenceRecord } from "../adapters/requestEvidenceApi";
 import { updateGraphConfiguration, readGraphConfigurationReceipt } from "../adapters/workflowConfigurationApi";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import { graphClone, graphJsonSignature, graphUuid } from "../domain/workflowGraph";
@@ -9,6 +9,7 @@ import { isGraphConfigurationDocument, isGraphConfigurationResult, isGraphConfig
   type GraphConfigurationUpdateRequest } from "../domain/workflowConfiguration";
 import { createWorkflowConfigurationSdk,
   type WorkflowConfigurationSubmissionPorts } from "../plugins/workflowFrontendSdk2";
+import type { RequestProgress } from "./resourceOutbox";
 
 export interface WorkflowConfigurationSelection {
   workflowId: string;
@@ -125,7 +126,9 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
     const pending = shallowRef<GraphConfigurationUpdateRequest | null>(null);
     const confirmation = shallowRef<WorkflowConfigurationConfirmation | null>(null);
     const lastResult = shallowRef<GraphConfigurationResult | null>(null);
+    const settledRequestKey = ref("");
     const error = ref(""), busy = ref(false), initialized = ref(false);
+    const progress = ref<RequestProgress>("ready");
     const locked = computed(() => !initialized.value || busy.value || pending.value !== null);
     let record: RequestEvidenceRecord | null = null, initializing: Promise<boolean> | null = null;
     function checkedRecord(value: unknown): RequestEvidenceRecord {
@@ -135,7 +138,8 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
         throw failure("unknown", "工作流原请求证据的身份或正文无效", "graph_configuration_evidence_invalid");
       return graphClone(value);
     }
-    async function initialize(): Promise<boolean> {
+    async function initialize(refresh = false): Promise<boolean> {
+      if (refresh && !busy.value) initialized.value = false;
       if (initialized.value) return true;
       if (initializing) return initializing;
       initializing = (async () => {
@@ -149,9 +153,12 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
           if (durable) {
             const captured = checkedRecord(durable);
             if (pending.value && !same(pending.value, captured.request))
-              throw failure("unknown", "待核实证据与捕获原请求不同", "graph_configuration_evidence_conflict");
+              if (!refresh || !records.some(row => row.resolution !== "pending"
+                && row.operation === operation && same(row.request, pending.value)))
+                throw failure("unknown", "待核实证据与捕获原请求不同", "graph_configuration_evidence_conflict");
             record = captured;
             pending.value = graphClone(captured.request) as unknown as GraphConfigurationUpdateRequest;
+            progress.value = "restored";
           } else if (pending.value) {
             throw failure("unknown", "原请求证据写入仍待核实，业务未自动发送", "graph_configuration_evidence_unresolved");
           }
@@ -168,6 +175,7 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
     async function resolveOriginal() {
       if (!record || !pending.value || !same(record.request, pending.value))
         throw failure("unknown", "原请求证据不完整，未结案", "graph_configuration_evidence_invalid");
+      await confirmEvidenceForResolution(evidence, record);
       const resolved = checkedRecord(await evidence.resolve({ operation, idempotency_key: record.idempotency_key,
         request_digest: record.request_digest, resolution: "verified" }));
       if (resolved.request_digest !== record.request_digest || resolved.resolution !== "verified"
@@ -176,17 +184,21 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
       record = null;
       pending.value = null;
     }
-    async function finish(result: GraphConfigurationResult, request: GraphConfigurationUpdateRequest, selected: number) {
+    async function finish(result: GraphConfigurationResult, request: GraphConfigurationUpdateRequest, selected: number,
+      acceptResult = true) {
       if (!isGraphConfigurationResult(result, request))
         throw failure("unknown", "正式配置回执与原请求不匹配", "graph_configuration_receipt_invalid");
       lastResult.value = graphClone(result);
-      try { accept(result, request, selected); }
+      progress.value = "business-confirmed";
+      try { if (acceptResult) accept(result, request, selected); }
       catch (cause) {
+        progress.value = "acceptance-failed";
         error.value = `配置正式结果已确认，当前视图接纳失败：${cause instanceof Error ? cause.message : "接纳失败"}`;
         throw cause;
       }
       try { await resolveOriginal(); }
       catch (cause) {
+        progress.value = "closure-failed";
         const verb = result.outcome === "derived" ? "派生"
           : result.outcome === "unchanged" ? "确认"
             : result.outcome === "confirmation_required" ? "请求确认" : "保存";
@@ -195,8 +207,10 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
         throw cause;
       }
       error.value = "";
+      progress.value = "completed";
+      settledRequestKey.value = request.idempotency_key;
       // Nothing was written for this outcome; expose the ask instead.
-      if (result.outcome === "confirmation_required") confirmation.value = { request: graphClone(request) };
+      if (acceptResult && result.outcome === "confirmation_required") confirmation.value = { request: graphClone(request) };
       return graphClone(result);
     }
     async function submit(request: GraphConfigurationUpdateRequest): Promise<GraphConfigurationResult> {
@@ -213,12 +227,14 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
       // A submission supersedes any earlier unanswered question.
       confirmation.value = null;
       busy.value = true; error.value = ""; lastResult.value = null;
+      progress.value = "evidence-writing";
       try {
         try {
           record = checkedRecord(await evidence.write({ operation, idempotency_key: original.idempotency_key,
             owner_kind: ownerKind, owner_id: workflowId, request: { ...graphClone(original) } }));
           if (record.resolution !== "pending" || !same(record.request, original))
             throw failure("unknown", "保存的原请求证据不同，业务未提交", "graph_configuration_evidence_invalid");
+          await confirmCurrentPendingEvidence(evidence, record);
         } catch (cause) {
           if (!(cause instanceof WorkbenchApiError && cause.kind === "rejected"
             && !["idempotency_conflict", "request_evidence_pending"].includes(cause.code ?? ""))) {
@@ -226,19 +242,25 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
             initialized.value = false;
           }
           error.value = `无法确认原请求证据，配置未发送：${cause instanceof Error ? cause.message : "持久化失败"}`;
+          progress.value = "evidence-unknown";
           throw cause;
         }
         pending.value = graphClone(original);
+        progress.value = "request-in-flight";
         let result: GraphConfigurationResult;
         try { result = await update(graphClone(original)); }
         catch (cause) {
           error.value = cause instanceof Error ? cause.message : "配置提交失败";
+          progress.value = "result-unknown";
           if (cause instanceof WorkbenchApiError && cause.kind === "rejected" && cause.code !== "idempotency_conflict") {
+            progress.value = "rejected";
             try { await resolveOriginal(); }
             catch (resolutionFailure) {
+              progress.value = "closure-failed";
               error.value += `；原请求证据结案失败：${resolutionFailure instanceof Error ? resolutionFailure.message : "持久化失败"}`;
               throw resolutionFailure;
             }
+            settledRequestKey.value = original.idempotency_key;
           }
           throw cause;
         }
@@ -265,20 +287,25 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
         throw failure("rejected", "确认请求格式无效", "graph_invalid_document");
       return submit(confirmed);
     }
-    async function reconcile(): Promise<GraphConfigurationResult> {
+    async function reconcile(options: { acceptResult?: boolean } = {}): Promise<GraphConfigurationResult> {
       await initialize();
       if (busy.value || !pending.value)
         throw failure("rejected", "没有可核实的工作流原请求", "graph_configuration_receipt_missing");
       const original = graphClone(pending.value), selected = selectionSequence;
       busy.value = true; error.value = "";
-      try { return await finish(await readReceipt(graphClone(original)), original, selected); }
+      progress.value = "request-in-flight";
+      try { return await finish(await readReceipt(graphClone(original)), original, selected, options.acceptResult); }
       catch (cause) {
+        if (progress.value === "request-in-flight") progress.value = "result-unknown";
         if (!error.value) error.value = cause instanceof Error ? cause.message : "原配置回执核实失败";
         throw cause;
       } finally { busy.value = false; }
     }
     return { pending: readonly(pending), confirmation: readonly(confirmation), lastResult: readonly(lastResult),
-      error: readonly(error), busy: readonly(busy), initialized: readonly(initialized), locked,
+      error: readonly(error), busy: readonly(busy), initialized: readonly(initialized), progress: readonly(progress),
+      settledRequestKey: readonly(settledRequestKey), locked,
+      matchesEvidence: (value: PendingRequestEvidence) => !!record
+        && evidenceCoordinate(record) === evidenceCoordinate(value) && record.request_digest === value.request_digest,
       initialize, submit, confirm, reject, reconcile };
   }
   function forWorkflow(workflowId: string) {

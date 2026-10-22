@@ -39,7 +39,10 @@ export function useWorkflowFrontendHost() {
   // Assembly precedes the directory read, the first activation and any
   // configuration command: both watchers are registered after the provides.
   watch(() => persistence.ready, ready => {
-    if (ready) void graph.loadDefinitions().then(() => persistence.selectLoadedWorkflow());
+    if (ready) {
+      void graph.loadDefinitions().then(() => persistence.selectLoadedWorkflow());
+      void graph.discoverPendingRequests();
+    }
   }, { immediate: true });
   watch(() => [persistence.ready, workspace.activeWorkflowId] as const, ([ready, workflowId]) => {
     if (ready && workflowId) void graph.activate(workflowId);

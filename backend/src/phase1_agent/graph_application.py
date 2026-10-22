@@ -57,7 +57,12 @@ class GraphApplication:
 
     def _invoke(self, spec, parameters):
         arguments = deepcopy(validate_parameters(spec, parameters))
-        if spec.name.startswith("request-evidence."):
+        check = getattr(self._service, "_check_application_operation", None)
+        if check is not None:
+            check(spec.name, arguments)
+        if spec.name == "request-evidence.pending":
+            target = self
+        elif spec.name.startswith("request-evidence."):
             from .request_evidence import RequestEvidenceService
             target = RequestEvidenceService(self._service.database)
         elif spec.name.startswith("content.metadata."):
@@ -124,6 +129,10 @@ class GraphApplication:
     def _receipt_read(self, operation, parameters):
         from .graph_receipts import read_graph_application_receipt
         return read_graph_application_receipt(self._service.database, operation, parameters, scope=self.scope)
+
+    def _workflow_pending(self, **parameters):
+        from .request_evidence import read_workflow_pending
+        return read_workflow_pending(self._service.database, **parameters)
 
     def _editor_inputs(self, document):
         from .graph_input_declarations import editor_input_declarations

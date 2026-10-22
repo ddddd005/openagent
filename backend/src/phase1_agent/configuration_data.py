@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from .contract_errors import require
+from .result_acceptance import persistence_boundary
 
 
 if TYPE_CHECKING:
@@ -326,8 +327,10 @@ class WorkflowDataManagement:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 receipt = ExecutionFacts(store).accept(owner, stream_id, fact)
-                store._inject("before_runtime_fact_commit")
-                connection.execute("COMMIT")
+                with persistence_boundary("fact_acceptance"):
+                    store._inject("before_runtime_fact_commit")
+                    connection.execute("COMMIT")
+                    store._inject("after_runtime_fact_commit")
                 return receipt
             except BaseException:
                 if connection.in_transaction:

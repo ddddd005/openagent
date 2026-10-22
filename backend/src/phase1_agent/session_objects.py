@@ -11,6 +11,7 @@ from copy import deepcopy
 from uuid import uuid4
 
 from .contract_json import canonical_bytes, content_digest, loads_strict
+from .contract_errors import ContractValidationError, DiagnosticError
 from .graph_records import require, uuid_value
 from .host_sdk import ObjectBinding, WriteIntent, validate_reference
 
@@ -131,20 +132,33 @@ class SessionObjectStore:
             (sid, key, revision_id),
         )
 
-    def initialize(self, sid, document):
+    def initialize(self, sid, document, *, preloaded_values=None):
         self._transaction()
         require(uuid_value(sid), "invalid_request", "Session identity is invalid")
+        from .session_preloads import session_preload_bindings
+        preload_keys = set(session_preload_bindings(document, self.types))
+        if preloaded_values is not None:
+            require(type(preloaded_values) is dict and set(preloaded_values) == preload_keys,
+                    "checkpoint_target_preload_binding_mismatch",
+                    "Historical initialization requires all exact preload values", 409)
         bindings = [ObjectBinding.from_dict(item) for item in document.get("object_bindings", [])]
-        initialized_keys = {binding.object_key for binding in bindings}
+        if preloaded_values is None:
+            bindings = [binding for binding in bindings if binding.object_key not in preload_keys]
+        self._initialize_bindings(sid, bindings, values=preloaded_values)
+        if not preload_keys or preloaded_values is not None:
+            self._validate_initialized_objects(sid, initialized_keys={binding.object_key for binding in bindings})
+
+    def _initialize_bindings(self, sid, bindings, *, values=None):
         for binding in bindings:
             self._check_type(binding)
-            require(self.connection.execute(
-                "SELECT 1 FROM session_object_bindings WHERE session_id=? AND object_key=?",
-                (sid, binding.object_key),
-            ).fetchone() is None, "session_object_binding_exists", "Object already exists", 409)
-            data = binding.to_dict()
-            value = (data["default_value"] if "default_value" in data
-                     else self.types.default(binding.type_id, binding.schema_version, scope="session"))
+            require(self._binding_absent(sid, binding.object_key),
+                    "session_object_binding_exists", "Object already exists", 409)
+            if values is not None and binding.object_key in values:
+                value = values[binding.object_key]
+            else:
+                data = binding.to_dict()
+                value = (data["default_value"] if "default_value" in data
+                         else self.types.default(binding.type_id, binding.schema_version, scope="session"))
             value = self.types.validate(binding.type_id, binding.schema_version, value, scope="session")
             revision_id = self._put_value(binding, value)
             revision = self._historical_revision(sid, binding.object_key) + 1
@@ -156,10 +170,48 @@ class SessionObjectStore:
                  revision, revision_id),
             )
             self._grant_revision(sid, binding.object_key, revision_id)
+
+    def _binding_absent(self, sid, key):
+        return self.connection.execute(
+            "SELECT 1 FROM session_object_bindings WHERE session_id=? AND object_key=?", (sid, key),
+        ).fetchone() is None
+
+    def initialize_preloads(self, sid, document):
+        """Complete ordinary session creation, before its first commit, exactly once."""
+        self._transaction()
+        from .session_preloads import validate_session_preloads
+        values = validate_session_preloads(document, self.types)
+        if not values:
+            return
+        from .checkpoint_loading import _require_fresh_target
+        from .graph_store import GraphRecordStore
+        repo = GraphRecordStore(self.store)
+        session = _require_fresh_target(repo, repo.get("workflow_session", workflow_session_id=sid))
+        fixed = repo.get("workflow_definition_revision",
+                         workflow_definition_id=session["workflow_definition_id"],
+                         revision=session["definition_revision"])["document"]
+        require(repo.equal(fixed, document), "session_preload_definition_mismatch",
+                "Session preloads require the exact persisted fixed document", 409)
+        bindings = {binding.object_key: binding for binding in (
+            ObjectBinding.from_dict(raw) for raw in document.get("object_bindings", []))}
+        current = self.current(sid)
+        require(set(current) == bindings.keys() - values.keys()
+                and all(item["binding"] == bindings[key].to_dict()
+                        and not item["deleted"] for key, item in current.items()),
+                "session_preload_target_not_fresh",
+                "Session preloads require the complete unchanged base objects and no preload heads", 409)
+        require(all(self.connection.execute(
+            "SELECT 1 FROM session_object_revision_membership WHERE session_id=? AND object_key=? LIMIT 1",
+            (sid, key)).fetchone() is None for key in values),
+            "session_preload_target_not_fresh", "Preload items must have no historical membership", 409)
+        self._initialize_bindings(sid, [bindings[key] for key in values], values=values)
+        self._validate_initialized_objects(sid)
+
+    def _validate_initialized_objects(self, sid, *, initialized_keys=None):
         for key, item in self.current(sid).items():
             if not item["deleted"]:
                 self._check_references(sid, ObjectBinding.from_dict(item["binding"]), item["value"])
-                if key in initialized_keys:
+                if initialized_keys is None or key in initialized_keys:
                     self.types.validate_write(
                         item["type_id"], item["schema_version"], item["value"],
                         self._write_context(sid, key, None, "initialize"),
@@ -484,6 +536,7 @@ class SessionObjectStore:
         self._transaction()
         from .checkpoint_collection import (
             checkpoint_chat_bindings, checkpoint_context_bindings, checkpoint_variable_bindings,
+            checkpoint_preloaded_bindings,
         )
         from .graph_store import GraphRecordStore
         repo = GraphRecordStore(self.store)
@@ -494,7 +547,8 @@ class SessionObjectStore:
         require(repo.equal(document, fixed), "chat_definition_mismatch",
                 "Chat operations require the session's exact fixed definition", 409)
         bindings = {}
-        for selector in (checkpoint_chat_bindings, checkpoint_context_bindings, checkpoint_variable_bindings):
+        for selector in (checkpoint_chat_bindings, checkpoint_context_bindings,
+                         checkpoint_variable_bindings, checkpoint_preloaded_bindings):
             bindings.update(selector(document, types=self.types, registry=registry))
         require(type(values) is dict and type(expected_cas) is dict
                 and set(values) == set(expected_cas) and set(values) <= set(bindings),
@@ -568,12 +622,21 @@ class StateManifestStore:
                 "WHERE owner_kind='chain_boundary' AND owner_id LIKE ?", (owner_id + ":%",),
             ).fetchall()
             row = max(rows, key=lambda item: int(item["owner_id"].rsplit(":", 1)[1])) if rows else None
-            return loads_strict(row["payload"]) if row else None
+            return self._decode_payload(row["payload"]) if row else None
         row = self.connection.execute(
             "SELECT payload FROM graph_state_manifests WHERE owner_kind=? AND owner_id=?",
             (owner_kind, owner_id),
         ).fetchone()
-        return loads_strict(row["payload"]) if row else None
+        return self._decode_payload(row["payload"]) if row else None
+
+    @staticmethod
+    def _decode_payload(payload):
+        try:
+            return loads_strict(payload)
+        except ContractValidationError as exc:
+            raise DiagnosticError(
+                "storage_contract_violation", "Stored state manifest JSON is invalid",
+                status=500) from exc
 
     def save(self, owner_kind, owner_id, *, session, data_revision, node_states, history_refs,
              package_lock, global_resources=None, status=None):

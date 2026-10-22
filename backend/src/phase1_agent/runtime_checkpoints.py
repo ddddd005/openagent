@@ -9,7 +9,7 @@ from .chat_contracts import (
     CHAT_CONTEXT_TYPE, CHAT_CONTEXT_SCHEMA_VERSION,
     remap_chat_context_checkpoints, validate_chat_context,
 )
-from .context_contract import validate_agent_checkpoint_value
+from .context_contract import EFFECTIVE_CONTEXT_TYPE, validate_agent_checkpoint_value
 from .contract_errors import require, uuid_value
 from .contract_json import canonical_bytes, validate_json_value
 from .variable_contract import VARIABLE_TYPE, VARIABLE_SCHEMA_VERSION, validate_variable
@@ -22,6 +22,7 @@ _CHECKPOINT_FIELDS = {
 _MAX_INTEGER = 2**53 - 1
 CHECKPOINT_SCHEMA_VERSION = 4
 _ITEM_SECTIONS = ("agent_contexts", "variables", "chat_contexts")
+_OPTIONAL_ITEM_SECTIONS = ("preloaded_items",)
 
 
 def _fields(value: Any, required: set[str], *, optional: set[str] | None = None) -> None:
@@ -92,38 +93,59 @@ def _validate_chat_contexts(contexts: Any) -> dict:
     return contexts
 
 
+def validate_preloaded_items(items: Any) -> None:
+    """Validate the inline shape; exact type admission belongs to the fixed registry."""
+    require(type(items) is dict, "runtime_checkpoint_invalid",
+            "Preloaded checkpoint items must be a mapping")
+    for object_key, entry in items.items():
+        require(_name(object_key), "runtime_checkpoint_invalid", "Preloaded object key is invalid")
+        _fields(entry, {"type_id", "schema_version", "value"})
+        require(_name(entry["type_id"]) and _revision(entry["schema_version"])
+                and entry["type_id"] not in (VARIABLE_TYPE, CHAT_CONTEXT_TYPE, EFFECTIVE_CONTEXT_TYPE),
+                "runtime_checkpoint_invalid", "Preloaded checkpoint exact type is invalid")
+        validate_json_value(entry["value"])
+
+
 def _require_unique_item_keys(partitions: dict) -> None:
     seen = set()
-    for section in _ITEM_SECTIONS:
-        require(not seen & partitions[section].keys(),
+    for section in (*_ITEM_SECTIONS, *_OPTIONAL_ITEM_SECTIONS):
+        require(not seen & partitions.get(section, {}).keys(),
                 "runtime_checkpoint_invalid", "Checkpoint item keys must have one exact type")
-        seen.update(partitions[section])
+        seen.update(partitions.get(section, {}))
 
 
 def validate_checkpoint_state(state: Any) -> dict:
     """Return the exact detached schema-4 logical state."""
     validate_json_value(state)
-    _fields(state, {"configuration", *_ITEM_SECTIONS})
+    _fields(state, {"configuration", *_ITEM_SECTIONS}, optional=set(_OPTIONAL_ITEM_SECTIONS))
     _validate_configuration(state["configuration"])
     _validate_agent_contexts(state["agent_contexts"])
     _validate_variables(state["variables"])
     _validate_chat_contexts(state["chat_contexts"])
+    if "preloaded_items" in state:
+        validate_preloaded_items(state["preloaded_items"])
     _require_unique_item_keys(state)
     return deepcopy(state)
 
 
 def _validate_changes(changes: Any) -> dict:
     _fields(changes, {"upsert", "delete"})
-    _fields(changes["upsert"], set(_ITEM_SECTIONS), optional={"configuration"})
-    _fields(changes["delete"], set(_ITEM_SECTIONS))
+    _fields(changes["upsert"], set(_ITEM_SECTIONS),
+            optional={"configuration", *_OPTIONAL_ITEM_SECTIONS})
+    _fields(changes["delete"], set(_ITEM_SECTIONS), optional=set(_OPTIONAL_ITEM_SECTIONS))
     upsert, deleted = changes["upsert"], changes["delete"]
     if "configuration" in upsert:
         _validate_configuration(upsert["configuration"])
     _validate_agent_contexts(upsert["agent_contexts"])
     _validate_variables(upsert["variables"])
     _validate_chat_contexts(upsert["chat_contexts"])
+    require(("preloaded_items" in upsert) == ("preloaded_items" in deleted),
+            "runtime_checkpoint_invalid", "Preloaded diff sections must be paired")
+    if "preloaded_items" in upsert:
+        validate_preloaded_items(upsert["preloaded_items"])
     _require_unique_item_keys(upsert)
-    for section in _ITEM_SECTIONS:
+    for section in (*_ITEM_SECTIONS, *(
+            _OPTIONAL_ITEM_SECTIONS if "preloaded_items" in upsert else ())):
         keys = deleted[section]
         require(type(keys) is list and all(_name(key) for key in keys)
                 and keys == sorted(set(keys))
@@ -184,22 +206,28 @@ def make_diff(parent_state: Any, state: Any) -> dict:
     """Return canonical configuration replacement and independent item changes."""
     parent = validate_checkpoint_state(parent_state)
     current = validate_checkpoint_state(state)
+    require("preloaded_items" not in parent or "preloaded_items" in current,
+            "runtime_checkpoint_invalid",
+            "An established preloaded partition must remain explicit; clear it with an empty mapping")
+    sections = (*_ITEM_SECTIONS, *(
+        _OPTIONAL_ITEM_SECTIONS
+        if "preloaded_items" in parent or "preloaded_items" in current else ()))
     upsert = {
         section: {
-            key: deepcopy(current[section][key])
-            for key in sorted(current[section])
-            if key not in parent[section]
+            key: deepcopy(current.get(section, {})[key])
+            for key in sorted(current.get(section, {}))
+            if key not in parent.get(section, {})
             or canonical_bytes(parent[section][key]) != canonical_bytes(current[section][key])
         }
-        for section in _ITEM_SECTIONS
+        for section in sections
     }
     if canonical_bytes(parent["configuration"]) != canonical_bytes(current["configuration"]):
         upsert["configuration"] = deepcopy(current["configuration"])
     return {
         "upsert": upsert,
         "delete": {
-            section: sorted(parent[section].keys() - current[section].keys())
-            for section in _ITEM_SECTIONS
+            section: sorted(parent.get(section, {}).keys() - current.get(section, {}).keys())
+            for section in sections
         },
     }
 
@@ -238,8 +266,10 @@ def materialize(checkpoint_id: str, load_checkpoint: Callable[[str], Any]) -> di
                 "Diff baseline is outside its parent chain")
         if "configuration" in storage["upsert"]:
             state["configuration"] = deepcopy(storage["upsert"]["configuration"])
-        for section in _ITEM_SECTIONS:
-            entries = state[section]
+        sections = (*_ITEM_SECTIONS, *(
+            _OPTIONAL_ITEM_SECTIONS if "preloaded_items" in storage["upsert"] else ()))
+        for section in sections:
+            entries = state.setdefault(section, {})
             for object_key in storage["delete"][section]:
                 require(object_key in entries, "runtime_checkpoint_lineage_invalid",
                         "Diff deletes a checkpoint item absent from its parent state")

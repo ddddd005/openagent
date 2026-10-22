@@ -11,6 +11,7 @@ import { frontendCatalog, frontendExecutionLock, frontendProjectLock, frontendSe
 import { requestEvidencePorts } from "../adapters/requestEvidenceApi";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkspaceStore } from "./workspace";
+import { useWorkbenchNoticesStore } from "./workbenchNotices";
 
 const nodeType: GraphNodeType = {
   component_id: "sample.node", component_version: "1", display_name: "Sample", category: "Test",
@@ -202,11 +203,23 @@ describe("workflow configuration store wiring", () => {
     expect(await graph.manageWorkflow(workflowId, "archive")).toBe(false);
     expect(archive).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(requests).toHaveLength(4));
+    expect(graph.configurationPendingRequests()).toEqual([]);
+    expect(application.forWorkflow(workflowId).progress.value).toBe("request-in-flight");
+    expect(useWorkbenchNoticesStore().notices).toEqual([]);
     pending.resolve(accepted(requests[3]!));
     await vi.waitFor(() => expect(graph.document?.nodes[0]?.config.text).toBe("ordinary edit"));
     expect(graph.active?.saved_document?.nodes[0]?.config.text).toBe("ordinary edit");
     await vi.waitFor(() => expect(graph.locked).toBe(false));
+    expect(useWorkbenchNoticesStore().notices).toEqual([]);
     pending = null;
+    for (let step = 1; step <= 3; step++) {
+      expect(graph.moveNodes([{ id: nodeId, position: { x: 20 + step * 10, y: 30 } }])).toBe(workflowId);
+      await vi.waitFor(() => expect(graph.locked).toBe(false));
+      expect(requests).toHaveLength(4 + step);
+      expect(graph.document?.nodes[0]?.position).toEqual({ x: 20 + step * 10, y: 30 });
+      expect(graph.configurationPendingRequests()).toEqual([]);
+      expect(useWorkbenchNoticesStore().notices).toEqual([]);
+    }
     // A save accepted before evidence closing failed still projects the real
     // written body; the lock and original evidence remain until reconcile.
     const resolveEvidence = evidence.ports.resolve;
@@ -215,6 +228,7 @@ describe("workflow configuration store wiring", () => {
     await vi.waitFor(() => expect(graph.document?.nodes[0]?.config.text).toBe("evidence failure"));
     expect(graph.editorLocked).toBe(true);
     expect(graph.configurationPendingRequests()).toHaveLength(1);
+    expect(application.forWorkflow(workflowId).progress.value).toBe("closure-failed");
     evidence.ports.resolve = resolveEvidence;
     await graph.reconcileConfiguration(workflowId);
     expect(graph.configurationPendingRequests()).toEqual([]);

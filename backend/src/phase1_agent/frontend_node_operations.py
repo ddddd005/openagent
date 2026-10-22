@@ -48,7 +48,8 @@ class FrontendNodeOperations:
         return FrontendNodeReceiptScope(
             self._service, workflow_definition_id, definition_revision, node_binding_id, session_id)
 
-    def bind(self, *, workflow_definition_id, definition_revision, node_binding_id, session_id=None):
+    def bind(self, *, workflow_definition_id, definition_revision, node_binding_id, session_id=None,
+             _receipt_only=False):
         uuid4_string(workflow_definition_id)
         uuid4_string(node_binding_id)
         _revision(definition_revision)
@@ -57,8 +58,12 @@ class FrontendNodeOperations:
         bound = BoundFrontendNodeOperations(
             self._service, workflow_definition_id, definition_revision, node_binding_id, session_id)
         with self._service._lock, self._service._configuration_data.read() as data:
-            self._service._check_open()
-            bound._require_binding(data)
+            if _receipt_only:
+                self._service._check_service_open()
+                bound._require_binding(data, registry=self._service._confirmed_registry())
+            else:
+                self._service._check_open()
+                bound._require_binding(data)
         return bound
 
 
@@ -84,7 +89,7 @@ class BoundFrontendNodeOperations:
         return (access if hasattr(access, "fixed_document")
                 else self._service._configuration_data.transaction(access))
 
-    def _require_binding(self, access, *, current=False):
+    def _require_binding(self, access, *, current=False, registry=None):
         data = self._binding_data(access)
         service = self._service
         service._require_definition_active_in(data, self.workflow_definition_id)
@@ -96,10 +101,11 @@ class BoundFrontendNodeOperations:
         identity = node["component_id"], node["component_version"]
         require(identity == FRONTEND_NODE_COMPONENT,
                 "frontend_node_binding_mismatch", "The binding must be exactly frontend.node@2", 409)
-        entry = service.registry.get(*identity)
+        registry = service.registry if registry is None else registry
+        entry = registry.get(*identity)
         require(entry is not None, "frontend_node_binding_mismatch",
                 "The exact frontend node contract is unavailable", 409)
-        service.registry.validate_config(entry, node["config"])
+        registry.validate_config(entry, node["config"])
         binding = next((item for item in document.get("object_bindings", [])
                         if item["object_key"] == node["config"]["object_key"]), None)
         require(binding is not None and binding["type_id"] == CHAT_CONTEXT_TYPE

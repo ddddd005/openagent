@@ -125,6 +125,65 @@ describe("workflow directory consumer separation", () => {
     expect(workspace.formalWorkflowCount()).toBe(1);
   });
 
+  it("drops formal rows missing from the full directory while keeping local evidence rows", async () => {
+    const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
+    const draft = workflowId(), copy = workflowId(), deleted = workflowId();
+    const kept = workflowId(), gone = workflowId(), archived = workflowId();
+    workspace.registerGraphWorkflow({ id: draft, title: "Local draft", description: "", nodeCount: 0, state: "draft" });
+    workspace.registerGraphWorkflow({ id: copy, title: "Unconfirmed copy", description: "", nodeCount: 0,
+      state: "draft", copyPending: true, sourceId: kept });
+    workspace.registerGraphWorkflow({ id: deleted, title: "Deletion pending", description: "", nodeCount: 0,
+      state: "saved", deleted: true });
+    installCleanConfiguration(graph);
+    let reads = 0;
+    stubQueries(() => {
+      reads++;
+      return reads === 1
+        ? [definitionRow({ workflow_definition_id: kept }), definitionRow({ workflow_definition_id: gone }),
+           definitionRow({ workflow_definition_id: archived, archived: true })]
+        : [definitionRow({ workflow_definition_id: kept })];
+    });
+    expect(await graph.loadDefinitions()).toBe(true);
+    expect(workspace.formalWorkflowCount(true)).toBe(3);
+    workspace.openWorkflow(gone);
+    expect(workspace.activeWorkflowId).toBe(gone);
+
+    expect(await graph.loadDefinitions()).toBe(true);
+    expect(reads).toBe(2);
+    // A formal item deleted by another browser leaves the directory and its count;
+    // local drafts, unconfirmed copies and deletion-pending evidence survive.
+    expect(workspace.workflows.map(row => row.id).sort()).toEqual([draft, copy, deleted, kept].sort());
+    expect(workspace.formalWorkflowCount(true)).toBe(1);
+    expect(workspace.formalWorkflowCount()).toBe(1);
+    expect(workspace.workflows.find(row => row.id === draft)).toMatchObject({ state: "draft" });
+    expect(workspace.workflows.find(row => row.id === copy)).toMatchObject({ copyPending: true });
+    expect(workspace.workflows.find(row => row.id === deleted)).toMatchObject({ deleted: true });
+    // An opened workflow that disappeared falls back to a remaining formal row.
+    expect(workspace.activeWorkflowId).toBe(kept);
+  });
+
+  it("keeps an accepted formal row whose stale summary is withheld", async () => {
+    const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
+    const id = workflowId();
+    const application = installCleanConfiguration(graph);
+    const stale = definitionRow({ workflow_definition_id: id, display_name: "Directory A",
+      edit_sequence: 1 });
+    let reads = 0;
+    stubQueries(() => { reads++; return [stale]; });
+    expect(await graph.loadDefinitions()).toBe(true);
+    expect(workspace.workflows.find(row => row.id === id)?.title).toBe("Directory A");
+    // A newer current is accepted after the directory row was read; the next
+    // directory response is older and is withheld from the projection.
+    expect(application.acceptDocument(currentDocument(id, 2)).status).toBe("accepted");
+    expect(await graph.loadDefinitions()).toBe(true);
+    expect(reads).toBe(2);
+    // The row is still listed by the complete directory, so it is not a deletion.
+    const row = workspace.workflows.find(item => item.id === id);
+    expect(row).toBeDefined();
+    expect(row?.title).toBe("Directory A");
+    expect(workspace.formalWorkflowCount()).toBe(1);
+  });
+
   it("opens a formal current through definition.read instead of the directory row", async () => {
     const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
     graph.catalog = [textType];

@@ -27,19 +27,32 @@ class WorkflowHost:
     environment and then creates the service along that binding.  Direct
     construction of the workflow services by trusted callers is unchanged.
 
+    The provider configuration / model profile and global content domains are
+    also acquired through their own declared management bindings: their public
+    management views are lazy, share the same project storage environment and
+    never activate workflow execution.  The workflow source receives only the
+    already-validated trusted factories of the two domains as narrow dependency
+    parameters; the graph service keeps building its own domain views at its
+    original construction time.
+
     ``capability_source`` is only a trusted-local composition/test injection
     seam for the workflow source itself; it is never a string entrypoint, module
     path or dynamic import, and an injected source still passes the same
     declaration validation and binding acquisition.
     """
 
-    def __init__(self, database_path, *, environment=None, capability_source=None):
+    def __init__(self, database_path, *, environment=None, capability_source=None,
+                 workflow_package_root=None):
         self.database = Path(database_path).resolve()
         if environment is None:
             environment = ProjectStorageEnvironment(self.database)
         else:
             require_matching_database(self.database, environment)
         self.environment = environment
+        self.workflow_package_root = (Path(workflow_package_root).resolve()
+                                      if workflow_package_root is not None
+                                      else self.database.parent / "packages" / "workflow")
+        self._workflow_packages = None
         self.definitions = ProjectDefinitionManagement(capability_source)
         self.execution_management = ProjectExecutionManagement(
             management_entry=lambda: self._management_dispatch_entry(),
@@ -53,20 +66,50 @@ class WorkflowHost:
         self._content = None
         self._evidence = None
 
+    # -- domain capability bindings ---------------------------------------
+
+    def _provider_management_binding(self):
+        from .provider_capability import CAPABILITY_ID
+
+        return self.definitions.require_role_binding(
+            MANAGEMENT_ROLE, database=self.database, environment=self.environment,
+            capability_id=CAPABILITY_ID)
+
+    def _content_management_binding(self):
+        from .content_capability import CAPABILITY_ID
+
+        return self.definitions.require_role_binding(
+            MANAGEMENT_ROLE, database=self.database, environment=self.environment,
+            capability_id=CAPABILITY_ID)
+
     @property
     def provider_configuration(self):
         with self._lock:
             if self._providers is None:
-                from .graph_provider_host import ProviderConfigurationService
-                self._providers = ProviderConfigurationService(self.database)
+                binding = self._provider_management_binding()
+                service = binding.factory(
+                    database=self.database, environment=self.environment)
+                if service is None:
+                    from .contract_errors import DiagnosticError
+                    raise DiagnosticError(
+                        "capability_binding_invalid",
+                        "Trusted provider access binding produced no service", status=409)
+                self._providers = service
             return self._providers
 
     @property
     def content_configuration(self):
         with self._lock:
             if self._content is None:
-                from .content_configuration import ContentConfigurationService
-                self._content = ContentConfigurationService(self.database)
+                binding = self._content_management_binding()
+                service = binding.factory(
+                    database=self.database, environment=self.environment)
+                if service is None:
+                    from .contract_errors import DiagnosticError
+                    raise DiagnosticError(
+                        "capability_binding_invalid",
+                        "Trusted content access binding produced no service", status=409)
+                self._content = service
             return self._content
 
     @property
@@ -102,15 +145,32 @@ class WorkflowHost:
             identity, expected_sequence=expected_sequence, idempotency_key=idempotency_key)
 
     def _acquire_role(self, role):
-        """Create one workflow service along its declared trusted local binding."""
+        """Create one workflow service along its declared trusted local binding.
+
+        The two project domain sources are resolved through their own validated
+        management bindings first and only their trusted factories are handed to
+        the workflow source as narrow dependency parameters.
+        """
         binding = self.definitions.require_role_binding(
             role, database=self.database, environment=self.environment)
-        service = binding.factory(database=self.database, environment=self.environment)
+        provider_factory = self._provider_management_binding().factory
+        content_factory = self._content_management_binding().factory
+        service = binding.factory(
+            database=self.database, environment=self.environment,
+            provider_configuration_factory=provider_factory,
+            content_configuration_factory=content_factory,
+            workflow_package_source=self._package_source())
         if service is None:
             from .contract_errors import DiagnosticError
             raise DiagnosticError("capability_binding_invalid",
                                   "Trusted workflow access binding produced no service", status=409)
         return service
+
+    def _package_source(self):
+        if self._workflow_packages is None:
+            from .local_workflow_packages import LocalWorkflowPackageSource
+            self._workflow_packages = LocalWorkflowPackageSource(self.workflow_package_root)
+        return self._workflow_packages
 
     @property
     def graph_service(self):
@@ -132,6 +192,12 @@ class WorkflowHost:
         """Existing management dispatch target: the acquired execution entry or this host."""
         with self._lock:
             return self._graph if self._graph is not None else self
+
+    def _check_application_operation(self, name, parameters):
+        with self._lock:
+            service = self._graph if self._graph is not None else self._management_graph
+            if service is not None:
+                service._check_application_operation(name, parameters)
 
     def _lifecycle_service(self):
         return self._graph if self._graph is not None else self.graph_management_service

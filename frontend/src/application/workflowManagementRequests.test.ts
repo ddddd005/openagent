@@ -53,8 +53,8 @@ describe("formal management request custody", () => {
     }));
     const entry = createWorkflowManagementRequests({ accept: state.ports.accept }).forWorkflow(state.workflowId);
     expect(await entry.dispatch(state.command)).toMatchObject({ kind: "session", session: state.session });
-    expect(observed).toEqual(["request-evidence.read", "request-evidence.write",
-      "session.create", "request-evidence.read", "request-evidence.read", "request-evidence.resolve"]);
+    expect(observed).toEqual(["request-evidence.read", "request-evidence.write", "request-evidence.read",
+      "session.create", "request-evidence.read", "request-evidence.read", "request-evidence.read", "request-evidence.resolve"]);
     expect(state.ports.accept).toHaveBeenCalledOnce();
   });
 

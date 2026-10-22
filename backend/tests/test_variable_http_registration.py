@@ -92,6 +92,7 @@ def _register(host, port, session, document, provider):
     host.graph_service.wait(chain)
     event = query(port, "event.read", session_id=session["workflow_session_id"], chain_id=chain)
     assert event["status"] == "succeeded", event
+    assert event["diagnostic"] is None, event
     assert event["ordered_nodes"] == [provider["node_binding_id"]]
     assert event["completed_nodes"] == event["ordered_nodes"]
     assert query(port, "checkpoint.list", session_id=session["workflow_session_id"]) == []

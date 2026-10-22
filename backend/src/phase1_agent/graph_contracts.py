@@ -18,8 +18,9 @@ from .host_sdk import (
     ObjectBinding, TypeRegistry, bounded_name,
 )
 from .runtime_executor_contracts import ExecutorReference, ExecutorRegistry
-from .tool_binding_contract import ToolBindingAdapter
+from .tool_binding_contract import PureToolBindingAdapter, ToolBindingAdapter
 from .variable_contract import VARIABLE_SCHEMA_VERSION, VARIABLE_TYPE, empty_variable_value
+from .session_preloads import validate_session_preloads
 
 
 MAX_GRAPH_NODES = 512
@@ -103,7 +104,7 @@ def validate_graph_document(value: Any) -> dict:
     require(set(value) == base_fields if value["schema_version"] == 1 else
             base_fields | {"object_bindings"} <= set(value) <= base_fields | {
                 "object_bindings", "package_lock", "control_edges", "event_bindings"}
-            | ({"edit_sequence"} if value["schema_version"] == 3 else set()),
+            | ({"edit_sequence", "session_preloads"} if value["schema_version"] == 3 else set()),
             "graph_invalid_document", "Graph document fields are invalid")
     uuid4_string(value["workflow_definition_id"])
     require(type(value["revision"]) is int and 1 <= value["revision"] <= 2**53 - 1,
@@ -223,6 +224,7 @@ def validate_graph_document(value: Any) -> dict:
                     and edge["target_node_id"] in node_ids,
                     "graph_invalid_control_edge", "Control dependency is duplicated or names a missing node")
             edge_ids.add(identity)
+    validate_session_preloads(value)
     require(len(canonical_bytes(value)) <= MAX_GRAPH_BYTES,
             "graph_invalid_document", "Graph document exceeds its wire limit")
     return copy.deepcopy(value)
@@ -452,7 +454,7 @@ class RegisteredNode:
     executor_ref: ExecutorReference | None = None
     settlement_builder: Callable | None = None
     failed_retry_validator: Callable[[dict, dict], dict] | None = None
-    tool_binding: ToolBindingAdapter | None = None
+    tool_binding: ToolBindingAdapter | PureToolBindingAdapter | None = None
 
 
 class NodeRegistry:
@@ -486,7 +488,7 @@ class NodeRegistry:
                  executor_ref: ExecutorReference | None = None,
                  settlement_builder: Callable | None = None,
                  failed_retry_validator: Callable[[dict, dict], dict] | None = None,
-                 tool_binding: ToolBindingAdapter | None = None,
+                 tool_binding: ToolBindingAdapter | PureToolBindingAdapter | None = None,
                  *, trusted_scope: str = "host") -> None:
         require(isinstance(definition, NodeDefinition), "graph_invalid_type",
                 "Node registration requires a node definition")
@@ -515,7 +517,8 @@ class NodeRegistry:
                 "Settlement builder must be callable")
         require(failed_retry_validator is None or callable(failed_retry_validator), "graph_invalid_type",
                 "Failed retry validator must be callable")
-        require(tool_binding is None or isinstance(tool_binding, ToolBindingAdapter), "graph_invalid_type",
+        require(tool_binding is None or isinstance(tool_binding, (ToolBindingAdapter, PureToolBindingAdapter)),
+                "graph_invalid_type",
                 "Tool binding declaration must be a trusted adapter")
         declared_fields = set()
         for reference in definition.config_node_references:
@@ -824,12 +827,15 @@ class GraphCompiler:
     def _compile(self, document: dict, *, external_inputs: dict | None = None,
                  targets: list[str] | None = None) -> GraphPlan:
         validate_session_item_registrations(document, self.registry)
+        preloads = validate_session_preloads(document, self.registry.data_types)
         available_packages = {item["package_id"]: item["version"] for item in self.registry.package_lock}
         require(all(available_packages.get(item["package_id"]) == item["version"]
                     for item in document.get("package_lock", [])),
                 "graph_missing_package", "The graph requires an unavailable package version")
         for raw_binding in document.get("object_bindings", []):
             binding = ObjectBinding.from_dict(raw_binding)
+            if binding.object_key in preloads:
+                continue
             try:
                 if binding.has_default:
                     self.registry.data_types.validate(binding.type_id, binding.schema_version,

@@ -10,12 +10,16 @@ export interface ResourceOutboxPorts<T> {
   readLegacyPending?(): string | null;
   archivePending?(value: string): Promise<void>;
 }
+export type RequestProgress = "ready" | "restored" | "evidence-writing" | "evidence-unknown"
+  | "request-in-flight" | "result-unknown" | "business-confirmed" | "acceptance-failed"
+  | "closure-failed" | "completed" | "rejected" | "blocked";
 export function createResourceOutbox<T>(ports: ResourceOutboxPorts<T>, valid: (value: unknown) => value is T,
   refresh: (request: T | null) => Promise<void>, label: string) {
   const pending = ref<T | null>(null);
   const completed = ref<T | null>(null);
   const error = ref("");
   const busy = ref(false), initialized = ref(false), blocked = ref(false);
+  const progress = ref<RequestProgress>("ready");
   const legacyRaw = ref<string | null>(null);
   const locked = computed(() => busy.value || !initialized.value || blocked.value || !!pending.value || legacyRaw.value !== null);
   let generation = 0;
@@ -30,6 +34,7 @@ export function createResourceOutbox<T>(ports: ResourceOutboxPorts<T>, valid: (v
       const request: unknown = JSON.parse(raw);
       if (!valid(request)) throw new Error("Invalid resource intent");
       pending.value = graphClone(request) as typeof pending.value;
+      progress.value = "restored";
     }
     legacyRaw.value = pending.value ? null : ports.readLegacyPending?.() ?? null;
     if (legacyRaw.value !== null) error.value = "旧浏览器原请求仅供核实回执，原文保留；不会恢复旧资源或重新提交";
@@ -37,6 +42,7 @@ export function createResourceOutbox<T>(ports: ResourceOutboxPorts<T>, valid: (v
   }
   function failedInitialization() {
     blocked.value = true;
+    progress.value = "blocked";
     initialized.value = true;
     error.value = `原${label}请求无法读取，资源修改已禁用`;
   }
@@ -48,6 +54,22 @@ export function createResourceOutbox<T>(ports: ResourceOutboxPorts<T>, valid: (v
   async function initialize() {
     if (initializing) await initializing;
     return initialized.value && !blocked.value;
+  }
+  async function reloadPending() {
+    if (busy.value) return false;
+    try {
+      const raw = await ports.readPending();
+      if (busy.value) return false;
+      pending.value = null;
+      blocked.value = false;
+      acceptSaved(raw);
+      if (raw === null) progress.value = "ready";
+      error.value = "";
+      return true;
+    } catch {
+      failedInitialization();
+      return false;
+    }
   }
   async function submit(request: T, reconcile = false): Promise<boolean> {
     const original = graphClone(request), identity = graphJsonSignature(original), version = ++generation;
@@ -61,16 +83,26 @@ export function createResourceOutbox<T>(ports: ResourceOutboxPorts<T>, valid: (v
       } catch { return false; }
     };
     busy.value = true; error.value = "";
+    progress.value = "request-in-flight";
     try {
       await (reconcile ? ports.readReceipt : ports.save)(graphClone(original));
+      progress.value = "business-confirmed";
       if (!await current()) return false;
-      if (acknowledge && !await acknowledge(graphClone(original)))
+      if (acknowledge && !await acknowledge(graphClone(original))) {
+        progress.value = "acceptance-failed";
         throw new Error("已收到提交回执，但当前表单尚未确认；请核实原请求");
+      }
       if (!await current()) return false;
-      await ports.writePending(null);
+      try { await ports.writePending(null); }
+      catch (cause) {
+        progress.value = "closure-failed";
+        throw new Error(`${label}业务结果已确认，原请求证据结案失败：${
+          cause instanceof Error ? cause.message : String(cause)}`, { cause });
+      }
       if (!locallyCurrent()) return false;
       pending.value = null;
       completed.value = graphClone(original) as typeof completed.value;
+      progress.value = "completed";
       // Refresh runs only after the durable original request has been closed;
       // completion handlers must not delete verification entries before this.
       await refresh(graphClone(original) as T);
@@ -78,12 +110,13 @@ export function createResourceOutbox<T>(ports: ResourceOutboxPorts<T>, valid: (v
     } catch (failure) {
       if (!await current()) return false;
       error.value = failure instanceof Error ? failure.message : `${label}保存失败`;
+      if (progress.value === "request-in-flight") progress.value = "result-unknown";
       if (!reconcile && failure instanceof WorkbenchApiError && failure.kind === "rejected"
         && failure.code !== "idempotency_conflict") {
         try {
           await ports.writePending(null);
-          if (locallyCurrent()) pending.value = null;
-        } catch { error.value = "原请求状态无法保存，先核实原请求"; }
+          if (locallyCurrent()) { pending.value = null; progress.value = "rejected"; }
+        } catch { progress.value = "closure-failed"; error.value = "业务请求已明确拒绝，原请求证据结案失败"; }
       }
       return false;
     } finally { if (version === generation) busy.value = false; }
@@ -93,9 +126,11 @@ export function createResourceOutbox<T>(ports: ResourceOutboxPorts<T>, valid: (v
     if (blocked.value || locked.value || !valid(request)) return false;
     const original = graphClone(request);
     busy.value = true;
+    progress.value = "evidence-writing";
     try { await ports.writePending(JSON.stringify(original)); }
     catch (failure) {
       error.value = `无法保存原${label}请求，未提交`;
+      progress.value = "evidence-unknown";
       if (failure instanceof WorkbenchApiError && failure.kind === "unknown") {
         try {
           const raw = await ports.readPending();
@@ -159,6 +194,6 @@ export function createResourceOutbox<T>(ports: ResourceOutboxPorts<T>, valid: (v
     } catch (failure) { error.value = failure instanceof Error ? failure.message : "旧原请求回执无法核实，原文仍保留"; return false; }
     finally { busy.value = false; }
   }
-  return { pending, completed, error, busy, locked, initialize, send, reconcile, abandon,
+  return { pending, completed, error, busy, locked, progress, initialize, reloadPending, send, reconcile, abandon,
     setCompletionHandler, legacyRaw, reconcileLegacyPending };
 }

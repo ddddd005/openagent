@@ -263,9 +263,9 @@ def test_real_start_captures_once_and_executes_the_same_basis(tmp_path, monkeypa
             captured.append(basis)
             return basis
 
-        def execute(execution_sid, chain_id):
+        def execute(execution_sid, chain_id, steps=None):
             executed.append(service._execution_registries[chain_id])
-            return original_execute(execution_sid, chain_id)
+            return original_execute(execution_sid, chain_id, steps)
 
         monkeypatch.setattr(service, "_capture_run_basis", capture)
         monkeypatch.setattr(service, "_execute", execute)

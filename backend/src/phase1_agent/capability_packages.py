@@ -281,6 +281,13 @@ class LoadedCapabilities:
                 "package_manifests": copy.deepcopy(list(self.package_manifests))}
 
 
+@dataclass(frozen=True)
+class _PreparedCapabilities:
+    loaded: LoadedCapabilities
+    owner: object = field(repr=False)
+    contracts: dict = field(repr=False)
+
+
 def _execution_package_lock(manifests: list[dict]) -> tuple[dict, ...]:
     """Exclude UI-only exports, retaining exact dependencies of execution packages.
 
@@ -370,7 +377,18 @@ class CapabilityPackageLoader:
         visiting: set[str] = set()
         order: list[CapabilityPackage] = []
 
-        def visit(package_id: str, version: str) -> None:
+        def visit(package_id: str, version: str, required_by=None) -> None:
+            try:
+                visit_exact(package_id, version)
+            except HostContractError as exc:
+                if not getattr(exc, "diagnostics", None):
+                    exc.diagnostics = [{"reason_code": exc.reason_code,
+                                        "message": "Exact package selection could not be resolved",
+                                        "package_id": package_id, "version": version,
+                                        "stage": "resolution", "required_by": required_by}]
+                raise
+
+        def visit_exact(package_id: str, version: str) -> None:
             ensure(package_id not in visiting, "package_dependency_cycle", "Package dependencies form a cycle")
             ensure(package_id not in selected or selected[package_id] == version,
                    "package_dependency_conflict", "Dependencies require incompatible exact versions")
@@ -384,7 +402,8 @@ class CapabilityPackageLoader:
             for dependency in sorted(package.manifest.dependencies, key=lambda item: item.package_id):
                 ensure(dependency.package_id not in enabled or enabled[dependency.package_id] == dependency.version,
                        "package_dependency_conflict", "Enabled dependency version conflicts with its requirement")
-                visit(dependency.package_id, dependency.version)
+                visit(dependency.package_id, dependency.version,
+                      {"package_id": package_id, "version": version})
             visiting.remove(package_id)
             selected[package_id] = version
             order.append(package)
@@ -399,7 +418,8 @@ class CapabilityPackageLoader:
                   for package in order),
         )
 
-    def load(self, enabled: dict[str, str] | None = None) -> LoadedCapabilities:
+    def _prepare(self, enabled: dict[str, str] | None = None) -> _PreparedCapabilities:
+        """Build a complete candidate without advancing published contract history."""
         resolved = self.resolve(enabled)
         staged = self._base_registry.detached()
         frontend_extensions: dict[str, dict] = {}
@@ -414,9 +434,19 @@ class CapabilityPackageLoader:
                 updated_node_declarations.update(registration._updated_node_declarations)
             except Exception as exc:
                 if isinstance(exc, HostContractError):
+                    if not getattr(exc, "diagnostics", None):
+                        exc.diagnostics = [{"reason_code": exc.reason_code,
+                                            "message": "Package registration or export validation failed",
+                                            "package_id": identity.package_id, "version": identity.version,
+                                            "stage": "registration"}]
                     raise
-                raise HostContractError("package_registration_failed",
-                                        f"Package registration failed: {package.manifest.package_id}") from exc
+                error = HostContractError("package_registration_failed",
+                                          f"Package registration failed: {package.manifest.package_id}")
+                error.diagnostics = [{"reason_code": error.reason_code,
+                                      "message": "Package registration failed",
+                                      "package_id": identity.package_id, "version": identity.version,
+                                      "stage": "registration"}]
+                raise error from exc
             manifest = package.manifest.to_dict()
             manifest["exports"] = exports
             manifests.append(manifest)
@@ -462,18 +492,32 @@ class CapabilityPackageLoader:
                and all(key not in self._frontend_contracts or self._frontend_contracts[key] == value
                        for key, value in frontend_contracts.items()),
                "package_contract_redefined", "Upgrades must use new type or component versions when contracts change")
-        self._type_contracts.update(type_contracts)
-        self._node_contracts.update(node_contracts)
-        self._node_contract_scopes.update(staged._trusted_scopes)
-        self._executor_contracts.update(executor_contracts)
-        self._service_contracts.update(service_contracts)
-        self._information_contracts.update(information_contracts)
-        self._frontend_contracts.update(frontend_contracts)
+        contracts = {
+            "_type_contracts": {**self._type_contracts, **type_contracts},
+            "_node_contracts": {**self._node_contracts, **node_contracts},
+            "_node_contract_scopes": {**self._node_contract_scopes, **staged._trusted_scopes},
+            "_executor_contracts": {**self._executor_contracts, **executor_contracts},
+            "_service_contracts": {**self._service_contracts, **service_contracts},
+            "_information_contracts": {**self._information_contracts, **information_contracts},
+            "_frontend_contracts": {**self._frontend_contracts, **frontend_contracts},
+        }
         staged.package_lock = copy.deepcopy(lock)
         staged.execution_package_lock = _execution_package_lock(manifests)
-        return LoadedCapabilities(staged.detached(frozen=True), copy.deepcopy(lock),
-                                  tuple(copy.deepcopy(frontend_extensions[key]) for key in sorted(frontend_extensions)),
-                                  tuple(copy.deepcopy(manifests)))
+        loaded = LoadedCapabilities(staged.detached(frozen=True), copy.deepcopy(lock),
+                                    tuple(copy.deepcopy(frontend_extensions[key]) for key in sorted(frontend_extensions)),
+                                    tuple(copy.deepcopy(manifests)))
+        return _PreparedCapabilities(loaded, self, contracts)
+
+    def _publish(self, candidate: _PreparedCapabilities) -> None:
+        ensure(candidate.owner is self, "package_invalid_candidate",
+               "Package candidate belongs to another loader")
+        for name, values in candidate.contracts.items():
+            setattr(self, name, values)
+
+    def load(self, enabled: dict[str, str] | None = None) -> LoadedCapabilities:
+        candidate = self._prepare(enabled)
+        self._publish(candidate)
+        return candidate.loaded
 
 
 def discover_trusted_packages(entrypoints: Iterable[str]) -> tuple[CapabilityPackage, ...]:

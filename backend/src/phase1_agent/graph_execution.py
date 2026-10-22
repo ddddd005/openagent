@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from .contract_json import canonical_bytes, content_digest, validate_json_value
 from .contract_errors import PublicDiagnostic
+from .result_acceptance import failure_responsibility
 from .graph_contracts import (
     GraphDiagnosticError, GraphPlan, NodeDefinition, NodeRegistry, require,
     validate_content_value, uuid4_string,
@@ -344,12 +345,14 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
                 payload["settlement_context"] = event["settlement_context"]
             try:
                 on_node(payload)
-            except Exception:
+            except Exception as error:
                 if payload.get("settlement_committed"):
                     raise GraphDiagnosticError(
                         "result_committed_notification_failed",
                         "Node result committed but its local completion acknowledgment failed",
                         node_id=event["node_binding_id"]) from None
+                if event["event"] == "succeeded":
+                    error._result_failure_stage = "node_acceptance"
                 raise
             # A persistence adapter may advance the shared-state revision after
             # saving a node. Its CAS basis must reach the next scoped context.
@@ -536,6 +539,10 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
             private.update(before_private)
             diagnostic = {"code": code, "message": str(exc), "node_id": identity,
                           "port_id": None, "edge_id": None, "dependent_outputs": list(plan.target_node_ids)}
+            if retryable:
+                diagnostic.update(
+                    failure_stage=getattr(exc, "_result_failure_stage", "result_acceptance"),
+                    responsibility=failure_responsibility(exc), definite_result=True)
             if isinstance(exc, GraphDiagnosticError):
                 diagnostic.update(exc.diagnostics[0])
                 diagnostic["node_id"] = diagnostic["node_id"] or identity

@@ -4,11 +4,14 @@ from contextlib import closing
 from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
+from re import fullmatch
+import sqlite3
 from threading import RLock
 
+from .contract_errors import DiagnosticError
 from .contract_json import canonical_bytes, content_digest, loads_strict, validate_json_value
 from .graph_application_identity import application_command_digest, persist_application_command_identity
-from .graph_records import require
+from .graph_records import require, uuid_value
 
 
 _SECRET_FIELDS = {
@@ -19,6 +22,66 @@ _FIELDS = {
     "schema_version", "kind", "operation", "idempotency_key", "owner_kind", "owner_id",
     "request", "request_digest", "resolution",
 }
+_WORKFLOW_OWNERS = frozenset({
+    "workflow-configuration", "workflow-configuration-copy", "workflow-management",
+})
+_PENDING_COORDINATES = ("owner_kind", "owner_id", "operation", "idempotency_key")
+
+
+def _valid_pending_coordinates(value):
+    return (type(value) is dict and set(value) == set(_PENDING_COORDINATES)
+            and type(value["owner_kind"]) is str and value["owner_kind"] in _WORKFLOW_OWNERS
+            and uuid_value(value["owner_id"])
+            and _text(value["operation"], 128) and _text(value["idempotency_key"], 128))
+
+
+def validate_pending_page(limit=50, cursor=None):
+    require(type(limit) is int and 1 <= limit <= 100, "invalid_request",
+            "Pending request page limit is invalid")
+    require(cursor is None or _valid_pending_coordinates(cursor), "invalid_request",
+            "Pending request cursor is invalid")
+
+
+def read_workflow_pending(database_path, *, limit=50, cursor=None):
+    """Discover workflow request coordinates without reading bodies or opening a writer."""
+    validate_pending_page(limit, cursor)
+    page = {"schema_version": 1, "kind": "workflow.request-evidence-page",
+            "items": [], "next_cursor": None}
+    path = Path(database_path).resolve()
+    try:
+        if not path.exists():
+            return page
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True,
+                                     isolation_level=None)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only=ON")
+            connection.execute("BEGIN")
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                                  "AND name='pending_commands'").fetchone() is None:
+                return page
+            coordinates = ",".join(_PENDING_COORDINATES)
+            parameters = sorted(_WORKFLOW_OWNERS)
+            after = ""
+            if cursor is not None:
+                after = f" AND ({coordinates}) > (?,?,?,?)"
+                parameters.extend(cursor[key] for key in _PENDING_COORDINATES)
+            rows = connection.execute(
+                f"SELECT {coordinates},request_digest,resolution FROM pending_commands "
+                "WHERE resolution='pending' AND owner_kind IN (?,?,?)" + after
+                + f" ORDER BY {coordinates} LIMIT ?", [*parameters, limit + 1]).fetchall()
+            for row in rows:
+                item = dict(row)
+                coordinate = {key: item[key] for key in _PENDING_COORDINATES}
+                require(_valid_pending_coordinates(coordinate)
+                        and type(item["request_digest"]) is str
+                        and fullmatch("[0-9a-f]{64}", item["request_digest"]) is not None,
+                        "storage_contract_violation", "Pending request summary is invalid", 500)
+            page["items"] = [dict(row) for row in rows[:limit]]
+            if len(rows) > limit:
+                page["next_cursor"] = {key: rows[limit - 1][key] for key in _PENDING_COORDINATES}
+            return page
+    except (sqlite3.Error, OSError) as exc:
+        raise DiagnosticError("storage_unavailable", "Pending requests cannot be read", status=503) from exc
 
 
 def initialize_request_evidence(connection):

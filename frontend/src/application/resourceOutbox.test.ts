@@ -20,6 +20,25 @@ function fixture(overrides: Partial<ResourceOutboxPorts<Request>> = {}) {
 }
 
 describe("async resource mutation custody", () => {
+  it("keeps new pending B when the late business confirmation for A arrives", async () => {
+    let durable: string | null = null;
+    const gate = deferred<void>(), entered = deferred<void>();
+    const original = request(), next = request(), clear = vi.fn();
+    const state = fixture({ readPending: () => durable, writePending: value => {
+      if (value === null) clear();
+      durable = value;
+    }, save: vi.fn(async () => { entered.resolve(); await gate.promise; }) });
+    const sending = state.outbox.send(original);
+    await entered.promise;
+    durable = JSON.stringify(next);
+    gate.resolve();
+    expect(await sending).toBe(false);
+    expect(JSON.parse(durable!)).toEqual(next);
+    expect(clear).not.toHaveBeenCalled();
+    expect(state.ports.save).toHaveBeenCalledOnce();
+    expect(state.ports.readReceipt).not.toHaveBeenCalled();
+    expect(state.outbox.locked.value).toBe(true);
+  });
   it("retains the original until the exact accepted form state has been persisted", async () => {
     const gate = deferred<boolean>(), called = deferred<void>();
     const state = fixture();

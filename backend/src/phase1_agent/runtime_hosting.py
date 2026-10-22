@@ -19,6 +19,7 @@ from jsonschema import Draft202012Validator, ValidationError
 from .contract_json import canonical_bytes, validate_json_value
 from .host_sdk import HostContractError, bounded_name, ensure
 from .runtime_executor_contracts import ExecutorReference, ExecutorRegistry
+from .result_acceptance import retained_acceptance_allowed
 
 
 @dataclass(frozen=True)
@@ -270,6 +271,7 @@ class RuntimeHost:
             generation, handle, continuation = invocation.generation, invocation.handle, invocation.continuation
             callbacks = ExecutorCallbacks(self, owner, generation)
         try:
+            failure_stage = "executor"
             outputs = handle.advance(callbacks, continuation)
             validate_json_value(outputs)
             ensure(type(outputs) is dict, "runtime_invalid_result", "Executor must return named output candidates")
@@ -279,6 +281,7 @@ class RuntimeHost:
                 self._active(owner, generation)
                 invocation.outputs = copy.deepcopy(outputs)
                 invocation.result_envelope = copy.deepcopy(envelope)
+                failure_stage = "result_acceptance"
                 receipt = self._result_sink(copy.deepcopy(envelope)) if self._result_sink is not None else None
                 invocation.outputs, invocation.receipt = copy.deepcopy(outputs), copy.deepcopy(receipt)
                 invocation.status = "succeeded"
@@ -297,9 +300,12 @@ class RuntimeHost:
                 return HostedOutcome("paused", continuation_ref=invocation.continuation_ref)
         except BaseException as error:
             with self._lock:
-                recoverable = getattr(error, "reason_code", None) is None and (invocation.outputs is not None or (
+                definite_result = (invocation.outputs is not None or (
                     callable(getattr(invocation.handle, "has_pending_acceptance", None))
                     and invocation.handle.has_pending_acceptance()))
+                recoverable = retained_acceptance_allowed(
+                    error, stage=getattr(error, "_result_failure_stage", failure_stage),
+                    definite_result=definite_result)
                 invocation.status = "acceptance_pending" if recoverable else "failed"
                 invocation.pause_requested = False
                 invocation.pause_request_id = None
@@ -333,7 +339,9 @@ class RuntimeHost:
             invocation.status = "running"
             callbacks = ExecutorCallbacks(self, owner, generation)
         try:
+            failure_stage = "information_binding"
             self._bind_information(invocation)
+            failure_stage = "result_acceptance"
             outputs = invocation.outputs
             if outputs is None:
                 recover = getattr(invocation.handle, "recover_acceptance", None)
@@ -356,7 +364,13 @@ class RuntimeHost:
                 return HostedOutcome("succeeded", copy.deepcopy(outputs), copy.deepcopy(invocation.receipt))
         except BaseException as error:
             with self._lock:
-                invocation.status = "acceptance_pending" if getattr(error, "reason_code", None) is None else "failed"
+                pending = (invocation.outputs is not None or (
+                    callable(getattr(invocation.handle, "has_pending_acceptance", None))
+                    and invocation.handle.has_pending_acceptance()))
+                recoverable = retained_acceptance_allowed(
+                    error, stage=getattr(error, "_result_failure_stage", failure_stage),
+                    definite_result=pending)
+                invocation.status = "acceptance_pending" if recoverable else "failed"
                 if invocation.status == "failed":
                     self._dispose(invocation)
             raise
@@ -467,7 +481,11 @@ class RuntimeHost:
                        "Pending fact identity cannot change payload")
                 envelope = copy.deepcopy(pending)
             invocation.pending_facts[fact_id] = copy.deepcopy(envelope)
-            receipt = self._fact_sink(envelope)
+            try:
+                receipt = self._fact_sink(envelope)
+            except Exception as error:
+                error._result_failure_stage = "fact_acceptance"
+                raise
             invocation.fact_sequence += 1
             invocation.facts[fact_id] = (digest, copy.deepcopy(receipt))
             invocation.pending_facts.pop(fact_id, None)

@@ -22,6 +22,7 @@ from .model_execution_contracts import (
 from .model_request_contracts import validate_compaction_policy, validate_model_binding
 from .provider_metadata import remap_provider_metadata
 from .runtime_hosting import InvocationOwner
+from .tool_batch_validation import tool_batch_argument_feedback
 
 
 _COMPONENT_ID = "9c5a4e10-c67c-4d3d-9df8-2c43cf9e19c4"
@@ -267,14 +268,30 @@ def prove_execution_facts_v2(executor_facts, prompt, binding, receipts, *, model
                 pending.pop(0)
                 dispatch, settled = None, None
             else:
-                require(feedback_request is not None and message["role"] == "user"
-                        and feedback_count == 0
-                        and message["source"] == {"kind": "protocol_feedback", "request_id": feedback_request}
-                        and message["blocks"] == [{"kind": "text",
-                                                  "text": "Call final_answer with a valid JSON answer."}],
-                        "agent_execution_order_mismatch", "Feedback does not derive from a plain normal response")
-                feedback_request = None
-                feedback_count += 1
+                if current is not None and response is not None:
+                    require(decision is None and not pending
+                            and current["settings"]["purpose"] == "normal"
+                            and response["finish_reason"] == "tool_calls" and response["tool_calls"],
+                            "agent_execution_order_mismatch", "Argument feedback has no unresolved tool batch")
+                    feedback = tool_batch_argument_feedback(
+                        response["tool_calls"], snapshot["tool_definitions"], seen_upstream)
+                    require(feedback is not None and message["role"] == "user"
+                            and message["source"] == {
+                                "kind": "protocol_feedback", "request_id": response["request_id"]}
+                            and message["blocks"] == [{"kind": "text", "text": feedback}],
+                            "agent_execution_order_mismatch",
+                            "Argument feedback does not derive from the original invalid batch")
+                    seen_upstream.update(call["id"] for call in response["tool_calls"])
+                    current, response = None, None
+                else:
+                    require(feedback_request is not None and message["role"] == "user"
+                            and feedback_count == 0
+                            and message["source"] == {"kind": "protocol_feedback", "request_id": feedback_request}
+                            and message["blocks"] == [{"kind": "text",
+                                                      "text": "Call final_answer with a valid JSON answer."}],
+                            "agent_execution_order_mismatch", "Feedback does not derive from a plain normal response")
+                    feedback_request = None
+                    feedback_count += 1
             effective.append(deepcopy(message))
             seen_messages.add(message["message_id"])
             accepted.append(message)

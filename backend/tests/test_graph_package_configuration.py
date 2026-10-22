@@ -223,12 +223,21 @@ def test_resolver_default_selection_and_explicit_empty_remain_distinct():
     assert calls == []
 
 
+class _SelectionCandidate:
+    def __init__(self, loader_candidate):
+        self.loader_candidate = loader_candidate
+        self.registry = loader_candidate.loaded.registry
+
+
 class SelectionPlatform(GraphPlatform):
     def __init__(self, path, loader):
         self.path, self._package_loader = path, loader
         self.registry = loader.load({}).registry.detached()
         self._frontend_extensions, self._package_manifests = (), ()
         self._package_diagnostics = [{"reason_code": "package_missing_dependency"}]
+        self._publication_failure = None
+        self._published_package = None
+        self._workflow_package_source = None
         self._lock = RLock()
         self._pauses, self._resuming = set(), set()
         for name in (
@@ -237,8 +246,21 @@ class SelectionPlatform(GraphPlatform):
         ):
             setattr(self, name, {})
 
-    def _load_current_capabilities(self, selected):
-        return self._package_loader.load(selected)
+    def _prepare_current_capabilities(self, selected):
+        # Build the complete candidate before the selection transaction; the
+        # loader's published contract history is advanced only after commit.
+        return _SelectionCandidate(self._package_loader._prepare(selected))
+
+    def _publish_capabilities(self, candidate):
+        loaded = candidate.loader_candidate.loaded
+        self.registry = candidate.registry
+        self._frontend_extensions = loaded.frontend_extensions
+        self._package_manifests = loaded.package_manifests
+        self._package_loader._publish(candidate.loader_candidate)
+        self._published_package = candidate
+
+    def _failed_package_publication(self, selected, *, selection_committed=True):
+        raise RuntimeError("package publication failed after selection commit")
 
     def _store(self):
         return SqliteStore(self.path)

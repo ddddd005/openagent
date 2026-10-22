@@ -10,6 +10,7 @@ from .contract_json import canonical_bytes
 from .graph_contracts import NodeRegistry, require
 from .host_sdk import ObjectBinding, TypeRegistry
 from .session_objects import SessionObjectStore
+from .session_preloads import session_preload_bindings
 from .variable_contract import VARIABLE_TYPE, VARIABLE_SCHEMA_VERSION
 from .workflow_configuration import fixed_configuration_projection, validate_node_configuration
 
@@ -116,6 +117,7 @@ def _checkpoint_bindings(document, exact_type, *, types: TypeRegistry, registry:
             "checkpoint_context_registration_invalid",
             "Checkpoint context selection requires the fixed document and trusted registries", 409)
     nodes = {node["node_binding_id"]: node for node in document.get("nodes", [])}
+    preloads = session_preload_bindings(document, types)
     bindings, registered_instances = {}, set()
     for raw in document.get("object_bindings", []):
         binding = ObjectBinding.from_dict(raw)
@@ -126,6 +128,13 @@ def _checkpoint_bindings(document, exact_type, *, types: TypeRegistry, registry:
                 "checkpoint_context_type_unavailable",
                 "The exact checkpoint session type is unavailable", 409)
         if not definition_type.checkpoint_admission:
+            continue
+        if binding.object_key in preloads:
+            require(exact_type == (VARIABLE_TYPE, VARIABLE_SCHEMA_VERSION),
+                    "checkpoint_context_registration_invalid",
+                    "Special checkpoint items cannot use a preload registration", 409,
+                    object_key=binding.object_key)
+            bindings[binding.object_key] = binding
             continue
         registrar_id = binding.registrar_node_id
         registrar = nodes.get(registrar_id)
@@ -171,6 +180,30 @@ def checkpoint_variable_bindings(document, *, types: TypeRegistry, registry: Nod
     """Resolve explicitly admitted independent variable items from the fixed graph."""
     return _checkpoint_bindings(
         document, (VARIABLE_TYPE, VARIABLE_SCHEMA_VERSION), types=types, registry=registry)
+
+
+def checkpoint_preloaded_bindings(document, *, types: TypeRegistry, registry: NodeRegistry):
+    """Only explicitly preloaded ordinary types enter the generic inline partition."""
+    require(isinstance(registry, NodeRegistry), "checkpoint_preload_registration_invalid",
+            "Preloaded checkpoint selection requires the exact node registry", 409)
+    return {
+        key: binding for key, binding in session_preload_bindings(document, types).items()
+        if (binding.type_id, binding.schema_version) != (VARIABLE_TYPE, VARIABLE_SCHEMA_VERSION)
+    }
+
+
+def _collect_preloaded_values(bindings, read, *, types):
+    result = {}
+    for key, binding in sorted(bindings.items()):
+        record = read(key, binding)
+        require(record is not None and not record["deleted"],
+                "checkpoint_preload_state_unavailable",
+                "An admitted preload requires its current logical state", 409, object_key=key)
+        result[key] = {
+            "type_id": binding.type_id, "schema_version": binding.schema_version,
+            "value": types.validate(binding.type_id, binding.schema_version, record["value"], scope="session"),
+        }
+    return result
 
 
 def checkpoint_chat_bindings(document, *, types: TypeRegistry, registry: NodeRegistry):
@@ -250,13 +283,19 @@ def collect_checkpoint_state(repo, workflow_definition_id, fixed_definition_revi
         chat_contexts[key] = {
             "type_id": binding.type_id, "schema_version": binding.schema_version, "value": value,
         }
-    return {
+    result = {
         "configuration": collect_checkpoint_configuration(
             repo, workflow_definition_id, fixed_definition_revision, registry=registry),
         "agent_contexts": contexts,
         "variables": variables,
         "chat_contexts": chat_contexts,
     }
+    preloads = _collect_preloaded_values(
+        checkpoint_preloaded_bindings(document, types=types, registry=registry),
+        lambda key, binding: objects._checkpoint_current_value(source_session, key, binding), types=types)
+    if preloads:
+        result["preloaded_items"] = preloads
+    return result
 
 
 def collect_agent_contexts_data(
@@ -327,10 +366,16 @@ def collect_checkpoint_state_data(data, source_session, document):
         chat_contexts[key] = {
             "type_id": binding.type_id, "schema_version": binding.schema_version, "value": value,
         }
-    return {
+    result = {
         "configuration": collect_checkpoint_configuration_document(
             document, registry=registry),
         "agent_contexts": contexts,
         "variables": variables,
         "chat_contexts": chat_contexts,
     }
+    preloads = _collect_preloaded_values(
+        checkpoint_preloaded_bindings(document, types=types, registry=registry),
+        lambda key, binding: data.state.checkpoint_value(source_session, key, binding), types=types)
+    if preloads:
+        result["preloaded_items"] = preloads
+    return result

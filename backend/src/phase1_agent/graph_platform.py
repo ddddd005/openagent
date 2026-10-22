@@ -154,16 +154,31 @@ class GraphPlatform:
             global_resources=global_resources, status=status,
         )
 
-    def platform_capabilities(self):
+    @staticmethod
+    def _capability_view(registry, frontend_extensions):
         return {"envelope_version": 1, "host_protocol_version": 1,
-                "package_lock": deepcopy(list(self.registry.package_lock)),
-                "execution_package_lock": deepcopy(list(self.registry.execution_package_lock)),
-                "data_types": self.registry.data_types.catalog(),
-                "executors": self.registry.executors.catalog(),
-                "pause_support": self.registry.executors.pause_catalog(),
-                "services": self.registry.services.catalog(),
-                "package_diagnostics": deepcopy(self._package_diagnostics),
-                "frontend_extensions": deepcopy(list(getattr(self, "_frontend_extensions", ())))}
+                "package_lock": deepcopy(list(registry.package_lock)),
+                "execution_package_lock": deepcopy(list(registry.execution_package_lock)),
+                "data_types": registry.data_types.catalog(),
+                "executors": registry.executors.catalog(),
+                "pause_support": registry.executors.pause_catalog(),
+                "services": registry.services.catalog(),
+                "frontend_extensions": deepcopy(list(frontend_extensions))}
+
+    def platform_capabilities(self):
+        with self._lock:
+            result = (deepcopy(self._published_package.platform) if self._publication_failure is not None
+                      else self._capability_view(self.registry, self._frontend_extensions))
+            result.update(package_diagnostics=deepcopy(self._package_diagnostics),
+                          local_package_sources=self._local_package_sources(),
+                          package_publication=deepcopy(self._publication_failure))
+            return result
+
+    def _local_package_sources(self):
+        source = self._workflow_package_source
+        return {"root": str(source.root) if source is not None else None,
+                "packages": source.catalog() if source is not None else [],
+                "diagnostics": deepcopy(list(source.diagnostics)) if source is not None else []}
 
     def configure_capability_packages(self, enabled_packages):
         """Project management operation; no executor replacement during active runs."""
@@ -181,21 +196,22 @@ class GraphPlatform:
                         or self._information_routers)
             require(not active and not retained, "package_change_during_execution",
                     "Settle active executions before changing project packages", 409)
-            loaded = self._load_current_capabilities(enabled_packages)
+            candidate = self._prepare_current_capabilities(enabled_packages)
             from .graph_package_selection import GraphPackageSelectionStore
             from .type_contract_store import TypeContractStore
             try:
                 store._connection.execute("BEGIN IMMEDIATE")
-                TypeContractStore(store).check_registry(loaded.registry.data_types)
+                TypeContractStore(store).check_registry(candidate.registry.data_types)
                 GraphPackageSelectionStore(store).write_current(enabled_packages)
                 store._connection.execute("COMMIT")
             except BaseException:
                 if store._connection.in_transaction:
                     store._connection.execute("ROLLBACK")
                 raise
-            self.registry = loaded.registry.detached()
-            self._frontend_extensions = loaded.frontend_extensions
-            self._package_manifests = loaded.package_manifests
+            try:
+                self._publish_capabilities(candidate)
+            except BaseException as exc:
+                raise self._failed_package_publication(enabled_packages) from exc
             self._package_diagnostics = []
             return self.platform_capabilities()
 
@@ -287,20 +303,20 @@ class GraphPlatform:
         from .host_sdk import ResourceIdentity
         identity = ResourceIdentity.from_dict(identity).to_dict()
         with self._lock:
-            self._check_open()
+            self._check_service_open()
             return global_resource_service(self, identity["type_id"]).get_global_resource(identity)
 
     def list_global_resources(self, *, scope=None, type_id=None):
         from .content_configuration import list_managed_global_resources
         with self._lock:
-            self._check_open()
+            self._check_service_open()
             return list_managed_global_resources(self, scope=scope, type_id=type_id)
 
     def save_global_resource(self, record, *, expected_sequence, idempotency_key):
         from .content_configuration import global_resource_service
         require(type(record) is dict, "global_resource_invalid", "Global resource envelope is invalid")
         with self._lock:
-            self._check_open()
+            self._check_service_open()
             return global_resource_service(self, record.get("type_id")).save_global_resource(
                 record, expected_sequence=expected_sequence, idempotency_key=idempotency_key)
 
@@ -309,6 +325,6 @@ class GraphPlatform:
         from .host_sdk import ResourceIdentity
         identity = ResourceIdentity.from_dict(identity).to_dict()
         with self._lock:
-            self._check_open()
+            self._check_service_open()
             return global_resource_service(self, identity["type_id"]).delete_global_resource(
                 identity, expected_sequence=expected_sequence, idempotency_key=idempotency_key)

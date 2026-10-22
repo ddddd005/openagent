@@ -184,6 +184,9 @@ describe("formal configuration copy in the workflow store", () => {
     expect(workspace.formalWorkflowCount()).toBe(1);
     expect(graph.copyPendingRequests()).toMatchObject([{ workflowId: id, title: "Source workflow",
       pending: true, busy: false }]);
+    // The new copy channel owns the copy gate while its request is unresolved,
+    // independently of the editor/run locks exercised below.
+    expect(graph.copyLocked).toBe(true);
     // A pending copy does not lock the source editor or run controls (the management
     // channel is initialized separately; the copy request itself is not a global lock).
     await graph.reconcile(id);
@@ -197,6 +200,7 @@ describe("formal configuration copy in the workflow store", () => {
     const reconciled = graph.copyPendingRequests()[0];
     expect(reconciled?.pending).toBe(false);
     expect(reconciled?.error).toContain("原复制已确认，目标现不可用");
+    expect(graph.copyLocked).toBe(false);
     expect(workspace.workflows.some(row => row.id === pendingTarget)).toBe(false);
     expect([...evidence.records.values()][0]).toMatchObject({ resolution: "verified" });
   });
@@ -255,6 +259,19 @@ describe("formal configuration copy in the workflow store", () => {
     expect(retry.requests).toHaveLength(1);
     expect(retry.requests[0]!.target_workflow_definition_id).not.toBe(
       retry.receiptRequests[0]!.target_workflow_definition_id);
+  });
+  it("refuses a concurrent copy while the first submission is still in flight", async () => {
+    const { graph, id } = seedSource();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const transport = stubTransport({ send: async request => { await gate; return commandResponse(request); } });
+    const first = graph.copyWorkflow(id);
+    // The second call must be refused before it can overwrite the first call's
+    // in-flight open token or send a second business request.
+    expect(await graph.copyWorkflow(id)).toBeNull();
+    await vi.waitFor(() => expect(transport.requests).toHaveLength(1));
+    release();
+    expect(await first).not.toBeNull();
   });
   it("builds the target name deterministically within the workflow name limit", async () => {
     const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();

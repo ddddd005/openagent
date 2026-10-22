@@ -243,10 +243,10 @@ def test_edit_after_run_preparation_does_not_change_that_run_config(tmp_path, mo
 
         original_execute = service._execute
 
-        def wait_before_execute(session_id, chain_id):
+        def wait_before_execute(session_id, chain_id, steps=None):
             entered.set()
             assert release.wait(10), "prepared execution gate timed out"
-            return original_execute(session_id, chain_id)
+            return original_execute(session_id, chain_id, steps)
 
         monkeypatch.setattr(service, "_execute", wait_before_execute)
         started = service.start(

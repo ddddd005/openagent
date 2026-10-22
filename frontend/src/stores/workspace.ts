@@ -46,9 +46,15 @@ export const useWorkspaceStore = defineStore("workspace", () => {
    * Only formal summary rows are projected here. Local drafts, pending copies and
    * rows whose deletion is still being verified are retained untouched; a
    * directory refresh never turns a summary into an editor entry or removes an
-   * original request that is still waiting for verification.
+   * original request that is still waiting for verification. Because the
+   * refresh requests the complete formal directory (archived included), a
+   * previously projected formal row that is now absent means the workflow was
+   * deleted elsewhere; it must disappear from the directory and its formal count.
+   * Locally created rows that have not yet been seen in a summary stay, so an
+   * in-flight summary cannot win over a newer local acceptance.
    */
-  function applyDefinitionSummaries(rows: readonly WorkflowDefinitionSummary[]) {
+  function applyDefinitionSummaries(rows: readonly WorkflowDefinitionSummary[],
+    options: { retainMissing?: (workflowId: string) => boolean } = {}) {
     for (const row of rows) {
       const existing = workflows.value.find(item => item.id === row.workflow_definition_id);
       if (existing) {
@@ -74,6 +80,21 @@ export const useWorkspaceStore = defineStore("workspace", () => {
         fromSummary: true,
       });
     }
+    const present = new Set(rows.map(row => row.workflow_definition_id));
+    const removed = new Set(workflows.value
+      .filter(row => !present.has(row.id) && row.fromSummary === true && row.state === "saved"
+        && !row.copyPending && !row.deleted && !(options.retainMissing?.(row.id)))
+      .map(row => row.id));
+    if (!removed.size) return;
+    workflows.value = workflows.value.filter(row => !removed.has(row.id));
+    if (removed.has(activeWorkflowId.value)) {
+      const fallback = workflows.value.find(row => row.state === "saved" && !row.deleted
+        && !row.copyPending)?.id ?? workflows.value.find(row => !row.copyPending)?.id ?? "";
+      activeWorkflowId.value = fallback;
+      viewVersion.value++;
+    }
+    if (!workflows.value.some(row => row.id === selectedWorkflowId.value))
+      selectedWorkflowId.value = activeWorkflowId.value;
   }
   /** Formal directory count; drafts, unconfirmed copies and deletion-pending rows are excluded. */
   function formalWorkflowCount(includeArchived = false) {

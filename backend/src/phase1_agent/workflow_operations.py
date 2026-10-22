@@ -25,7 +25,7 @@ def read_native_receipt(service, operation, key, request):
             "invalid_request", "An idempotency key is required")
     expected = "workflow-op-v1:" + content_digest(request).rsplit(":", 1)[1]
     with service._lock, closing(service._store()) as store:
-        service._check_open()
+        service._check_service_open()
         prior = store.read_receipt_with_digest(operation, key)
         if prior is None:
             return None

@@ -98,6 +98,28 @@ describe("current node directory", () => {
     expect(families.find(row => row.id === "plugin.node")!.profiles.map(row => row.key)).toEqual(["plugin.node@42"]);
     expect(families.find(row => row.id === "models.source")).toBeUndefined();
   });
+  it("offers an enabled external node in other while preserving its exact declaration and configuration", () => {
+    const installed: GraphNodeType = {
+      ...type("sample.local-transform", "3.2.1"), display_name: "Local transform", category: "Sample package",
+      config_schema: { type: "object", properties: { prefix: { type: "string", title: "Prefix" },
+        repeat: { type: "integer", minimum: 1 } }, required: ["prefix", "repeat"], additionalProperties: false },
+      default_config: { prefix: "local:", repeat: 2 },
+    };
+    const catalog = [installed], before = graphClone(catalog), families = buildNodeFamilies(catalog);
+    expect(nodeMenuGroups(families)).toEqual([{
+      id: "other", label: "其他",
+      items: [{ id: "sample.local-transform", label: "Local transform", disabled: false }],
+    }]);
+    expect(families[0]).toMatchObject({
+      category: "other", preferredKey: "sample.local-transform@3.2.1",
+      profiles: [{ key: "sample.local-transform@3.2.1", definition: {
+        component_id: "sample.local-transform", component_version: "3.2.1",
+        config_schema: installed.config_schema, default_config: { prefix: "local:", repeat: 2 },
+      } }],
+    });
+    expect(families[0]!.profiles[0]!.definition).toEqual(installed);
+    expect(catalog).toEqual(before);
+  });
   it("unifies default names and preserves user titles", () => {
     const definition = type("models.source", "7");
     const node = { node_binding_id: "id", component_id: definition.component_id, component_version: "7",

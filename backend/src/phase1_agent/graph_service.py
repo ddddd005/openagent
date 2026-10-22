@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 import os
 from threading import RLock
@@ -38,6 +39,8 @@ from .content_configuration import ContentConfigurationService
 from .workflow_lifecycle import WorkflowLifecycle
 from .workflow_configuration import WorkflowConfiguration
 from .workflow_chat_service import WorkflowChatService
+from .workflow_run_order import STAGE_BACKGROUND, STAGE_START, steps_for_stage
+from .result_acceptance import failure_responsibility, retained_acceptance_allowed
 from .notification_results import (
     CommittedNotificationError, public_diagnostic_failure, run_notification_stages)
 
@@ -76,6 +79,48 @@ class _GraphLease:
         self.file.close()
 
 
+class _StartRunProgress:
+    """Small carrier for the 0100 prepare stage of one start command."""
+
+    __slots__ = ("sid", "idempotency_key", "request", "prepare", "operation",
+                 "accepted", "response", "background_steps")
+
+    def __init__(self, sid, idempotency_key, request, prepare, operation):
+        self.sid = sid
+        self.idempotency_key = idempotency_key
+        self.request = request
+        self.prepare = prepare
+        self.operation = operation
+        self.accepted = []
+        self.response = None
+        self.background_steps = None
+
+
+class _RunProgress:
+    """Small carrier for the stage inputs and shared results of one invocation."""
+
+    __slots__ = ("sid", "chain_id", "registry", "result", "retained", "finish_key")
+
+    def __init__(self, sid, chain_id):
+        self.sid = sid
+        self.chain_id = chain_id
+        self.registry = None
+        self.result = None
+        self.retained = None
+        self.finish_key = None
+
+
+@dataclass(frozen=True)
+class _PackagePublication:
+    loader_candidate: Any
+    registry: Any
+    platform: dict
+
+    @property
+    def loaded(self):
+        return self.loader_candidate.loaded
+
+
 class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowLifecycle, GraphEditingHost,
                            GraphFailedRetry, GraphEvents, GraphInformation, GraphRuntimeHost,
                            GraphToolHost, GraphFrontendNodes, GraphResourceHost, GraphPlatform, GraphPublic,
@@ -83,19 +128,27 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
     def __init__(self, database_path: str | Path, *, environment=None, registry=None,
                  fault_injector=None,
                  capability_packages=(), enabled_packages=None, trusted_package_entrypoints=(),
-                 public_model_factory=None, credential_protector=None, provider_discovery_client_factory=None):
+                 workflow_package_source=None,
+                 public_model_factory=None, credential_protector=None, provider_discovery_client_factory=None,
+                 provider_configuration_factory=None, content_configuration_factory=None):
         self._initialize_service(
             database_path, environment=environment, registry=registry, fault_injector=fault_injector,
             capability_packages=capability_packages, enabled_packages=enabled_packages,
             trusted_package_entrypoints=trusted_package_entrypoints,
+            workflow_package_source=workflow_package_source,
             public_model_factory=public_model_factory, credential_protector=credential_protector,
-            provider_discovery_client_factory=provider_discovery_client_factory, execution_owner=True)
+            provider_discovery_client_factory=provider_discovery_client_factory,
+            provider_configuration_factory=provider_configuration_factory,
+            content_configuration_factory=content_configuration_factory, execution_owner=True)
 
     def _initialize_service(self, database_path: str | Path, *, environment=None, registry=None,
                             fault_injector=None,
                             capability_packages=(), enabled_packages=None, trusted_package_entrypoints=(),
+                            workflow_package_source=None,
                             public_model_factory=None, credential_protector=None,
-                            provider_discovery_client_factory=None, execution_owner):
+                            provider_discovery_client_factory=None,
+                            provider_configuration_factory=None,
+                            content_configuration_factory=None, execution_owner):
         self.database = Path(database_path).resolve()
         if environment is None:
             environment = ProjectStorageEnvironment(self.database)
@@ -104,12 +157,20 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         self.environment = environment
         self.database.parent.mkdir(parents=True, exist_ok=True)
         self._execution_owner = execution_owner
+        # Narrow dependency factories of the two project domain sources.  They
+        # are supplied by the project Host through the workflow source binding;
+        # direct trusted construction keeps the explicit local defaults.
+        self._provider_configuration_factory = provider_configuration_factory
+        self._content_configuration_factory = content_configuration_factory
         self._lease = _GraphLease(self.database) if execution_owner else None
         self._fault_injector = fault_injector
         self._package_loader = None
         self._frontend_extensions = ()
         self._package_manifests = ()
         self._package_diagnostics = []
+        self._publication_failure = None
+        self._published_package = None
+        self._workflow_package_source = workflow_package_source
         if registry is None:
             from .capability_packages import CapabilityPackageLoader, discover_trusted_packages
             from .graph_package_selection import GraphPackageSelectionStore
@@ -121,6 +182,9 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                 packages = [*(package for package in builtin_capability_packages(runtime_fact_reader=self._read_runtime_fact_page)
                               if (package.manifest.package_id, package.manifest.version) not in explicit_identities),
                             *explicit_packages]
+                if workflow_package_source is not None:
+                    workflow_package_source.require_no_conflicts(packages)
+                    packages.extend(workflow_package_source.packages)
                 self._package_loader = CapabilityPackageLoader(packages)
                 with closing(self._store()) as store:
                     selections = GraphPackageSelectionStore(store)
@@ -129,22 +193,20 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                     selected = (deepcopy(enabled_packages)
                                 if enabled_packages is not None else saved.enabled_packages)
                     try:
-                        loaded = self._load_current_capabilities(selected)
+                        candidate = self._prepare_current_capabilities(selected)
                     except Exception as exc:
                         if enabled_packages is not None or saved.configuration_id is None \
                                 or getattr(exc, "reason_code", None) != "package_missing_dependency":
                             raise
                         self._package_diagnostics = [{"reason_code": exc.reason_code,
                                                       "message": str(exc), "enabled_packages": deepcopy(selected)}]
-                        loaded = self._load_current_capabilities({})
-                    self.registry, self._frontend_extensions = loaded.registry.detached(), loaded.frontend_extensions
-                    self._package_manifests = loaded.package_manifests
+                        candidate = self._prepare_current_capabilities({})
                     from .type_contract_store import TypeContractStore
                     contracts = TypeContractStore(store)
                     if execution_owner:
                         try:
                             store._connection.execute("BEGIN IMMEDIATE")
-                            contracts.check_registry(self.registry.data_types)
+                            contracts.check_registry(candidate.registry.data_types)
                             if enabled_packages is not None or saved.configuration_id is None:
                                 selections.write_current(selected)
                             store._connection.execute("COMMIT")
@@ -153,17 +215,23 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                                 store._connection.execute("ROLLBACK")
                             raise
                     else:
-                        for definition in self.registry.data_types.definitions():
-                            contracts.check(self.registry.data_types, definition.type_id,
+                        for definition in candidate.registry.data_types.definitions():
+                            contracts.check(candidate.registry.data_types, definition.type_id,
                                             definition.schema_version, definition.scope,
                                             allow_legacy=True)
+                    try:
+                        self._publish_capabilities(candidate)
+                    except BaseException as exc:
+                        raise self._failed_package_publication(
+                            selected, selection_committed=execution_owner) from exc
             except BaseException:
                 if self._lease is not None:
                     self._lease.close()
                 raise
         else:
             try:
-                require(not capability_packages and enabled_packages is None and not trusted_package_entrypoints,
+                require(not capability_packages and enabled_packages is None and not trusted_package_entrypoints
+                        and workflow_package_source is None,
                         "invalid_request", "Choose a custom registry or configured capability packages")
             except BaseException:
                 if self._lease is not None:
@@ -207,13 +275,19 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         self._closed = False
         if execution_owner:
             try:
-                self.provider_configuration = ProviderConfigurationService(
-                    self.database,
-                    credential_protector=credential_protector,
-                    discovery_client_factory=provider_discovery_client_factory, store_factory=self._store)
-                self.content_configuration = ContentConfigurationService(
-                    self.database, store_factory=self._store,
-                    type_registry_factory=lambda: self.registry.data_types)
+                from .content_capability import build_management_service as build_content_configuration
+                from .provider_capability import build_management_service as build_provider_configuration
+
+                provider_factory = self._provider_configuration_factory or build_provider_configuration
+                content_factory = self._content_configuration_factory or build_content_configuration
+                self.provider_configuration = provider_factory(
+                    database=self.database, environment=self.environment,
+                    store_factory=self._store, credential_protector=credential_protector,
+                    discovery_client_factory=provider_discovery_client_factory)
+                self.content_configuration = content_factory(
+                    database=self.database, environment=self.environment,
+                    store_factory=self._store,
+                    type_registry_factory=self._content_types)
                 from .model_host_service import MODEL_SERVICE_REF
                 self._service_options[MODEL_SERVICE_REF] = {
                     "credential_broker_factory": self.provider_configuration.new_credential_broker}
@@ -230,22 +304,97 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         return self.environment.open_store(fault_injector=self._fault_injector)
 
     def _check_open(self):
+        self._check_service_open()
+        self._require_package_publication()
+
+    def _check_service_open(self):
         require(not self._closed, "service_closed", "Graph service is closed", 409)
 
+    def _require_package_publication(self):
+        if self._publication_failure is not None:
+            from .contract_errors import DiagnosticError
+            raise DiagnosticError("package_publication_failed",
+                                  "Committed package selection is unavailable in this workflow service",
+                                  status=503, **deepcopy(self._publication_failure))
+
+    def _check_application_operation(self, name, parameters):
+        independent = ("provider.", "credential.", "resource.", "content.metadata.")
+        if name in ("platform", "receipt.read", "request-evidence.read") or name.startswith(independent):
+            return
+        if name in ("request-evidence.write", "request-evidence.resolve") \
+                and parameters["operation"].startswith(independent):
+            return
+        self._require_package_publication()
+
     def _require_execution_owner(self):
+        self._require_package_publication()
         require(self._execution_owner, "execution_authority_required",
                 "This management service does not own workflow execution", 409)
 
-    def _load_current_capabilities(self, selected):
-        resolved = self._package_loader.resolve(selected)
-        require(all(item["package_id"] != "workflow.compat" for item in resolved.package_lock),
-                "package_retired", "Compatibility packages are no longer supported", 409)
-        return self._package_loader.load(selected)
+    def _prepare_current_capabilities(self, selected):
+        try:
+            resolved = self._package_loader.resolve(selected)
+            require(all(item["package_id"] != "workflow.compat" for item in resolved.package_lock),
+                    "package_retired", "Compatibility packages are no longer supported", 409)
+            prepared = self._package_loader._prepare(selected)
+            registry = prepared.loaded.registry.detached()
+            platform = self._capability_view(registry, prepared.loaded.frontend_extensions)
+            return _PackagePublication(prepared, registry, platform)
+        except Exception as exc:
+            from .host_sdk import HostContractError
+            if isinstance(exc, HostContractError):
+                diagnostics = deepcopy(getattr(exc, "diagnostics", [])) or [{
+                    "reason_code": exc.reason_code, "message": "Package candidate could not be prepared",
+                    "stage": "candidate_validation", "enabled_packages": deepcopy(selected),
+                }]
+                source = self._workflow_package_source
+                sources = ({(row["manifest"]["package_id"], row["manifest"]["version"]): row["source"]
+                            for row in source.catalog() if row["manifest"] is not None}
+                           if source is not None else {})
+                for diagnostic in diagnostics:
+                    identity = diagnostic.get("package_id"), diagnostic.get("version")
+                    diagnostic.setdefault("source", sources.get(identity, "configured-package-sources"))
+                    required_by = diagnostic.get("required_by")
+                    if required_by is not None:
+                        parent = required_by["package_id"], required_by["version"]
+                        diagnostic["required_by_source"] = sources.get(parent, "configured-package-sources")
+                    diagnostic.update(selection_committed=False, publication_completed=False)
+                exc.diagnostics = diagnostics
+            raise
+
+    def _publish_capabilities(self, candidate):
+        # Everything that constructs, validates or copies a candidate precedes COMMIT.
+        self.registry = candidate.registry
+        self._frontend_extensions = candidate.loaded.frontend_extensions
+        self._package_manifests = candidate.loaded.package_manifests
+        self._package_loader._publish(candidate.loader_candidate)
+        self._published_package = candidate
+
+    def _failed_package_publication(self, selected, *, selection_committed=True):
+        from .contract_errors import DiagnosticError
+        self._publication_failure = {
+            "selection_committed": selection_committed,
+            "publication_completed": False,
+            "enabled_packages": deepcopy(selected),
+        }
+        return DiagnosticError("package_publication_failed",
+                               ("Package selection was committed but workflow publication failed"
+                                if selection_committed else "Workflow package publication failed"),
+                               status=503, **deepcopy(self._publication_failure))
+
+    def _content_types(self):
+        return self._confirmed_registry().data_types
+
+    def _confirmed_registry(self):
+        if self._published_package is not None:
+            return self._published_package.registry
+        return self.registry
 
     @property
     def definition_query(self):
         """Exact read-only definition query over the active trusted registry."""
         from .workflow_definitions import WorkflowDefinitionCatalog
+        self._require_package_publication()
         return WorkflowDefinitionCatalog(self.registry, getattr(self, "_package_manifests", ()))
 
     def _capture_run_basis(self):
@@ -257,6 +406,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         """
         from .workflow_definitions import WorkflowDefinitionCatalog
         with self._lock:
+            self._check_open()
             registry = self.registry.detached(frozen=True)
             manifests = deepcopy(getattr(self, "_package_manifests", ()))
         return RunBasis(registry, WorkflowDefinitionCatalog(registry, manifests))
@@ -272,6 +422,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         from .definition_data import require_evidence
         from .workflow_definitions import definition_reference
 
+        self._check_open()
         reference = definition_reference("data_type", reference)
         with self._definition_data.read() as data:
             return require_evidence(data.type_evidence(
@@ -279,6 +430,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
 
     def definition_references(self, identity, revision):
         """Resolve definitions used by one already-persisted fixed workflow revision."""
+        self._check_open()
         require(type(revision) is int and revision >= 1, "invalid_request",
                 "Definition references require one exact fixed revision")
         with self._data_management.read_configuration() as data:
@@ -297,7 +449,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
 
     def _change(self, operation, key, request, callback):
         with self._lock, closing(self._store()) as store:
-            require(not self._closed, "service_closed", "Graph service is closed", 409)
+            self._check_open()
             return GraphRecordStore(store, definition_registry=self.registry).atomic(operation, key, request, callback)
 
     def _configuration_change(self, operation, key, request, callback):
@@ -496,7 +648,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                             history=snapshot["history_refs"], registry=registry,
                             fallback_manifest=fallback_manifest)
 
-    def _initialize_session(self, repo, document):
+    def _initialize_session(self, repo, document, *, preloaded_values=None):
         self._require_definition_active(repo, document["workflow_definition_id"])
         require(not self._package_diagnostics, "package_missing_dependency",
                 "Restore the saved packages before initializing session data", 409)
@@ -506,11 +658,12 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
             revision=1, source={"kind": "new"}, active_chain_run_id=None)
         repo.put("workflow_session", session)
         self._save_private(repo, sid, document, self._defaults(document))
-        self._objects(repo).initialize(sid, document)
+        self._objects(repo).initialize(sid, document, preloaded_values=preloaded_values)
         return session
 
     def _new_session(self, repo, document):
         session = self._initialize_session(repo, document)
+        self._objects(repo).initialize_preloads(session["workflow_session_id"], document)
         self._commit(repo, session, source={"kind": "session_seed", "source": None}, history=[])
         return self._view(
             self._data_management.execution_read(repo, registry=self.registry),
@@ -549,12 +702,14 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
 
     def get_session(self, sid):
         with self._lock, closing(self._store()) as store:
+            self._check_open()
             data = self._data_management.execution_read(
                 GraphRecordStore(store), registry=self.registry)
             return self._view(data, sid)
 
     def list_sessions(self, workflow_definition_id):
         with self._lock, closing(self._store()) as store:
+            self._check_open()
             data = self._data_management.execution_read(
                 GraphRecordStore(store), registry=self.registry)
             return [self._view(data, row["workflow_session_id"])
@@ -562,6 +717,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
 
     def get_run(self, sid, chain_id):
         with self._lock, closing(self._store()) as store:
+            self._check_open()
             repo = GraphRecordStore(store)
             repo.get("workflow_session", workflow_session_id=sid)
             require(chain_id in self._history(repo, sid), "not_found", "Execution is not in this session history", 404)
@@ -577,6 +733,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
 
     def list_checkpoints(self, session_id):
         with self._lock, closing(self._store()) as store:
+            self._check_open()
             connection = store._connection
             connection.execute("BEGIN")
             try:
@@ -603,6 +760,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
 
     def read_checkpoint(self, session_id, *, checkpoint_id):
         with self._lock, closing(self._store()) as store:
+            self._check_open()
             connection = store._connection
             connection.execute("BEGIN")
             try:
@@ -800,30 +958,13 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
 
     def _start_run(self, sid, idempotency_key, request, prepare, *, operation="graph.run.start"):
         self._require_execution_owner()
-        accepted = []
-
-        with self._lock:
-            basis = self._capture_run_basis()
-            previous_frames = set(self._resource_frames)
-
-            def change(repo):
-                data = self._data_management.execution_transaction(repo, basis=basis)
-                response = prepare(data, basis)
-                accepted.append(response["active_chain_run_id"])
-                return response
-
-            try:
-                response = self._change(operation, idempotency_key, request, change)
-            except BaseException:
-                for unaccepted in set(self._resource_frames) - previous_frames:
-                    self._release_public_capabilities(sid, unaccepted)
-                    self._resource_frames.pop(unaccepted, None)
-                    self._execution_registries.pop(unaccepted, None)
-                raise
+        progress = _StartRunProgress(sid, idempotency_key, request, prepare, operation)
+        self._run_prepare_stage(progress)
+        response = progress.response
         # A persisted receipt replay never creates another execution frame.
-        if not accepted:
+        if not progress.accepted:
             return response
-        chain_id = accepted[0]
+        chain_id = progress.accepted[0]
         with self._lock:
             if chain_id not in self._futures:
                 basis = self._require_run_basis(chain_id)
@@ -832,8 +973,56 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                         GraphRecordStore(store), registry=basis.registry)
                     chain = data.records.chain(chain_id)
                 if chain["status"] == "prepared":
-                    self._futures[chain_id] = self._executor.submit(self._execute, sid, chain_id)
+                    self._futures[chain_id] = self._executor.submit(
+                        self._execute, sid, chain_id, progress.background_steps)
         return response
+
+    def _declared_steps(self, stage, bindings):
+        """Validate the static declaration and its trusted bindings before any write."""
+        steps = steps_for_stage(stage)
+        declared = {step.entry_ref for step in steps}
+        if set(bindings) != declared:
+            raise graph_error("storage_contract_violation",
+                              "Workflow run order declaration and bindings differ", 500)
+        return steps
+
+    def _background_bindings(self, progress):
+        return {
+            "graph.run.execute": lambda: self._run_execute_stage(progress),
+            "graph.run.settle": lambda: self._run_settle_stage(progress),
+            "graph.run.notify": lambda: self._run_notify_stage(progress),
+            "graph.run.release": lambda: self._run_release_stage(progress),
+        }
+
+    def _capture_background_steps(self):
+        return self._declared_steps(STAGE_BACKGROUND, self._background_bindings(None))
+
+    def _run_prepare_stage(self, progress):
+        """Bound 0100: capture this invocation's basis and accept the prepare transaction."""
+        sid = progress.sid
+        accepted = progress.accepted
+        with self._lock:
+            basis = self._capture_run_basis()
+            previous_frames = set(self._resource_frames)
+
+            def change(repo):
+                self._declared_steps(STAGE_START, {"graph.run.prepare": None})
+                progress.background_steps = self._capture_background_steps()
+                data = self._data_management.execution_transaction(repo, basis=basis)
+                response = progress.prepare(data, basis)
+                accepted.append(response["active_chain_run_id"])
+                return response
+
+            try:
+                progress.response = self._change(
+                    progress.operation, progress.idempotency_key, progress.request, change)
+            except BaseException:
+                for unaccepted in set(self._resource_frames) - previous_frames:
+                    self._release_public_capabilities(sid, unaccepted)
+                    self._resource_frames.pop(unaccepted, None)
+                    self._execution_registries.pop(unaccepted, None)
+                raise
+
 
     def _save_effects(self, data, sid, document, event):
         current = data.state.variables(sid)
@@ -1096,173 +1285,22 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         })
         data.settlement.inject_checkpoint_write()
 
-    def _execute(self, sid, chain_id):
-        from .graph_contracts import GraphCompiler
-        from .graph_execution import execute_graph
+    def _execute(self, sid, chain_id, steps=None):
         # A resumed or retried invocation supersedes the previous invocation's
         # reported outcome.  Only the latest invocation of this chain may be
         # raised by wait(); a reporting error from an earlier pause must not
         # survive a successful continuation.
         with self._lock:
             self._execution_errors.pop(chain_id, None)
-        run_ids = {}
-        registry = None
+        progress = _RunProgress(sid, chain_id)
+        bindings = self._background_bindings(progress)
+        # Private direct invocations also validate; scheduled invocations always
+        # receive the exact steps captured before their accepting transaction.
+        if steps is None:
+            steps = self._declared_steps(STAGE_BACKGROUND, bindings)
         try:
-            def begin(data):
-                chain = data.records.chain(chain_id)
-                require(chain["status"] in ("prepared", "paused", "archive_failed"), "invalid_state", "Execution cannot start", 409)
-                chain["status"] = "running"
-                chain["revision"] += 1
-                data.records.put_chain(chain)
-                return chain
-            with self._lock:
-                basis = self._require_run_basis(chain_id)
-                with closing(self._store()) as store:
-                    data = self._data_management.execution_read(
-                        GraphRecordStore(store), registry=basis.registry)
-                    existing = data.records.chain(chain_id)
-            chain = self._change(
-                "graph.run.begin", chain_id + ":begin:" + str(existing["revision"]),
-                {"chain": chain_id, "revision": existing["revision"]},
-                lambda repo: begin(self._data_management.execution_transaction(
-                    repo, basis=basis)))
-            registry = basis.registry
-            with self._lock:
-                self._resuming.discard(chain_id)
-            with self._lock, closing(self._store()) as store:
-                store._connection.execute("BEGIN")
-                data = self._data_management.execution_read(
-                    GraphRecordStore(store), registry=basis.registry)
-                document = data.configuration.fixed_document(
-                    chain["workflow_definition_id"], chain["definition_revision"])
-                planned_runs = dict(zip(chain["ordered_nodes"], chain["node_run_ids"]))
-                for node in document["nodes"]:
-                    run_id = planned_runs.get(node["node_binding_id"])
-                    if run_id is not None:
-                        node["config"] = data.records.node_run(run_id)["config"]
-                state = data.state.variables(sid)
-                private = data.records.private_states(sid)
-                objects = data.state.objects(sid)
-                output_records = {row["output_id"]: row for row in data.records.all_outputs()}
-                outputs = {node_id: {port: output_records[oid]["payload"] for port, oid in refs.items()}
-                           for node_id, refs in chain["outputs"].items()}
-                completed_events = [{"event": "succeeded", "node_binding_id": node_id,
-                                     "node_run_id": planned_runs[node_id]}
-                                    for node_id in chain["completed_nodes"]]
-                chat_contexts = self._chat_execution_contexts(
-                    data, sid, chain_id, document)
-            run_ids = dict(zip(chain["ordered_nodes"], chain["node_run_ids"]))
-            retained = self._acceptance_candidates.setdefault(chain_id, {}).get("completed_execution")
-            if retained is not None:
-                with self._lock, closing(self._store()) as store:
-                    data = self._data_management.execution_read(
-                        GraphRecordStore(store), registry=registry)
-                    require(self._completed_result_matches(
-                                data, sid, data.records.chain(chain_id), retained,
-                                registry=registry),
-                            "graph_acceptance_basis_changed", "Completed result state basis changed", 409)
-                result = retained["result"]
-            else:
-                compiler = GraphCompiler(registry)
-                event = chain.get("event")
-                plan = (compiler.compile_event(document, event["event_id"], event["schema_version"])
-                        if chain.get("execution_kind", "round") == "event" else compiler.compile(document))
-                result = execute_graph(plan, registry, workflow_session_id=sid, chain_run_id=chain_id,
-                    node_run_ids=run_ids, state=state, private_states=private, external_inputs=chain["inputs"],
-                    object_states=objects,
-                    artifact_refs=chain["outputs"],
-                    outputs=outputs, node_runs=completed_events, start_index=chain["next_node_index"],
-                    should_pause=lambda: chain_id in self._pauses or self._closed,
-                    on_node=lambda event: self._node_event(sid, chain_id, event), host=self._host_call,
-                    validate_output_references=lambda context, references:
-                        self._validate_runtime_references(context, references, registry=registry),
-                    runtime_host=self._host_for_chain(chain_id, registry),
-                    acceptance_cache=self._acceptance_candidates[chain_id],
-                    result_recovery=self._retained_result_recovery,
-                    chat_append_contexts=chat_contexts,
-                    tool_bridge=self._tool_bridge)
-                if result.status == "succeeded":
-                    with self._lock, closing(self._store()) as store:
-                        data = self._data_management.execution_read(
-                            GraphRecordStore(store), registry=registry)
-                        retained = {"result": deepcopy(result),
-                            "definition": (chain["workflow_definition_id"], chain["definition_revision"]),
-                            "basis": {"state": data.state.variables(sid),
-                                      "private": data.records.private_states(sid),
-                                      "objects": data.state.objects(sid)},
-                            "finish_key": chain_id + ":finish:" + str(chain["revision"])}
-                        require(self._completed_result_matches(
-                                    data, sid, data.records.chain(chain_id), retained,
-                                    registry=registry),
-                                "storage_contract_violation", "Completed result differs from accepted execution", 500)
-                        self._acceptance_candidates[chain_id]["completed_execution"] = retained
-            def finish(data):
-                current = data.records.chain(chain_id)
-                session = data.records.session(sid)
-                if result.status == "succeeded":
-                    require(self._completed_result_matches(data, sid, current, retained, registry=registry),
-                            "graph_acceptance_basis_changed", "Completed result state basis changed", 409)
-                current["status"] = result.status
-                current["diagnostic"] = result.diagnostic
-                if result.status == "failed":
-                    try:
-                        permission = self._capture_failed_retry(data, current)
-                    except Exception as error:
-                        permission = {"allowed": False,
-                                      "reason_code": getattr(error, "reason_code", "failed_retry_unavailable"),
-                                      "node_run_id": current["node_run_ids"][current["next_node_index"]],
-                                      "classification": None}
-                    current["diagnostic"] = {**(current["diagnostic"] or {}), "failure_retry": permission}
-                current["revision"] += 1
-                data.records.put_chain(current)
-                session["revision"] += 1
-                if result.status == "succeeded":
-                    session["active_chain_run_id"] = None
-                data.records.put_session(session)
-                if result.status == "succeeded" and current.get("execution_kind", "round") == "round":
-                    checkpoint_id = _uid()
-                    self._bind_chat_success(data, session, chain_id, checkpoint_id)
-                    self._commit(data, session, source={"kind": "completed_execution", "chain_run_id": chain_id})
-                    self._append_success_checkpoint(data, session, checkpoint_id=checkpoint_id)
-                self._save_manifest(data, "chain_end", chain_id, session,
-                                    status=result.status)
-                return {"status": result.status}
-            finish_key = (retained["finish_key"] if retained is not None
-                          else chain_id + ":finish:" + str(chain["revision"]))
-            self._change("graph.run.finish", finish_key,
-                         {"chain": chain_id, "result": result.status},
-                         lambda repo: finish(self._data_management.execution_transaction(
-                             repo, basis=self._require_run_basis(chain_id))))
-            # Business settlement is already committed.  Local notifications are
-            # a separate stage: their failure is recorded in the existing chain
-            # diagnostic field and reported to the waiter as a structured
-            # committed-result error, without rewriting the business result.
-            stages = []
-            if result.status == "succeeded":
-                stages.append(("chat_snapshot", lambda: self._refresh_chat_snapshots(sid)))
-            stages.append(("frontend_node_state", lambda: self._frontend_node_state_changed(sid)))
-            notifications, notification_failure = run_notification_stages(stages)
-            try:
-                diagnostic_recorded, diagnostic_error = self._record_round_notification(
-                    chain_id, sid, result.status, notifications,
-                    key=finish_key + ":notifications")
-            except BaseException as error:
-                diagnostic_recorded = False
-                diagnostic_error = public_diagnostic_failure(error)
-            if notification_failure is not None or not diagnostic_recorded:
-                with self._lock:
-                    self._execution_errors[chain_id] = CommittedNotificationError(
-                        chain_id=chain_id, workflow_session_id=sid,
-                        business_status=result.status, notifications=notifications,
-                        diagnostic_recorded=diagnostic_recorded,
-                        diagnostic_error=diagnostic_error)
-            if result.status == "succeeded" or result.status == "failed" and chain_id not in self._failed_retry_candidates:
-                with self._lock:
-                    self._release_public_capabilities(sid, chain_id)
-                    self._resource_frames.pop(chain_id, None)
-                    self._execution_registries.pop(chain_id, None)
-                    self._acceptance_candidates.pop(chain_id, None)
-                    self._failed_retry_candidates.pop(chain_id, None)
+            for step in steps:
+                bindings[step.entry_ref]()
         except BaseException as exc:
             # Only an exact retained result can retry.
             # Unknown execution and rejected business results cannot be replayed.
@@ -1283,12 +1321,15 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                         return None
                     index = chain["next_node_index"]
                     pending = self._acceptance_candidates.get(chain_id, {})
-                    result_retry = (index < len(chain["node_run_ids"])
-                                    and chain["node_run_ids"][index] in pending
-                                    and getattr(exc, "reason_code", None) is None)
-                    run_registry = basis.registry if basis is not None else registry
+                    result_retry = retained_acceptance_allowed(
+                        exc, stage=getattr(exc, "_result_failure_stage", None),
+                        definite_result=(index < len(chain["node_run_ids"])
+                                         and chain["node_run_ids"][index] in pending))
+                    run_registry = basis.registry if basis is not None else progress.registry
                     completion_retry = (run_registry is not None
-                                        and getattr(exc, "reason_code", None) is None
+                                        and step.entry_ref == "graph.run.settle"
+                                        and retained_acceptance_allowed(
+                                            exc, stage="round_acceptance", definite_result=True)
                                         and self._completed_result_matches(
                                             data if data is not None else repo, sid, chain,
                                             pending.get("completed_execution"),
@@ -1312,6 +1353,11 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                                     if acknowledged_failure else
                                     "Multiple declared services retain results; node-level recovery is unavailable"
                                     if ambiguous_recovery else "Execution could not preserve its completion boundary")}
+                    if retryable:
+                        chain["diagnostic"].update(
+                            failure_stage=("round_acceptance" if completion_retry
+                                           else getattr(exc, "_result_failure_stage", "node_acceptance")),
+                            responsibility=failure_responsibility(exc), definite_result=True)
                     chain["revision"] += 1
                     records.put_chain(chain)
                     for identity in chain["node_run_ids"]:
@@ -1352,6 +1398,195 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                     self._execution_registries.pop(chain_id, None)
                     self._acceptance_candidates.pop(chain_id, None)
                     self._failed_retry_candidates.pop(chain_id, None)
+
+    def _run_execute_stage(self, progress):
+        """Bound 1000: begin the chain, read the prepared content and run the graph."""
+        from .graph_contracts import GraphCompiler
+        from .graph_execution import execute_graph
+        sid = progress.sid
+        chain_id = progress.chain_id
+        def begin(data):
+            chain = data.records.chain(chain_id)
+            require(chain["status"] in ("prepared", "paused", "archive_failed"), "invalid_state", "Execution cannot start", 409)
+            chain["status"] = "running"
+            chain["revision"] += 1
+            data.records.put_chain(chain)
+            return chain
+        with self._lock:
+            basis = self._require_run_basis(chain_id)
+            with closing(self._store()) as store:
+                data = self._data_management.execution_read(
+                    GraphRecordStore(store), registry=basis.registry)
+                existing = data.records.chain(chain_id)
+        chain = self._change(
+            "graph.run.begin", chain_id + ":begin:" + str(existing["revision"]),
+            {"chain": chain_id, "revision": existing["revision"]},
+            lambda repo: begin(self._data_management.execution_transaction(
+                repo, basis=basis)))
+        registry = basis.registry
+        progress.registry = registry
+        with self._lock:
+            self._resuming.discard(chain_id)
+        with self._lock, closing(self._store()) as store:
+            store._connection.execute("BEGIN")
+            data = self._data_management.execution_read(
+                GraphRecordStore(store), registry=basis.registry)
+            document = data.configuration.fixed_document(
+                chain["workflow_definition_id"], chain["definition_revision"])
+            planned_runs = dict(zip(chain["ordered_nodes"], chain["node_run_ids"]))
+            for node in document["nodes"]:
+                run_id = planned_runs.get(node["node_binding_id"])
+                if run_id is not None:
+                    node["config"] = data.records.node_run(run_id)["config"]
+            state = data.state.variables(sid)
+            private = data.records.private_states(sid)
+            objects = data.state.objects(sid)
+            output_records = {row["output_id"]: row for row in data.records.all_outputs()}
+            outputs = {node_id: {port: output_records[oid]["payload"] for port, oid in refs.items()}
+                       for node_id, refs in chain["outputs"].items()}
+            completed_events = [{"event": "succeeded", "node_binding_id": node_id,
+                                 "node_run_id": planned_runs[node_id]}
+                                for node_id in chain["completed_nodes"]]
+            chat_contexts = self._chat_execution_contexts(
+                data, sid, chain_id, document)
+        run_ids = dict(zip(chain["ordered_nodes"], chain["node_run_ids"]))
+        retained = self._acceptance_candidates.setdefault(chain_id, {}).get("completed_execution")
+        if retained is not None:
+            with self._lock, closing(self._store()) as store:
+                data = self._data_management.execution_read(
+                    GraphRecordStore(store), registry=registry)
+                require(self._completed_result_matches(
+                            data, sid, data.records.chain(chain_id), retained,
+                            registry=registry),
+                        "graph_acceptance_basis_changed", "Completed result state basis changed", 409)
+            result = retained["result"]
+        else:
+            compiler = GraphCompiler(registry)
+            event = chain.get("event")
+            plan = (compiler.compile_event(document, event["event_id"], event["schema_version"])
+                    if chain.get("execution_kind", "round") == "event" else compiler.compile(document))
+            result = execute_graph(plan, registry, workflow_session_id=sid, chain_run_id=chain_id,
+                node_run_ids=run_ids, state=state, private_states=private, external_inputs=chain["inputs"],
+                object_states=objects,
+                artifact_refs=chain["outputs"],
+                outputs=outputs, node_runs=completed_events, start_index=chain["next_node_index"],
+                should_pause=lambda: chain_id in self._pauses or self._closed,
+                on_node=lambda event: self._node_event(sid, chain_id, event), host=self._host_call,
+                validate_output_references=lambda context, references:
+                    self._validate_runtime_references(context, references, registry=registry),
+                runtime_host=self._host_for_chain(chain_id, registry),
+                acceptance_cache=self._acceptance_candidates[chain_id],
+                result_recovery=self._retained_result_recovery,
+                chat_append_contexts=chat_contexts,
+                tool_bridge=self._tool_bridge)
+            if result.status == "succeeded":
+                with self._lock, closing(self._store()) as store:
+                    data = self._data_management.execution_read(
+                        GraphRecordStore(store), registry=registry)
+                    retained = {"result": deepcopy(result),
+                        "definition": (chain["workflow_definition_id"], chain["definition_revision"]),
+                        "basis": {"state": data.state.variables(sid),
+                                  "private": data.records.private_states(sid),
+                                  "objects": data.state.objects(sid)},
+                        "finish_key": chain_id + ":finish:" + str(chain["revision"])}
+                    require(self._completed_result_matches(
+                                data, sid, data.records.chain(chain_id), retained,
+                                registry=registry),
+                            "storage_contract_violation", "Completed result differs from accepted execution", 500)
+                    self._acceptance_candidates[chain_id]["completed_execution"] = retained
+        finish_key = (retained["finish_key"] if retained is not None
+                      else chain_id + ":finish:" + str(chain["revision"]))
+        progress.result = result
+        progress.retained = retained
+        progress.finish_key = finish_key
+
+    def _run_settle_stage(self, progress):
+        """Bound 2000: settle the business result in the original finish transaction."""
+        sid = progress.sid
+        chain_id = progress.chain_id
+        result = progress.result
+        retained = progress.retained
+        registry = progress.registry
+        def finish(data):
+            current = data.records.chain(chain_id)
+            session = data.records.session(sid)
+            if result.status == "succeeded":
+                require(self._completed_result_matches(data, sid, current, retained, registry=registry),
+                        "graph_acceptance_basis_changed", "Completed result state basis changed", 409)
+            current["status"] = result.status
+            current["diagnostic"] = result.diagnostic
+            if result.status == "failed":
+                try:
+                    permission = self._capture_failed_retry(data, current)
+                except Exception as error:
+                    permission = {"allowed": False,
+                                  "reason_code": getattr(error, "reason_code", "failed_retry_unavailable"),
+                                  "node_run_id": current["node_run_ids"][current["next_node_index"]],
+                                  "classification": None}
+                current["diagnostic"] = {**(current["diagnostic"] or {}), "failure_retry": permission}
+            current["revision"] += 1
+            data.records.put_chain(current)
+            session["revision"] += 1
+            if result.status == "succeeded":
+                session["active_chain_run_id"] = None
+            data.records.put_session(session)
+            if result.status == "succeeded" and current.get("execution_kind", "round") == "round":
+                checkpoint_id = _uid()
+                self._bind_chat_success(data, session, chain_id, checkpoint_id)
+                self._commit(data, session, source={"kind": "completed_execution", "chain_run_id": chain_id})
+                self._append_success_checkpoint(data, session, checkpoint_id=checkpoint_id)
+            self._save_manifest(data, "chain_end", chain_id, session,
+                                status=result.status)
+            return {"status": result.status}
+        self._change("graph.run.finish", progress.finish_key,
+                     {"chain": chain_id, "result": result.status},
+                     lambda repo: finish(self._data_management.execution_transaction(
+                         repo, basis=self._require_run_basis(chain_id))))
+
+    def _run_notify_stage(self, progress):
+        """Bound 2100: post-commit notifications, diagnostic and structured wait error."""
+        sid = progress.sid
+        chain_id = progress.chain_id
+        result = progress.result
+        finish_key = progress.finish_key
+        # Business settlement is already committed.  Local notifications are
+        # a separate stage: their failure is recorded in the existing chain
+        # diagnostic field and reported to the waiter as a structured
+        # committed-result error, without rewriting the business result.
+        stages = []
+        if result.status == "succeeded":
+            stages.append(("chat_snapshot", lambda: self._refresh_chat_snapshots(sid)))
+        stages.append(("frontend_node_state", lambda: self._frontend_node_state_changed(sid)))
+        notifications, notification_failure = run_notification_stages(stages)
+        try:
+            diagnostic_recorded, diagnostic_error = self._record_round_notification(
+                chain_id, sid, result.status, notifications,
+                key=finish_key + ":notifications")
+        except BaseException as error:
+            diagnostic_recorded = False
+            diagnostic_error = public_diagnostic_failure(error)
+        if notification_failure is not None or not diagnostic_recorded:
+            with self._lock:
+                self._execution_errors[chain_id] = CommittedNotificationError(
+                    chain_id=chain_id, workflow_session_id=sid,
+                    business_status=result.status, notifications=notifications,
+                    diagnostic_recorded=diagnostic_recorded,
+                    diagnostic_error=diagnostic_error)
+
+    def _run_release_stage(self, progress):
+        """Bound 2200: release or retain this invocation's execution resources."""
+        sid = progress.sid
+        chain_id = progress.chain_id
+        result = progress.result
+        if result.status == "succeeded" or result.status == "failed" and chain_id not in self._failed_retry_candidates:
+            with self._lock:
+                self._release_public_capabilities(sid, chain_id)
+                self._resource_frames.pop(chain_id, None)
+                self._execution_registries.pop(chain_id, None)
+                self._acceptance_candidates.pop(chain_id, None)
+                self._failed_retry_candidates.pop(chain_id, None)
+
+
 
     def _record_round_notification(self, chain_id, sid, business_status, notifications, *, key):
         """Record post-commit notification results in the existing chain diagnostic.
@@ -1574,6 +1809,9 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                         chain["chain_run_id"], candidate, authorize=True)
 
             def change(repo):
+                nonlocal background_steps
+                if action in ("resume", "retry_archive", "retry_acceptance", "retry_failed_node"):
+                    background_steps = self._capture_background_steps()
                 if basis is not None:
                     data = self._data_management.execution_transaction(repo, basis=basis)
                     require(data.records.session(sid)["active_chain_run_id"] == active_chain_id,
@@ -1589,6 +1827,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                 accepted.append(active_chain_id)
                 return response
 
+            background_steps = None
             response = self._change("graph.run.control", idempotency_key, request, change)
             # Receipt replay observes the original command. Reapplying its
             # in-memory effects could pause a resumed run or dispose its frame.
@@ -1624,7 +1863,8 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         if schedule_resume:
             self._control_hosted_invocation(chain_id, action, idempotency_key)
             with self._lock:
-                self._futures[chain_id] = self._executor.submit(self._execute, sid, chain_id)
+                self._futures[chain_id] = self._executor.submit(
+                    self._execute, sid, chain_id, background_steps)
         return response
 
     def wait(self, chain_id, timeout=30):
@@ -1661,8 +1901,14 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
 class GraphManagementService(GraphWorkflowService):
     """Management operations over the shared graph domain without execution ownership."""
 
-    def __init__(self, database_path: str | Path, *, environment=None):
-        self._initialize_service(database_path, environment=environment, execution_owner=False)
+    def __init__(self, database_path: str | Path, *, environment=None,
+                 provider_configuration_factory=None, content_configuration_factory=None,
+                 workflow_package_source=None):
+        self._initialize_service(
+            database_path, environment=environment,
+            workflow_package_source=workflow_package_source,
+            provider_configuration_factory=provider_configuration_factory,
+            content_configuration_factory=content_configuration_factory, execution_owner=False)
         self._provider_configuration = None
         self._content_configuration = None
 
@@ -1670,17 +1916,29 @@ class GraphManagementService(GraphWorkflowService):
     def provider_configuration(self):
         with self._lock:
             if self._provider_configuration is None:
-                self._provider_configuration = ProviderConfigurationService(
-                    self.database, store_factory=self._store)
+                if self._provider_configuration_factory is None:
+                    from .provider_capability import build_management_service
+                    factory = build_management_service
+                else:
+                    factory = self._provider_configuration_factory
+                self._provider_configuration = factory(
+                    database=self.database, environment=self.environment,
+                    store_factory=self._store)
             return self._provider_configuration
 
     @property
     def content_configuration(self):
         with self._lock:
             if self._content_configuration is None:
-                self._content_configuration = ContentConfigurationService(
-                    self.database, store_factory=self._store,
-                    type_registry_factory=lambda: self.registry.data_types)
+                if self._content_configuration_factory is None:
+                    from .content_capability import build_management_service
+                    factory = build_management_service
+                else:
+                    factory = self._content_configuration_factory
+                self._content_configuration = factory(
+                    database=self.database, environment=self.environment,
+                    store_factory=self._store,
+                    type_registry_factory=self._content_types)
             return self._content_configuration
 
     def _stop_owned_runs(self, sessions, key):

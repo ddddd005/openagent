@@ -23,6 +23,7 @@ from uuid import uuid4
 from .contract_errors import require, uuid4_string, uuid_value
 from .contract_json import canonical_bytes
 from .host_sdk import bounded_name
+from .session_preloads import validate_session_preloads
 from .configuration_mutations import (
     configuration_mutation_rule, validate_editable_input_configuration,
 )
@@ -314,6 +315,7 @@ class WorkflowConfiguration:
                 validate_node_configuration(node, descriptor)
         from .graph_contracts import validate_session_item_registrations
         validate_session_item_registrations(document, registry)
+        validate_session_preloads(document, registry.data_types)
         return document
 
     def _configuration_view(self, data, identity, *, registry=None, definitions=None):
@@ -394,6 +396,7 @@ class WorkflowConfiguration:
         require(proposed["schema_version"] == 3, "graph_invalid_document",
                 "Configuration updates require graph document schema 3")
         validate_session_item_registrations(proposed, self.registry)
+        validate_session_preloads(proposed, self.registry.data_types)
         require(proposed["workflow_definition_id"] == workflow_definition_id, "invalid_request",
                 "Submitted document identity must equal the source workflow")
         require("edit_sequence" not in proposed or proposed["edit_sequence"] == expected_edit_sequence,
@@ -533,6 +536,7 @@ class WorkflowConfiguration:
         require(proposed["schema_version"] == 3, "graph_invalid_document",
                 "Configuration copies require graph document schema 3")
         validate_session_item_registrations(proposed, self.registry)
+        validate_session_preloads(proposed, self.registry.data_types)
         for node in proposed["nodes"]:
             validate_node_configuration(node, self._configuration_descriptor(node))
         data.save_fixed_revision(proposed, 0)

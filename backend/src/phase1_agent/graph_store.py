@@ -152,8 +152,16 @@ class GraphRecordStore:
             )
             persist_application_command_identity(connection, table="idempotency", operation=operation,
                                                  key=key, request_digest=digest)
-            self.store._inject("before_commit")
-            connection.execute("COMMIT")
+            if operation in ("graph.node.succeeded", "graph.run.finish"):
+                from .result_acceptance import persistence_boundary
+                stage = ("node_acceptance" if operation == "graph.node.succeeded"
+                         else "round_acceptance")
+                with persistence_boundary(stage):
+                    self.store._inject("before_commit")
+                    connection.execute("COMMIT")
+            else:
+                self.store._inject("before_commit")
+                connection.execute("COMMIT")
             return deepcopy(result)
         except BaseException:
             if connection.in_transaction:

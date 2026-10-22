@@ -45,10 +45,7 @@ describe("ordinary graph view layout declarations", () => {
     expect(declarations("CurrentProviderPanel.vue", "label")).toMatchObject({ "min-width": "0" });
     expect(declarations("ModelSourceFields.vue", "label")).toMatchObject({ "min-width": "0" });
   });
-  it("wraps pending banners while keeping their explicit commands readable", () => {
-    expect(declarations("WorkflowWorkspace.vue", ".model-pending-banner")).toMatchObject({ "flex-wrap": "wrap" });
-    expect(declarations("WorkflowWorkspace.vue", ".model-pending-banner span")).toMatchObject({
-      "min-width": "0", "overflow-wrap": "anywhere",
-    });
+  it("has no removed canvas pending-banner layout rule in the workflow workspace", () => {
+    expect(declarations("WorkflowWorkspace.vue", ".model-pending-banner")).toEqual({});
   });
 });

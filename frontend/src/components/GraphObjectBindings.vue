@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { isGraphObjectBindings, type GraphDocument, type GraphDataType } from "../domain/workflowGraph";
+import { sessionPreloadsIssue } from "../domain/sessionPreloads";
 const props = defineProps<{ document: GraphDocument; types: GraphDataType[]; disabled?: boolean }>();
 const emit = defineEmits<{ change: [value: unknown] }>();
 const draft = ref("[]");
@@ -17,6 +18,8 @@ function parsed() {
   const value: unknown = JSON.parse(draft.value);
   if (!isGraphObjectBindings(value, props.document.nodes))
     throw new Error("检查对象键、类型版本、节点 UUID 与权限；私有对象仅允许所有者读取和写入。");
+  const issue = props.document.session_preloads ? sessionPreloadsIssue(value, props.document.session_preloads, props.types) : null;
+  if (issue) throw new Error(issue);
   return value;
 }
 function apply() {
@@ -48,13 +51,13 @@ function add() {
 <template>
   <section class="graph-object-bindings" aria-label="会话对象绑定编辑">
     <h3>会话对象绑定</h3>
-    <p>绑定声明对象类型和节点权限。节点配置中的对象键须与此处一致；更改仅保留在当前内存工作流中。</p>
+    <p>绑定声明对象类型和节点权限。节点配置中的对象键须与此处一致。</p>
     <label>添加已加载的会话类型<select v-model="selectedType" :disabled="locked">
       <option value="">选择类型</option><option v-for="type in types" :key="typeKey(type)" :value="typeKey(type)">{{ typeKey(type) }}</option>
     </select></label>
     <button type="button" :disabled="locked || !selectedType" @click="add">加入绑定</button>
     <label>对象绑定 JSON<textarea v-model="draft" rows="16" spellcheck="false" :disabled="locked" /></label>
-    <p>readers / writers 填节点 UUID；private 的 owner_node_id 与权限必须属于同一个节点。新私有绑定按声明的默认值初始化。</p>
+    <p>readers / writers 填节点 UUID；private 的 owner_node_id 与权限必须属于同一个节点。预加载项的初值在会话预加载数据中维护。</p>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <button type="button" :disabled="locked" @click="apply">校验并应用到工作流</button>
     <h3>节点 UUID</h3>

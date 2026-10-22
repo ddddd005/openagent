@@ -51,9 +51,10 @@ class FrontendNodeChannel:
             self._bound = FrontendNodeOperations(self._service).bind(**self._owner)
         return self._bound
 
-    def _require_chat_receipt_binding(self, bound):
+    def _require_chat_receipt_binding(self, bound, *, receipt_only=False):
         with self._service._lock, self._service._configuration_data.read() as data:
-            node = bound._require_binding(data)
+            registry = self._service._confirmed_registry() if receipt_only else None
+            node = bound._require_binding(data, registry=registry)
         require(node["component_version"] == "2",
                 "frontend_node_chat_unavailable",
                 "Chat receipts require frontend.node@2 and an exact session", 409)
@@ -114,6 +115,8 @@ class FrontendNodeChannel:
         require(type(operation) is str
                 and operation in {"state", "checkpoints", "checkpoint", "receipt", "accept_receipt"} | _COMMANDS,
                 "invalid_request", "Frontend operation is not allowed")
+        if operation != "receipt":
+            self._service._check_open()
         if operation == "state":
             require(type(parameters) is dict and not parameters,
                     "invalid_request", "Frontend state accepts no selectors")
@@ -148,8 +151,10 @@ class FrontendNodeChannel:
                     "frontend_node_owner_mismatch", "Original request belongs to another frontend binding", 409)
             original = self._parameters(operation, original_request["parameters"])
             if operation in _CHAT_RECEIPT_OPERATIONS:
-                bound = self._bind()
-                self._require_chat_receipt_binding(bound)
+                readonly = receipt_operation == "receipt"
+                bound = (FrontendNodeOperations(self._service).bind(**owner, _receipt_only=True)
+                         if readonly else self._bind())
+                self._require_chat_receipt_binding(bound, receipt_only=readonly)
             elif self._bound is not None:
                 bound = self._bound
             else:

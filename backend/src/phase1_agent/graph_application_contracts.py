@@ -130,6 +130,7 @@ STORED_EVIDENCE_COMMANDS = (
 _STORED_ZERO_REVISION_NAMES = frozenset({"definition.save"})
 
 QUERIES = (
+    operation("request-evidence.pending", "_workflow_pending", optional=("limit", "cursor")),
     operation("request-evidence.read", "read_evidence", ("owner_kind", "owner_id")),
     operation("content.metadata.read", "read_content_metadata", ("reference",)),
     operation("session.metadata.read", "get_session_metadata", session=True),
@@ -227,6 +228,9 @@ def validate_parameters(spec, parameters, *, stored_evidence=False):
             "invalid_request", "Application operation fields differ")
     if spec.name.startswith("request-evidence."):
         from .request_evidence import validate_evidence_owner, validate_evidence_request
+        if spec.name == "request-evidence.pending":
+            from .request_evidence import validate_pending_page
+            validate_pending_page(**parameters)
         if spec.name in ("request-evidence.read", "request-evidence.write"):
             validate_evidence_owner(parameters["owner_kind"], parameters["owner_id"])
         if spec.name == "request-evidence.write":

@@ -47,6 +47,7 @@ class WorkflowConfigurationService:
     def read_configuration(self, identity, revision=None):
         service = self._service
         with service._lock, service._configuration_data.read() as data:
+            service._check_open()
             if revision is None:
                 current, fixed = data.configuration_view(identity)
                 if current is not None:
@@ -58,6 +59,7 @@ class WorkflowConfigurationService:
                 "Archive filter must be boolean")
         service = self._service
         with service._lock, service._configuration_data.read() as data:
+            service._check_open()
             latest = {}
             for row in data.all_definition_revisions():
                 identity = row["workflow_definition_id"]

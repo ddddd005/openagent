@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .checkpoint_collection import (
     checkpoint_chat_bindings, checkpoint_context_bindings, checkpoint_variable_bindings,
+    checkpoint_preloaded_bindings,
 )
 from .contract_json import canonical_bytes
 from .graph_contracts import NodeRegistry
@@ -215,9 +216,20 @@ def load_checkpoint_state_in_transaction(
                 == (binding.type_id, binding.schema_version),
                 "checkpoint_target_chat_binding_mismatch",
                 "Checkpoint chat has another exact target type", 409, object_key=key)
+    preloaded_items = state.get("preloaded_items", {})
+    preload_bindings = checkpoint_preloaded_bindings(document, types=types, registry=registry)
+    require(set(preloaded_items) == preload_bindings.keys(),
+            "checkpoint_target_preload_binding_mismatch",
+            "Checkpoint preloads must match all exact fixed target items", 409)
+    for key, entry in preloaded_items.items():
+        binding = preload_bindings[key]
+        require((entry["type_id"], entry["schema_version"]) == (binding.type_id, binding.schema_version),
+                "checkpoint_target_preload_binding_mismatch",
+                "Checkpoint preload has another exact target type", 409, object_key=key)
     values = {
         key: entry["value"]
-        for section in (agent_contexts, variables, chat_contexts) for key, entry in section.items()
+        for section in (agent_contexts, variables, chat_contexts, preloaded_items)
+        for key, entry in section.items()
     }
     require(type(target_current_cas) is dict
             and set(target_current_cas) == set(values)

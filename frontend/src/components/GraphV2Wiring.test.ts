@@ -36,7 +36,7 @@ describe("v2 workflow controls and object presentation", () => {
     expect(html).toContain("plugin.custom-state@7");
     expect(html).toContain("对象绑定 JSON");
     expect(html).toContain(document.nodes[0].node_binding_id);
-    expect(html).toContain("默认值初始化");
+    expect(html).toContain("预加载项的初值在会话预加载数据中维护");
   });
   it("presents authoritative session objects without exposing legacy variables or writes", async () => {
     const pinia = createPinia(); const graph = useWorkflowGraphStore(pinia);

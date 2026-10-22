@@ -177,6 +177,7 @@ class GraphPublic:
 
     def get_consumer(self, sid):
         with self._lock, closing(self._store()) as store:
+            self._check_open()
             return self._consumer_view(GraphRecordStore(store), sid)
 
     def consumer_frontend_extensions(self, sid, *, workflow_definition_id, definition_revision, node_id, port_id):
@@ -205,6 +206,7 @@ class GraphPublic:
 
     def read_public_output(self, sid, *, workflow_definition_id, definition_revision, node_id, port_id, run_id=None):
         with self._lock, closing(self._store()) as store:
+            self._check_open()
             repo = GraphRecordStore(store)
             session, document = self._consumer_scope(repo, sid, workflow_definition_id, definition_revision)
             require(uuid_value(node_id) and type(port_id) is str and 0 < len(port_id) <= 128,
@@ -227,6 +229,7 @@ class GraphPublic:
 
     def public_output_history(self, sid, *, workflow_definition_id, definition_revision, node_id, port_id):
         with self._lock, closing(self._store()) as store:
+            self._check_open()
             repo = GraphRecordStore(store)
             session, document = self._consumer_scope(repo, sid, workflow_definition_id, definition_revision)
             require(uuid_value(node_id) and type(port_id) is str and 0 < len(port_id) <= 128,

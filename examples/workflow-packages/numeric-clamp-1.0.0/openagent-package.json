@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "entrypoint": "numeric_clamp.package:create_package",
+  "manifest": {
+    "schema_version": 1,
+    "package_id": "example.numeric-clamp",
+    "version": "1.0.0",
+    "host_protocol_version": 1,
+    "dependencies": [
+      {"package_id": "workflow.content", "version": "1.0.0"},
+      {"package_id": "workflow.agents", "version": "1.0.0"}
+    ],
+    "exports": {
+      "nodes": [
+        {"component_id": "example.numeric-clamp", "component_version": "1"},
+        {"component_id": "example.numeric-clamp-tools", "component_version": "1"}
+      ]
+    }
+  }
+}

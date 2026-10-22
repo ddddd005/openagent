@@ -21,6 +21,49 @@ export interface RequestEvidenceRecord extends RequestEvidenceWrite {
   request_digest: string;
   resolution: "pending" | "verified" | "archived";
 }
+export interface RequestEvidenceCursor {
+  owner_kind: string;
+  owner_id: string;
+  operation: string;
+  idempotency_key: string;
+}
+export interface PendingRequestEvidence extends RequestEvidenceCursor {
+  request_digest: string;
+  resolution: "pending";
+}
+export interface RequestEvidencePage {
+  schema_version: 1;
+  kind: "workflow.request-evidence-page";
+  items: PendingRequestEvidence[];
+  next_cursor: RequestEvidenceCursor | null;
+}
+const workflowOwners = new Set(["workflow-configuration", "workflow-configuration-copy", "workflow-management"]);
+function isCursor(value: unknown): value is RequestEvidenceCursor {
+  return graphObject(value) && Object.keys(value).length === 4
+    && workflowOwners.has(String(value.owner_kind))
+    && ["owner_kind", "owner_id", "operation", "idempotency_key"].every(key =>
+      typeof value[key] === "string" && (value[key] as string).length > 0);
+}
+export const evidenceCoordinate = (value: RequestEvidenceCursor) =>
+  JSON.stringify([value.owner_kind, value.owner_id, value.operation, value.idempotency_key]);
+export async function readPendingWorkflowEvidence(
+  parameters: { limit?: number; cursor?: RequestEvidenceCursor } = {},
+): Promise<RequestEvidencePage> {
+  const value = await graphApplicationQuery("request-evidence.pending", parameters);
+  if (!graphObject(value) || Object.keys(value).length !== 4 || value.schema_version !== 1
+    || value.kind !== "workflow.request-evidence-page" || !Array.isArray(value.items)
+    || value.items.length > (parameters.limit ?? 50)
+    || !value.items.every(row => graphObject(row) && Object.keys(row).length === 6
+      && isCursor(Object.fromEntries(["owner_kind", "owner_id", "operation", "idempotency_key"]
+        .map(key => [key, row[key]])))
+      && row.resolution === "pending" && typeof row.request_digest === "string"
+      && /^[0-9a-f]{64}$/.test(row.request_digest))
+    || new Set(value.items.map(row => evidenceCoordinate(row as PendingRequestEvidence))).size !== value.items.length
+    || value.next_cursor !== null && (!isCursor(value.next_cursor) || !value.items.length
+      || evidenceCoordinate(value.next_cursor) !== evidenceCoordinate(value.items.at(-1) as PendingRequestEvidence)))
+    throw new WorkbenchApiError("unavailable", "工作流原请求摘要格式无效，未核实或重发");
+  return graphClone(value) as unknown as RequestEvidencePage;
+}
 export function isRequestEvidenceRecord(value: unknown): value is RequestEvidenceRecord {
   return graphObject(value) && Object.keys(value).length === 9
     && value.schema_version === 1 && value.kind === "workflow.request-evidence"
@@ -54,6 +97,27 @@ export interface RequestEvidencePorts {
   read(owner_kind: string, owner_id: string): Promise<RequestEvidenceRecord[]>;
   write(request: RequestEvidenceWrite): Promise<RequestEvidenceRecord>;
   resolve(request: RequestEvidenceResolve): Promise<RequestEvidenceRecord>;
+}
+export async function confirmCurrentPendingEvidence(evidence: RequestEvidencePorts, record: RequestEvidenceRecord) {
+  const current = await evidence.read(record.owner_kind, record.owner_id);
+  if (!Array.isArray(current) || !current.every(isRequestEvidenceRecord)
+    || current.some(row => row.owner_kind !== record.owner_kind || row.owner_id !== record.owner_id)
+    || current.filter(row => row.resolution === "pending").length !== 1
+    || !current.some(row => row.resolution === "pending" && row.operation === record.operation
+      && row.idempotency_key === record.idempotency_key && row.request_digest === record.request_digest
+      && graphJsonSignature(row.request) === graphJsonSignature(record.request)))
+    throw new WorkbenchApiError("unknown", "当前原请求证据与写入回执不同，业务未发送；请只读核实");
+}
+export async function confirmEvidenceForResolution(evidence: RequestEvidencePorts, record: RequestEvidenceRecord) {
+  const current = await evidence.read(record.owner_kind, record.owner_id);
+  if (!Array.isArray(current) || !current.every(isRequestEvidenceRecord)
+    || current.some(row => row.owner_kind !== record.owner_kind || row.owner_id !== record.owner_id)
+    || current.some(row => row.resolution === "pending" && (row.operation !== record.operation
+      || row.idempotency_key !== record.idempotency_key || row.request_digest !== record.request_digest))
+    || !current.some(row => ["pending", "verified"].includes(row.resolution) && row.operation === record.operation
+      && row.idempotency_key === record.idempotency_key && row.request_digest === record.request_digest
+      && graphJsonSignature(row.request) === graphJsonSignature(record.request)))
+    throw new WorkbenchApiError("unknown", "当前证据与原结案请求不同，原请求仍保留；请只读核实");
 }
 export const requestEvidencePorts: RequestEvidencePorts = {
   async read(owner_kind, owner_id) {

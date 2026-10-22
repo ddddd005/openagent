@@ -45,6 +45,7 @@ from .provider_metadata import (
     validate_thinking_summary,
 )
 from .tools import RegisteredTool, ToolExecutionError, ToolInvocation, ToolOutcomeUnknown
+from .tool_batch_validation import tool_batch_argument_feedback
 
 
 @dataclass
@@ -1137,8 +1138,6 @@ class SnapshotKernel:
                     args = loads_strict(call.raw_arguments)
                     if type(args) is not dict:
                         raise ValueError("Tool arguments must be an object")
-                    if call.name != "final_answer":
-                        registered[call.name].validate(args)
                     accepted.append((call.name, call.raw_arguments, args, _id()))
                 if any(name == "final_answer" for name, _, _, _ in accepted) and len(accepted) != 1:
                     raise ValueError("Final must be exclusive")
@@ -1146,10 +1145,24 @@ class SnapshotKernel:
                     if type(response.content) is not str:
                         raise ValueError("Invalid assistant content")
                     validate_json_value(response.content)
+                argument_feedback = tool_batch_argument_feedback([
+                    {"id": call.id, "name": call.name, "type": call.type,
+                     "raw_arguments": call.raw_arguments} for call in response.tool_calls
+                ], frozen["tool_definitions"], seen_provider_ids)
             except (Unresolvable, RecursionError) as exc:
                 contract_fail("configuration_error", exc)
             except (ContractValidationError, ValidationError, ValueError, TypeError, AttributeError):
                 fail("protocol_error")
+
+            if argument_feedback is not None:
+                # Keep the original response in model facts. No assistant calls
+                # from this rejected batch enter accepted history or dispatch.
+                accept(checked_record(
+                    _message, "user", {"kind": "protocol_feedback", "request_id": request_id},
+                    [{"kind": "text", "text": argument_feedback}]))
+                seen_provider_ids.update(call.id for call in response.tool_calls)
+                boundary("after_tool_batch_rejected")
+                continue
 
             blocks = ([{"kind": "text", "text": response.content}]
                       if isinstance(response.content, str) and response.content else [])

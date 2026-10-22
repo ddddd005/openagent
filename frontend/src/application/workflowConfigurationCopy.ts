@@ -1,8 +1,8 @@
 import { shallowRef } from "vue";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import { readConfigurationCopyReceipt, submitConfigurationCopy } from "../adapters/workflowConfigurationCopyApi";
-import { isRequestEvidenceRecord, requestEvidencePorts,
-  type RequestEvidencePorts, type RequestEvidenceRecord } from "../adapters/requestEvidenceApi";
+import { isRequestEvidenceRecord, requestEvidencePorts, confirmCurrentPendingEvidence, confirmEvidenceForResolution,
+  evidenceCoordinate, type PendingRequestEvidence, type RequestEvidencePorts, type RequestEvidenceRecord } from "../adapters/requestEvidenceApi";
 import { graphClone, graphJsonSignature, graphUuid } from "../domain/workflowGraph";
 import { isWorkflowConfigurationCopyRequest, isWorkflowConfigurationCopyResult,
   workflowConfigurationCopyOperation, workflowConfigurationCopyOwnerKind,
@@ -79,10 +79,12 @@ export function createWorkflowConfigurationCopy(ports: WorkflowConfigurationCopy
           owner_id: sourceId, request: graphClone(value) as unknown as Record<string, unknown> }));
         if (record.resolution !== "pending" || graphJsonSignature(record.request) !== graphJsonSignature(value))
           throw unknown("保存的原请求不同，业务未提交");
+        await confirmCurrentPendingEvidence(evidence, record);
         return;
       }
       if (!record) throw unknown("配置复制原请求证据缺失，未结案");
       const original = record;
+      await confirmEvidenceForResolution(evidence, original);
       const resolved = checked(await evidence.resolve({ operation: workflowConfigurationCopyOperation,
         idempotency_key: original.idempotency_key, request_digest: original.request_digest,
         resolution: "verified" }));
@@ -101,9 +103,11 @@ export function createWorkflowConfigurationCopy(ports: WorkflowConfigurationCopy
       if (!isWorkflowConfigurationCopyResult(result, request))
         throw new WorkbenchApiError("unknown", "配置复制正式结果与请求不匹配，保留原请求");
       lastResult.value = graphClone(result);
+      outbox.progress.value = "business-confirmed";
       if (ports.accept) {
         try { await ports.accept(request, result, reconcile); }
         catch (cause) {
+          outbox.progress.value = "acceptance-failed";
           throw new WorkbenchApiError("unknown",
             `配置复制正式结果已确认，当前视图接纳失败：${cause instanceof Error ? cause.message : String(cause)}`);
         }
@@ -128,7 +132,12 @@ export function createWorkflowConfigurationCopy(ports: WorkflowConfigurationCopy
       return outbox.reconcile();
     }
     return { pending: outbox.pending, error: outbox.error, busy: outbox.busy, locked: outbox.locked,
+      progress: outbox.progress,
+      completed: outbox.completed,
+      reloadPending: outbox.reloadPending,
       lastResult, initialize: outbox.initialize, submit, reconcile,
+      matchesEvidence: (value: PendingRequestEvidence) => !!record
+        && evidenceCoordinate(record) === evidenceCoordinate(value) && record.request_digest === value.request_digest,
       note(message: string) { outbox.error.value = message; } };
   }
   return {

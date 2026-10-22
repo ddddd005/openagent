@@ -6,10 +6,11 @@ from copy import deepcopy
 
 from jsonschema import Draft202012Validator, ValidationError
 
-from .contract_errors import require, uuid_value
+from .contract_errors import ContractValidationError, require, uuid_value
 from .contract_json import canonical_bytes, validate_json_value
 from .graph_execution import NodeExecutionContext
 from .graph_records import graph_error
+from .tool_binding_contract import PreparedPureToolSpec, PureToolBindingAdapter
 
 
 class GraphToolHost:
@@ -108,8 +109,10 @@ class GraphToolHost:
         require(binding is not None and spec is not None, "tool_binding_not_found",
                 "The exact prepared tool is unavailable", 409)
         try:
+            if isinstance(spec, PreparedPureToolSpec):
+                validate_json_value(payload["arguments"])
             Draft202012Validator(spec.parameters).validate(payload["arguments"])
-        except ValidationError as exc:
+        except (ValidationError, ContractValidationError) as exc:
             raise graph_error("tool_arguments_invalid", "Tool arguments differ from their schema", 400) from exc
         basis = self._require_run_basis(context.chain_run_id)
         anchor_entry = basis.registry.get(
@@ -119,14 +122,51 @@ class GraphToolHost:
         target_entry = basis.registry.get(spec.target_component_id, spec.target_component_version)
         require(target_entry is not None and target_entry.executor is not None,
                 "tool_binding_target_unavailable", "Prepared tool target is unavailable", 409)
+        if isinstance(spec, PreparedPureToolSpec):
+            result = self._invoke_pure_tool(
+                context, payload, spec, anchor_entry.tool_binding, target_entry, basis)
+        else:
+            result = self._invoke_variable_tool(
+                context, payload, spec, anchor_entry.tool_binding, target_entry, basis)
+        validate_json_value(result)
+        require(type(result) is dict, "tool_binding_invalid", "Tool result must be a JSON object", 500)
+        return deepcopy(result)
+
+    def _invoke_pure_tool(self, context, payload, spec, adapter, target_entry, basis):
+        require(isinstance(adapter, PureToolBindingAdapter), "tool_binding_not_prepared",
+                "Prepared computation adapter differs from its frozen binding", 409)
+        with self._lock, self._data_management.read_execution(registry=basis.registry) as data:
+            self._require_tool_owner(data, context)
+        config, inputs = adapter.call(spec.adapter_spec(), deepcopy(payload["arguments"]))
+        require(type(config) is dict and type(inputs) is dict, "tool_binding_invalid",
+                "Tool adapter returned invalid target arguments", 500)
+        validate_json_value(config)
+        validate_json_value(inputs)
+        basis.registry.validate_config(target_entry, config)
+        self._validate_target_inputs(basis.registry, target_entry, config, inputs)
+        tool_context = NodeExecutionContext(
+            definition=target_entry.definition, node_binding_id=context.node_binding_id,
+            workflow_session_id=context.workflow_session_id,
+            chain_run_id=context.chain_run_id, node_run_id=context.node_run_id,
+            state={}, private_states={}, external_inputs={}, object_states={},
+            type_registry=basis.registry.data_types, input_refs={}, object_accesses={},
+            operation_scope="tool:" + payload["tool_execution_id"])
+        returned = target_entry.executor(deepcopy(config), deepcopy(inputs), tool_context)
+        returned = self._validate_target_outputs(basis.registry, target_entry, config, returned)
+        require(not tool_context.effects and not tool_context.object_writes,
+                "tool_binding_invalid", "A pure tool formed a business effect", 500)
+        return adapter.result(spec.adapter_spec(), deepcopy(returned))
+
+    def _invoke_variable_tool(self, context, payload, spec, adapter, target_entry, basis):
         with self._lock, self._data_management.read_execution(registry=basis.registry) as data:
             self._require_tool_owner(data, context)
             item = data.state.read_object(context.workflow_session_id, spec.object_key,
                                           node_id=context.node_binding_id)
             state = data.state.variables(context.workflow_session_id)
-        config, inputs = anchor_entry.tool_binding.call(spec.adapter_spec(), payload["arguments"])
+        config, inputs = adapter.call(spec.adapter_spec(), deepcopy(payload["arguments"]))
         require(type(config) is dict and type(inputs) is dict, "tool_binding_invalid",
                 "Tool adapter returned invalid target arguments", 500)
+        basis.registry.validate_config(target_entry, config)
         self._validate_target_inputs(basis.registry, target_entry, config, inputs)
         tool_context = NodeExecutionContext(
             definition=target_entry.definition, node_binding_id=context.node_binding_id,
@@ -142,7 +182,7 @@ class GraphToolHost:
         if spec.access == "read":
             require(not tool_context.object_writes, "tool_binding_invalid",
                     "A read tool formed an object write", 500)
-            result = anchor_entry.tool_binding.result(
+            result = adapter.result(
                 spec.adapter_spec(), returned, deepcopy(item))
         else:
             require(len(tool_context.object_writes) == 1, "tool_binding_invalid",
@@ -157,11 +197,9 @@ class GraphToolHost:
             accepted = self._accept_tool_write(
                 context, spec, intent, payload["tool_call_id"], payload["tool_execution_id"])
             context.apply_accepted_object(spec.object_key, accepted)
-            result = anchor_entry.tool_binding.result(
+            result = adapter.result(
                 spec.adapter_spec(), returned, deepcopy(accepted))
-        validate_json_value(result)
-        require(type(result) is dict, "tool_binding_invalid", "Tool result must be a JSON object", 500)
-        return deepcopy(result)
+        return result
 
     @staticmethod
     def _validate_target_inputs(registry, entry, config, inputs):

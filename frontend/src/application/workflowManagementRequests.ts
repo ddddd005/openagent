@@ -1,7 +1,7 @@
 import { computed, shallowRef } from "vue";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
-import { isRequestEvidenceRecord, requestEvidencePorts,
-  type RequestEvidencePorts, type RequestEvidenceRecord } from "../adapters/requestEvidenceApi";
+import { isRequestEvidenceRecord, requestEvidencePorts, confirmCurrentPendingEvidence, confirmEvidenceForResolution,
+  evidenceCoordinate, type PendingRequestEvidence, type RequestEvidencePorts, type RequestEvidenceRecord } from "../adapters/requestEvidenceApi";
 import { graphCommandOperation, readGraphReceipt, sendGraphCommand } from "../adapters/workflowApplicationApi";
 import { readGraphDefinition } from "../adapters/workflowGraphApi";
 import { graphClone, graphJsonSignature, graphObject, graphUuid,
@@ -61,6 +61,7 @@ export function createWorkflowManagementRequests(ports: WorkflowManagementReques
   const entries = new Map<string, ReturnType<typeof createEntry>>();
   function createEntry(workflowId: string) {
     let record: RequestEvidenceRecord | null = null, failure: unknown = null;
+    let acceptRecoveredResult = true;
     const lastReceipt = shallowRef<GraphReceipt | null>(null);
     function valid(value: unknown): value is ManagementRequest {
       if (!graphObject(value) || Object.keys(value).length !== 2 || !operations.has(String(value.operation))
@@ -102,10 +103,12 @@ export function createWorkflowManagementRequests(ports: WorkflowManagementReques
           owner_kind: ownerKind, owner_id: workflowId, request: graphClone(value.parameters) }));
         if (record.resolution !== "pending" || !same(record.request, value.parameters))
           throw new WorkbenchApiError("unknown", "保存的原请求不同，业务未提交");
+        await confirmCurrentPendingEvidence(evidence, record);
         return;
       }
       if (!record) throw new WorkbenchApiError("unknown", "管理原请求证据缺失，未结案");
       const original = record;
+      await confirmEvidenceForResolution(evidence, original);
       const resolved = checked(await evidence.resolve({ operation: original.operation,
         idempotency_key: original.idempotency_key, request_digest: original.request_digest, resolution: "verified" }));
       if (resolved.resolution !== "verified" || resolved.request_digest !== original.request_digest
@@ -125,8 +128,10 @@ export function createWorkflowManagementRequests(ports: WorkflowManagementReques
           sessionId: typeof request.parameters.session_id === "string" ? request.parameters.session_id : null,
         }, { readDefinition: readGraphDefinition });
         lastReceipt.value = graphClone(receipt);
-        try { await ports.accept(workflowId, receipt, graphClone(command)); }
+        outbox.progress.value = "business-confirmed";
+        try { if (acceptRecoveredResult) await ports.accept(workflowId, receipt, graphClone(command)); }
         catch (cause) {
+          outbox.progress.value = "acceptance-failed";
           throw new WorkbenchApiError("unknown",
             `管理正式结果已确认，当前视图接纳失败：${cause instanceof Error ? cause.message : String(cause)}`);
         }
@@ -140,7 +145,7 @@ export function createWorkflowManagementRequests(ports: WorkflowManagementReques
       if (!request || (request.operation !== "definition.delete" && request.operation !== "session.delete")) return;
       const receipt = lastReceipt.value;
       if (!receipt || receipt.kind !== "management" || !receipt.result.deleted) return;
-      await ports.completed?.(workflowId, originalCommand(request), graphClone(receipt));
+      if (acceptRecoveredResult) await ports.completed?.(workflowId, originalCommand(request), graphClone(receipt));
     }, "工作流管理");
     async function dispatch(command: GraphCommand): Promise<GraphReceipt> {
       const request = graphCommandOperation(command.path, command.body);
@@ -160,7 +165,15 @@ export function createWorkflowManagementRequests(ports: WorkflowManagementReques
       }
       return graphClone(lastReceipt.value);
     }
-    return { ...outbox, dispatch, lastReceipt,
+    async function reconcile(options: { acceptResult?: boolean } = {}) {
+      if (outbox.busy.value) return false;
+      acceptRecoveredResult = options.acceptResult !== false;
+      try { return await outbox.reconcile(); }
+      finally { acceptRecoveredResult = true; }
+    }
+    return { ...outbox, reconcile, dispatch, lastReceipt,
+      matchesEvidence: (value: PendingRequestEvidence) => !!record
+        && evidenceCoordinate(record) === evidenceCoordinate(value) && record.request_digest === value.request_digest,
       pendingCommand: computed(() => outbox.pending.value ? originalCommand(outbox.pending.value) : null) };
   }
   function forWorkflow(workflowId: string) {

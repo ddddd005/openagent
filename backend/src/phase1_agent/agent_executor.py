@@ -264,30 +264,34 @@ class PublicAgentExecutor:
             identity, event = self._result_fact
             self._publish_original(identity, event, callbacks)
             self._result_fact_accepted = True
-        result = self._completed_result
-        project_generated_messages(result.messages, result.final, self.snapshot["snapshot_id"])
-        from .model_execution_contracts import AGENT_EXECUTOR_REF_V2
-        model_requests = []
-        for identity in self.fact_ids:
-            event = self._original_events[identity][1]
-            if event["kind"] == "model_result":
-                payload = event["payload"]
-                model_requests.append({
-                    "request_id": payload["request_id"], "settings_id": payload["settings_id"],
-                    "fact_ids": [reference["fact_id"] for reference in payload["result"]["fact_refs"]],
-                })
-        receipts = validate_agent_receipts({
-            "schema_version": 2, "kind": "workflow.agent-receipts",
-            "owner": {"workflow_session_id": self.context.workflow_session_id,
-                      "chain_run_id": self.context.chain_run_id, "node_binding_id": self.context.node_binding_id,
-                      "node_run_id": self.context.node_run_id},
-            "executor_ref": deepcopy(AGENT_EXECUTOR_REF_V2), "snapshot_id": self.snapshot["snapshot_id"],
-            "frozen_prompt_ref": exact_input(self.context, "prompt"), "model_ref": exact_input(self.context, "model"),
-            "compaction_policy_ref": deepcopy(
-                self.snapshot["config"]["payload"]["frozen_compaction_policy_ref"]),
-            "unit_id": self.unit_id, "fact_ids": list(self.fact_ids),
-            "model_requests": model_requests})
-        outputs = {"result": text_content(result.final["value"]["text"]), "receipts": receipts}
+        try:
+            result = self._completed_result
+            project_generated_messages(result.messages, result.final, self.snapshot["snapshot_id"])
+            from .model_execution_contracts import AGENT_EXECUTOR_REF_V2
+            model_requests = []
+            for identity in self.fact_ids:
+                event = self._original_events[identity][1]
+                if event["kind"] == "model_result":
+                    payload = event["payload"]
+                    model_requests.append({
+                        "request_id": payload["request_id"], "settings_id": payload["settings_id"],
+                        "fact_ids": [reference["fact_id"] for reference in payload["result"]["fact_refs"]],
+                    })
+            receipts = validate_agent_receipts({
+                "schema_version": 2, "kind": "workflow.agent-receipts",
+                "owner": {"workflow_session_id": self.context.workflow_session_id,
+                          "chain_run_id": self.context.chain_run_id, "node_binding_id": self.context.node_binding_id,
+                          "node_run_id": self.context.node_run_id},
+                "executor_ref": deepcopy(AGENT_EXECUTOR_REF_V2), "snapshot_id": self.snapshot["snapshot_id"],
+                "frozen_prompt_ref": exact_input(self.context, "prompt"), "model_ref": exact_input(self.context, "model"),
+                "compaction_policy_ref": deepcopy(
+                    self.snapshot["config"]["payload"]["frozen_compaction_policy_ref"]),
+                "unit_id": self.unit_id, "fact_ids": list(self.fact_ids),
+                "model_requests": model_requests})
+            outputs = {"result": text_content(result.final["value"]["text"]), "receipts": receipts}
+        except Exception as error:
+            error._result_failure_stage = "result_projection"
+            raise
         self._pending_acceptance = False
         return outputs
 

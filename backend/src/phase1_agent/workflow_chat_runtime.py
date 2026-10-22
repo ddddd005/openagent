@@ -8,6 +8,7 @@ from .contract_errors import require, uuid_value
 from .contract_json import canonical_bytes, loads_strict, validate_json_value
 from .host_sdk import bounded_name
 from .variable_contract import VARIABLE_SCHEMA_VERSION, VARIABLE_TYPE, validate_variable
+from .runtime_checkpoints import validate_preloaded_items
 
 
 def initialize_chat_tables(connection):
@@ -35,10 +36,16 @@ def _owner(sid, object_key=None):
 def _initial_state(value):
     if value is None:
         return None
-    require(type(value) is dict and set(value) == {"agent_contexts", "variables"}
+    require(type(value) is dict and {"agent_contexts", "variables"} <= set(value)
+            <= {"agent_contexts", "variables", "preloaded_items"}
             and type(value["agent_contexts"]) is dict and type(value["variables"]) is dict
             and not value["agent_contexts"].keys() & value["variables"].keys(),
             "chat_runtime_invalid", "Initial computation values require exact admitted sections")
+    if "preloaded_items" in value:
+        validate_preloaded_items(value["preloaded_items"])
+        require(not (value["agent_contexts"].keys() | value["variables"].keys())
+                & value["preloaded_items"].keys(),
+                "chat_runtime_invalid", "Initial computation object keys must be disjoint")
     for key, entry in value["agent_contexts"].items():
         require(bounded_name(key) and type(entry) is dict and set(entry) == {"value"},
                 "chat_runtime_invalid", "Initial context item is invalid")

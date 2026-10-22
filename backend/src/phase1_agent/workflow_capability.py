@@ -1,10 +1,14 @@
 """Workflow-owned minimal project access declaration and its trusted local bindings.
 
-This module is the workflow source of the project-level access declaration for
-T2 (140 号 §6.1).  It owns the declaration content: capability identity, access
+This module is the workflow source of the project-level access declaration
+(147 号 §4.1).  It owns the declaration content: capability identity, access
 declaration/contract version, source reference, the per-role acquisition
 bindings, the required environment, lifecycle, public business contract
 references, frontend access references and the cross-domain dependency list.
+The common data types and the common format validation live in the neutral
+``project_capability`` module; this module only supplies the workflow's own
+content and source policy (both acquisition roles and the five dependency
+coverage kinds the workflow declares).
 
 Bindings are explicit trusted local callables (module-level factories), never
 string entrypoints or dynamic discovery: this module is the only place that
@@ -14,362 +18,120 @@ queries this declaration; it never enumerates internal construction, imports
 modules from strings or executes arbitrary module imports.
 
 The declaration deliberately references existing public operations,
-``ServiceDefinition`` identities and frontend package/extension ids instead of
-copying workflow node/type catalogs or claiming provider/content/model supply as
-already registered project sub-capabilities.
+``ServiceDefinition`` identities and frontend package/extension ids, and names
+the provider/model-preset and global-content domains as project sub-capabilities
+now wired through their own trusted source bindings instead of claiming those
+supplies are unregistered contract references.
 """
 
 from __future__ import annotations
 
 import copy
-import re
 from dataclasses import dataclass
-from typing import Any, Callable
 
-from .contract_errors import require
-
-CAPABILITY_SCHEMA_VERSION = 1
-DECLARATION_SCHEMA_VERSION = 1
-ACCESS_CONTRACT_VERSION = 1
+from .project_capability import (
+    ACCESS_CONTRACT_VERSION,
+    ACCESS_ROLES,
+    CAPABILITY_SCHEMA_VERSION,
+    CONTRACT_KINDS,
+    DECLARATION_SCHEMA_VERSION,
+    DEPENDENCY_REQUIREMENTS,
+    EXECUTION_ROLE,
+    MANAGEMENT_ROLE,
+    PROJECT_LIFECYCLE_OWNER,
+    CapabilityContractReference,
+    CapabilityDeclaration,
+    CapabilityDependency,
+    CapabilitySource,
+    RoleBinding,
+)
 
 CAPABILITY_ID = "workflow.graph"
 CAPABILITY_KIND = "workflow"
-
-MANAGEMENT_ROLE = "management"
-EXECUTION_ROLE = "execution"
-ACCESS_ROLES = (MANAGEMENT_ROLE, EXECUTION_ROLE)
-
-CONTRACT_KINDS = frozenset({
-    "environment", "operation", "service_definition", "private_store",
-    "frontend_package", "frontend_extension", "frontend_container",
-})
-DEPENDENCY_REQUIREMENTS = frozenset({"required", "conditional", "optional"})
 
 SOURCE_ID = "workflow.local-source"
 SOURCE_KIND = "local-source"
 SOURCE_VERSION = "1.0.0"
 SOURCE_MAINTAINER = "workflow"
 
-_MAX_TEXT = 256
-_MAX_ITEMS = 64
-_MODULE_PATTERN = re.compile(r"phase1_agent\.[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*")
+# The workflow source's own dependency-coverage lower bound: the existing
+# cross-domain dependency list must keep covering these five contract kinds.
+REQUIRED_DEPENDENCY_CONTRACT_KINDS = ("environment", "operation", "service_definition",
+                                      "private_store", "frontend_extension")
 
-
-def _text(value: Any, code: str, message: str) -> str:
-    require(type(value) is str and 0 < len(value) <= _MAX_TEXT, code, message)
-    return value
-
-
-def _items(value: Any, code: str, message: str, *, maximum: int = _MAX_ITEMS) -> tuple:
-    require(type(value) in (tuple, list) and 0 < len(value) <= maximum, code, message)
-    return tuple(value)
-
-
-@dataclass(frozen=True)
-class CapabilityContractReference:
-    """One existing public contract the workflow depends on or exposes."""
-
-    kind: str
-    identity: str
-    version: str | None = None
-
-    def to_dict(self) -> dict:
-        require(self.kind in CONTRACT_KINDS, "capability_dependency_invalid",
-                "Dependency contract kind is unsupported")
-        value = {"kind": self.kind,
-                 "identity": _text(self.identity, "capability_dependency_invalid",
-                                   "Dependency contract identity is invalid")}
-        if self.version is not None:
-            value["version"] = _text(self.version, "capability_dependency_invalid",
-                                     "Dependency contract version is invalid")
-        return value
-
-
-@dataclass(frozen=True)
-class CapabilityDependency:
-    """One cross-domain dependency entry with its real call location."""
-
-    dependency_id: str
-    caller: str
-    provider: str
-    contracts: tuple[CapabilityContractReference, ...]
-    purpose: str
-    condition: str
-    module: str
-    anchor: str
-    requirement: str
-    carrier: str
-
-    def to_dict(self) -> dict:
-        dependency_id = _text(self.dependency_id, "capability_dependency_invalid",
-                              "Dependency identity is invalid")
-        caller = _text(self.caller, "capability_dependency_invalid", "Dependency caller is invalid")
-        provider = _text(self.provider, "capability_dependency_invalid", "Dependency provider is invalid")
-        purpose = _text(self.purpose, "capability_dependency_invalid", "Dependency purpose is invalid")
-        condition = _text(self.condition, "capability_dependency_invalid",
-                          "Dependency condition is invalid")
-        carrier = _text(self.carrier, "capability_dependency_invalid", "Dependency carrier is invalid")
-        require(self.requirement in DEPENDENCY_REQUIREMENTS, "capability_dependency_invalid",
-                "Dependency requirement is unsupported")
-        require(type(self.module) is str and _MODULE_PATTERN.fullmatch(self.module) is not None,
-                "capability_dependency_invalid", "Dependency call-site module is invalid")
-        anchor = _text(self.anchor, "capability_dependency_invalid", "Dependency call-site anchor is invalid")
-        contracts = _items(self.contracts, "capability_dependency_invalid",
-                           "Dependency contracts must be a bounded array")
-        require(all(isinstance(item, CapabilityContractReference) for item in contracts),
-                "capability_dependency_invalid", "Dependency contract references are invalid")
-        rendered = [item.to_dict() for item in contracts]
-        require(len({(item["kind"], item["identity"]) for item in rendered}) == len(rendered),
-                "capability_dependency_invalid", "Dependency contract references are duplicated")
-        return {"dependency_id": dependency_id, "caller": caller, "provider": provider,
-                "contracts": rendered, "purpose": purpose, "condition": condition,
-                "call_site": {"module": self.module, "anchor": anchor},
-                "requirement": self.requirement, "carrier": carrier}
+__all__ = [
+    "ACCESS_CONTRACT_VERSION",
+    "ACCESS_ROLES",
+    "CAPABILITY_ID",
+    "CAPABILITY_KIND",
+    "CAPABILITY_SCHEMA_VERSION",
+    "CONTRACT_KINDS",
+    "CapabilityContractReference",
+    "CapabilityDependency",
+    "DECLARATION_SCHEMA_VERSION",
+    "DEPENDENCY_REQUIREMENTS",
+    "EXECUTION_ROLE",
+    "MANAGEMENT_ROLE",
+    "PROJECT_LIFECYCLE_OWNER",
+    "REQUIRED_DEPENDENCY_CONTRACT_KINDS",
+    "RoleBinding",
+    "SOURCE_ID",
+    "SOURCE_KIND",
+    "SOURCE_MAINTAINER",
+    "SOURCE_VERSION",
+    "WorkflowCapabilityDeclaration",
+    "WorkflowCapabilitySource",
+    "build_execution_service",
+    "build_management_service",
+    "local_workflow_capability_source",
+    "workflow_capability_declaration",
+]
 
 
 @dataclass(frozen=True)
-class RoleBinding:
-    """One trusted local acquisition binding for a project role."""
-
-    role: str
-    capability_id: str
-    service_contract: str
-    factory: Callable
-
-    def to_dict(self) -> dict:
-        require(self.role in ACCESS_ROLES, "capability_role_invalid", "Access role is unsupported")
-        capability_id = _text(self.capability_id, "capability_binding_invalid",
-                              "Access binding capability identity is invalid")
-        service_contract = _text(self.service_contract, "capability_binding_invalid",
-                                 "Access binding service contract is invalid")
-        require(callable(self.factory), "capability_binding_not_callable",
-                "Access binding must provide a trusted local callable")
-        return {"role": self.role, "capability_id": capability_id,
-                "service_contract": service_contract}
-
-
-def _validate_capability(value: Any) -> dict:
-    code = "capability_identity_invalid"
-    require(type(value) is dict and set(value) == {
-        "schema_version", "capability_id", "capability_kind",
-        "access_contract_version", "source"}, code,
-        "Capability identity fields differ")
-    require(type(value["schema_version"]) is int and value["schema_version"] == CAPABILITY_SCHEMA_VERSION,
-            code, "Capability identity schema is unsupported")
-    _text(value["capability_id"], code, "Capability identity is invalid")
-    require(value["capability_kind"] == CAPABILITY_KIND, code, "Capability kind is unsupported")
-    require(type(value["access_contract_version"]) is int and value["access_contract_version"] > 0,
-            code, "Access contract version is invalid")
-    source = value["source"]
-    require(type(source) is dict and set(source) == {
-        "source_id", "source_kind", "source_version", "maintainer"}, code,
-        "Capability source reference fields differ")
-    for field_name in ("source_id", "source_kind", "source_version", "maintainer"):
-        _text(source[field_name], code, "Capability source reference is invalid")
-    return copy.deepcopy(value)
-
-
-def _validate_roles(value: Any) -> list[dict]:
-    code = "capability_role_invalid"
-    roles = _items(value, code, "Access roles must be a bounded array")
-    require(len(roles) <= len(ACCESS_ROLES), code, "Access role count exceeds its limit")
-    rendered, seen = [], set()
-    for binding in roles:
-        require(isinstance(binding, RoleBinding), code, "Access role binding is invalid")
-        item = binding.to_dict()
-        require(item["role"] not in seen, "capability_role_duplicated",
-                "Access role is declared more than once")
-        seen.add(item["role"])
-        rendered.append(item)
-    return rendered
-
-
-def _validate_environment(value: Any) -> dict:
-    require(value is not None, "capability_environment_missing",
-            "Required environment declaration is missing")
-    code = "capability_environment_invalid"
-    require(type(value) is dict and set(value) == {
-        "schema_version", "contract_id", "contract_version", "requirements"}, code,
-        "Environment declaration fields differ")
-    require(type(value["schema_version"]) is int and value["schema_version"] == 1, code,
-            "Environment declaration schema is unsupported")
-    _text(value["contract_id"], code, "Environment contract identity is invalid")
-    require(type(value["contract_version"]) is int and value["contract_version"] > 0, code,
-            "Environment contract version is invalid")
-    requirements = _items(value["requirements"], code,
-                          "Environment requirements must be a bounded array", maximum=16)
-    require(all(type(item) is str and 0 < len(item) <= _MAX_TEXT for item in requirements)
-            and len(set(requirements)) == len(requirements), code,
-            "Environment requirements are invalid")
-    rendered = copy.deepcopy(value)
-    rendered["requirements"] = list(requirements)
-    return rendered
-
-
-def _validate_lifecycle(value: Any) -> dict:
-    require(value is not None, "capability_lifecycle_missing",
-            "Required lifecycle declaration is missing")
-    code = "capability_lifecycle_invalid"
-    require(type(value) is dict and set(value) == {
-        "schema_version", "owner", "close_entry", "roles", "borrowed_by"}, code,
-        "Lifecycle declaration fields differ")
-    require(type(value["schema_version"]) is int and value["schema_version"] == 1, code,
-            "Lifecycle declaration schema is unsupported")
-    _text(value["owner"], code, "Lifecycle owner is invalid")
-    _text(value["close_entry"], code, "Lifecycle close entry is invalid")
-    roles = _items(value["roles"], code, "Lifecycle roles must be a bounded array")
-    require(all(type(item) is str and item in ACCESS_ROLES for item in roles)
-            and len(set(roles)) == len(roles), code, "Lifecycle roles are invalid")
-    borrowed = _items(value["borrowed_by"], code, "Lifecycle borrowers must be a bounded array")
-    require(all(type(item) is str and 0 < len(item) <= _MAX_TEXT for item in borrowed)
-            and len(set(borrowed)) == len(borrowed), code, "Lifecycle borrowers are invalid")
-    rendered = copy.deepcopy(value)
-    rendered["roles"] = list(roles)
-    rendered["borrowed_by"] = list(borrowed)
-    return rendered
-
-
-def _validate_public_contracts(value: Any) -> dict:
-    require(value is not None, "capability_public_contract_missing",
-            "Required public contract declaration is missing")
-    code = "capability_public_contract_invalid"
-    require(type(value) is dict and set(value) == {
-        "schema_version", "operation_groups", "service_definitions"}, code,
-        "Public contract declaration fields differ")
-    require(type(value["schema_version"]) is int and value["schema_version"] == 1, code,
-            "Public contract declaration schema is unsupported")
-    groups = _items(value["operation_groups"], code,
-                    "Public operation groups must be a bounded array", maximum=8)
-    rendered_groups = []
-    for group in groups:
-        require(type(group) is dict and set(group) == {"scope", "operations"}
-                and group["scope"] in ("management", "execution", "lifecycle"), code,
-                "Public operation group is invalid")
-        operations = _items(group["operations"], code,
-                            "Public operations must be a bounded array", maximum=128)
-        require(all(type(item) is str and 0 < len(item) <= _MAX_TEXT for item in operations)
-                and len(set(operations)) == len(operations), code,
-                "Public operation identities are invalid")
-        rendered_groups.append({"scope": group["scope"], "operations": list(operations)})
-    services = value["service_definitions"]
-    require(type(services) in (tuple, list) and len(services) <= 16, code,
-            "Public service definitions must be a bounded array")
-    rendered_services = []
-    for service in services:
-        require(type(service) is dict and set(service) == {"service_id", "exact_version"}, code,
-                "Public service definition reference is invalid")
-        rendered_services.append({
-            "service_id": _text(service["service_id"], code,
-                                "Public service identity is invalid"),
-            "exact_version": _text(service["exact_version"], code,
-                                   "Public service version is invalid")})
-    return {"schema_version": 1,
-            "operation_groups": rendered_groups,
-            "service_definitions": rendered_services}
-
-
-def _validate_frontend(value: Any) -> dict:
-    require(value is not None, "capability_frontend_missing",
-            "Required frontend access declaration is missing")
-    code = "capability_frontend_invalid"
-    require(type(value) is dict and set(value) == {
-        "schema_version", "packages", "extensions", "containers"}, code,
-        "Frontend access declaration fields differ")
-    require(type(value["schema_version"]) is int and value["schema_version"] == 1, code,
-            "Frontend access declaration schema is unsupported")
-    packages = value["packages"]
-    require(type(packages) in (tuple, list) and len(packages) <= 16, code,
-            "Frontend packages must be a bounded array")
-    rendered_packages = []
-    for package in packages:
-        require(type(package) is dict and set(package) == {"package_id", "version"}, code,
-                "Frontend package reference is invalid")
-        rendered_packages.append({
-            "package_id": _text(package["package_id"], code,
-                                "Frontend package identity is invalid"),
-            "version": _text(package["version"], code, "Frontend package version is invalid")})
-    extensions = value["extensions"]
-    require(type(extensions) in (tuple, list) and len(extensions) <= 32, code,
-            "Frontend extensions must be a bounded array")
-    rendered_extensions = []
-    for extension in extensions:
-        require(type(extension) is dict and set(extension) == {"package_id", "extension_id"}, code,
-                "Frontend extension reference is invalid")
-        rendered_extensions.append({
-            "package_id": _text(extension["package_id"], code,
-                                "Frontend extension package identity is invalid"),
-            "extension_id": _text(extension["extension_id"], code,
-                                  "Frontend extension identity is invalid")})
-    containers = _items(value["containers"], code,
-                        "Frontend containers must be a bounded array", maximum=8)
-    require(all(type(item) is str and 0 < len(item) <= _MAX_TEXT for item in containers)
-            and len(set(containers)) == len(containers), code,
-            "Frontend containers are invalid")
-    return {"schema_version": 1, "packages": rendered_packages,
-            "extensions": rendered_extensions, "containers": list(containers)}
-
-
-def _validate_dependencies(value: Any) -> list[dict]:
-    require(value is not None, "capability_dependencies_missing",
-            "Required cross-domain dependency declaration is missing")
-    dependencies = _items(value, "capability_dependencies_missing",
-                          "Cross-domain dependencies must be a bounded array",
-                          maximum=32)
-    rendered, seen = [], set()
-    for dependency in dependencies:
-        require(isinstance(dependency, CapabilityDependency), "capability_dependency_invalid",
-                "Cross-domain dependency entry is invalid")
-        item = dependency.to_dict()
-        require(item["dependency_id"] not in seen, "capability_dependency_duplicated",
-                "Cross-domain dependency is declared more than once")
-        seen.add(item["dependency_id"])
-        rendered.append(item)
-    return rendered
-
-
-@dataclass(frozen=True)
-class WorkflowCapabilityDeclaration:
+class WorkflowCapabilityDeclaration(CapabilityDeclaration):
     """The workflow source's minimal project access declaration."""
 
-    capability: dict
-    roles: tuple[RoleBinding, ...]
-    environment: dict
-    lifecycle: dict
-    public_contracts: dict
-    frontend: dict
-    dependencies: tuple[CapabilityDependency, ...]
-
-    def to_dict(self) -> dict:
-        return {
-            "schema_version": DECLARATION_SCHEMA_VERSION,
-            "capability": _validate_capability(self.capability),
-            "roles": _validate_roles(self.roles),
-            "environment": _validate_environment(self.environment),
-            "lifecycle": _validate_lifecycle(self.lifecycle),
-            "public_contracts": _validate_public_contracts(self.public_contracts),
-            "frontend": _validate_frontend(self.frontend),
-            "dependencies": _validate_dependencies(self.dependencies),
-        }
-
 
 @dataclass(frozen=True)
-class WorkflowCapabilitySource:
-    """One trusted local source together with the declarations it maintains."""
+class WorkflowCapabilitySource(CapabilitySource):
+    """The workflow source with the workflow's own source policy.
 
-    source_id: str
-    declarations: tuple[WorkflowCapabilityDeclaration, ...]
+    Tests and trusted composition keep constructing the source as
+    ``WorkflowCapabilitySource(SOURCE_ID, (declaration,))``; the workflow policy
+    (both acquisition roles and the five dependency coverage kinds) is applied
+    by this subclass rather than by the project or the caller.
+    """
+
+    required_roles: tuple = ACCESS_ROLES
+    required_dependency_contract_kinds: tuple = REQUIRED_DEPENDENCY_CONTRACT_KINDS
 
 
-def build_management_service(*, database, environment):
-    """Trusted local binding: the workflow's original management construction path."""
+def build_management_service(*, database, environment, provider_configuration_factory=None,
+                             content_configuration_factory=None, workflow_package_source=None):
+    """Trusted local binding: the workflow's original management construction path.
+
+    The provider and content factories are narrow dependency hand-offs only:
+    they carry the already-validated project bindings of the two domain
+    capabilities, never the whole host or project repository.
+    """
     from .graph_service import GraphManagementService
-    return GraphManagementService(database, environment=environment)
+    return GraphManagementService(
+        database, environment=environment,
+        provider_configuration_factory=provider_configuration_factory,
+        content_configuration_factory=content_configuration_factory,
+        workflow_package_source=workflow_package_source)
 
 
-def build_execution_service(*, database, environment):
+def build_execution_service(*, database, environment, provider_configuration_factory=None,
+                            content_configuration_factory=None, workflow_package_source=None):
     """Trusted local binding: the workflow's original execution construction path."""
     from .graph_service import GraphWorkflowService
-    return GraphWorkflowService(database, environment=environment)
+    return GraphWorkflowService(
+        database, environment=environment,
+        provider_configuration_factory=provider_configuration_factory,
+        content_configuration_factory=content_configuration_factory,
+        workflow_package_source=workflow_package_source)
 
 
 def _role_bindings() -> tuple[RoleBinding, ...]:
@@ -401,7 +163,7 @@ ENVIRONMENT = {
 
 LIFECYCLE = {
     "schema_version": 1,
-    "owner": "project.workflow-host",
+    "owner": PROJECT_LIFECYCLE_OWNER,
     "close_entry": "close",
     "roles": ACCESS_ROLES,
     "borrowed_by": ("http-server",),
@@ -411,6 +173,7 @@ PUBLIC_CONTRACTS = {
     "schema_version": 1,
     "operation_groups": (
         {"scope": "management", "operations": (
+            "platform", "packages.configure",
             "definition.list", "definition.summaries", "definition.read",
             "definition.sessions", "session.read", "session.summaries",
             "definition.update", "definition.copy", "session.metadata.update",
@@ -459,34 +222,107 @@ DEPENDENCIES = (
         carrier="project-environment",
     ),
     CapabilityDependency(
+        dependency_id="dep.local-package-source",
+        caller="workflow.management+execution",
+        provider="project.workflow-package-source",
+        contracts=(CapabilityContractReference("operation", "platform"),
+                   CapabilityContractReference("operation", "packages.configure")),
+        purpose="The project supplies a declaration-only local directory source to the "
+                "workflow factory. Workflow owns exact selection, loading and consumption; "
+                "platform exposes discovery and diagnostics and packages.configure changes "
+                "the existing persisted selection.",
+        condition="Required on normal project Host acquisition; a missing directory is an "
+                  "empty source, and direct trusted service construction may omit it.",
+        module="phase1_agent.workflow_host",
+        anchor="workflow_package_source=self._package_source()",
+        requirement="required",
+        carrier="project-supplied LocalWorkflowPackageSource; operation references describe "
+                "its existing public discovery and selection contract",
+    ),
+    CapabilityDependency(
         dependency_id="dep.resource-content",
         caller="workflow.runtime",
-        provider="workflow.resources",
+        provider="content.global",
         contracts=(CapabilityContractReference("operation", "resource.read"),
                    CapabilityContractReference("operation", "resource.list"),
                    CapabilityContractReference("operation", "content.metadata.read")),
-        purpose="Declared node resource dependencies are frozen before a run and current "
-                "global content records are read at use time.",
+        purpose="Declared node resource dependencies are frozen before a run: the preflight "
+                "reads records.read_global_resources in the original records transaction to "
+                "verify resource identities, references and the current type basis, without "
+                "cross-service reads.",
         condition="Only when a node declares resources:read or references global resources; "
                   "the resource type must be registered by an enabled package.",
         module="phase1_agent.graph_resource_host",
-        anchor="def _content_dependencies",
+        anchor="def _preflight_capabilities",
         requirement="conditional",
-        carrier="existing-operation (resources/content are not yet project capabilities)",
+        carrier="domain direct read in the original records transaction "
+                "(records.read_global_resources; not a cross-service content-service call)",
+    ),
+    CapabilityDependency(
+        dependency_id="dep.content-use-time-read",
+        caller="workflow.runtime",
+        provider="content.global",
+        contracts=(CapabilityContractReference("operation", "resource.read"),),
+        purpose="After the declared identity is verified, node use-time reads fetch current "
+                "content through the original _store/_global_store direct domain read with "
+                "the retained RunBasis registry, not through the wired content service.",
+        condition="Only when a node with resources:read or a routed service reads current "
+                  "global content during execution.",
+        module="phase1_agent.graph_resource_host",
+        anchor="def _read_current_resource",
+        requirement="conditional",
+        carrier="in-domain direct read (original _store/_global_store with the retained "
+                "RunBasis registry; not the wired content service)",
+    ),
+    CapabilityDependency(
+        dependency_id="dep.content-host-service-read",
+        caller="workflow.runtime",
+        provider="content.global",
+        contracts=(CapabilityContractReference("operation", "resource.read"),),
+        purpose="The Host service environment reads content-type resources through the wired "
+                "content configuration service and passes this invocation's registry.data_types "
+                "explicitly; other relations keep the original Host read.",
+        condition="Only when a routed service reads a content-type global resource in a frozen run.",
+        module="phase1_agent.graph_runtime_host",
+        anchor="self.content_configuration.get_global_resource(",
+        requirement="conditional",
+        carrier="project capability content.global (wired ContentConfigurationService with "
+                "this run's registry.data_types)",
     ),
     CapabilityDependency(
         dependency_id="dep.provider-model",
         caller="workflow.management+runtime",
-        provider="workflow.providers",
+        provider="provider.configuration",
         contracts=(CapabilityContractReference("operation", "provider.models.list"),),
         purpose="Model nodes resolve and bind provider and model configuration through the "
-                "existing provider operations.",
+                "project's wired provider capability; ordinary management and discovery do "
+                "not cover the restricted request bundle read.",
         condition="Only when provider/model nodes participate in a run or a user manages "
-                  "provider configuration.",
+                  "provider configuration. The restricted request bundle read is declared "
+                  "separately.",
         module="phase1_agent.graph_provider_host",
         anchor="class ProviderConfigurationService",
         requirement="conditional",
-        carrier="existing-operation (providers are not yet project capabilities)",
+        carrier="project capability provider.configuration (provider source management "
+                "factory → ProviderConfigurationService over the project environment)",
+    ),
+    CapabilityDependency(
+        dependency_id="dep.model-request-resource-reader",
+        caller="workflow.runtime",
+        provider="workflow.models",
+        contracts=(CapabilityContractReference("service_definition", "workflow.models", "2.0.0"),),
+        purpose="Model request preparation reads authorized workspace profile and provider "
+                "via ModelRequestResourceReader: one read-only transaction authorizes the "
+                "accepted source binding and reads both records; check_resource_bundle "
+                "checks head without reloading values.",
+        condition="Only when a model request prepares an authorized source bundle; "
+                  "graph_runtime_host injects the reader as its model_resource_reader option. "
+                  "check_resource_bundle re-verifies the authorized update_sequence/deleted head.",
+        module="phase1_agent.model_request_resources",
+        anchor="def read_resource_bundle",
+        requirement="conditional",
+        carrier="restricted ModelRequestResourceReader port (not ordinary management CRUD, "
+                "not discovery, not two ordinary reads)",
     ),
     CapabilityDependency(
         dependency_id="dep.model-request-service",
@@ -499,7 +335,7 @@ DEPENDENCIES = (
         module="phase1_agent.graph_runtime_host",
         anchor="MODEL_REQUEST_SERVICE_REF",
         requirement="conditional",
-        carrier="existing-service-definition (model supply is not yet a project capability)",
+        carrier="existing-service-definition (model supply is not a project capability)",
     ),
     CapabilityDependency(
         dependency_id="dep.credentials",
