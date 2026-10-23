@@ -18,7 +18,9 @@ from .host_sdk import (
     ObjectBinding, TypeRegistry, bounded_name,
 )
 from .runtime_executor_contracts import ExecutorReference, ExecutorRegistry
-from .tool_binding_contract import PureToolBindingAdapter, ToolBindingAdapter
+from .tool_binding_contract import (
+    PureToolBindingAdapter, ToolBindingAdapter, WorkspaceToolBindingAdapter,
+)
 from .variable_contract import VARIABLE_SCHEMA_VERSION, VARIABLE_TYPE, empty_variable_value
 from .session_preloads import validate_session_preloads
 
@@ -454,7 +456,7 @@ class RegisteredNode:
     executor_ref: ExecutorReference | None = None
     settlement_builder: Callable | None = None
     failed_retry_validator: Callable[[dict, dict], dict] | None = None
-    tool_binding: ToolBindingAdapter | PureToolBindingAdapter | None = None
+    tool_binding: ToolBindingAdapter | PureToolBindingAdapter | WorkspaceToolBindingAdapter | None = None
 
 
 class NodeRegistry:
@@ -488,7 +490,8 @@ class NodeRegistry:
                  executor_ref: ExecutorReference | None = None,
                  settlement_builder: Callable | None = None,
                  failed_retry_validator: Callable[[dict, dict], dict] | None = None,
-                 tool_binding: ToolBindingAdapter | PureToolBindingAdapter | None = None,
+                 tool_binding: ToolBindingAdapter | PureToolBindingAdapter
+                 | WorkspaceToolBindingAdapter | None = None,
                  *, trusted_scope: str = "host") -> None:
         require(isinstance(definition, NodeDefinition), "graph_invalid_type",
                 "Node registration requires a node definition")
@@ -517,7 +520,9 @@ class NodeRegistry:
                 "Settlement builder must be callable")
         require(failed_retry_validator is None or callable(failed_retry_validator), "graph_invalid_type",
                 "Failed retry validator must be callable")
-        require(tool_binding is None or isinstance(tool_binding, (ToolBindingAdapter, PureToolBindingAdapter)),
+        require(tool_binding is None or isinstance(
+                    tool_binding,
+                    (ToolBindingAdapter, PureToolBindingAdapter, WorkspaceToolBindingAdapter)),
                 "graph_invalid_type",
                 "Tool binding declaration must be a trusted adapter")
         declared_fields = set()

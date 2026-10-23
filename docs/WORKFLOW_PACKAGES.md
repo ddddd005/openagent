@@ -260,3 +260,76 @@ A4 已用隔离库和离线 transport 验证示例装配、模型真实工具调
 该示例在通用协议冻结后加入，只新增包和验证。两个包与既有变量工具已通过同一 Agent 的
 正式保存、离线模型工具调用、持久事实读取及关闭重开验证；通用准备、调用、注册和 Agent
 核心的六个文件哈希未变。首版范围内新增工具按同一方式提供包，不在核心加入工具名分支。
+
+### 5.5 工作区工具适配器
+
+工作区工具把“一次 Agent 调用期间的运行中实例”交给可信包持有：模型逐次工具调用共享同一个
+实例，正常 final 后由程序依次通知收尾、合成结果并释放。它仍是可信包显式注册的加载节点钩子，
+不是新的 manifest 导出种类，也不新增 Agent 节点能力、输出端口、执行事实或回执。
+
+适配器接口（`phase1_agent.tool_binding_contract.WorkspaceToolBindingAdapter`）：
+
+```python
+adapter = WorkspaceToolBindingAdapter(
+    normalize=normalize,  # (config) -> list[dict]，每项恰好 {name, description, parameters, config}
+    open=open,            # (binding, invocation) -> 不透明 handle
+    invoke=invoke,        # (handle, tool, arguments, invocation) -> dict
+    finish=finish,        # (handle, invocation) -> {"text": str} | None
+    close=close,          # (handle) -> None
+    abort=abort,          # (handle) -> None
+    prompt_output=("materials", PROMPT_MATERIALS_TYPE, 1),
+)
+```
+
+`normalize` 每项只含 `name/description/parameters/config`，不写 target：加载锚点自身即目标
+实现，来源仍由准备期冻结的 `package_lock` 与锚点登记固定；工具名不得占用 `final_answer`，
+参数仍是严格标量对象 schema。`open` 入参为
+`{binding_id, agent_node_id, config, tools}`；`invocation` 由宿主生成
+`{workflow_session_id, chain_run_id, node_binding_id, node_run_id, binding_id}`
+（`invoke` 另含 `tool_call_id`/`tool_execution_id`）。handle 是不透明 Python 对象，只在宿主
+内存表中保存，不进入模型可见 JSON、事实或持久记录。`invoke` 必须返回严格 JSON 对象；业务
+异常沿用内核既有工具错误分类，宿主不吞错、不自动重试。
+
+生命周期顺序（每 Agent 一次调用至多一个工作区绑定/实例）：
+
+```text
+准备（run.start）: 只冻结声明、来源与锚点配置；不读业务数据、不启动进程
+执行器首次 advance: open（启动/加载实例；pause/resume 与结果接纳再入不重开）
+模型循环:         每次工具调用 invoke 同一实例，后一次调用看见前一次修改
+有效 final 之后:  finish（工具自行保存并导出） -> 合成 result 文本 -> close（释放/退出确认）
+异常/用户终止:    abort（只释放，不保存、不导出）
+```
+
+合成规则：无导出时 `result` 就是模型 final 文本；有导出时为
+`模型 final 文本 + "\n\n" + 导出文本`，仍是 `TEXT@2`，不新增端口、不固定 JSON 封套。
+原始 final 保留在 `agent_result` 事实，合成只改节点 `result` 输出；合成文本不进入下一轮
+模型上下文。`finish` 失败即节点失败，`dispose` 只走 `abort`；`close` 失败后保留已保存事实，
+报告失败且不重试。失败阶段码（节点诊断以 `code` 字段呈现）：
+`workspace_open_failed`、`workspace_finalize_failed`、`workspace_export_invalid`、
+`workspace_compose_failed`、`workspace_close_failed`、`workspace_abort_failed`。
+已提交/已保存数据按实际事实保留，不报告回滚。
+
+完整样例见
+[workspace-demo-1.0.0](../examples/workflow-packages/workspace-demo-1.0.0/README.md)，
+准确包身份是 `example.workspace-demo@1.0.0`，导出 `example.workspace-demo-tools@1`。
+放置、显式选择与工作流装配同第 1、2 节与 5.2 节；加载节点配置 `agent_node_id` 与
+`state_path`，`materials` 接到 context assembly 的 `materials`。样例用一个长驻 JSON-lines
+子进程承载 `look/status/move`：`open` 启动进程并加载已存状态（初值 `city_gate`），`finish`
+原子写入 `state_path` 并导出“当前位置/移动记录”文本，`close` 发送 `quit` 并要求退出码 0
+（超时或非零退出显式失败），`abort` 只终止进程。第二次调用重新 open 并读回上次 `finish`
+保存的状态。提示材料仍按 5.3 生成成对 `tool-description`/`tool-schema`；同一绑定服务多个
+工具时，材料身份必须含工具名，并按规范 placement/order 排序（可直接使用
+`merge_lifecycle_prompt_materials`）。
+
+首版边界：
+
+| 类别 | 边界 |
+| --- | --- |
+| 实例数量 | 每 Agent 至多一个工作区绑定/实例；一个加载节点的多个工具共享同一实例；第二个工作区锚点指向同一 Agent 明确拒绝，不静默合并 |
+| 数据写入口 | 本轮不新增通用数据写端口；样例只演示受控存储内的“finish 保存 / abort 不保存 / 下一次调用重载”，不以样例文件冒充产品数据层 |
+| 检查点 | 进程本地状态（如样例 `state_path`）不属于检查点采集范围，不宣称受检查点保护；历史回合恢复仍是后续待办并如实记录缺口 |
+| 失败 | 不自动重试、不补偿、不重跑模型或工具；释放失败按清理错误如实报告，不假装已释放 |
+| 兼容 | 纯计算与既有变量工具路径保持不变；工作区是并列的第三条工具绑定路径，不删除既有纯工具限制，也不在核心加入具体工具名分支 |
+
+该适配器路径于 0.5.1 新增；5.4 所述“六个文件哈希未变”仅是 0.5.0 A4/A5 当次的证据，
+不是本期冻结，核心文件按新基线重新记录。

@@ -14,10 +14,12 @@ from copy import deepcopy
 from uuid import uuid4
 
 from .contract_errors import require
+from .contract_json import validate_json_value
 from .graph_contracts import validate_config_node_references
 from .tool_binding_contract import (
     PreparedPureToolBinding, PreparedPureToolSpec, PreparedToolBinding,
-    PreparedToolFrame, PreparedToolSpec, PureToolBindingAdapter,
+    PreparedToolFrame, PreparedToolSpec, PreparedWorkspaceToolBinding,
+    PreparedWorkspaceToolSpec, PureToolBindingAdapter, WorkspaceToolBindingAdapter,
 )
 from .tools import _model_tool_schema
 
@@ -120,6 +122,25 @@ def _check_target(registry, definitions, spec: dict, *, pure=False) -> tuple[dic
     return _require_source(view, registry)
 
 
+def _check_workspace_spec(value) -> dict:
+    """A workspace declaration names its tools; the anchor itself is the target."""
+
+    require(type(value) is dict and set(value) == {
+        "name", "description", "parameters", "config",
+    }, "tool_binding_invalid", "Workspace tool declaration fields differ")
+    require(type(value["name"]) is str and value["name"]
+            and type(value["description"]) is str,
+            "tool_binding_invalid",
+            "Workspace tool requires an explicit name and description")
+    require(value["name"] != "final_answer", "tool_binding_invalid",
+            "Workspace tool name is reserved for the control tool")
+    _model_tool_schema(value["name"], value["parameters"])
+    require(type(value["config"]) is dict, "tool_binding_invalid",
+            "Workspace tool requires an exact configuration")
+    validate_json_value(value["config"])
+    return deepcopy(value)
+
+
 def _prepare_pure_bindings(normalized, *, anchor, agent_node_id, anchor_source,
                            registry, definitions, seen_names):
     prepared = []
@@ -146,6 +167,76 @@ def _prepare_pure_bindings(normalized, *, anchor, agent_node_id, anchor_source,
         require(len(seen_names) <= 120, "tool_binding_invalid",
                 "Agent tool bindings exceed the bounded model tool budget")
     return prepared
+
+
+def _prepare_workspace_data_objects(adapter, config, *, agent_node_id,
+                                    document_bindings, registry):
+    """Freeze the declared session objects and the Agent's write permissions.
+
+    Only declaration metadata is read: the document's object bindings supply the
+    type and the readers/writers ACL, so the loader config never repeats them.
+    """
+
+    field = adapter.data_config_field
+    if field is None:
+        return (), ()
+    declaration = config.get(field)
+    require(type(declaration) is list and len(declaration) <= 8,
+            "tool_binding_invalid",
+            "Workspace data objects require a bounded declaration list")
+    data_objects, writable = [], []
+    for item in declaration:
+        require(type(item) is dict and set(item) == {"object_key"}
+                and type(item["object_key"]) is str and item["object_key"],
+                "tool_binding_invalid", "Workspace data object declarations are invalid")
+        key = item["object_key"]
+        require(key not in data_objects, "tool_binding_invalid",
+                "Workspace data object is repeated")
+        binding = document_bindings.get(key)
+        require(binding is not None, "tool_binding_object_missing",
+                "Workspace data object is not bound in this session", 409)
+        require(agent_node_id in binding["readers"], "tool_binding_access_denied",
+                "The Agent is not an explicit reader of the workspace data object", 403)
+        require(registry.data_types.get(binding["type_id"], binding["schema_version"],
+                                        scope="session") is not None,
+                "tool_binding_object_type_unavailable",
+                "Workspace data object type is not registered in the session scope", 409)
+        data_objects.append(key)
+        if agent_node_id in binding["writers"]:
+            writable.append(key)
+    return tuple(data_objects), tuple(writable)
+
+
+def _prepare_workspace_bindings(normalized, *, anchor, agent_node_id, anchor_source,
+                                seen_names, data_objects=(), writable=()):
+    """One loading anchor freezes one workspace instance for one Agent.
+
+    The instance itself is never created here: the anchor configuration is
+    copied as the declaration for the later call-lifetime ``open``, and the
+    tools only reference their package source.  Reusing the anchor identity
+    removes any need for a second target export kind.
+    """
+
+    binding_id = str(uuid4())
+    tools = []
+    for declaration in normalized:
+        value = _check_workspace_spec(declaration)
+        require(value["name"] not in seen_names, "tool_binding_alias_conflict",
+                "Model tool name is repeated for one Agent")
+        tools.append(PreparedWorkspaceToolSpec(
+            name=value["name"], description=value["description"],
+            parameters=value["parameters"], config=value["config"],
+            binding_id=binding_id, agent_node_id=agent_node_id, source=anchor_source))
+        seen_names.add(value["name"])
+        require(len(seen_names) <= 120, "tool_binding_invalid",
+                "Agent tool bindings exceed the bounded model tool budget")
+    return [PreparedWorkspaceToolBinding(
+        binding_id=binding_id, anchor_node_id=anchor["node_binding_id"],
+        anchor_component_id=anchor["component_id"],
+        anchor_component_version=anchor["component_version"],
+        agent_node_id=agent_node_id, anchor_config=deepcopy(anchor["config"]),
+        tools=tuple(tools), anchor_source=anchor_source,
+        data_objects=data_objects, writable=writable)]
 
 
 def _prepare_variable_bindings(normalized, *, anchor, adapter, agent_node_id,
@@ -250,6 +341,20 @@ def prepare_tool_frame(*, data, sid: str, document: dict, plan, registry,
                 normalized, anchor=anchor, agent_node_id=agent_node_id,
                 anchor_source=anchor_source, registry=registry,
                 definitions=definitions, seen_names=seen_names)
+        elif isinstance(entry.tool_binding, WorkspaceToolBindingAdapter):
+            # One Agent owns at most one workspace instance.  A second explicit
+            # workspace anchor for the same Agent is rejected, never merged.
+            require(not any(isinstance(binding, PreparedWorkspaceToolBinding)
+                            for binding in agent_bindings.get(agent_node_id, ())),
+                    "workspace_binding_conflict",
+                    "An Agent may prepare only one workspace tool binding")
+            data_objects, writable = _prepare_workspace_data_objects(
+                entry.tool_binding, anchor["config"], agent_node_id=agent_node_id,
+                document_bindings=document_bindings, registry=registry)
+            prepared = _prepare_workspace_bindings(
+                normalized, anchor=anchor, agent_node_id=agent_node_id,
+                anchor_source=anchor_source, seen_names=seen_names,
+                data_objects=data_objects, writable=writable)
         else:
             prepared = _prepare_variable_bindings(
                 normalized, anchor=anchor, adapter=entry.tool_binding,

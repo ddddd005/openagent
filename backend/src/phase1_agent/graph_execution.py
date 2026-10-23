@@ -90,14 +90,54 @@ class NodeExecutionContext:
         return self._tool_bridge(self, "prompt", {"agent_node_id": agent_node_id})
 
     def invoke_bound_tool(self, *, binding_id: str, operation: str, arguments: dict,
-                          tool_call_id: str, tool_execution_id: str) -> dict:
-        """Invoke one prepared business tool under the exact kernel identity."""
+                          tool_call_id: str, tool_execution_id: str,
+                          tool_name: str | None = None) -> dict:
+        """Invoke one prepared business tool under the exact kernel identity.
+
+        ``tool_name`` is optional and only added to the bridge payload when the
+        caller supplies the model-facing name: it distinguishes the several
+        tools that share one workspace instance.  Omitted, the payload keeps its
+        pre-workspace shape byte for byte.
+        """
         require(callable(self._tool_bridge), "tool_binding_not_prepared",
                 "This invocation has no prepared tool bridge", node_id=self.node_binding_id)
-        return self._tool_bridge(self, "invoke", {
+        payload = {
             "binding_id": binding_id, "operation": operation, "arguments": arguments,
             "tool_call_id": tool_call_id, "tool_execution_id": tool_execution_id,
-        })
+        }
+        if tool_name is not None:
+            payload["tool_name"] = tool_name
+        return self._tool_bridge(self, "invoke", payload)
+
+    def bound_workspace_specs(self, agent_node_id: str) -> list[dict]:
+        """Read this Agent's prepared workspace declarations for this run."""
+        require(callable(self._tool_bridge), "tool_binding_not_prepared",
+                "This invocation has no prepared tool bridge", node_id=self.node_binding_id)
+        return self._tool_bridge(self, "workspace-specs", {"agent_node_id": agent_node_id})
+
+    def open_bound_workspace(self, agent_node_id: str) -> dict:
+        """Open this Agent's workspace instance; a repeated open is idempotent."""
+        require(callable(self._tool_bridge), "tool_binding_not_prepared",
+                "This invocation has no prepared tool bridge", node_id=self.node_binding_id)
+        return self._tool_bridge(self, "workspace-open", {"agent_node_id": agent_node_id})
+
+    def finish_bound_workspace(self, agent_node_id: str) -> dict | None:
+        """Let the workspace save and export its final text after a valid final."""
+        require(callable(self._tool_bridge), "tool_binding_not_prepared",
+                "This invocation has no prepared tool bridge", node_id=self.node_binding_id)
+        return self._tool_bridge(self, "workspace-finish", {"agent_node_id": agent_node_id})
+
+    def close_bound_workspace(self, agent_node_id: str) -> dict:
+        """Release this Agent's finished workspace exactly once."""
+        require(callable(self._tool_bridge), "tool_binding_not_prepared",
+                "This invocation has no prepared tool bridge", node_id=self.node_binding_id)
+        return self._tool_bridge(self, "workspace-close", {"agent_node_id": agent_node_id})
+
+    def abort_bound_workspace(self, agent_node_id: str) -> dict:
+        """Release this Agent's workspace without saving or exporting."""
+        require(callable(self._tool_bridge), "tool_binding_not_prepared",
+                "This invocation has no prepared tool bridge", node_id=self.node_binding_id)
+        return self._tool_bridge(self, "workspace-abort", {"agent_node_id": agent_node_id})
 
     def apply_accepted_object(self, object_key: str, record: dict) -> None:
         """Replace this run's object view with the freshly re-read accepted record."""

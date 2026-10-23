@@ -10,9 +10,10 @@ from .agent_receipt_contract import (
     AGENT_EXECUTOR_REF, projection_id, validate_agent_receipts,
 )
 
-from .content_contracts import text_content
+from .content_contracts import CONTENT_WIRE_BYTES, text_content
 from .context_contract import artifact_ref
-from .contract_json import canonical_bytes
+from .contract_errors import ContractValidationError
+from .contract_json import canonical_bytes, validate_json_value
 from .contracts_v2 import validate_record
 from .graph_contracts import require, uuid4_string
 from .model_contract import validate_public_model_binding
@@ -56,10 +57,17 @@ def _bound_tools(context):
             return context.invoke_bound_tool(
                 binding_id=exact["binding_id"], operation=exact["operation"],
                 arguments=arguments, tool_call_id=invocation.tool_call_id,
-                tool_execution_id=invocation.tool_execution_id)
+                tool_execution_id=invocation.tool_execution_id, tool_name=invocation.tool_name)
         result.append(register_bound_tool(
             spec["name"], spec["description"], spec["parameters"], invoke))
     return tuple(result)
+
+
+def _bound_workspace_specs(context):
+    """Read this run's prepared workspace declarations; absence is no workspace capability."""
+    if not callable(getattr(context, "bound_workspace_specs", None)):
+        return ()
+    return tuple(context.bound_workspace_specs(context.node_binding_id))
 
 
 def exact_input(context, port: str) -> dict:
@@ -182,6 +190,7 @@ class PublicAgentExecutor:
             policy_ref = exact_input(context, "compaction_policy")
             resolve_input(context, "compaction_policy", policy)
         self.tools = _agent_tools(tools, _bound_tools(context))
+        self._workspace_declared = _bound_workspace_specs(context)
         self.snapshot = make_public_agent_snapshot(
             context, config, self.prompt, self.binding, self.tools, policy=policy, policy_ref=policy_ref,
             schema_version=schema_version)
@@ -200,6 +209,9 @@ class PublicAgentExecutor:
         self._result_fact = None
         self._result_fact_accepted = False
         self._pending_acceptance = False
+        self._workspace_state = "new"
+        self._workspace_export = None
+        self._composed_result_text = None
 
     def retains(self, checkpoint) -> bool:
         if self.disposed or type(checkpoint) is not KernelCheckpoint or checkpoint is not self.checkpoint:
@@ -231,6 +243,8 @@ class PublicAgentExecutor:
         def fact(event):
             self._publish_original(str(uuid4()), event, callbacks)
 
+        if continuation is None and self._workspace_state == "new":
+            self._open_workspace()
         try:
             result = self.kernel.run(
                 self.snapshot, self.tools,
@@ -243,6 +257,7 @@ class PublicAgentExecutor:
             callbacks.pause_point(self.checkpoint)
             require(False, "agent_pause_unacknowledged", "Kernel yielded without public pause acknowledgment")
         self.checkpoint = None
+        self._finalize_workspace(result.final["value"]["text"])
         self._completed_result = result
         self._result_fact = (str(uuid4()), {"kind": "agent_result", "payload": {
             "snapshot_id": self.snapshot["snapshot_id"], "unit_id": self.unit_id,
@@ -252,6 +267,89 @@ class PublicAgentExecutor:
                 timespec="milliseconds").replace("+00:00", "Z")})
         self._pending_acceptance = True
         return self.recover_acceptance(callbacks)
+
+    def _open_workspace(self):
+        """Open the declared workspace once, before the model loop can call it."""
+        if not self._workspace_declared:
+            return
+        # The attempted state lets dispose release any partially acquired resource.
+        self._workspace_state = "open"
+        try:
+            opened = self.context.open_bound_workspace(self.context.node_binding_id)
+            require(type(opened) is dict and set(opened) == {"opened"}
+                    and type(opened["opened"]) is list and bool(opened["opened"])
+                    and all(type(binding_id) is str and bool(binding_id)
+                            for binding_id in opened["opened"]),
+                    "workspace_open_failed", "Workspace open must report its opened bindings")
+        except Exception as error:
+            error._result_failure_stage = "workspace_open"
+            raise
+
+    def _finalize_workspace(self, model_text):
+        """Finish, compose and close one declared workspace exactly once per run."""
+        if self._workspace_state != "open":
+            return
+        try:
+            export = self._workspace_export_value(
+                self.context.finish_bound_workspace(self.context.node_binding_id))
+        except Exception as error:
+            # The workspace stays OPEN: dispose aborts it without a normal save.
+            error._result_failure_stage = "workspace_finalize"
+            raise
+        self._workspace_state = "finished"
+        self._workspace_export = export
+        try:
+            composed = model_text if export is None else model_text + "\n\n" + export["text"]
+            require(len(canonical_bytes(text_content(composed))) <= CONTENT_WIRE_BYTES,
+                    "workspace_compose_failed",
+                    f"Composed Agent result exceeds the {CONTENT_WIRE_BYTES}-byte content budget")
+        except Exception as error:
+            error._result_failure_stage = "workspace_compose"
+            raise
+        self._composed_result_text = composed
+        self._workspace_state = "composed"
+        try:
+            closed = self.context.close_bound_workspace(self.context.node_binding_id)
+            require(type(closed) is dict and not closed, "workspace_close_failed",
+                    "Workspace close must report an empty object")
+        except Exception as error:
+            self._workspace_state = "close_failed"
+            error._result_failure_stage = "workspace_close"
+            raise
+        self._workspace_state = "closed"
+
+    @staticmethod
+    def _workspace_export_value(exported):
+        """Accept only the frozen finish shape: null or one JSON-safe text value."""
+        if exported is None:
+            return None
+        require(type(exported) is dict and set(exported) == {"text"}
+                and type(exported["text"]) is str,
+                "workspace_export_invalid",
+                "Workspace finish must return null or exactly one exported text")
+        try:
+            validate_json_value(exported["text"])
+        except ContractValidationError:
+            require(False, "workspace_export_invalid", "Workspace export text must be JSON-safe")
+        return exported
+
+    def _release_workspace(self):
+        """Idempotent best-effort release; a normal save never happens here."""
+        if not self._workspace_declared:
+            return
+        state = self._workspace_state
+        try:
+            if state == "open":
+                self._workspace_state = "aborted"
+                self.context.abort_bound_workspace(self.context.node_binding_id)
+            elif state in ("finished", "composed"):
+                self._workspace_state = "closed"
+                self.context.close_bound_workspace(self.context.node_binding_id)
+            elif state == "close_failed":
+                self._workspace_state = "aborted"
+                self.context.abort_bound_workspace(self.context.node_binding_id)
+        except Exception:
+            pass
 
     def has_pending_acceptance(self) -> bool:
         return not self.disposed and self._pending_acceptance and self._completed_result is not None
@@ -288,7 +386,9 @@ class PublicAgentExecutor:
                     self.snapshot["config"]["payload"]["frozen_compaction_policy_ref"]),
                 "unit_id": self.unit_id, "fact_ids": list(self.fact_ids),
                 "model_requests": model_requests})
-            outputs = {"result": text_content(result.final["value"]["text"]), "receipts": receipts}
+            result_text = (result.final["value"]["text"] if self._composed_result_text is None
+                           else self._composed_result_text)
+            outputs = {"result": text_content(result_text), "receipts": receipts}
         except Exception as error:
             error._result_failure_stage = "result_projection"
             raise
@@ -298,6 +398,7 @@ class PublicAgentExecutor:
     def dispose(self):
         if self.disposed:
             return
+        self._release_workspace()
         self.request_bridge.close()
         self.checkpoint = None
         self.snapshot = None

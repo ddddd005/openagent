@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "entrypoint": "workspace_demo.package:create_package",
+  "manifest": {
+    "schema_version": 1,
+    "package_id": "example.workspace-demo",
+    "version": "1.0.0",
+    "host_protocol_version": 1,
+    "dependencies": [
+      {"package_id": "workflow.content", "version": "1.0.0"},
+      {"package_id": "workflow.agents", "version": "1.0.0"}
+    ],
+    "exports": {
+      "nodes": [
+        {"component_id": "example.workspace-demo-tools", "component_version": "1"}
+      ]
+    }
+  }
+}

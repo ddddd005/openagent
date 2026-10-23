@@ -243,6 +243,10 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         self._resource_frames = {}
         # chain id -> prepared business tool frame; same lifecycle as the basis.
         self._tool_frames = {}
+        # chain id -> {binding id: opaque workspace handle}; memory only, released
+        # with the same lifecycle as the prepared frame.  Business code owns the
+        # handle and its process; the host never inspects or persists it.
+        self._tool_workspaces = {}
         # chain id -> RunBasis.  The historical attribute name is kept because
         # it is the existing per-chain execution map; values are now the whole
         # bound load result, not a bare registry.
