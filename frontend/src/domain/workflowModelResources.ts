@@ -18,18 +18,19 @@ export interface CurrentProvider {
   value: { name: string; protocol: ProviderProtocol; base_url: string;
     credential_ref: null | CredentialReference; enabled: boolean };
 }
-export interface GeminiThinkingCapability {
+interface LegacyGeminiThinkingCapability {
   mode: "budget" | "level"; canDisable: boolean; budgetMin?: number; budgetMax?: number; levels?: ThinkingLevel[];
 }
-const geminiThinkingCapabilities: Record<string, GeminiThinkingCapability> = {
+// Only schema-1 historical receipt verification uses these frozen model rules.
+const legacyGeminiThinkingCapabilities: Record<string, LegacyGeminiThinkingCapability> = {
   "gemini-2.5-pro": { mode: "budget", canDisable: false, budgetMin: 128, budgetMax: 32768 },
   "gemini-2.5-flash": { mode: "budget", canDisable: true, budgetMin: 0, budgetMax: 24576 },
   "gemini-2.5-flash-lite": { mode: "budget", canDisable: true, budgetMin: 512, budgetMax: 24576 },
   "gemini-3-flash-preview": { mode: "level", canDisable: false, levels: ["minimal", "low", "medium", "high"] },
   "gemini-3.1-pro-preview": { mode: "level", canDisable: false, levels: ["low", "medium", "high"] },
 };
-export function geminiThinkingCapability(model: string): GeminiThinkingCapability | null {
-  return Object.hasOwn(geminiThinkingCapabilities, model) ? graphClone(geminiThinkingCapabilities[model]!) : null;
+function legacyGeminiThinkingCapability(model: string): LegacyGeminiThinkingCapability | null {
+  return Object.hasOwn(legacyGeminiThinkingCapabilities, model) ? graphClone(legacyGeminiThinkingCapabilities[model]!) : null;
 }
 export function isModelThinking(value: unknown): value is ModelThinking {
   if (value === "disabled") return true;
@@ -40,15 +41,11 @@ export function isModelThinking(value: unknown): value is ModelThinking {
         && ["minimal", "low", "medium", "high"].includes(String(value.level)));
 }
 export function modelParameterDiagnostic(model: string, thinking: ModelThinking, protocol: ProviderProtocol): string | null {
+  if (!model || model.trim() !== model || model.length > 256 || /[\u0000-\u001f\u007f]/.test(model))
+    return "请填写准确的模型名称，不能包含首尾空白或控制字符";
+  if (!isModelThinking(thinking)) return "请填写有效的思考配置";
   if (protocol === "chat") return thinking === "disabled" ? null : "Chat 路线不支持此思考配置";
-  const capability = geminiThinkingCapability(model);
-  if (!capability) return "此 Gemini 型号尚未登记能力";
-  if (thinking === "disabled") return capability.canDisable ? null : "此 Gemini 型号不能关闭思考";
-  if (thinking.mode !== capability.mode) return "思考模式与所选 Gemini 型号不匹配";
-  if (thinking.mode === "level") return capability.levels?.includes(thinking.level) ? null : "此 Gemini 型号不支持所选思考强度";
-  return thinking.budget === -1 || thinking.budget === 0 && capability.canDisable
-    || thinking.budget >= capability.budgetMin! && thinking.budget <= capability.budgetMax!
-    ? null : "思考预算超出所选 Gemini 型号范围";
+  return null;
 }
 export interface ModelProfileIdentity {
   envelope_version: 1; scope: string; type_id: typeof modelProfileType; resource_id: string;
@@ -211,7 +208,7 @@ function isLegacyModelCapacity(value: unknown): value is LegacyModelProfileRecor
 function legacyModelThinkingDiagnostic(parameters: LegacyModelProfileRecord["value"]["parameters"],
   protocol: ProviderProtocol): string | null {
   if (protocol === "chat") return parameters.thinking === "disabled" ? null : "Chat route does not support thinking";
-  const capability = geminiThinkingCapability(parameters.model);
+  const capability = legacyGeminiThinkingCapability(parameters.model);
   if (!capability) return "Gemini model has no installed capability";
   const thinking = parameters.thinking;
   if (thinking === "disabled") return capability.canDisable ? null : "Gemini model cannot disable thinking";

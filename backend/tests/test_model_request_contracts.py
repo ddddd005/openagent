@@ -153,7 +153,7 @@ def test_installed_output_ceiling_and_tool_support_are_independent_of_manual_cap
     assert error.value.reason_code == "model_tools_unsupported"
 
 
-def test_thinking_follows_current_protocol_and_installed_exact_model_capability():
+def test_thinking_follows_protocol_and_explicit_settings_without_model_specific_limits():
     profile = synthetic_profile()
     profile["runtime"]["thinking"] = {"mode": "budget", "budget": 1024, "include_summary": True}
     with pytest.raises(DiagnosticError) as error:
@@ -164,9 +164,14 @@ def test_thinking_follows_current_protocol_and_installed_exact_model_capability(
     settings = synthetic_settings(profile, capability=capability, protocol="gemini")
     assert settings["capabilities"]["thinking"] == "budget"
     profile["runtime"]["thinking"]["budget"] = 24_577
-    with pytest.raises(DiagnosticError) as error:
-        synthetic_settings(profile, capability=capability, protocol="gemini")
-    assert error.value.reason_code == "model_thinking_unsupported"
+    settings = synthetic_settings(profile, capability=capability, protocol="gemini")
+    assert settings["parameters"]["thinking"]["budget"] == 24_577
+    profile["model"]["id"] = "gemini-3.8-flash"
+    capability["model_id"] = profile["model"]["id"]
+    settings = synthetic_settings(profile, capability=capability, protocol="gemini")
+    assert settings["parameters"]["model"] == "gemini-3.8-flash"
+    assert settings["parameters"]["thinking"] == profile["runtime"]["thinking"]
+    assert validate_model_settings(settings) == settings
 
 
 def test_settings_preserve_resource_revisions_and_share_global_output_limit():

@@ -25,6 +25,8 @@ class GeminiGraphFixture:
 
     def factory(self, *, provider, parameters, api_key):
         def respond(request):
+            assert str(request.url) == (
+                provider["base_url"] + "/models/" + parameters["model"] + ":generateContent")
             self.wires.append(json.loads(request.content))
             current = self.response_step
             self.response_step += 1
@@ -51,7 +53,7 @@ class GeminiGraphFixture:
             http_client=httpx.Client(transport=httpx.MockTransport(respond)))
 
     @staticmethod
-    def write_provider(service):
+    def write_provider(service, model="gemini-3-flash-preview"):
         reference = seed_service_credential(service, secret="offline-fixture-not-a-real-key")
         record = {**profile_config()["provider"], "data_schema_version": 3, "update_sequence": 1,
                   "value": {"name": "Offline Gemini", "protocol": "gemini",
@@ -59,7 +61,7 @@ class GeminiGraphFixture:
                             "credential_ref": reference, "enabled": True}}
         service.save_global_resource(record, expected_sequence=0, idempotency_key=str(uuid4()))
         profile = profile_config()
-        profile["model"]["id"] = "gemini-3-flash-preview"
+        profile["model"]["id"] = model
         profile["runtime"]["thinking"] = {
             "mode": "level", "level": "low", "include_summary": True,
         }
@@ -100,11 +102,12 @@ def read_public_thinking(service, view):
 
 
 @pytest.mark.parametrize("route", ["native"])
-def test_gemini_agent_tools_context_cold_reopen_and_public_thinking(route, tmp_path, monkeypatch):
+@pytest.mark.parametrize("model", ["gemini-3-flash-preview", "gemini-3.8-flash", "proxy-custom-flash"])
+def test_gemini_agent_tools_context_cold_reopen_and_public_thinking(route, model, tmp_path, monkeypatch):
     fixture = GeminiGraphFixture()
     database = tmp_path / (route + ".sqlite")
     with closing(GraphWorkflowService(database, public_model_factory=fixture.factory)) as service:
-        fixture.write_provider(service)
+        fixture.write_provider(service, model)
         doc = gemini_graph(service, route)
         first = run(service, create(service, doc), "First Gemini request")
         assert first["status"] == "succeeded", json.dumps([
@@ -126,6 +129,7 @@ def test_gemini_agent_tools_context_cold_reopen_and_public_thinking(route, tmp_p
         model_requests = [fact for fact in history["runtime_facts"]
                           if fact.get("kind") == "workflow.model-fact" and fact["stage"] == "request"]
         assert [fact["details"]["wire_request"] for fact in model_requests] == fixture.wires
+        assert [fact["details"]["settings"]["parameters"]["model"] for fact in model_requests] == [model] * 3
         assert "offline-fixture-not-a-real-key" not in json.dumps(history)
         saved_context = deepcopy(first["objects"])
     with closing(GraphWorkflowService(database, public_model_factory=fixture.factory)) as reopened:

@@ -297,7 +297,7 @@ def validate_transport_capability(value: object, *, protocol: str, model: str,
             "model_thinking_unsupported", "Transport does not support the requested thinking mode")
     require(type(requires_tools) is bool and (not requires_tools or result["tools"]),
             "model_tools_unsupported", "Transport does not support required tools")
-    # Preserve the installed Gemini model's finer budget/level constraints.
+    # Validate explicit Gemini settings without inferring limits from the model ID.
     if protocol == "gemini":
         from .gemini_capabilities import validate_provider_parameters
         validate_provider_parameters(protocol, {"model": model, "thinking": thinking})

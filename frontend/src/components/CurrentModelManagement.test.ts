@@ -84,6 +84,14 @@ async function input(node: HostNode, value: string) {
   listener?.({ target: node });
   await flush();
 }
+async function select(node: HostNode, value: string) {
+  node.value = value;
+  for (const option of node.options) option.selected = option._value === value;
+  node.dispatchEvent(new Event("change"));
+  const listener = node.props.onChange as ((event: { target: HostNode }) => void) | undefined;
+  listener?.({ target: node });
+  await flush();
+}
 const field = (root: HostNode, name: string) => find(
   find(root, node => node.tag === "label" && text(node).includes(name)), node => node.tag === "input");
 function browserMemoryOnly() {
@@ -153,6 +161,53 @@ async function mount(f: ReturnType<typeof fixture>, modelOnly = false) {
 afterEach(() => { for (const app of apps.splice(0)) app.unmount(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("provider and named model management ownership", () => {
+  it.each(["disabled", "budget", "level"])("saves a manually entered Gemini ID with explicit %s thinking", async mode => {
+    const f = fixture(true);
+    f.provider.value.protocol = "gemini";
+    const root = await mount(f, true);
+    await event(namedButton(root, f.profile.value.name), "Click"); await flush();
+    await select(labeled(root, "思考模式"), mode);
+    if (mode === "budget") await input(field(root, "思考预算 tokens"), "65536");
+    if (mode === "level") await select(labeled(root, "思考强度"), "minimal");
+    await input(field(root, "模型名称"), "gemini-3.8-flash");
+    await event(find(root, node => node.tag === "form"), "Submit"); await flush();
+    expect(f.modelSave).toHaveBeenCalledOnce();
+    expect(f.modelSave.mock.calls[0]![0].record.value).toMatchObject({
+      model: { id: "gemini-3.8-flash", capacity: f.profile.value.model.capacity },
+      runtime: { thinking: mode === "disabled" ? "disabled"
+        : mode === "budget" ? { mode, budget: 65536, include_summary: true }
+          : { mode, level: "minimal", include_summary: true } },
+    });
+    expect(text(root)).not.toContain("尚未登记能力");
+  });
+
+  it.each(["gemini-3.8-flash", "gemini-2.5-flash"])(
+    "selects discovered %s while preserving explicit thinking and manual capacities", async model => {
+      const listModels = vi.spyOn(providerConfigurationApi, "listProviderModels").mockResolvedValue([
+        { model, adapted: true, input_token_limit: 1000, output_token_limit: 100, context_window_tokens: null },
+      ]);
+      const f = fixture(true);
+      f.provider.value.protocol = "gemini";
+      f.profile.value.runtime.thinking = { mode: "level", level: "medium", include_summary: true };
+      const root = await mount(f, true);
+      await event(namedButton(root, f.profile.value.name), "Click"); await flush();
+      await event(labeled(root, "获取上游模型列表"), "Click"); await flush();
+      expect(listModels).toHaveBeenCalledWith(f.profile.value.provider, f.provider.update_sequence, "gemini");
+      const list = labeled(root, "上游模型列表");
+      expect(list.options.find(option => option._value === model)?.props.disabled).toBe(false);
+      await select(list, model);
+      expect(field(root, "模型名称").value).toBe(model);
+      const mode = labeled(root, "思考模式"), level = labeled(root, "思考强度");
+      expect(mode.options[mode.selectedIndex]?._value).toBe("level");
+      expect(level.options[level.selectedIndex]?._value).toBe("medium");
+      await event(find(root, node => node.tag === "form"), "Submit"); await flush();
+      expect(f.modelSave).toHaveBeenCalledOnce();
+      expect(f.modelSave.mock.calls[0]![0].record.value).toMatchObject({
+        model: { id: model, capacity: f.profile.value.model.capacity },
+        runtime: { thinking: { mode: "level", level: "medium", include_summary: true } },
+      });
+    });
+
   it("edits only memory and submits one complete configuration explicitly", async () => {
     const noDraftWrites = browserMemoryOnly();
     const f = fixture(), root = await mount(f, true);

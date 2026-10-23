@@ -14,7 +14,7 @@ from .contract_errors import ContractValidationError, require
 from .contracts import ModelResponse, ModelToolCall
 from .frozen_model import FrozenModelParameters
 from .gemini_capabilities import (
-    GEMINI_BASE_URL, GEMINI_PROTOCOL, model_capability, thinking_wire,
+    GEMINI_BASE_URL, GEMINI_PROTOCOL, requires_call_signature, thinking_wire,
     validate_provider_parameters,
 )
 from .provider_metadata import validate_provider_metadata
@@ -78,7 +78,7 @@ def _tool_declarations(tools):
 
 
 def _signature_check(content, model, *, source="provider_response"):
-    if not model_capability(model)["required_call_signature"]:
+    if not requires_call_signature(model):
         return
     for index, part in enumerate(content["parts"]):
         if "functionCall" in part:
@@ -217,7 +217,7 @@ class GeminiAdapter:
                             deepcopy(original["parts"][binding["part_index"]]["functionCall"]))
                            for binding in envelope["tool_call_bindings"]]
             else:
-                require(not calls or not model_capability(model)["required_call_signature"],
+                require(not calls or not requires_call_signature(model),
                         "gemini_thought_signature_missing",
                         "Gemini tool history has no original provider metadata or required signature")
                 require(message.get("thinking_summary") is None, "gemini_history_invalid",

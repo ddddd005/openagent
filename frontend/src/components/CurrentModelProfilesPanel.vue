@@ -4,9 +4,9 @@ import { Archive, Plus, RefreshCw, Save, X } from "lucide-vue-next";
 import { useModelProfiles } from "../application/modelProfiles";
 import { listProviderModels, type DiscoveredModel } from "../adapters/providerConfigurationApi";
 import { graphClone, graphJsonSignature } from "../domain/workflowGraph";
-import { geminiThinkingCapability, isCurrentModelProfile, modelParameterDiagnostic, modelProfileDiagnostic,
+import { isCurrentModelProfile, modelParameterDiagnostic, modelProfileDiagnostic,
   newModelProfile, newProvider, providerIdentity, sameProviderIdentity, type CurrentModelProfile,
-  type CurrentProvider, type ProviderIdentity, type ThinkingLevel } from "../domain/workflowModelResources";
+  type CurrentProvider, type ProviderIdentity } from "../domain/workflowModelResources";
 import { useResourceFormEditor } from "../composables/useResourceFormEditor";
 import RawNumberInput from "./RawNumberInput.vue";
 import { listModelProfiles } from "../adapters/workflowModelProfilesApi";
@@ -46,13 +46,12 @@ const selectedProvider = computed({ get: () => provider.value ? providerKey(prov
     form.value.value.provider = providerIdentity(selected);
     form.value.value.runtime.thinking = "disabled";
   } });
-const capability = computed(() => form.value ? geminiThinkingCapability(form.value.value.model.id) : null);
 const thinkingMode = computed({ get: () => form.value?.value.runtime.thinking === "disabled" ? "disabled"
   : form.value?.value.runtime.thinking.mode ?? "disabled",
   set: (mode: string) => {
     if (!form.value) return;
     form.value.value.runtime.thinking = mode === "budget" ? { mode, budget: -1, include_summary: true }
-      : mode === "level" ? { mode, level: capability.value?.levels?.[0] ?? "low", include_summary: true } : "disabled";
+      : mode === "level" ? { mode, level: "low", include_summary: true } : "disabled";
   } });
 const contextMode = computed({ get: () => form.value?.context_mode ?? "custom",
   set: (mode: string) => {
@@ -91,7 +90,6 @@ function chooseModel(event: Event) {
   const row = discovered.value.find(item => item.model === (event.target as HTMLSelectElement).value);
   if (!row?.adapted || !form.value) return;
   form.value.value.model.id = row.model;
-  if (protocol.value === "gemini") thinkingMode.value = geminiThinkingCapability(row.model)?.mode ?? "disabled";
 }
 async function save() {
   if (!form.value || locked.value) return;
@@ -181,9 +179,9 @@ onMounted(() => { void profiles.refresh(); });
           <label>思考模式<select v-model="thinkingMode" aria-label="思考模式">
             <option value="disabled">关闭</option><option value="budget">Token 预算</option><option value="level">强度</option>
           </select></label>
-          <label v-if="thinkingMode === 'budget'">思考预算 tokens<RawNumberInput v-model:raw-value="form.raw.budget" :disabled="locked" :min="-1" :max="32768" integer @validity="validity.budget = $event" /></label>
+          <label v-if="thinkingMode === 'budget'">思考预算 tokens<RawNumberInput v-model:raw-value="form.raw.budget" :disabled="locked" :min="-1" integer @validity="validity.budget = $event" /></label>
           <label v-if="form.value.runtime.thinking !== 'disabled' && form.value.runtime.thinking.mode === 'level'">思考强度
-            <select v-model="form.value.runtime.thinking.level" aria-label="思考强度"><option v-for="level in (capability?.levels ?? ['minimal', 'low', 'medium', 'high']) as ThinkingLevel[]" :key="level" :value="level">{{ level }}</option></select>
+            <select v-model="form.value.runtime.thinking.level" aria-label="思考强度"><option v-for="level in ['minimal', 'low', 'medium', 'high']" :key="level" :value="level">{{ level }}</option></select>
           </label>
         </template>
         <label>上下文长度方式<select v-model="contextMode" aria-label="上下文长度方式">

@@ -340,30 +340,91 @@ def test_unsupported_schema_fails_before_http_without_silent_constraint_loss(sch
     assert error.value.reason_code == "model_tool_schema_unsupported"
 
 
-@pytest.mark.parametrize("model,thinking,valid", [
-    ("gemini-2.5-pro", "disabled", False),
-    ("gemini-2.5-pro", {"mode": "budget", "budget": 127, "include_summary": True}, False),
-    ("gemini-2.5-pro", {"mode": "budget", "budget": 32768, "include_summary": True}, True),
-    ("gemini-2.5-flash", "disabled", True),
-    ("gemini-2.5-flash", {"mode": "budget", "budget": -1, "include_summary": False}, True),
-    ("gemini-2.5-flash-lite", {"mode": "budget", "budget": 100, "include_summary": True}, False),
-    ("gemini-2.5-flash-lite", {"mode": "budget", "budget": 512, "include_summary": True}, True),
-    ("gemini-3.1-pro-preview", {"mode": "level", "level": "minimal", "include_summary": True}, False),
-    ("gemini-3-flash-preview", {"mode": "level", "level": "minimal", "include_summary": True}, True),
-    ("gemini-guessed-future", {"mode": "level", "level": "low", "include_summary": True}, False),
+@pytest.mark.parametrize("model,thinking", [
+    ("gemini-2.5-pro", "disabled"),
+    ("gemini-2.5-pro", {"mode": "budget", "budget": 127, "include_summary": True}),
+    ("gemini-2.5-pro", {"mode": "budget", "budget": 32768, "include_summary": True}),
+    ("gemini-2.5-flash", "disabled"),
+    ("gemini-2.5-flash", {"mode": "budget", "budget": -1, "include_summary": False}),
+    ("gemini-2.5-flash-lite", {"mode": "budget", "budget": 100, "include_summary": True}),
+    ("gemini-2.5-flash-lite", {"mode": "budget", "budget": 512, "include_summary": True}),
+    ("gemini-3.1-pro-preview", {"mode": "level", "level": "minimal", "include_summary": True}),
+    ("gemini-3-flash-preview", {"mode": "level", "level": "minimal", "include_summary": True}),
+    ("gemini-3.8-flash", {"mode": "level", "level": "low", "include_summary": True}),
 ])
-def test_model_specific_thinking_capabilities_and_freeze(model, thinking, valid):
+def test_explicit_thinking_settings_do_not_depend_on_model_registration(model, thinking):
     parameters = {"model": model, "thinking": thinking, "stream": False}
     frozen = FrozenModelParameters.from_mapping(parameters)
-    if not valid:
-        with pytest.raises(ContractValidationError):
-            validate_provider_parameters("gemini", dict(frozen.as_mapping()))
-        return
     validate_provider_parameters("gemini", dict(frozen.as_mapping()))
     assert dict(frozen.as_mapping()) == parameters
     if isinstance(thinking, dict):
         thinking["include_summary"] = not thinking["include_summary"]
         assert dict(frozen.as_mapping())["thinking"] != thinking
+
+
+@pytest.mark.parametrize("thinking", [
+    None, True, {}, {"mode": "auto", "include_summary": True},
+    {"mode": "budget", "budget": -2, "include_summary": True},
+    {"mode": "budget", "budget": True, "include_summary": True},
+    {"mode": "budget", "budget": 1.5, "include_summary": True},
+    {"mode": "level", "level": "extreme", "include_summary": True},
+    {"mode": "level", "level": "low"},
+    {"mode": "level", "level": "low", "include_summary": True, "extra": True},
+])
+def test_unregistered_models_still_reject_malformed_explicit_thinking(thinking):
+    parameters = {"model": "gemini-3.8-flash", "thinking": thinking, "stream": False}
+    with pytest.raises(ContractValidationError):
+        validate_provider_parameters("gemini", parameters)
+    with pytest.raises(ContractValidationError):
+        GeminiAdapter.prepare_request(MESSAGES, TOOLS, parameters)
+
+
+@pytest.mark.parametrize("model,thinking,wire_thinking", [
+    ("gemini-3.8-flash", "disabled", {"thinkingBudget": 0, "includeThoughts": False}),
+    ("gemini-3.8-flash", {"mode": "budget", "budget": 65536, "include_summary": True},
+     {"thinkingBudget": 65536, "includeThoughts": True}),
+    ("proxy-custom-flash", {"mode": "level", "level": "high", "include_summary": True},
+     {"thinkingLevel": "high", "includeThoughts": True}),
+])
+def test_new_model_and_alias_dispatch_long_reply_and_preserve_tool_signatures(model, thinking, wire_thinking):
+    observed = []
+    long_text = "Long visible answer.\n" * 30_000
+    replies = [response(batch()), response([{"text": long_text}])]
+    for reply in replies:
+        reply["modelVersion"] = "upstream-response-revision"
+
+    def handler(http_request):
+        assert str(http_request.url) == (
+            "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent")
+        observed.append(json.loads(http_request.content))
+        return httpx.Response(200, json=replies[len(observed) - 1])
+
+    value = fixture(handler)
+    try:
+        value.profile["value"]["model"]["id"] = model
+        value.profile["value"]["runtime"]["thinking"] = deepcopy(thinking)
+        first = request(value, key="new-model:1", messages=MESSAGES, tools=TOOLS)
+        assert first["provider_metadata"]["model"] == model
+        assert first["model"] == "upstream-response-revision"
+        continuation = [{"kind": "assistant_calls", "role": "assistant", "content": first["content"],
+                         "thinking_summary": first["thinking_summary"],
+                         "provider_metadata": first["provider_metadata"], "calls": first["tool_calls"]},
+                        *[{"kind": "tool_result", "role": "tool", "tool_call_id": call["id"],
+                           "status": "success", "content": "done"} for call in first["tool_calls"]]]
+        final = request(value, key="new-model:2", messages=MESSAGES + continuation, tools=TOOLS)
+        assert final["content"] == long_text
+        assert final["provider_metadata"]["model"] == model
+        assert final["finish_reason"] == "stop"
+        assert len(observed) == 2
+        assert all(wire["generationConfig"]["thinkingConfig"] == wire_thinking for wire in observed)
+        assert observed[1]["contents"][1]["parts"] == batch()
+        assert observed[1]["contents"][2]["parts"][0]["functionResponse"]["id"] == "native-1"
+        facts = list(value.accepted.values())
+        assert [fact["details"]["wire_request"] for fact in facts if fact["stage"] == "request"] == observed
+        assert [fact["details"]["settings"]["parameters"]["model"]
+                for fact in facts if fact["stage"] == "request"] == [model, model]
+    finally:
+        value.close()
 
 
 def test_gemini_uses_only_the_saved_private_key():

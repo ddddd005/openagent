@@ -104,8 +104,25 @@ def test_injected_transport_must_support_exact_prepared_wire_settings(factory):
             provider=_provider("chat"), parameters=_parameters("deepseek-chat"), api_key="fixture-only")
 
 
-def test_unknown_gemini_model_and_unknown_protocol_fail_closed():
+@pytest.mark.parametrize("model", ["gemini-3.8-flash", "proxy-custom-flash"])
+def test_gemini_model_names_do_not_require_registration_or_infer_capacity(model):
+    definition = resolve_model_request_transport("gemini", model)
+    assert definition.capability["model_id"] == model
+    assert definition.capability["output_limit_tokens"] is None
+    assert definition.capability["thinking"] == ["disabled", "budget", "level"]
+    prepared = definition.projector(
+        [{"kind": "text", "role": "user", "content": "hello"}], [], _parameters(model))
+    assert prepared["model"] == model
+    assert prepared["wire_request"]["generationConfig"]["thinkingConfig"] == {
+        "thinkingBudget": 0, "includeThoughts": False}
+
+
+@pytest.mark.parametrize("model", ["", " gemini-3.8-flash", "gemini-3.8-flash ", "bad\nmodel", "x" * 257])
+def test_gemini_still_requires_an_exact_valid_model_identity(model):
     with pytest.raises(ContractValidationError):
-        resolve_model_request_transport("gemini", "unlisted-gemini-model")
+        resolve_model_request_transport("gemini", model)
+
+
+def test_unknown_protocol_is_still_rejected():
     with pytest.raises(ContractValidationError):
         resolve_model_request_transport("unknown", "some-model")

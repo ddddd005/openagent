@@ -12,7 +12,7 @@ from .adapter import DeepSeekAdapter
 from .contract_errors import require
 from .frozen_model import FrozenConfiguredAdapter, FrozenModelParameters
 from .gemini_adapter import GeminiAdapter
-from .gemini_capabilities import GEMINI_PROTOCOL, model_capability
+from .gemini_capabilities import GEMINI_PROTOCOL
 
 
 CHAT_PROTOCOL = "chat"
@@ -73,7 +73,6 @@ def resolve_model_request_transport(protocol: str, model_id: str,
             and not any(ord(char) < 32 or ord(char) == 127 for char in model_id),
             "model_transport_capability_unavailable", "Exact protocol and model identity are required")
     if protocol == GEMINI_MODEL_PROTOCOL:
-        model_capability(model_id)
         projector = GeminiAdapter.prepare_request
         projection_version = GEMINI_PROJECTION_VERSION
     else:

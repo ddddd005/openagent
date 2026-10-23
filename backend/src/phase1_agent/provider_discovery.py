@@ -4,8 +4,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .contract_json import loads_strict
-from .gemini_capabilities import GEMINI_MODELS
-from .contract_errors import require
+from .contract_errors import ContractValidationError, require
 
 MAX_PAGES = 10
 MAX_BYTES = 1_000_000
@@ -40,7 +39,11 @@ def discover_provider_models(provider, secret, client_factory=None):
                         require(total_bytes <= MAX_BYTES, "provider_discovery_capacity",
                                 "Model discovery response exceeded its limit", 502)
                         content.extend(chunk)
-                payload = loads_strict(bytes(content).decode("utf-8"))
+                try:
+                    payload = loads_strict(bytes(content).decode("utf-8"))
+                except (ContractValidationError, UnicodeDecodeError):
+                    require(False, "provider_discovery_invalid",
+                            "Provider model list is not valid UTF-8 JSON", 502)
                 require(type(payload) is dict and type(payload.get("models" if gemini else "data")) is list,
                         "provider_discovery_invalid", "Provider model list is invalid", 502)
                 for item in payload["models" if gemini else "data"]:
@@ -56,7 +59,7 @@ def discover_provider_models(provider, secret, client_factory=None):
                             continue
                         require(name.startswith("models/"), "provider_discovery_invalid", "Gemini model name is invalid", 502)
                         name = name.removeprefix("models/")
-                    rows.append({"model": name, "adapted": not gemini or name in GEMINI_MODELS,
+                    rows.append({"model": name, "adapted": True,
                                  "input_token_limit": _positive(item.get("inputTokenLimit")) if gemini else None,
                                  "output_token_limit": _positive(item.get("outputTokenLimit" if gemini else "max_output_tokens")),
                                  "context_window_tokens": None if gemini else _positive(item.get("context_window"))})

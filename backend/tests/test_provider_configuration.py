@@ -212,7 +212,7 @@ def test_gemini_pagination_filters_methods_and_keeps_capacity_semantics():
     assert rows[0]["input_token_limit"] == 1000
     assert rows[0]["output_token_limit"] == 100
     assert rows[0]["context_window_tokens"] is None
-    assert rows[1]["adapted"] is False
+    assert rows[1]["adapted"] is True
 
 
 def test_chat_discovery_tolerates_missing_capacity_without_inventing_numbers():
@@ -224,6 +224,48 @@ def test_chat_discovery_tolerates_missing_capacity_without_inventing_numbers():
     rows = discover_provider_models(provider("chat"), "dummy-discovery-key", client(handler))
     assert rows[0]["context_window_tokens"] == 128000
     assert rows[1]["context_window_tokens"] is None and rows[1]["output_token_limit"] is None
+
+
+@pytest.mark.parametrize("description_size,accepted", [(500_000, True), (1_000_000, False)])
+def test_long_valid_model_list_keeps_new_ids_or_reports_capacity_explicitly(description_size, accepted):
+    calls = []
+
+    def handler(req):
+        calls.append(req)
+        return httpx.Response(200, json={"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"],
+             "description": "x" * description_size}]})
+
+    if accepted:
+        rows = discover_provider_models(provider(), "dummy-discovery-key", client(handler))
+        assert rows == [{"model": "gemini-3.8-flash", "adapted": True, "input_token_limit": None,
+                         "output_token_limit": None, "context_window_tokens": None}]
+    else:
+        with pytest.raises(Exception) as failure:
+            discover_provider_models(provider(), "dummy-discovery-key", client(handler))
+        assert failure.value.reason_code == "provider_discovery_capacity"
+        assert failure.value.status_code == 502
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("content", [
+    b"<html>dummy-sensitive-error-key</html>",
+    b'{"models":[],"message":"\xffdummy-sensitive-error-key"}',
+])
+def test_discovery_reports_invalid_json_or_utf8_as_format_errors_without_retry(content):
+    calls = []
+
+    def handler(req):
+        calls.append(req)
+        return httpx.Response(200, content=content)
+
+    with pytest.raises(Exception) as failure:
+        discover_provider_models(provider(), "dummy-sensitive-error-key", client(handler))
+    assert failure.value.reason_code == "provider_discovery_invalid"
+    assert failure.value.status_code == 502
+    assert "dummy-sensitive-error-key" not in str(failure.value)
+    assert "dummy-sensitive-error-key" not in json.dumps(failure.value.diagnostics)
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("mode", ["redirect", "provider-error", "body-capacity", "duplicate", "pagination"])

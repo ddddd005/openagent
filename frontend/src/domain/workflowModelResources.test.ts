@@ -78,10 +78,16 @@ describe("current model resource contracts", () => {
     const thinking = { mode: "level" as const, level: "medium" as const, include_summary: true as const };
     expect(modelParameterDiagnostic("gemini-3-flash-preview", thinking, "gemini")).toBeNull();
     expect(modelParameterDiagnostic("gemini-3-flash-preview", thinking, "chat")).not.toBeNull();
-    expect(modelParameterDiagnostic("gemini-unknown", "disabled", "gemini")).not.toBeNull();
+    expect(modelParameterDiagnostic("gemini-3.8-flash", "disabled", "gemini")).toBeNull();
+    expect(modelParameterDiagnostic("proxy-custom-flash", thinking, "gemini")).toBeNull();
     const budget = { mode: "budget" as const, budget: 512, include_summary: true as const };
     expect(modelParameterDiagnostic("gemini-2.5-flash-lite", budget, "gemini")).toBeNull();
     expect(modelParameterDiagnostic("gemini-2.5-flash-lite",
-      { ...budget, budget: 24_577 }, "gemini")).not.toBeNull();
+      { ...budget, budget: 65_536 }, "gemini")).toBeNull();
+    expect(modelParameterDiagnostic("gemini-2.5-pro", "disabled", "gemini")).toBeNull();
+    expect(modelParameterDiagnostic("gemini-3.1-pro-preview",
+      { ...thinking, level: "minimal" }, "gemini")).toBeNull();
+    expect(modelParameterDiagnostic("gemini-3.8-flash", { ...budget, budget: -2 }, "gemini")).not.toBeNull();
+    expect(modelParameterDiagnostic(" gemini-3.8-flash", "disabled", "gemini")).not.toBeNull();
   });
 });

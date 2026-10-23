@@ -31,6 +31,9 @@ describe("same-origin workbench adapter", () => {
     ["credential_protection_unavailable", "无法保存或使用 Key"],
     ["model_credential_broker_unavailable", "检查后端初始化"],
     ["model_provider_type_mismatch", "重新选择"],
+    ["provider_discovery_invalid", "上游模型列表格式无法安全读取"],
+    ["provider_discovery_capacity", "超过页数、条目或响应大小限制"],
+    ["provider_discovery_unavailable", "仍可手填型号"],
   ])("presents an actionable current-configuration error for %s", async (code, reason) => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       error: { reason_code: code, message: "PRIVATE configuration" },
