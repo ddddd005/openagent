@@ -158,6 +158,47 @@ afterEach(() => {
 });
 
 describe("global lorebook workbench UI", () => {
+  it("keeps named entries independently collapsible through edits and reordering without losing partial input", async () => {
+    const record = newLorebookResource(), first = newLorebookEntry(), second = newLorebookEntry();
+    first.name = "First setting"; second.name = " ";
+    record.value.entries = [first, second];
+    const original = graphClone(record), f = fixture([record]), root = await mount(CurrentLorebookPanel, f);
+    await trigger(find(root, node => node.props.class === "resource-edit"), "Click");
+    const section = label(root, "条目 1 收起").parent!.parent!;
+    const body = find(section, node => node.props.class === "entry-body");
+    const scan = label(root, "条目 1 扫描深度");
+    expect(body.props.hidden).toBe(false);
+    expect(elements(label(root, "条目 2 收起")).some(node => node.text === "条目 2")).toBe(true);
+    await trigger(label(root, "条目 1 名称"), "Input", { value: "Renamed setting" });
+    await trigger(label(root, "条目 1 正文"), "Input", { value: "Unsaved content" });
+    await trigger(scan, "Input", { value: "-" });
+    await trigger(label(root, "条目 1 收起"), "Click");
+    const collapsed = label(root, "条目 1 展开");
+    expect(collapsed.props["aria-expanded"]).toBe(false);
+    expect(collapsed.props["aria-controls"]).toBe(body.props.id);
+    expect(elements(collapsed).some(node => node.text === "Renamed setting")).toBe(true);
+    expect(body.props.hidden).toBe(true);
+    expect(label(root, "条目 2 收起").props["aria-expanded"]).toBe(true);
+    await trigger(label(root, "条目 2 上移"), "Click");
+    expect(label(root, "条目 2 展开").parent!.parent).toBe(section);
+    await trigger(label(root, "全局 Lorebook 表单"), "Submit");
+    expect(f.save).not.toHaveBeenCalled();
+    await trigger(label(root, "条目 2 展开"), "Click");
+    expect(body.props.hidden).toBe(false);
+    expect(label(root, "条目 2 扫描深度")).toBe(scan);
+    expect(scan.value).toBe("-");
+    expect(label(root, "条目 2 正文").value).toBe("Unsaved content");
+    await trigger(scan, "Input", { value: "9" });
+    await trigger(label(root, "条目 2 收起"), "Click");
+    await trigger(label(root, "全局 Lorebook 表单"), "Submit");
+    expect(f.save).toHaveBeenCalledOnce();
+    const saved = f.save.mock.calls[0]![0].record.value.entries;
+    expect(saved.map(entry => entry.id)).toEqual([second.id, first.id]);
+    expect(saved[1]).toEqual({ ...first, name: "Renamed setting", text: "Unsaved content", scan_depth: 9,
+      presentation: { ...first.presentation, order: 1 } });
+    expect(record).toEqual(original);
+  });
+
   it("copies a listed resource and submits it as new without touching the source or node binding", async () => {
     const record = newLorebookResource(), entry = newLorebookEntry();
     record.scope = "project:one"; record.update_sequence = 7;
