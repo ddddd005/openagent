@@ -8,11 +8,12 @@ import pytest
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.graph_application import GraphApplication
 from phase1_agent.graph_application_contracts import COMMANDS, QUERIES, RETIRED_RECEIPT_COMMANDS
-from phase1_agent.graph_application_identity import application_command_receipt, bind_application_command
-from phase1_agent.graph_drafts import LocalDraftStore, validate_draft_address, validate_draft_value
+from phase1_agent.graph_application_identity import application_command_receipt
+from phase1_agent.graph_drafts import validate_draft_address, validate_draft_value
 from phase1_agent.graph_records import require
 from phase1_agent.graph_http import dispatch_graph
 from phase1_agent.graph_receipts import read_graph_application_receipt
+from legacy_consumer_receipt_fixture import seed_local_draft
 from test_graph_application_receipt_custody import raw_database
 from test_graph_service import service, text_graph
 
@@ -33,12 +34,7 @@ def _legacy_management_draft(service, request):
     validate_draft_value(address, request["format_version"], request["value"])
     require(type(request["expected_sequence"]) is int and 0 <= request["expected_sequence"] <= 2**53 - 1,
             "invalid_request", "Draft expected sequence is invalid")
-    native_request = {key: value for key, value in request.items() if key != "idempotency_key"}
-    with bind_application_command("draft.save", "management", request):
-        with closing(service._store()) as store:
-            result = LocalDraftStore(store).save(
-                "graph.draft.save", native_request, request["idempotency_key"],
-                lambda address, value: service._draft_owner(store, address, value))
+    result = seed_local_draft(service, "draft.save", "management", request)
     receipt = application_command_receipt(
         "draft.save", "management", request, result, authority="service_receipt")
     return {

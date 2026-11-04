@@ -207,6 +207,8 @@ def create_content_package():
             ))
         from .prompt_lifecycle import lifecycle_prompt_definition
         host.register_data_type(lifecycle_prompt_definition())
+        from .content_summary import content_summary_definition
+        host.register_data_type(content_summary_definition())
         from .global_resources import global_resource_ref_definition
         host.register_shared_data_type(global_resource_ref_definition())
 

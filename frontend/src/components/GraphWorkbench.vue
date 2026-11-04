@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { MarkerType, VueFlow, type Connection, type OnConnectStartParams, type VueFlowStore } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
 import { ArrowDown, ArrowUp, Copy, Crosshair, Database, Plus, Redo2, RefreshCw, Settings2, Trash2, Undo2, X } from "lucide-vue-next";
-import { useWorkflowGraphStore } from "../stores/workflowGraph";
+import { useWorkflowGraphStore, type WorkflowEditResult } from "../stores/workflowGraph";
 import { useWorkspaceStore } from "../stores/workspace";
 import { nodePorts, type GraphNode } from "../domain/workflowGraph";
 import { buildNodeFamilies, nodeDisplayTitle, nodeMenuGroups, nodeProfileLabel, nodeTypeLabel } from "../domain/nodeCatalog";
@@ -23,12 +23,13 @@ import { resultStatusLabel } from "../domain/resultPresentation";
 import { modelPresentationJson } from "../domain/modelPresentation";
 import { useCanvasNodeMenu } from "../composables/useCanvasNodeMenu";
 import { useVolatileFormState } from "../composables/useVolatileFormState";
-import { diagnosticRecovery } from "../domain/diagnosticPresentation";
+import { diagnosticExpectation, diagnosticPhaseLabel, diagnosticRecovery } from "../domain/diagnosticPresentation";
 import { useInstalledWorkbenchFrontendHost } from "../application/workbenchFrontendHost";
 const graph = useWorkflowGraphStore();
 const workspace = useWorkspaceStore();
 const frontendHost = useInstalledWorkbenchFrontendHost();
 const navigationError = ref("");
+const editFailure = ref("");
 let navigationGeneration = 0;
 function leaveEditor(change: () => void) {
   const token = ++navigationGeneration, id = workspace.activeWorkflowId;
@@ -36,12 +37,68 @@ function leaveEditor(change: () => void) {
   navigationError.value = "";
   change();
 }
-function selectNodes(ids: string[], edgeId: string | null = null, closePanels = false) {
-  void leaveEditor(() => {
-    if (closePanels) showEvents.value = showBindings.value = showInformation.value = false;
-    graph.selectedNodeIds = ids; graph.selectedEdgeId = edgeId;
-  });
+// Await the formal result of one edit; success state is applied by the store before this
+// resolves, and a failure keeps the reason visible instead of returning a bare null.
+async function applyEdit(change: () => Promise<WorkflowEditResult | null>): Promise<WorkflowEditResult | null> {
+  const token = ++navigationGeneration, id = workspace.activeWorkflowId;
+  if (token !== navigationGeneration || id !== workspace.activeWorkflowId) return null;
+  navigationError.value = ""; editFailure.value = "";
+  const result = await change();
+  if (result?.outcome === "failed" && id === workspace.activeWorkflowId)
+    editFailure.value = result.error.message;
+  return result;
 }
+function reportAddNodeFailure(nodeId: string | null, workflowId: string) {
+  if (!nodeId && workflowId === workspace.activeWorkflowId)
+    editFailure.value = "节点修改未完成，请查看提示或工作流原请求";
+}
+function changeTitle() {
+  const node = selectedNode.value, workflowId = graph.document?.workflow_definition_id,
+    title = titleDraft.value, context = titleForm.context.value;
+  if (!node || !workflowId || graph.editorLocked) return;
+  if (context !== titleForm.context.value || graph.document?.workflow_definition_id !== workflowId
+    || selectedNode.value?.node_binding_id !== node.node_binding_id) return;
+  void applyEdit(() => graph.patchNode(node.node_binding_id, { title }));
+}
+function changeNodeConfig(value: Record<string, unknown>) {
+  const node = selectedNode.value;
+  if (!node || graph.editorLocked) return;
+  void applyEdit(() => graph.patchNode(node.node_binding_id, { config: value }));
+}
+function changePolicy(mode: "fixed" | "adjustable") {
+  const node = selectedNode.value;
+  if (!node || graph.editorLocked) return;
+  void applyEdit(() => graph.patchNodeConfigurationPolicy(node.node_binding_id, mode));
+}
+function changePublicOutput(portId: string, checked: boolean) {
+  const node = selectedNode.value;
+  if (!node || graph.editorLocked) return;
+  const outputs = checked ? [...new Set([...(node.public_outputs ?? []), portId])]
+    : (node.public_outputs ?? []).filter(port => port !== portId);
+  void applyEdit(() => graph.patchNode(node.node_binding_id, { public_outputs: outputs }));
+}
+function applyObjectBindings(value: unknown) {
+  void applyEdit(() => graph.setObjectBindings(value));
+}
+function moveEdge(edgeId: string, offset: number) {
+  void applyEdit(() => graph.reorderEdge(edgeId, offset));
+}
+function undoEdit(redo: boolean) {
+  void applyEdit(() => graph.undo(redo));
+}
+function deleteSelection() {
+  void applyEdit(() => graph.removeSelection());
+}
+function duplicateNodes() {
+  void applyEdit(() => graph.duplicateSelection());
+}
+function closeSelectionPanels() {
+  showEvents.value = showBindings.value = showInformation.value = false;
+}
+// S2-03: the store actions are the only selection writers; the exported refs stay read-only.
+function clearGraphSelection() { void leaveEditor(() => graph.clearSelection()); }
+function selectGraphNodes(ids: readonly string[]) { void leaveEditor(() => graph.selectNodes(ids)); }
+function selectGraphEdge(edgeId: string) { void leaveEditor(() => graph.selectEdge(edgeId)); }
 function panel(name: "events" | "bindings" | "information") {
   void leaveEditor(() => {
     const previous = { events: showEvents.value, bindings: showBindings.value, information: showInformation.value };
@@ -54,6 +111,8 @@ const canvas = ref<HTMLElement | null>(null);
 const menu = useCanvasNodeMenu(canvas);
 const flow = shallowRef<VueFlowStore | null>(null);
 const connecting = ref<OnConnectStartParams | null>(null), connectionMessage = ref("");
+// Q04-2: a cancelled gesture must not create an edge when the pointer is released later.
+let cancelledConnection = false;
 function connectionIssue(connection: Connection) {
   if (!graph.document || graph.editorLocked) return "当前不可连线";
   return graphConnectionIssue(graph.document, graph.catalog, { source_node_id: connection.source,
@@ -73,6 +132,55 @@ function validConnection(connection: Connection & { id?: string }) {
   if (connecting.value) connectionMessage.value = issue ?? "端口兼容，可连接";
   return !issue;
 }
+/** Q04-2: end the in-flight drag gesture without creating an edge.
+ *
+ * @vue-flow/core 1.48.2 keeps the pointer-down closure (its document mousemove/mouseup
+ * listeners) private, and the public `endConnection()` action only clears store state, so
+ * it cannot stop that closure from emitting `connect` on release. Moving the pointer off
+ * every handle and releasing there makes the closure end without a candidate connection;
+ * the cancelled flag additionally rejects any late `connect` event for this gesture.
+ */
+function cancelConnection() {
+  if (!connecting.value && !flow.value?.connectionStartHandle.value) return;
+  cancelledConnection = true;
+  connecting.value = null;
+  connectionMessage.value = "";
+  flow.value?.endConnection(undefined, false);
+  document.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 0, clientY: 0 }));
+  document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: 0, clientY: 0 }));
+  cancelledConnection = false;
+}
+/** Specific reason for the handle a gesture was released on, or null for a blank/valid release. */
+function releasedConnectionIssue(start: OnConnectStartParams, target: EventTarget | null): string | null {
+  const element = target instanceof Element ? target.closest(".vue-flow__handle") : null;
+  if (!element || !start.nodeId || !start.handleId) return null;
+  const nodeId = element.getAttribute("data-nodeid"), handleId = element.getAttribute("data-handleid");
+  if (!nodeId || !handleId) return null;
+  // A plain click on the start handle is neither a completion nor an illegal target.
+  if (nodeId === start.nodeId && handleId === start.handleId) return null;
+  if (start.handleType === "target") {
+    if (!element.classList.contains("source")) return "连线需要从输出端口连接到输入端口";
+    return connectionIssue({ source: nodeId, sourceHandle: handleId, target: start.nodeId, targetHandle: start.handleId });
+  }
+  if (!element.classList.contains("target")) return "连线需要从输出端口连接到输入端口";
+  return connectionIssue({ source: start.nodeId, sourceHandle: start.handleId, target: nodeId, targetHandle: handleId });
+}
+/** Q04-2: Escape must cancel an in-flight connection regardless of where focus is.
+ *  Priority is one action per key press: open menu/dialog first, then the connection. */
+function escapeDuringConnection(event: KeyboardEvent) {
+  if (event.key !== "Escape") return;
+  if (menu.menu.value || selectionRequest.value) return;
+  if (!connecting.value && !flow.value?.connectionStartHandle.value) return;
+  event.preventDefault();
+  event.stopPropagation();
+  cancelConnection();
+}
+if (typeof document !== "undefined")
+  document.addEventListener("keydown", escapeDuringConnection, true);
+onBeforeUnmount(() => {
+  if (typeof document !== "undefined")
+    document.removeEventListener("keydown", escapeDuringConnection, true);
+});
 function portIssues(node: GraphNode, direction: "inputs" | "outputs") {
   const from = connecting.value;
   if (!from?.nodeId || !from.handleId || (direction === "inputs") === (from.handleType === "target")) return undefined;
@@ -87,6 +195,14 @@ const showBindings = ref(false);
 const showInformation = ref(false);
 const showEvents = ref(false);
 const selectedNode = computed(() => graph.document?.nodes.find(n => graph.selectedNodeIds.includes(n.node_binding_id)));
+/** Existing selected edge/control edge; a selection pointing at a vanished identity is not shown. */
+const selectedEdge = computed(() => {
+  const document = graph.document;
+  if (!document || !graph.selectedEdgeId) return undefined;
+  return document.edges.find(edge => edge.edge_id === graph.selectedEdgeId)
+    ?? (document.control_edges ?? []).find(edge => edge.edge_id === graph.selectedEdgeId);
+});
+const hasSelection = computed(() => !!selectedNode.value || !!selectedEdge.value);
 const titleDraft = ref("");
 const titleBasis = () => ({ workflowId: graph.document?.workflow_definition_id ?? null,
   nodeId: selectedNode.value?.node_binding_id ?? null, title: selectedNode.value?.title ?? "" });
@@ -95,24 +211,17 @@ const titleForm = useVolatileFormState({
   basis: titleBasis,
   reset: () => { titleDraft.value = selectedNode.value ? displayTitle(selectedNode.value) : ""; },
 });
-function changeTitle() {
-  const node = selectedNode.value, workflowId = graph.document?.workflow_definition_id,
-    title = titleDraft.value, context = titleForm.context.value;
-  if (!node || !workflowId || graph.editorLocked) return;
-  if (context !== titleForm.context.value || graph.document?.workflow_definition_id !== workflowId
-    || selectedNode.value?.node_binding_id !== node.node_binding_id) return;
-  graph.patchNode(node.node_binding_id, { title });
-}
 const selectedType = computed(() => selectedNode.value ? graph.typeFor(selectedNode.value) : undefined);
 const selectedState = computed(() => graph.session?.nodes.find(n => n.node_binding_id === selectedNode.value?.node_binding_id));
 const incoming = computed(() => graph.document?.edges.filter(e => e.target_node_id === selectedNode.value?.node_binding_id).sort((a,b) => a.order-b.order) ?? []);
 const predecessors = computed(() => (graph.document?.control_edges ?? [])
   .filter(edge => edge.target_node_id === selectedNode.value?.node_binding_id).map(edge => edge.source_node_id));
 function predecessor(id: string, event: Event) {
-  if (!selectedNode.value) return;
+  const node = selectedNode.value;
+  if (!node) return;
   const checked = (event.target as HTMLInputElement).checked;
-  graph.setControlDependencies(selectedNode.value.node_binding_id,
-    [...predecessors.value.filter(source => source !== id), ...(checked ? [id] : [])]);
+  void applyEdit(() => graph.setControlDependencies(node.node_binding_id,
+    [...predecessors.value.filter(source => source !== id), ...(checked ? [id] : [])]));
 }
 const families = computed(() => buildNodeFamilies(graph.catalog));
 const menuGroups = computed(() => nodeMenuGroups(families.value, graph.editorLocked || graph.catalogLoading || !!graph.catalogError));
@@ -167,29 +276,74 @@ function attach(instance: VueFlowStore) {
   flow.value = instance;
   const id = workspace.activeWorkflowId;
   const current = () => workspace.activeWorkflowId === id && flow.value === instance;
-  instance.onNodeClick(({ node }) => { if (current()) selectNodes([node.id], null, true); });
+  instance.onNodeClick(({ event, node }) => {
+    if (!current()) return;
+    closeSelectionPanels();
+    // The library already applied its selection change; onNodesChange mirrors it into the
+    // store (multi-select keeps the merged set). A plain click still collapses to this node.
+    const multi = event instanceof MouseEvent && (event.ctrlKey || event.metaKey || event.shiftKey);
+    if (!multi) selectGraphNodes([node.id]);
+  });
   instance.onNodesChange(changes => {
     if (!current() || !changes.some(change => change.type === "select")) return;
     const selected = new Set(graph.selectedNodeIds);
     for (const change of changes) if (change.type === "select") {
       if (change.selected) selected.add(change.id); else selected.delete(change.id);
     }
-    selectNodes([...selected]);
+    // Node selection and edge selection are mutually exclusive in the store actions.
+    if (selected.size) selectGraphNodes([...selected]);
+    else clearGraphSelection();
   });
-  instance.onEdgeClick(({ edge }) => { if (current()) selectNodes([], edge.id); });
-  instance.onPaneClick(() => { if (current()) { selectNodes([]); menu.close(); } });
-  instance.onNodeDragStop(({ nodes }) => { if (current()) graph.moveNodes(nodes.map(node => ({ id: node.id, position: { ...node.position } }))); });
+  instance.onEdgeClick(({ edge }) => { if (current()) selectGraphEdge(edge.id); });
+  instance.onPaneClick(() => {
+    if (!current()) return;
+    // Q04-2: end a pending connection first, then clear the selection (one action each).
+    if (connecting.value || flow.value?.connectionStartHandle.value) cancelConnection();
+    connectionMessage.value = "";
+    clearGraphSelection();
+    menu.close();
+  });
+  instance.onNodeDragStop(({ nodes }) => {
+    if (current()) void applyEdit(() => graph.moveNodes(nodes.map(node => ({ id: node.id, position: { ...node.position } }))));
+  });
   instance.onConnect(connection => {
-    if (current() && connection.sourceHandle && connection.targetHandle
-      && ![connection.sourceHandle, connection.targetHandle].some(handle => handle.startsWith("__control_"))) {
-      const accepted = graph.connect({ source_node_id: connection.source,
-        source_port_id: connection.sourceHandle, target_node_id: connection.target, target_port_id: connection.targetHandle });
-      if (accepted) connectionMessage.value = "";
-    }
+    if (!(current() && connection.sourceHandle && connection.targetHandle
+      && ![connection.sourceHandle, connection.targetHandle].some(handle => handle.startsWith("__control_")))) return;
+    // A cancelled gesture (Q04-2) never reaches the store.
+    if (cancelledConnection) return;
+    // Admission failures stay in the connection hint; only a real submission uses the
+    // step-1 persistent save feedback instead of the transient hint.
+    const admissionIssue = connectionIssue(connection);
+    if (admissionIssue) { connectionMessage.value = admissionIssue; return; }
+    void applyEdit(() => graph.connect({ source_node_id: connection.source,
+      source_port_id: connection.sourceHandle!, target_node_id: connection.target,
+      target_port_id: connection.targetHandle! })).then(result => {
+      if (!current()) return;
+      if (result?.outcome === "failed") { connectionMessage.value = ""; return; }
+      if (result?.outcome === "no-change") { connectionMessage.value = connectionIssue(connection) ?? ""; return; }
+      connectionMessage.value = "";
+    });
   });
-  instance.onConnectStart(({ ...start }) => { if (current()) { connecting.value = start; connectionMessage.value = ""; } });
-  instance.onConnectEnd(() => { if (current()) connecting.value = null; });
-  instance.onNodesInitialized(() => { if (current() && initialFit) { fit(); initialFit = false; } });
+  instance.onConnectStart(({ ...start }) => {
+    if (!current()) return;
+    cancelledConnection = false;
+    connecting.value = start;
+    connectionMessage.value = "";
+  });
+  instance.onConnectEnd(event => {
+    if (!current()) return;
+    const start = connecting.value, cancelled = cancelledConnection;
+    connecting.value = null;
+    cancelledConnection = false;
+    if (cancelled) { connectionMessage.value = ""; return; }
+    connectionMessage.value = releasedConnectionIssue(start ?? { handleId: null }, event?.target ?? null) ?? "";
+  });
+  instance.onNodesInitialized(() => {
+    if (!current()) return;
+    // A remounted canvas must not display a selection whose identity no longer exists.
+    graph.pruneSelection();
+    if (initialFit) { fit(); initialFit = false; }
+  });
 }
 function add(familyId: string) {
   if (!menu.menu.value) return;
@@ -200,37 +354,61 @@ function add(familyId: string) {
   if (!family || !request) return;
   const only = family.profiles.length === 1 ? family.profiles[0] : undefined;
   if (only && family.preferredKey === only.key
-    && nodeSelectionAllowed(request, selectionContext.value, only.key)) graph.addNode(only.key, position);
-  else selectionRequest.value = request;
+    && nodeSelectionAllowed(request, selectionContext.value, only.key)) {
+    const workflowId = workspace.activeWorkflowId;
+    navigationError.value = ""; editFailure.value = "";
+    void graph.addNode(only.key, position).then(nodeId => reportAddNodeFailure(nodeId, workflowId));
+  } else selectionRequest.value = request;
 }
 function changeProfile() {
   if (!selectedNode.value) return;
   selectionRequest.value = captureNodeSelection(selectionContext.value, selectedNode.value.component_id,
     { nodeId: selectedNode.value.node_binding_id });
 }
-function confirmSelection(key: string, resetConfirmed: boolean) {
+async function confirmSelection(key: string, resetConfirmed: boolean) {
   const request = selectionRequest.value;
   if (!request || !nodeSelectionAllowed(request, selectionContext.value, key, resetConfirmed)) return;
-  if (request.nodeId) graph.replaceNode(request.nodeId, key);
-  else if (request.position) graph.addNode(key, request.position);
-  selectionRequest.value = null;
+  const workflowId = workspace.activeWorkflowId;
+  navigationError.value = ""; editFailure.value = "";
+  const result = request.nodeId ? await graph.replaceNode(request.nodeId, key)
+    : request.position ? await graph.addNode(key, request.position) : null;
+  if (workspace.activeWorkflowId !== workflowId || selectionRequest.value !== request) return;
+  if (typeof result === "string") {
+    if (!result) editFailure.value = "节点修改未完成，请查看提示或工作流原请求";
+    else selectionRequest.value = null;
+    return;
+  }
+  if (result?.outcome === "accepted" || result?.outcome === "no-change") selectionRequest.value = null;
+  else if (result?.outcome === "failed") editFailure.value = result.error.message;
+  else if (!result) editFailure.value = "节点修改未完成，请查看提示或工作流原请求";
 }
 function keyboard(event: KeyboardEvent) {
+  // Q04-2: an in-flight connection owns Escape; cancelling it keeps the current selection.
+  if (event.key === "Escape" && (connecting.value || flow.value?.connectionStartHandle.value)) {
+    event.preventDefault();
+    cancelConnection();
+    return;
+  }
   if (selectionRequest.value || menu.menu.value) return;
   if ((event.target as HTMLElement).closest("input,textarea,select,[contenteditable]")) return;
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); void leaveEditor(() => graph.undo(event.shiftKey)); }
-  else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "d") { event.preventDefault(); void leaveEditor(() => graph.duplicateSelection()); }
-  else if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); void leaveEditor(() => graph.removeSelection()); }
-  else if (event.key === "Escape") { menu.close(); selectNodes([]); }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); undoEdit(event.shiftKey); }
+  else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "d") { event.preventDefault(); duplicateNodes(); }
+  else if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); deleteSelection(); }
+  else if (event.key === "Escape") { menu.close(); clearGraphSelection(); }
 }
 function locate(id?: string) {
   if (!id) return;
   void leaveEditor(() => {
-    graph.selectedNodeIds = [id];
+    selectGraphNodes([id]);
     void nextTick(() => { void flow.value?.fitView({ nodes: [id], padding: 0.6, maxZoom: 1 }); });
   });
 }
-watch(() => workspace.activeWorkflowId, () => { flow.value = null; connecting.value = null; connectionMessage.value = ""; initialFit = true; menu.close(); selectionRequest.value = null; inspectorTab.value = "config"; showBindings.value = false; showInformation.value = false; showEvents.value = false; });
+watch(() => workspace.activeWorkflowId, () => {
+  flow.value = null; connecting.value = null; cancelledConnection = false; connectionMessage.value = "";
+  graph.clearSelection();
+  initialFit = true; menu.close(); selectionRequest.value = null; inspectorTab.value = "config";
+  showBindings.value = false; showInformation.value = false; showEvents.value = false;
+});
 </script>
 
 <template>
@@ -243,32 +421,36 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; connecting.va
         <button type="button" :aria-pressed="showEvents" :disabled="!graph.document" @click="panel('events')">局部事件</button>
         <button type="button" :aria-pressed="showBindings" :disabled="!graph.document" @click="panel('bindings')">会话绑定</button>
         <button type="button" title="统一登记目录" aria-label="统一登记目录" :aria-pressed="showInformation" @click="panel('information')"><Database :size="15" /></button>
-        <button type="button" title="撤销" aria-label="撤销" :disabled="!graph.canUndo" @click="leaveEditor(() => graph.undo())"><Undo2 :size="15" /></button>
-        <button type="button" title="重做" aria-label="重做" :disabled="!graph.canRedo" @click="leaveEditor(() => graph.undo(true))"><Redo2 :size="15" /></button>
-        <button type="button" title="复制选中节点" aria-label="复制选中节点" :disabled="!graph.selectedNodeIds.length || graph.editorLocked" @click="leaveEditor(() => graph.duplicateSelection())"><Copy :size="15" /></button>
+        <button type="button" title="撤销" aria-label="撤销" :disabled="!graph.canUndo" @click="undoEdit(false)"><Undo2 :size="15" /></button>
+        <button type="button" title="重做" aria-label="重做" :disabled="!graph.canRedo" @click="undoEdit(true)"><Redo2 :size="15" /></button>
+        <button type="button" title="复制选中节点" aria-label="复制选中节点" :disabled="!graph.selectedNodeIds.length || graph.editorLocked" @click="duplicateNodes()"><Copy :size="15" /></button>
         <button type="button" title="定位全部节点" aria-label="定位全部节点" @click="fit"><Crosshair :size="15" /></button>
         <button type="button" title="刷新目录和运行" aria-label="刷新目录和运行" :disabled="graph.catalogLoading" @click="graph.loadCatalog(); graph.refresh()"><RefreshCw :size="15" /></button>
       </div>
     </header>
     <div v-if="graph.catalogError" class="graph-warning" role="status">{{ graph.catalogError }}</div>
     <div v-if="navigationError" class="graph-warning" role="status">{{ navigationError }}</div>
+    <div v-if="editFailure" class="graph-warning" role="status">{{ editFailure }}</div>
     <div v-if="invalidEdges.length" class="graph-warning" role="status">有 {{ invalidEdges.length }} 条连线需要核对：{{ invalidEdges[0]?.issue }}</div>
-    <div v-if="connectionMessage" class="graph-connection-message" role="status">{{ connectionMessage }}</div>
+    <div v-if="connectionMessage" class="graph-connection-message" role="status">
+      <span>{{ connectionMessage }}</span>
+      <button type="button" aria-label="关闭连线提示" title="关闭连线提示" @click="connectionMessage = ''"><X :size="12" /></button>
+    </div>
     <div v-for="issue in frontendHost.issues.value" :key="issue" class="graph-warning" role="status">{{ issue }}</div>
     <div class="graph-body">
       <div ref="canvas" class="graph-canvas" tabindex="0" aria-label="工作流节点画布" @contextmenu="menu.contextMenu" @pointermove="menu.pointerMove" @pointerleave="menu.pointerLeave">
-        <VueFlow :key="workspace.activeWorkflowId" :id="`graph-${workspace.activeWorkflowId}`" :nodes="nodes" :edges="edges" :min-zoom="0.15" :max-zoom="2" :connection-radius="28" :is-valid-connection="validConnection" :delete-key-code="null" :disable-keyboard-a11y="true" :nodes-draggable="!graph.editorLocked" :nodes-connectable="!graph.editorLocked" @init="attach">
+        <VueFlow :key="workspace.activeWorkflowId" :id="`graph-${workspace.activeWorkflowId}`" :nodes="nodes" :edges="edges" :min-zoom="0.15" :max-zoom="2" :connection-radius="28" :connect-on-click="false" :is-valid-connection="validConnection" :delete-key-code="null" :disable-keyboard-a11y="true" :nodes-draggable="!graph.editorLocked" :nodes-connectable="!graph.editorLocked" @init="attach">
           <Background :gap="24" :size="1" pattern-color="#4c4c53" />
           <template #node-graph="nodeProps"><GraphCanvasNode v-bind="nodeProps" /></template>
         </VueFlow>
         <CanvasNodeMenu :state="menu.menu.value" :groups="menuGroups" @select="add" @add="menu.open('add', menu.menu.value ?? undefined)" @back="menu.open('context', menu.menu.value ?? undefined)" @dismiss="menu.close()" />
       </div>
       <aside class="graph-inspector" aria-label="节点详情">
-        <header><strong>{{ showEvents ? '局部事件' : showInformation ? '统一登记目录' : showBindings ? '会话对象绑定' : selectedNode ? displayTitle(selectedNode) : '运行结果' }}</strong><button v-if="!showEvents && !showBindings && !showInformation && (selectedNode || graph.selectedEdgeId)" type="button" aria-label="删除选中" title="删除选中" :disabled="graph.editorLocked" @click="leaveEditor(() => graph.removeSelection())"><Trash2 :size="15" /></button></header>
+        <header><strong>{{ showEvents ? '局部事件' : showInformation ? '统一登记目录' : showBindings ? '会话对象绑定' : selectedNode ? displayTitle(selectedNode) : '运行结果' }}</strong><button v-if="!showEvents && !showBindings && !showInformation && hasSelection" type="button" aria-label="删除选中" title="删除选中" :disabled="graph.editorLocked" @click="deleteSelection()"><Trash2 :size="15" /></button></header>
         <div v-if="showEvents" class="graph-inspector-content"><GraphEvents /></div>
         <div v-else-if="showInformation" class="graph-inspector-content"><GraphInformation :session-id="graph.session?.workflow_session_id" /></div>
         <div v-else-if="showBindings && graph.document" class="graph-inspector-content">
-          <GraphObjectBindings :document="graph.document" :types="graph.dataTypes" :disabled="graph.editorLocked" @change="graph.setObjectBindings($event)" />
+          <GraphObjectBindings :document="graph.document" :types="graph.dataTypes" :disabled="graph.editorLocked" @change="applyObjectBindings($event)" />
           <GraphSessionData />
         </div>
         <template v-else-if="selectedNode">
@@ -282,19 +464,19 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; connecting.va
               <button type="button" aria-label="替换节点或切换模型协议" title="替换节点或切换模型协议"
                 :disabled="graph.editorLocked || graph.catalogLoading || !!graph.catalogError || !families.length" @click="changeProfile"><Settings2 :size="15" /></button>
             </section>
-            <GraphNodeConfiguration v-if="selectedType && graph.document" :node="selectedNode" :definition="selectedType" :document="graph.document" :catalog="graph.catalog" :disabled="graph.editorLocked" @change="graph.patchNode(selectedNode.node_binding_id, { config: $event })"
-              @policy-change="graph.patchNodeConfigurationPolicy(selectedNode.node_binding_id, $event)" />
+            <GraphNodeConfiguration v-if="selectedType && graph.document" :node="selectedNode" :definition="selectedType" :document="graph.document" :catalog="graph.catalog" :disabled="graph.editorLocked" @change="changeNodeConfig($event)"
+              @policy-change="changePolicy($event)" />
             <pre v-else>{{ json(selectedNode.config) }}</pre>
             <GraphVariableRegistration :node-id="selectedNode.node_binding_id" />
             <small class="graph-muted">{{ selectedType?.execution_class === 'non_working' ? '主动交互 · ' : '' }}{{ predecessors.length ? `等待 ${predecessors.length} 个前序节点` : '无前序等待' }}</small>
             <details class="graph-runtime-settings"><summary>运行设置</summary>
               <fieldset><legend>前序节点</legend><label v-for="node in graph.document?.nodes.filter(node => node.node_binding_id !== selectedNode?.node_binding_id)" :key="node.node_binding_id" class="graph-checkbox"><input type="checkbox" :checked="predecessors.includes(node.node_binding_id)" :disabled="graph.editorLocked" @change="predecessor(node.node_binding_id, $event)" />{{ displayTitle(node) }}</label></fieldset>
-              <fieldset v-if="selectedType"><legend>允许聊天端读取的结果</legend><label v-for="port in nodePorts(selectedType, selectedNode, 'outputs')" :key="port.port_id" class="graph-checkbox"><input type="checkbox" :checked="selectedNode.public_outputs?.includes(port.port_id)" :disabled="graph.editorLocked" @change="graph.patchNode(selectedNode.node_binding_id, { public_outputs: ($event.target as HTMLInputElement).checked ? [...(selectedNode.public_outputs ?? []), port.port_id] : (selectedNode.public_outputs ?? []).filter(p => p !== port.port_id) })" />{{ port.port_id }}</label></fieldset>
+              <fieldset v-if="selectedType"><legend>允许聊天端读取的结果</legend><label v-for="port in nodePorts(selectedType, selectedNode, 'outputs')" :key="port.port_id" class="graph-checkbox"><input type="checkbox" :checked="selectedNode.public_outputs?.includes(port.port_id)" :disabled="graph.editorLocked" @change="changePublicOutput(port.port_id, ($event.target as HTMLInputElement).checked)" />{{ port.port_id }}</label></fieldset>
             </details>
             <details><summary>技术详情</summary><label>节点 UUID<input :value="selectedNode.node_binding_id" readonly @focus="($event.target as HTMLInputElement).select()" /></label><code>{{ selectedNode.component_id }}@{{ selectedNode.component_version }}</code>
               <pre>{{ json(selectedNode.config) }}</pre><details v-if="selectedType?.object_accesses?.length"><summary>会话对象访问契约</summary><pre>{{ json(selectedType.object_accesses) }}</pre></details></details>
             <button v-if="graph.active?.diagnostics?.some(d => d.node_id === selectedNode?.node_binding_id && d.reason_code.includes('state'))" class="graph-reset-state" type="button" :disabled="graph.editorLocked" title="仅修改当前内存工作流；正式保存暂不可用" @click="graph.resetPrivateState(workspace.activeWorkflowId, selectedNode.node_binding_id)">重建该节点私有状态（仅内存）</button>
-            <section v-if="incoming.length"><h3>输入顺序</h3><div v-for="edge in incoming" :key="edge.edge_id" class="graph-incoming"><span>{{ edge.target_port_id }} · {{ titleForId(edge.source_node_id) }} / {{ edge.source_port_id }}</span><button type="button" title="上移" aria-label="上移输入" :disabled="graph.editorLocked" @click="graph.reorderEdge(edge.edge_id, -1)"><ArrowUp :size="13" /></button><button type="button" title="下移" aria-label="下移输入" :disabled="graph.editorLocked" @click="graph.reorderEdge(edge.edge_id, 1)"><ArrowDown :size="13" /></button></div></section>
+            <section v-if="incoming.length"><h3>输入顺序</h3><div v-for="edge in incoming" :key="edge.edge_id" class="graph-incoming"><span>{{ edge.target_port_id }} · {{ titleForId(edge.source_node_id) }} / {{ edge.source_port_id }}</span><button type="button" title="上移" aria-label="上移输入" :disabled="graph.editorLocked" @click="moveEdge(edge.edge_id, -1)"><ArrowUp :size="13" /></button><button type="button" title="下移" aria-label="下移输入" :disabled="graph.editorLocked" @click="moveEdge(edge.edge_id, 1)"><ArrowDown :size="13" /></button></div></section>
           </div>
           <div v-else-if="inspectorTab === 'information'" class="graph-inspector-content"><GraphInformation :session-id="graph.session?.workflow_session_id" :node-id="selectedNode.node_binding_id" initial-kind="information_binding" /></div>
           <div v-else class="graph-inspector-content"><span>{{ resultStatusLabel(selectedState?.status ?? 'idle') }}</span><GraphResult v-for="(value, port) in selectedState?.outputs ?? {}" :key="port" :value="value" :label="String(port)" /><p v-if="!Object.keys(selectedState?.outputs ?? {}).length" class="graph-muted">暂无结果</p><pre v-if="selectedState?.diagnostic" class="graph-warning">{{ json(selectedState.diagnostic) }}</pre></div>
@@ -302,8 +484,7 @@ watch(() => workspace.activeWorkflowId, () => { flow.value = null; connecting.va
         <div v-else class="graph-inspector-content">
           <section v-for="output in graph.session?.outputs ?? []" :key="output.output_id"><h3>{{ graph.session?.nodes.find(node => node.node_binding_id === output.node_binding_id)?.label ?? '历史节点' }} / {{ output.port_id }}</h3><GraphResult :value="output.payload" /></section>
           <p v-if="!graph.session?.outputs.length" class="graph-muted">暂无结果</p>
-          <button v-for="(diagnostic, index) in diagnostics" :key="index" class="graph-diagnostic" type="button" @click="locate(diagnostic.node_id)"><strong>{{ diagnostic.reason_code ?? diagnostic.code }}</strong><span>{{ diagnostic.message }}</span><span v-if="diagnosticRecovery(diagnostic)">{{ diagnosticRecovery(diagnostic) }}</span><small v-if="diagnostic.step">失败步骤：{{ diagnostic.step }}</small><small v-if="diagnostic.correlation_id">关联编号：{{ diagnostic.correlation_id }}</small></button>
-          <button v-if="graph.session?.available_actions?.includes('close')" type="button" class="graph-close-run" @click="graph.closeRun()"><X :size="14" />关闭本次运行</button>
+          <button v-for="(diagnostic, index) in diagnostics" :key="index" class="graph-diagnostic" type="button" @click="locate(diagnostic.node_id)"><strong>{{ diagnostic.reason_code ?? diagnostic.code }}</strong><span>{{ diagnostic.message }}</span><small v-if="diagnostic.phase">阶段：{{ diagnosticPhaseLabel(diagnostic.phase) }}</small><small v-if="diagnostic.path">路径：{{ diagnostic.path }}</small><small v-if="diagnostic.expected !== undefined || diagnostic.actual !== undefined">{{ diagnosticExpectation(diagnostic) }}</small><small v-if="diagnostic.object_key">对象键：{{ diagnostic.object_key }}</small><span v-if="diagnosticRecovery(diagnostic)">{{ diagnosticRecovery(diagnostic) }}</span><small v-if="diagnostic.step">失败步骤：{{ diagnostic.step }}</small><small v-if="diagnostic.correlation_id">关联编号：{{ diagnostic.correlation_id }}</small></button>
           <GraphSessionData />
         </div>
       </aside>
@@ -344,12 +525,12 @@ legend { font-size:11px; padding:0 3px; }
 .graph-node-profile strong { font-size:12px; font-weight:500; }
 .graph-node-profile span,.graph-node-profile code { font-size:11px; color:#aab9b3; overflow-wrap:anywhere; }
 .graph-warning { color:#e4a0a0; padding:7px 10px; font-size:11px; overflow-wrap:anywhere; }
-.graph-connection-message { position:absolute; bottom:8px; left:8px; z-index:10; max-width:calc(100% - 310px); pointer-events:none; padding:6px 10px; font-size:11px; color:#dbbf91; background:#303034; overflow-wrap:anywhere; }
+.graph-connection-message { position:absolute; bottom:8px; left:8px; z-index:10; max-width:calc(100% - 310px); display:flex; align-items:center; gap:6px; padding:6px 10px; font-size:11px; color:#dbbf91; background:#303034; overflow-wrap:anywhere; pointer-events:none; }
+.graph-connection-message button { flex:0 0 auto; min-width:20px; min-height:20px; color:#dbbf91; pointer-events:auto; }
 .graph-inspector-content > details { font-size:11px; min-width:0; }
 .graph-inspector-content summary { cursor:pointer; color:#b4bdb8; padding:5px 0; }
 .graph-runtime-settings[open] { display:grid; gap:8px; }
 .graph-muted { color:#9c9ca7; font-size:12px; }
 .graph-diagnostic { display:flex; flex-direction:column; align-items:flex-start; gap:5px; color:#e4a0a0; text-align:left; font-size:11px; }
 .graph-diagnostic span { overflow-wrap:anywhere; }
-.graph-close-run { display:flex; gap:5px; align-self:flex-start; font-size:11px; }
 </style>

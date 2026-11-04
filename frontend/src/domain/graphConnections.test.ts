@@ -24,6 +24,15 @@ describe("shared connection diagnostics", () => {
     catalog[0]!.port_modes = { other: { inputs: [], outputs: [] } };
     expect(graphConnectionIssue(document, catalog, edge)).toContain("模式");
   });
+  it("accepts only explicitly listed alternative type versions", () => {
+    const { document, edge, catalog } = fixture();
+    catalog[0]!.inputs[0]!.accepted_types = [{ data_type: "JSON", data_schema_version: 3 }];
+    catalog[0]!.outputs[0]!.data_type = "JSON";
+    catalog[0]!.outputs[0]!.data_schema_version = 3;
+    expect(graphConnectionIssue(document, catalog, edge)).toBeNull();
+    catalog[0]!.outputs[0]!.data_schema_version = 2;
+    expect(graphConnectionIssue(document, catalog, edge)).toContain("不兼容");
+  });
   it("checks effective dynamic ports, not the default port list", () => {
     const { document, edge, catalog } = fixture();
     catalog[0]!.port_modes = { active: { inputs: type.inputs, outputs: [] } };

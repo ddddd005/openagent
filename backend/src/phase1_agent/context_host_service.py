@@ -16,10 +16,27 @@ NATIVE_CONTEXT_SERVICE_DEFINITION = ServiceDefinition(NATIVE_CONTEXT_SERVICE_REF
     ServiceOperation("context:validate", "validate-context", _VALIDATE_SCHEMA,
                      object_schema({"validated": {"const": True}})),
 ))
+SUMMARY_CONTEXT_SERVICE_REF = ServiceReference("workflow.context", "4.0.0")
+_SUMMARY_VALIDATE_SCHEMA = object_schema({
+    **_VALIDATE_SCHEMA["properties"],
+    "summary": {"type": "object"}, "summary_ref": {"type": "object"},
+}, required=["operation", "view", "view_ref"])
+_SUMMARY_VALIDATE_SCHEMA["dependentRequired"] = {
+    **_VALIDATE_SCHEMA["dependentRequired"], "summary": ["summary_ref"], "summary_ref": ["summary"],
+}
+SUMMARY_CONTEXT_SERVICE_DEFINITION = ServiceDefinition(SUMMARY_CONTEXT_SERVICE_REF, (
+    ServiceOperation("context:validate", "validate-context", _SUMMARY_VALIDATE_SCHEMA,
+                     object_schema({"validated": {"const": True}})),
+))
 
 
 def native_service_requirement(capability, *operations):
     return {**NATIVE_CONTEXT_SERVICE_REF.to_dict(), "capability": capability, "operations": list(operations)}
+
+
+def summary_context_service_requirement():
+    return {**SUMMARY_CONTEXT_SERVICE_REF.to_dict(), "capability": "context:validate",
+            "operations": ["validate-context"]}
 
 
 class NativeContextHostService:
@@ -36,9 +53,19 @@ class NativeContextHostService:
                 "host_service_operation_denied", "Native context operation is not declared")
         from .context_v4 import validate_native_context_artifacts_v5
         view = payload["view"]
-        origin = self.environment.resolve_input(context, "view")
-        require(payload["view_ref"]["output_id"] == origin["output_id"] and origin["value"] == view,
-                "context_input_mismatch", "Native context must equal its exact accepted input", 409)
+        if "summary" in payload:
+            from .content_summary import validate_content_summary
+            summary = validate_content_summary(payload["summary"])
+            origin = self.environment.resolve_input(context, "summary")
+            require(origin["output_id"] == payload["summary_ref"]["output_id"]
+                    and origin["value"] == summary and summary.get("context") == view
+                    and summary.get("context_ref") == payload["view_ref"],
+                    "context_input_mismatch",
+                    "Native context must equal the original context in its exact accepted summary", 409)
+        else:
+            origin = self.environment.resolve_input(context, "view")
+            require(payload["view_ref"]["output_id"] == origin["output_id"] and origin["value"] == view,
+                    "context_input_mismatch", "Native context must equal its exact accepted input", 409)
         require(view["owner"]["workflow_session_id"] == context.workflow_session_id,
                 "context_owner_mismatch", "Native context belongs to another session", 403)
         if "context" in payload:

@@ -216,6 +216,15 @@ class WorkflowLifecycle:
                     "Unknown model request evidence must be retained", 409)
 
     def _manage(self, kind, identity, expected_revision, key, delete):
+        if kind != "definition":
+            return self._manage_locked(kind, identity, expected_revision, key, delete)
+        # Definition archive/delete coordinates with the same per-workflow
+        # modification entitlement as definition edits.  A real modification in
+        # flight rejects this management action immediately; it never queues.
+        with self._modification_gate(identity):
+            return self._manage_locked(kind, identity, expected_revision, key, delete)
+
+    def _manage_locked(self, kind, identity, expected_revision, key, delete):
         require(uuid_value(identity), "invalid_request", "Management target must be an exact identity")
         require(type(expected_revision) is int and expected_revision >= 1,
                 "invalid_request", "Management revision must be positive")
@@ -233,6 +242,9 @@ class WorkflowLifecycle:
             if kind == "definition":
                 document = self._document(repo, identity)
                 require(document["revision"] == expected_revision, "stale_revision", "Workflow changed", 409)
+                if not delete:
+                    require(not self._archived(repo, "definition", identity), "workflow_archived",
+                            "Archived workflows are read-only", 409)
                 sessions = repo.rows("workflow_session", workflow_definition_id=identity)
                 marker = self._management_workflows
                 workflow_id = identity
@@ -253,6 +265,18 @@ class WorkflowLifecycle:
             self._stop_owned_runs(sessions, key)
 
             def change(repo):
+                if kind == "definition":
+                    # The fast pre-check above ran outside the write transaction.
+                    # Re-read the durable definition and its state inside it so an
+                    # edit committed meanwhile (for example from another process
+                    # that only shares the SQLite transaction) cannot be archived
+                    # or deleted on a stale expected revision.
+                    durable = self._document(repo, identity)
+                    require(durable["revision"] == expected_revision, "stale_revision",
+                            "Workflow changed", 409)
+                    if not delete:
+                        require(not self._archived(repo, "definition", identity), "workflow_archived",
+                                "Archived workflows are read-only", 409)
                 if delete:
                     self._require_deletion_resolved(repo, sessions)
                 self._close_owned_runs(repo, sessions)

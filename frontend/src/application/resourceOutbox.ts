@@ -12,7 +12,7 @@ export interface ResourceOutboxPorts<T> {
 }
 export type RequestProgress = "ready" | "restored" | "evidence-writing" | "evidence-unknown"
   | "request-in-flight" | "result-unknown" | "business-confirmed" | "acceptance-failed"
-  | "closure-failed" | "completed" | "rejected" | "blocked";
+  | "closure-failed" | "completed" | "rejected" | "abandoned" | "blocked";
 export function createResourceOutbox<T>(ports: ResourceOutboxPorts<T>, valid: (value: unknown) => value is T,
   refresh: (request: T | null) => Promise<void>, label: string) {
   const pending = ref<T | null>(null);

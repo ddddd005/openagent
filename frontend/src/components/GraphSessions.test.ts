@@ -51,8 +51,7 @@ async function mount() {
   vi.stubGlobal("Document", class {}); vi.stubGlobal("ShadowRoot", class {});
   const pinia = createPinia(); instances.push(pinia); setActivePinia(pinia);
   const graph = useWorkflowGraphStore(pinia), workspace = useWorkspaceStore(pinia);
-  graph.setPersistenceGuard(() => true);
-  const id = graph.createWorkflow(), sid = crypto.randomUUID();
+  const id = await graph.createWorkflow(), sid = crypto.randomUUID();
   const view: GraphSession = { schema_version: 2, execution_model: "graph", workflow_session_id: sid,
     workflow_definition_id: id, definition_revision: 1, name: "Original", metadata_sequence: 0,
     revision: 5, data_revision: 0, head_revision: 2, status: "idle", can_submit: true,

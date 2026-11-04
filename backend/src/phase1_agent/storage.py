@@ -8,7 +8,7 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
-from .contract_errors import ContractValidationError
+from .contract_errors import ContractValidationError, DiagnosticError
 from .contract_json import canonical_bytes, loads_strict
 from .graph_records import GRAPH_VERSIONS, is_graph_record, require, validate_graph_transition
 
@@ -36,6 +36,12 @@ def _record_id(record_type: str, record: Mapping[str, Any]) -> str:
     fields = _fields(record_type)
     return (record[fields[0]] if len(fields) == 1 else
             canonical_bytes([record[field] for field in fields]).decode("utf-8"))
+
+
+def is_storage_busy(exc: BaseException) -> bool:
+    """True when SQLite refused an acquisition with a busy/locked result."""
+    return isinstance(exc, sqlite3.OperationalError) and any(
+        marker in str(exc).casefold() for marker in ("locked", "busy"))
 
 
 class SqliteStore:
@@ -110,6 +116,10 @@ class SqliteStore:
                 self._connection.close()
             if isinstance(exc, ContractValidationError):
                 raise
+            if is_storage_busy(exc):
+                raise DiagnosticError(
+                    "graph_storage_busy", "Storage is busy; the request was not processed",
+                    status=409, phase="storage") from exc
             raise ContractValidationError("SQLite storage initialization failed") from exc
 
     def close(self) -> None:

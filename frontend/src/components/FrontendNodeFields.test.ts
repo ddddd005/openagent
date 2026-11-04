@@ -75,7 +75,7 @@ async function fixture(version = "2") {
   graph.catalog = graphClone(sample.catalog);
   graph.packageLock = [{ package_id: "workflow.frontend", version: "1.0.0" }];
   graph.frontendExtensions = graphClone(workflowFrontendExtensions);
-  const id = graph.createWorkflow(), document = { ...sample.document, workflow_definition_id: id };
+  const id = await graph.createWorkflow(), document = { ...sample.document, workflow_definition_id: id };
   Object.assign(graph.entries[id]!, { document, saved_document: graphClone(document), saved_revision: 1 });
   const host = createWorkbenchFrontendHost(() => graph.frontendExtensions, () => graph.packageLock);
   const requests: GraphConfigurationUpdateRequest[] = [];

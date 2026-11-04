@@ -15,7 +15,7 @@ describe("minimum event workbench", () => {
     vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
     vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
     const pinia = createPinia(), graph = useWorkflowGraphStore(pinia);
-    const workflowId = graph.createWorkflow();
+    const workflowId = await graph.createWorkflow();
     await graph.reconcile(workflowId);
     const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
     try {

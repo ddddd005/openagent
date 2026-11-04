@@ -1,6 +1,14 @@
 import { graphObject } from "./workflowGraph";
 
 export interface ResultText { label: string; text: string }
+function messageTexts(messages: unknown): ResultText[] {
+  if (!Array.isArray(messages)) return [];
+  return messages.flatMap(message => {
+    if (!graphObject(message) || !Array.isArray(message.blocks)) return [];
+    return message.blocks.filter(block => graphObject(block) && block.kind === "text" && typeof block.text === "string")
+      .map(block => ({ label: typeof message.role === "string" ? message.role : "提示词", text: block.text as string }));
+  });
+}
 export function resultTexts(value: unknown): ResultText[] {
   if (Array.isArray(value)) return value.flatMap(resultTexts);
   if (!graphObject(value)) return [];
@@ -10,6 +18,12 @@ export function resultTexts(value: unknown): ResultText[] {
     && (value.schema_version === 1 || value.schema_version === 2 || value.schema_version === 3)
     && typeof value.content === "string")
     return [{ label: "回答", text: value.content }];
+  if (value.kind === "workflow.content-summary" && value.schema_version === 1)
+    return [...resultTexts(value.materials), ...resultTexts(value.context), ...resultTexts(value.current_input)];
+  if (value.kind === "workflow.context-view" && value.schema_version === 5)
+    return messageTexts(value.messages);
+  if (value.kind === "workflow.prompt" && value.schema_version === 6 && Array.isArray(value.messages))
+    return messageTexts(value.messages);
   if ((value.kind === "workflow.prompt" && value.schema_version === 2
     || value.kind === "workflow.prompt-materials" && value.schema_version === 1) && Array.isArray(value.items))
     return value.items.filter(item => graphObject(item) && typeof item.text === "string")

@@ -78,4 +78,12 @@ describe("node profile selection", () => {
     expect(missing).not.toContain('aria-label="节点契约"');
     expect(missing).toMatch(/type="submit"[^>]*disabled/);
   });
+  it("shows all accepted input types with the readable port name", async () => {
+    const summary = definition("prompts.summary", "3");
+    summary.inputs = [{ ...port("input", "PROMPT_MATERIALS", 1, false), multiple: true,
+      accepted_types: [{ data_type: "PROMPT", data_schema_version: 2 }] }];
+    const html = await render({ families: buildNodeFamilies([summary]), familyId: "prompts.summary" });
+    expect(html).toContain("提示词材料");
+    expect(html).toContain("PROMPT_MATERIALS@1 / PROMPT@2");
+  });
 });

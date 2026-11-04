@@ -1,0 +1,1418 @@
+{
+  "harness": "s4-00-application-layer-baseline",
+  "generated_at": "2026-11-04T23:15:07+0800",
+  "workdir": "C:\\Users\\Lament\\AppData\\Local\\Temp\\s4-01m3-945dc20d",
+  "argv": [
+    "tests\\measurement_harness.py",
+    "--workdir",
+    "C:\\Users\\Lament\\AppData\\Local\\Temp\\s4-01m3-945dc20d",
+    "--scenario",
+    "chain,chain-narrow,chain-history,evidence",
+    "--repeat",
+    "3",
+    "--json",
+    "tests\\measurement_results\\s4-01-evidence-narrow-2026-11-04.json"
+  ],
+  "repeat": 3,
+  "environment": {
+    "python": "3.12.8",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "machine": "AMD64",
+    "processor": "AMD64 Family 26 Model 68 Stepping 0, AuthenticAMD",
+    "code_snapshot_sha256_16": {
+      "backend/src/phase1_agent/graph_contracts.py": "ea867de7f4be0f6b",
+      "backend/src/phase1_agent/workflow_configuration.py": "02dc2a8e1004792f",
+      "backend/src/phase1_agent/configuration_data.py": "5b53a934d67a68e8",
+      "backend/src/phase1_agent/configuration_service.py": "39d5d4b6ceb1b41c",
+      "backend/src/phase1_agent/graph_store.py": "937b765912e6f92c",
+      "backend/src/phase1_agent/graph_service.py": "e1071366e56448bb",
+      "backend/src/phase1_agent/graph_application.py": "02df83de738c5b43",
+      "backend/src/phase1_agent/graph_application_contracts.py": "9111a4d905c542a7",
+      "backend/src/phase1_agent/request_evidence.py": "d5aafd89befb39c2",
+      "backend/src/phase1_agent/workflow_modification_gate.py": "ef1ce8b564526e2c",
+      "frontend/src/application/workflowConfiguration.ts": "bdeff3bd17d42660",
+      "frontend/src/stores/workflowGraph.ts": "c513cb984a796a17",
+      "backend/tests/measurement_harness.py": "d69f20af831ab9ed"
+    }
+  },
+  "limitations": [
+    "application layer only: no HTTP hop, no network RTT, no server scheduling",
+    "no real frontend wait or edit-lock window is measured",
+    "request/response bytes are canonical JSON bodies without HTTP headers",
+    "runs use in-process synthetic node executors; no package files, no tools, no model calls",
+    "unknown-result path is measured through the read-only receipt verification; no post-commit fault injection was used for a simulated lost response",
+    "history/q08 cases build their fixtures once per size and are not repeated for timing"
+  ],
+  "scenarios": {
+    "chain": {
+      "scenario": "chain-five-step-save",
+      "note": "five serial application calls of one initialized normal save; one additional request-evidence.read initializes the channel on its first use",
+      "rows": [
+        {
+          "node_count": 1,
+          "repeats": 3,
+          "document_bytes": 407,
+          "application_calls": 5,
+          "request_bytes": 1701,
+          "response_bytes": 6692,
+          "application_seconds": {
+            "min": 0.037063,
+            "median": 0.037504,
+            "max": 0.047038
+          },
+          "per_call_request_bytes": {
+            "command:request-evidence.write": 757,
+            "query:request-evidence.read": 89,
+            "command:definition.update": 568,
+            "command:request-evidence.resolve": 198
+          },
+          "per_call_response_bytes": {
+            "command:request-evidence.write": 1603,
+            "query:request-evidence.read": 920,
+            "command:definition.update": 1642,
+            "command:request-evidence.resolve": 1607
+          },
+          "outcome": {
+            "outcome": "saved",
+            "definition_revision": 1,
+            "edit_sequence": 1,
+            "workflow_definition_id": "8d63d92d-4f5d-4177-a9d9-d6f85c720598",
+            "changed_categories": [
+              "fixed"
+            ]
+          },
+          "history_scan_calls": 1,
+          "history_rows_validated": 0,
+          "replay_probe_calls": 1,
+          "replay_probe_seconds_median": 0.001008,
+          "validate_graph_document_calls": 6,
+          "validate_graph_document_seconds_median": 0.000757,
+          "declaration_reference_calls": 1,
+          "sample_calls": [
+            {
+              "call": "command:request-evidence.write",
+              "kind": "command",
+              "seconds": 0.011164,
+              "request_bytes": 757,
+              "response_bytes": 1603,
+              "outcome": {},
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.006034,
+              "request_bytes": 89,
+              "response_bytes": 920,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:definition.update",
+              "kind": "command",
+              "seconds": 0.015088,
+              "request_bytes": 568,
+              "response_bytes": 1642,
+              "outcome": {
+                "outcome": "saved",
+                "definition_revision": 1,
+                "edit_sequence": 1,
+                "workflow_definition_id": "8d63d92d-4f5d-4177-a9d9-d6f85c720598",
+                "changed_categories": [
+                  "fixed"
+                ]
+              },
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.005489,
+              "request_bytes": 89,
+              "response_bytes": 920,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.resolve",
+              "kind": "command",
+              "seconds": 0.009263,
+              "request_bytes": 198,
+              "response_bytes": 1607,
+              "outcome": {},
+              "error": null
+            }
+          ]
+        },
+        {
+          "node_count": 20,
+          "repeats": 3,
+          "document_bytes": 9135,
+          "application_calls": 5,
+          "request_bytes": 19157,
+          "response_bytes": 53296,
+          "application_seconds": {
+            "min": 0.057985,
+            "median": 0.0583,
+            "max": 0.05884
+          },
+          "per_call_request_bytes": {
+            "command:request-evidence.write": 9485,
+            "query:request-evidence.read": 89,
+            "command:definition.update": 9296,
+            "command:request-evidence.resolve": 198
+          },
+          "per_call_response_bytes": {
+            "command:request-evidence.write": 10331,
+            "query:request-evidence.read": 9648,
+            "command:definition.update": 13334,
+            "command:request-evidence.resolve": 10335
+          },
+          "outcome": {
+            "outcome": "saved",
+            "definition_revision": 1,
+            "edit_sequence": 1,
+            "workflow_definition_id": "a85fc2a8-4c29-4de0-8c5f-7e373f379ddd",
+            "changed_categories": [
+              "fixed"
+            ]
+          },
+          "history_scan_calls": 1,
+          "history_rows_validated": 0,
+          "replay_probe_calls": 1,
+          "replay_probe_seconds_median": 0.001144,
+          "validate_graph_document_calls": 6,
+          "validate_graph_document_seconds_median": 0.00475,
+          "declaration_reference_calls": 1,
+          "sample_calls": [
+            {
+              "call": "command:request-evidence.write",
+              "kind": "command",
+              "seconds": 0.012032,
+              "request_bytes": 9485,
+              "response_bytes": 10331,
+              "outcome": {},
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.005705,
+              "request_bytes": 89,
+              "response_bytes": 9648,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:definition.update",
+              "kind": "command",
+              "seconds": 0.025733,
+              "request_bytes": 9296,
+              "response_bytes": 13334,
+              "outcome": {
+                "outcome": "saved",
+                "definition_revision": 1,
+                "edit_sequence": 1,
+                "workflow_definition_id": "a85fc2a8-4c29-4de0-8c5f-7e373f379ddd",
+                "changed_categories": [
+                  "fixed"
+                ]
+              },
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.005516,
+              "request_bytes": 89,
+              "response_bytes": 9648,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.resolve",
+              "kind": "command",
+              "seconds": 0.009855,
+              "request_bytes": 198,
+              "response_bytes": 10335,
+              "outcome": {},
+              "error": null
+            }
+          ]
+        },
+        {
+          "node_count": 100,
+          "repeats": 3,
+          "document_bytes": 46010,
+          "application_calls": 5,
+          "request_bytes": 92907,
+          "response_bytes": 250151,
+          "application_seconds": {
+            "min": 0.131107,
+            "median": 0.138142,
+            "max": 0.15992
+          },
+          "per_call_request_bytes": {
+            "command:request-evidence.write": 46360,
+            "query:request-evidence.read": 89,
+            "command:definition.update": 46171,
+            "command:request-evidence.resolve": 198
+          },
+          "per_call_response_bytes": {
+            "command:request-evidence.write": 47206,
+            "query:request-evidence.read": 46523,
+            "command:definition.update": 62689,
+            "command:request-evidence.resolve": 47210
+          },
+          "outcome": {
+            "outcome": "saved",
+            "definition_revision": 1,
+            "edit_sequence": 1,
+            "workflow_definition_id": "1b47beb3-cd6b-4708-9e76-e63c0dcc4345",
+            "changed_categories": [
+              "fixed"
+            ]
+          },
+          "history_scan_calls": 1,
+          "history_rows_validated": 0,
+          "replay_probe_calls": 1,
+          "replay_probe_seconds_median": 0.001713,
+          "validate_graph_document_calls": 6,
+          "validate_graph_document_seconds_median": 0.02216,
+          "declaration_reference_calls": 1,
+          "sample_calls": [
+            {
+              "call": "command:request-evidence.write",
+              "kind": "command",
+              "seconds": 0.025382,
+              "request_bytes": 46360,
+              "response_bytes": 47206,
+              "outcome": {},
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.008459,
+              "request_bytes": 89,
+              "response_bytes": 46523,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:definition.update",
+              "kind": "command",
+              "seconds": 0.103685,
+              "request_bytes": 46171,
+              "response_bytes": 62689,
+              "outcome": {
+                "outcome": "saved",
+                "definition_revision": 1,
+                "edit_sequence": 1,
+                "workflow_definition_id": "1b47beb3-cd6b-4708-9e76-e63c0dcc4345",
+                "changed_categories": [
+                  "fixed"
+                ]
+              },
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.008751,
+              "request_bytes": 89,
+              "response_bytes": 46523,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.resolve",
+              "kind": "command",
+              "seconds": 0.013643,
+              "request_bytes": 198,
+              "response_bytes": 47210,
+              "outcome": {},
+              "error": null
+            }
+          ]
+        }
+      ],
+      "wall_seconds": 1.740111
+    },
+    "chain-narrow": {
+      "scenario": "chain-narrow-save",
+      "note": "S4-01 flow: one owner-scoped pending summary (no pending on the normal path), then write, point confirm, business, point confirm, resolve; compare with `chain` which reads the owner's full history",
+      "rows": [
+        {
+          "node_count": 1,
+          "repeats": 3,
+          "document_bytes": 407,
+          "application_calls": 6,
+          "request_bytes": 1978,
+          "response_bytes": 6782,
+          "application_seconds": {
+            "min": 0.037269,
+            "median": 0.039363,
+            "max": 0.039994
+          },
+          "per_call_request_bytes": {
+            "query:request-evidence.pending": 99,
+            "command:request-evidence.write": 757,
+            "query:request-evidence.read": 178,
+            "command:definition.update": 568,
+            "command:request-evidence.resolve": 198
+          },
+          "per_call_response_bytes": {
+            "query:request-evidence.pending": 90,
+            "command:request-evidence.write": 1603,
+            "query:request-evidence.read": 920,
+            "command:definition.update": 1642,
+            "command:request-evidence.resolve": 1607
+          },
+          "outcome": {
+            "outcome": "saved",
+            "definition_revision": 1,
+            "edit_sequence": 1,
+            "workflow_definition_id": "d9e2563d-33fa-44b2-aa29-3f89deb33a2d",
+            "changed_categories": [
+              "fixed"
+            ]
+          },
+          "sample_calls": [
+            {
+              "call": "query:request-evidence.pending",
+              "kind": "query",
+              "seconds": 0.001637,
+              "request_bytes": 99,
+              "response_bytes": 90,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.write",
+              "kind": "command",
+              "seconds": 0.008563,
+              "request_bytes": 757,
+              "response_bytes": 1603,
+              "outcome": {},
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.004782,
+              "request_bytes": 178,
+              "response_bytes": 920,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:definition.update",
+              "kind": "command",
+              "seconds": 0.010908,
+              "request_bytes": 568,
+              "response_bytes": 1642,
+              "outcome": {
+                "outcome": "saved",
+                "definition_revision": 1,
+                "edit_sequence": 1,
+                "workflow_definition_id": "d9e2563d-33fa-44b2-aa29-3f89deb33a2d",
+                "changed_categories": [
+                  "fixed"
+                ]
+              },
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.005562,
+              "request_bytes": 178,
+              "response_bytes": 920,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.resolve",
+              "kind": "command",
+              "seconds": 0.007911,
+              "request_bytes": 198,
+              "response_bytes": 1607,
+              "outcome": {},
+              "error": null
+            }
+          ]
+        },
+        {
+          "node_count": 20,
+          "repeats": 3,
+          "document_bytes": 9135,
+          "application_calls": 6,
+          "request_bytes": 19434,
+          "response_bytes": 53386,
+          "application_seconds": {
+            "min": 0.057362,
+            "median": 0.058101,
+            "max": 0.058437
+          },
+          "per_call_request_bytes": {
+            "query:request-evidence.pending": 99,
+            "command:request-evidence.write": 9485,
+            "query:request-evidence.read": 178,
+            "command:definition.update": 9296,
+            "command:request-evidence.resolve": 198
+          },
+          "per_call_response_bytes": {
+            "query:request-evidence.pending": 90,
+            "command:request-evidence.write": 10331,
+            "query:request-evidence.read": 9648,
+            "command:definition.update": 13334,
+            "command:request-evidence.resolve": 10335
+          },
+          "outcome": {
+            "outcome": "saved",
+            "definition_revision": 1,
+            "edit_sequence": 1,
+            "workflow_definition_id": "3bcec8c0-f762-4c17-9afb-1ae4559615e9",
+            "changed_categories": [
+              "fixed"
+            ]
+          },
+          "sample_calls": [
+            {
+              "call": "query:request-evidence.pending",
+              "kind": "query",
+              "seconds": 0.001357,
+              "request_bytes": 99,
+              "response_bytes": 90,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.write",
+              "kind": "command",
+              "seconds": 0.011132,
+              "request_bytes": 9485,
+              "response_bytes": 10331,
+              "outcome": {},
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.00538,
+              "request_bytes": 178,
+              "response_bytes": 9648,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:definition.update",
+              "kind": "command",
+              "seconds": 0.025579,
+              "request_bytes": 9296,
+              "response_bytes": 13334,
+              "outcome": {
+                "outcome": "saved",
+                "definition_revision": 1,
+                "edit_sequence": 1,
+                "workflow_definition_id": "3bcec8c0-f762-4c17-9afb-1ae4559615e9",
+                "changed_categories": [
+                  "fixed"
+                ]
+              },
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.005826,
+              "request_bytes": 178,
+              "response_bytes": 9648,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.resolve",
+              "kind": "command",
+              "seconds": 0.009163,
+              "request_bytes": 198,
+              "response_bytes": 10335,
+              "outcome": {},
+              "error": null
+            }
+          ]
+        },
+        {
+          "node_count": 100,
+          "repeats": 3,
+          "document_bytes": 46010,
+          "application_calls": 6,
+          "request_bytes": 93184,
+          "response_bytes": 250241,
+          "application_seconds": {
+            "min": 0.141091,
+            "median": 0.17217,
+            "max": 0.176647
+          },
+          "per_call_request_bytes": {
+            "query:request-evidence.pending": 99,
+            "command:request-evidence.write": 46360,
+            "query:request-evidence.read": 178,
+            "command:definition.update": 46171,
+            "command:request-evidence.resolve": 198
+          },
+          "per_call_response_bytes": {
+            "query:request-evidence.pending": 90,
+            "command:request-evidence.write": 47206,
+            "query:request-evidence.read": 46523,
+            "command:definition.update": 62689,
+            "command:request-evidence.resolve": 47210
+          },
+          "outcome": {
+            "outcome": "saved",
+            "definition_revision": 1,
+            "edit_sequence": 1,
+            "workflow_definition_id": "a5510e7c-58f1-44c0-8abf-138a041d0d9c",
+            "changed_categories": [
+              "fixed"
+            ]
+          },
+          "sample_calls": [
+            {
+              "call": "query:request-evidence.pending",
+              "kind": "query",
+              "seconds": 0.001194,
+              "request_bytes": 99,
+              "response_bytes": 90,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.write",
+              "kind": "command",
+              "seconds": 0.023336,
+              "request_bytes": 46360,
+              "response_bytes": 47206,
+              "outcome": {},
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.008379,
+              "request_bytes": 178,
+              "response_bytes": 46523,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:definition.update",
+              "kind": "command",
+              "seconds": 0.083626,
+              "request_bytes": 46171,
+              "response_bytes": 62689,
+              "outcome": {
+                "outcome": "saved",
+                "definition_revision": 1,
+                "edit_sequence": 1,
+                "workflow_definition_id": "a5510e7c-58f1-44c0-8abf-138a041d0d9c",
+                "changed_categories": [
+                  "fixed"
+                ]
+              },
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.009826,
+              "request_bytes": 178,
+              "response_bytes": 46523,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.resolve",
+              "kind": "command",
+              "seconds": 0.01473,
+              "request_bytes": 198,
+              "response_bytes": 47210,
+              "outcome": {},
+              "error": null
+            }
+          ]
+        }
+      ],
+      "wall_seconds": 1.098439
+    },
+    "chain-history": {
+      "scenario": "chain-history-before-after",
+      "note": "the owner already holds 100 verified evidence rows of the same document size; baseline = full owner read for init + both confirms, narrow = one owner pending summary + two point reads",
+      "rows": [
+        {
+          "node_count": 1,
+          "history_rows": 100,
+          "mode": "baseline",
+          "repeats": 3,
+          "application_calls": 6,
+          "request_bytes": 1826,
+          "response_bytes": 272559,
+          "application_seconds": {
+            "min": 0.070963,
+            "median": 0.071081,
+            "max": 0.073199
+          },
+          "outcome": {
+            "outcome": "unchanged",
+            "definition_revision": 1,
+            "edit_sequence": 1,
+            "workflow_definition_id": "4f5cc470-1cba-483d-954b-ce9d83383a65",
+            "changed_categories": []
+          },
+          "sample_calls": [
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.015197,
+              "request_bytes": 89,
+              "response_bytes": 88601,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.write",
+              "kind": "command",
+              "seconds": 0.009241,
+              "request_bytes": 775,
+              "response_bytes": 1621,
+              "outcome": {},
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.013598,
+              "request_bytes": 89,
+              "response_bytes": 89538,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:definition.update",
+              "kind": "command",
+              "seconds": 0.011581,
+              "request_bytes": 586,
+              "response_bytes": 1636,
+              "outcome": {
+                "outcome": "unchanged",
+                "definition_revision": 1,
+                "edit_sequence": 1,
+                "workflow_definition_id": "4f5cc470-1cba-483d-954b-ce9d83383a65",
+                "changed_categories": []
+              },
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.015036,
+              "request_bytes": 89,
+              "response_bytes": 89538,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.resolve",
+              "kind": "command",
+              "seconds": 0.008547,
+              "request_bytes": 198,
+              "response_bytes": 1625,
+              "outcome": {},
+              "error": null
+            }
+          ]
+        },
+        {
+          "node_count": 1,
+          "history_rows": 100,
+          "mode": "narrow",
+          "repeats": 3,
+          "application_calls": 6,
+          "request_bytes": 2014,
+          "response_bytes": 6848,
+          "application_seconds": {
+            "min": 0.03662,
+            "median": 0.037752,
+            "max": 0.039993
+          },
+          "outcome": {
+            "outcome": "unchanged",
+            "definition_revision": 1,
+            "edit_sequence": 1,
+            "workflow_definition_id": "c3594478-587b-4834-b40f-bd9cf1d6fceb",
+            "changed_categories": []
+          },
+          "sample_calls": [
+            {
+              "call": "query:request-evidence.pending",
+              "kind": "query",
+              "seconds": 0.001411,
+              "request_bytes": 99,
+              "response_bytes": 90,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.write",
+              "kind": "command",
+              "seconds": 0.007624,
+              "request_bytes": 775,
+              "response_bytes": 1621,
+              "outcome": {},
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.00442,
+              "request_bytes": 178,
+              "response_bytes": 938,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:definition.update",
+              "kind": "command",
+              "seconds": 0.010239,
+              "request_bytes": 586,
+              "response_bytes": 1636,
+              "outcome": {
+                "outcome": "unchanged",
+                "definition_revision": 1,
+                "edit_sequence": 1,
+                "workflow_definition_id": "c3594478-587b-4834-b40f-bd9cf1d6fceb",
+                "changed_categories": []
+              },
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.005433,
+              "request_bytes": 178,
+              "response_bytes": 938,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.resolve",
+              "kind": "command",
+              "seconds": 0.008625,
+              "request_bytes": 198,
+              "response_bytes": 1625,
+              "outcome": {},
+              "error": null
+            }
+          ]
+        },
+        {
+          "node_count": 20,
+          "history_rows": 100,
+          "mode": "baseline",
+          "repeats": 3,
+          "application_calls": 6,
+          "request_bytes": 19282,
+          "response_bytes": 2937563,
+          "application_seconds": {
+            "min": 0.329574,
+            "median": 0.360617,
+            "max": 0.362029
+          },
+          "outcome": {
+            "outcome": "unchanged",
+            "definition_revision": 1,
+            "edit_sequence": 1,
+            "workflow_definition_id": "a2b9196a-a7fd-415a-b19b-b115dcddf86d",
+            "changed_categories": []
+          },
+          "sample_calls": [
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.100361,
+              "request_bytes": 89,
+              "response_bytes": 961401,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.write",
+              "kind": "command",
+              "seconds": 0.013859,
+              "request_bytes": 9503,
+              "response_bytes": 10349,
+              "outcome": {},
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.099416,
+              "request_bytes": 89,
+              "response_bytes": 971066,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:definition.update",
+              "kind": "command",
+              "seconds": 0.028748,
+              "request_bytes": 9314,
+              "response_bytes": 13328,
+              "outcome": {
+                "outcome": "unchanged",
+                "definition_revision": 1,
+                "edit_sequence": 1,
+                "workflow_definition_id": "a2b9196a-a7fd-415a-b19b-b115dcddf86d",
+                "changed_categories": []
+              },
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.106147,
+              "request_bytes": 89,
+              "response_bytes": 971066,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.resolve",
+              "kind": "command",
+              "seconds": 0.012085,
+              "request_bytes": 198,
+              "response_bytes": 10353,
+              "outcome": {},
+              "error": null
+            }
+          ]
+        },
+        {
+          "node_count": 20,
+          "history_rows": 100,
+          "mode": "narrow",
+          "repeats": 3,
+          "application_calls": 6,
+          "request_bytes": 19470,
+          "response_bytes": 53452,
+          "application_seconds": {
+            "min": 0.065327,
+            "median": 0.06557,
+            "max": 0.065967
+          },
+          "outcome": {
+            "outcome": "unchanged",
+            "definition_revision": 1,
+            "edit_sequence": 1,
+            "workflow_definition_id": "2b5f1f59-29e0-4b1a-86d7-2a10d686c859",
+            "changed_categories": []
+          },
+          "sample_calls": [
+            {
+              "call": "query:request-evidence.pending",
+              "kind": "query",
+              "seconds": 0.001551,
+              "request_bytes": 99,
+              "response_bytes": 90,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.write",
+              "kind": "command",
+              "seconds": 0.011428,
+              "request_bytes": 9503,
+              "response_bytes": 10349,
+              "outcome": {},
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.005085,
+              "request_bytes": 178,
+              "response_bytes": 9666,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:definition.update",
+              "kind": "command",
+              "seconds": 0.027266,
+              "request_bytes": 9314,
+              "response_bytes": 13328,
+              "outcome": {
+                "outcome": "unchanged",
+                "definition_revision": 1,
+                "edit_sequence": 1,
+                "workflow_definition_id": "2b5f1f59-29e0-4b1a-86d7-2a10d686c859",
+                "changed_categories": []
+              },
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.006395,
+              "request_bytes": 178,
+              "response_bytes": 9666,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.resolve",
+              "kind": "command",
+              "seconds": 0.013845,
+              "request_bytes": 198,
+              "response_bytes": 10353,
+              "outcome": {},
+              "error": null
+            }
+          ]
+        },
+        {
+          "node_count": 100,
+          "history_rows": 100,
+          "mode": "baseline",
+          "repeats": 3,
+          "application_calls": 6,
+          "request_bytes": 93032,
+          "response_bytes": 14196918,
+          "application_seconds": {
+            "min": 1.304816,
+            "median": 1.324666,
+            "max": 1.436757
+          },
+          "outcome": {
+            "outcome": "unchanged",
+            "definition_revision": 1,
+            "edit_sequence": 1,
+            "workflow_definition_id": "8a38c8ba-dfcf-481e-83ed-a3ed0345ba20",
+            "changed_categories": []
+          },
+          "sample_calls": [
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.480404,
+              "request_bytes": 89,
+              "response_bytes": 4648901,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.write",
+              "kind": "command",
+              "seconds": 0.025506,
+              "request_bytes": 46378,
+              "response_bytes": 47224,
+              "outcome": {},
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.419377,
+              "request_bytes": 89,
+              "response_bytes": 4695441,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:definition.update",
+              "kind": "command",
+              "seconds": 0.07931,
+              "request_bytes": 46189,
+              "response_bytes": 62683,
+              "outcome": {
+                "outcome": "unchanged",
+                "definition_revision": 1,
+                "edit_sequence": 1,
+                "workflow_definition_id": "8a38c8ba-dfcf-481e-83ed-a3ed0345ba20",
+                "changed_categories": []
+              },
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.416293,
+              "request_bytes": 89,
+              "response_bytes": 4695441,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.resolve",
+              "kind": "command",
+              "seconds": 0.015867,
+              "request_bytes": 198,
+              "response_bytes": 47228,
+              "outcome": {},
+              "error": null
+            }
+          ]
+        },
+        {
+          "node_count": 100,
+          "history_rows": 100,
+          "mode": "narrow",
+          "repeats": 3,
+          "application_calls": 6,
+          "request_bytes": 93220,
+          "response_bytes": 250307,
+          "application_seconds": {
+            "min": 0.140406,
+            "median": 0.158387,
+            "max": 0.175027
+          },
+          "outcome": {
+            "outcome": "unchanged",
+            "definition_revision": 1,
+            "edit_sequence": 1,
+            "workflow_definition_id": "618b4971-236b-4c61-9dc3-aa84fb14aca5",
+            "changed_categories": []
+          },
+          "sample_calls": [
+            {
+              "call": "query:request-evidence.pending",
+              "kind": "query",
+              "seconds": 0.001096,
+              "request_bytes": 99,
+              "response_bytes": 90,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.write",
+              "kind": "command",
+              "seconds": 0.023651,
+              "request_bytes": 46378,
+              "response_bytes": 47224,
+              "outcome": {},
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.008061,
+              "request_bytes": 178,
+              "response_bytes": 46541,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:definition.update",
+              "kind": "command",
+              "seconds": 0.083493,
+              "request_bytes": 46189,
+              "response_bytes": 62683,
+              "outcome": {
+                "outcome": "unchanged",
+                "definition_revision": 1,
+                "edit_sequence": 1,
+                "workflow_definition_id": "618b4971-236b-4c61-9dc3-aa84fb14aca5",
+                "changed_categories": []
+              },
+              "error": null
+            },
+            {
+              "call": "query:request-evidence.read",
+              "kind": "query",
+              "seconds": 0.008612,
+              "request_bytes": 178,
+              "response_bytes": 46541,
+              "outcome": null,
+              "error": null
+            },
+            {
+              "call": "command:request-evidence.resolve",
+              "kind": "command",
+              "seconds": 0.015494,
+              "request_bytes": 198,
+              "response_bytes": 47228,
+              "outcome": {},
+              "error": null
+            }
+          ]
+        }
+      ],
+      "wall_seconds": 10.218312
+    },
+    "evidence": {
+      "scenario": "evidence-owner-history",
+      "note": "owner evidence rows are verified historical rows plus at most one pending row; `full_owner_read` is the pre-S4-01 read and `narrow_reads` are the S4-01 owner summary / point / pending reads on the same data",
+      "rows": [
+        {
+          "history_rows": 0,
+          "pending_rows": 0,
+          "stored_rows": 0,
+          "pending_page_seconds": 0.001062,
+          "pending_page_bytes": 90,
+          "full_owner_read": {
+            "seconds": 0.00506,
+            "response_bytes": 2,
+            "rows": 0,
+            "rows_bytes": 0,
+            "error": null
+          },
+          "narrow_sql": {
+            "sql_point_seconds": 0.000298,
+            "sql_point_rows": 0,
+            "sql_pending_seconds": 6.7e-05,
+            "sql_pending_rows": 0
+          },
+          "narrow_reads": {
+            "owner_pending_page_seconds": 0.001129,
+            "owner_pending_page_bytes": 90,
+            "owner_pending_page_items": 0,
+            "point_read_seconds": 0.00463,
+            "point_read_bytes": 2,
+            "point_read_rows": 0,
+            "pending_narrow_seconds": 0.004508,
+            "pending_narrow_bytes": 2,
+            "pending_narrow_rows": 0,
+            "errors": []
+          }
+        },
+        {
+          "history_rows": 0,
+          "pending_rows": 1,
+          "stored_rows": 1,
+          "pending_page_seconds": 0.001328,
+          "pending_page_bytes": 375,
+          "full_owner_read": {
+            "seconds": 0.005348,
+            "response_bytes": 938,
+            "rows": 1,
+            "rows_bytes": 936,
+            "error": null
+          },
+          "narrow_sql": {
+            "sql_point_seconds": 0.000397,
+            "sql_point_rows": 1,
+            "sql_pending_seconds": 9.7e-05,
+            "sql_pending_rows": 1
+          },
+          "narrow_reads": {
+            "owner_pending_page_seconds": 0.001234,
+            "owner_pending_page_bytes": 375,
+            "owner_pending_page_items": 1,
+            "point_read_seconds": 0.004935,
+            "point_read_bytes": 938,
+            "point_read_rows": 1,
+            "pending_narrow_seconds": 0.004899,
+            "pending_narrow_bytes": 938,
+            "pending_narrow_rows": 1,
+            "errors": []
+          }
+        },
+        {
+          "history_rows": 50,
+          "pending_rows": 0,
+          "stored_rows": 50,
+          "pending_page_seconds": 0.001725,
+          "pending_page_bytes": 90,
+          "full_owner_read": {
+            "seconds": 0.014324,
+            "response_bytes": 44301,
+            "rows": 50,
+            "rows_bytes": 44250,
+            "error": null
+          },
+          "narrow_sql": {
+            "sql_point_seconds": 0.000479,
+            "sql_point_rows": 0,
+            "sql_pending_seconds": 9.7e-05,
+            "sql_pending_rows": 0
+          },
+          "narrow_reads": {
+            "owner_pending_page_seconds": 0.00131,
+            "owner_pending_page_bytes": 90,
+            "owner_pending_page_items": 0,
+            "point_read_seconds": 0.004695,
+            "point_read_bytes": 2,
+            "point_read_rows": 0,
+            "pending_narrow_seconds": 0.004426,
+            "pending_narrow_bytes": 2,
+            "pending_narrow_rows": 0,
+            "errors": []
+          }
+        },
+        {
+          "history_rows": 50,
+          "pending_rows": 1,
+          "stored_rows": 51,
+          "pending_page_seconds": 0.001259,
+          "pending_page_bytes": 375,
+          "full_owner_read": {
+            "seconds": 0.009289,
+            "response_bytes": 45238,
+            "rows": 51,
+            "rows_bytes": 45186,
+            "error": null
+          },
+          "narrow_sql": {
+            "sql_point_seconds": 0.000429,
+            "sql_point_rows": 1,
+            "sql_pending_seconds": 0.000113,
+            "sql_pending_rows": 1
+          },
+          "narrow_reads": {
+            "owner_pending_page_seconds": 0.001265,
+            "owner_pending_page_bytes": 375,
+            "owner_pending_page_items": 1,
+            "point_read_seconds": 0.004951,
+            "point_read_bytes": 938,
+            "point_read_rows": 1,
+            "pending_narrow_seconds": 0.005068,
+            "pending_narrow_bytes": 938,
+            "pending_narrow_rows": 1,
+            "errors": []
+          }
+        },
+        {
+          "history_rows": 200,
+          "pending_rows": 0,
+          "stored_rows": 200,
+          "pending_page_seconds": 0.001214,
+          "pending_page_bytes": 90,
+          "full_owner_read": {
+            "seconds": 0.022863,
+            "response_bytes": 177201,
+            "rows": 200,
+            "rows_bytes": 177000,
+            "error": null
+          },
+          "narrow_sql": {
+            "sql_point_seconds": 0.000417,
+            "sql_point_rows": 0,
+            "sql_pending_seconds": 7.4e-05,
+            "sql_pending_rows": 0
+          },
+          "narrow_reads": {
+            "owner_pending_page_seconds": 0.000946,
+            "owner_pending_page_bytes": 90,
+            "owner_pending_page_items": 0,
+            "point_read_seconds": 0.004489,
+            "point_read_bytes": 2,
+            "point_read_rows": 0,
+            "pending_narrow_seconds": 0.004274,
+            "pending_narrow_bytes": 2,
+            "pending_narrow_rows": 0,
+            "errors": []
+          }
+        },
+        {
+          "history_rows": 200,
+          "pending_rows": 1,
+          "stored_rows": 201,
+          "pending_page_seconds": 0.00166,
+          "pending_page_bytes": 375,
+          "full_owner_read": {
+            "seconds": 0.022449,
+            "response_bytes": 178138,
+            "rows": 201,
+            "rows_bytes": 177936,
+            "error": null
+          },
+          "narrow_sql": {
+            "sql_point_seconds": 0.000507,
+            "sql_point_rows": 1,
+            "sql_pending_seconds": 0.00017,
+            "sql_pending_rows": 1
+          },
+          "narrow_reads": {
+            "owner_pending_page_seconds": 0.001173,
+            "owner_pending_page_bytes": 375,
+            "owner_pending_page_items": 1,
+            "point_read_seconds": 0.004701,
+            "point_read_bytes": 938,
+            "point_read_rows": 1,
+            "pending_narrow_seconds": 0.00447,
+            "pending_narrow_bytes": 938,
+            "pending_narrow_rows": 1,
+            "errors": []
+          }
+        },
+        {
+          "history_rows": 600,
+          "pending_rows": 0,
+          "stored_rows": 600,
+          "pending_page_seconds": 0.001412,
+          "pending_page_bytes": 90,
+          "full_owner_read": {
+            "seconds": 0.058657,
+            "response_bytes": 531601,
+            "rows": 600,
+            "rows_bytes": 531000,
+            "error": null
+          },
+          "narrow_sql": {
+            "sql_point_seconds": 0.000376,
+            "sql_point_rows": 0,
+            "sql_pending_seconds": 6.8e-05,
+            "sql_pending_rows": 0
+          },
+          "narrow_reads": {
+            "owner_pending_page_seconds": 0.001094,
+            "owner_pending_page_bytes": 90,
+            "owner_pending_page_items": 0,
+            "point_read_seconds": 0.004507,
+            "point_read_bytes": 2,
+            "point_read_rows": 0,
+            "pending_narrow_seconds": 0.004402,
+            "pending_narrow_bytes": 2,
+            "pending_narrow_rows": 0,
+            "errors": []
+          }
+        },
+        {
+          "history_rows": 600,
+          "pending_rows": 1,
+          "stored_rows": 601,
+          "pending_page_seconds": 0.001096,
+          "pending_page_bytes": 375,
+          "full_owner_read": {
+            "seconds": 0.060191,
+            "response_bytes": 532538,
+            "rows": 601,
+            "rows_bytes": 531936,
+            "error": null
+          },
+          "narrow_sql": {
+            "sql_point_seconds": 0.000482,
+            "sql_point_rows": 1,
+            "sql_pending_seconds": 0.000175,
+            "sql_pending_rows": 1
+          },
+          "narrow_reads": {
+            "owner_pending_page_seconds": 0.001434,
+            "owner_pending_page_bytes": 375,
+            "owner_pending_page_items": 1,
+            "point_read_seconds": 0.004773,
+            "point_read_bytes": 938,
+            "point_read_rows": 1,
+            "pending_narrow_seconds": 0.004467,
+            "pending_narrow_bytes": 938,
+            "pending_narrow_rows": 1,
+            "errors": []
+          }
+        }
+      ],
+      "wall_seconds": 0.860196
+    }
+  }
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultGraphConfigurationPolicy, graphClone, graphNodeAllowsAdjustable, graphSignature,
-  isGraphCatalog, isGraphDocument, isGraphSession, newGraph, nodePorts, type GraphNodeType } from "./workflowGraph";
+  graphDanglingEdgeIssues, isGraphCatalog, isGraphDocument, isGraphSession, newGraph, nodePorts, type GraphNodeType } from "./workflowGraph";
 import { editableInputType } from "../testUtils/editableInputFixture";
 
 export const textType: GraphNodeType = { component_id: "workflow.text", component_version: "1", display_name: "文本",
@@ -109,5 +109,26 @@ describe("versioned workflow graph boundary", () => {
     expect(isGraphSession(view)).toBe(true);
     view.status = "archive_failed"; expect(isGraphSession(view)).toBe(true);
     view.nodes[0].budget.attempts = -1; expect(isGraphSession(view)).toBe(false);
+  });
+  it("localizes dangling data-edge endpoints with edge, node and JSON Pointer", () => {
+    const document = newGraph("Dangling");
+    const node = { node_binding_id: crypto.randomUUID(), component_id: "workflow.text",
+      component_version: "1", title: "Text", config: { text: "" }, position: { x: 0, y: 0 } };
+    document.nodes = [node];
+    const missing = crypto.randomUUID();
+    const edge = { edge_id: crypto.randomUUID(), source_node_id: missing, source_port_id: "output",
+      target_node_id: node.node_binding_id, target_port_id: "input", order: 0 };
+    document.edges = [edge];
+    expect(graphDanglingEdgeIssues(document)).toEqual([
+      { reason_code: "graph_dangling_edge", message: `数据边 ${edge.edge_id} 的 source_node_id 指向不存在的节点 ${missing}`,
+        edge_id: edge.edge_id, node_id: missing, field: "source_node_id", path: "/edges/0/source_node_id" },
+    ]);
+    document.edges[0]!.source_node_id = node.node_binding_id;
+    document.edges[0]!.target_node_id = missing;
+    expect(graphDanglingEdgeIssues(document)).toEqual([
+      expect.objectContaining({ field: "target_node_id", path: "/edges/0/target_node_id" }),
+    ]);
+    document.edges = [];
+    expect(graphDanglingEdgeIssues(document)).toEqual([]);
   });
 });

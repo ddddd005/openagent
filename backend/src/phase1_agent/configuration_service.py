@@ -26,12 +26,19 @@ class WorkflowConfigurationService:
                    "expected_edit_sequence": expected_edit_sequence, "document": document}
         if confirm_derivation is not None:
             request["confirm_derivation"] = confirm_derivation
-        return service._configuration_change(
-            "graph.definition.update", idempotency_key, request,
-            lambda data: service._save_configuration_update(
-                data, document, workflow_definition_id=workflow_definition_id,
-                expected_edit_sequence=expected_edit_sequence,
-                confirm_derivation=confirm_derivation))
+        # An exact accepted replay is a read of the original result, not a second
+        # real modification: return it before the entitlement is requested.
+        replayed = service._replayed_configuration(
+            "graph.definition.update", idempotency_key, request)
+        if replayed is not None:
+            return replayed
+        with service._modification_gate(workflow_definition_id):
+            return service._configuration_change(
+                "graph.definition.update", idempotency_key, request,
+                lambda data: service._save_configuration_update(
+                    data, document, workflow_definition_id=workflow_definition_id,
+                    expected_edit_sequence=expected_edit_sequence,
+                    confirm_derivation=confirm_derivation))
 
     def patch_exact_configuration(self, data, *, workflow_definition_id, node_binding_id,
                                   component_id, component_version, changes,

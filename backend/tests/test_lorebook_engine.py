@@ -11,7 +11,8 @@ from phase1_agent.context_prompt_v6 import assemble_native_context_prompt
 from phase1_agent.context_v4 import read_native_context_v5
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.lorebook_engine import (
-    default_lorebook_entry, evaluate_lorebook, validate_lorebook_entries, validate_lorebook_entry,
+    default_lorebook_entry, evaluate_lorebook, evaluate_lorebook_content,
+    validate_lorebook_entries, validate_lorebook_entry,
 )
 from phase1_agent.prompt_lifecycle import (
     lifecycle_prompt_content, make_lifecycle_prompt_item, merge_lifecycle_prompt_materials,
@@ -78,6 +79,101 @@ def history_layout(*rounds):
 def variable(name, value, *, value_type="string", assigned=True):
     return {"registered": True, "name": name, "value_type": value_type,
             "assigned": assigned, "value": value if assigned else None}
+
+
+def test_content_inputs_are_read_only_and_text_is_not_depth_limited():
+    text = text_content("seed")
+    original = deepcopy(text)
+    result = evaluate_lorebook_content([entry(scan_depth=0)], [], [text], node_id=uid(700))
+    assert text == original
+    assert [item["text"] for item in result["materials"]["items"]] == ["body-1"]
+
+
+def test_content_materials_scan_ordinary_and_lorebook_origins_by_rule():
+    ordinary = merge_lifecycle_prompt_materials([lifecycle_prompt_content([material(21, "seed")])])
+    lore = merge_lifecycle_prompt_materials([lifecycle_prompt_content([material(22, "seed", lorebook=True)])])
+    sources = [ordinary, lore]
+    original = deepcopy(sources)
+    result = evaluate_lorebook_content(
+        [entry(), entry(2, recursive=True)], sources, [], node_id=uid(700))
+    assert activated(result) == {uid(1): 0, uid(2): 0}
+    assert sources == original
+    assert {item["text"] for item in result["materials"]["items"]} == {"body-1", "body-2"}
+    lore_only = evaluate_lorebook_content([entry(), entry(2, recursive=True)], [lore], [], node_id=uid(700))
+    assert activated(lore_only) == {uid(2): 0}
+
+
+def test_content_scans_raw_prompt_structured_and_rejects_prompt_as_text():
+    from phase1_agent.content_contracts import make_prompt_item, prompt_content
+
+    raw = prompt_content([make_prompt_item(uid(710), uid(31), "seed", default_presentation())])
+    assert evaluate_lorebook_content([entry(scan_depth=0)], [raw], [], node_id=uid(700))["materials"]["items"]
+    with pytest.raises(ContractValidationError):
+        evaluate_lorebook_content([entry()], [], [raw], node_id=uid(700))
+    with pytest.raises(ContractValidationError):
+        evaluate_lorebook_content([entry()], [scan()], [], node_id=uid(700))
+
+
+def test_raw_prompt_lorebook_origin_survives_content_summary_projection():
+    from phase1_agent.content_contracts import make_prompt_item, prompt_content
+    from phase1_agent.content_summary import summarize_content
+
+    raw = prompt_content([make_prompt_item(
+        uid(710), uid(31), "seed", default_presentation(),
+        source={"kind": "lorebook", "node_id": uid(710), "member_id": uid(31)})])
+    summary = summarize_content([raw])
+    direct = evaluate_lorebook_content([entry(recursive=True)], [raw], [], node_id=uid(700))
+    projected = evaluate_lorebook_content([entry(recursive=True)], [summary], [], node_id=uid(700))
+    assert direct == projected
+    assert activated(projected) == {uid(1): 0}
+
+
+def test_nested_projection_and_merged_origins_preserve_recursive_lorebook_source():
+    from phase1_agent.content_contracts import make_prompt_item, prompt_content
+    from phase1_agent.content_summary import summarize_content
+
+    source = {"kind": "prompt_projection", "original": {
+        "kind": "merged", "origins": [
+            {"kind": "configuration"},
+            {"kind": "prompt_projection", "original": {
+                "kind": "lorebook", "node_id": uid(710), "member_id": uid(31)}},
+        ]}}
+    raw = prompt_content([make_prompt_item(
+        uid(710), uid(31), "seed", default_presentation(), source=source)])
+    summary = summarize_content([raw])
+    direct = evaluate_lorebook_content([entry(recursive=True)], [raw], [], node_id=uid(700))
+    projected = evaluate_lorebook_content([entry(recursive=True)], [summary], [], node_id=uid(700))
+    assert direct == projected
+    assert activated(projected) == {uid(1): 0}
+    ordinary = evaluate_lorebook_content([entry(scan_depth=0)], [summary], [], node_id=uid(700))
+    assert activated(ordinary) == {uid(1): 0}
+
+
+def test_content_input_limits_are_shared_across_both_ports(monkeypatch):
+    monkeypatch.setattr(engine, "MAX_ENTRIES", 2)
+    with pytest.raises(ContractValidationError, match="input count"):
+        evaluate_lorebook_content([], [scan()["context"]], [text_content("a"), text_content("b")],
+                                  node_id=uid(700))
+    monkeypatch.setattr(engine, "MAX_WIRE_BYTES", 200)
+    with pytest.raises(ContractValidationError, match="shared transport budget"):
+        evaluate_lorebook_content([], [], [text_content("a" * 100), text_content("b" * 100)],
+                                  node_id=uid(700))
+
+
+def test_content_rejects_assembled_prompt_v2():
+    from phase1_agent.content_contracts import prompt_content
+
+    with pytest.raises(ContractValidationError):
+        evaluate_lorebook_content([], [prompt_content([], assembly={})], [], node_id=uid(700))
+
+
+def test_content_context_history_respects_scan_depth():
+    prompt = scan("current", messages=[history(10, "seed"), history(11, "new", "assistant")],
+                  layout=history_layout(50, 50))
+    view = prompt["context"]
+    result = evaluate_lorebook_content(
+        [entry(scan_depth=1), entry(2, scan_depth=2)], [view], [], node_id=uid(700))
+    assert activated(result) == {uid(2): 0}
 
 
 def test_default_entry_is_valid_and_output_keeps_stable_presentation_and_lifetime():

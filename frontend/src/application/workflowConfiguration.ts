@@ -1,7 +1,9 @@
 import { computed, readonly, ref, shallowReactive, shallowRef } from "vue";
 import { requestEvidencePorts, isRequestEvidenceRecord, confirmCurrentPendingEvidence, confirmEvidenceForResolution,
-  evidenceCoordinate, type PendingRequestEvidence, type RequestEvidencePorts, type RequestEvidenceRecord } from "../adapters/requestEvidenceApi";
-import { updateGraphConfiguration, readGraphConfigurationReceipt } from "../adapters/workflowConfigurationApi";
+  evidenceCoordinate, readPendingEvidence, type PendingRequestEvidence, type RequestEvidencePorts,
+  type RequestEvidenceRecord } from "../adapters/requestEvidenceApi";
+import { updateGraphConfiguration, readGraphConfigurationReceipt, abandonGraphConfiguration,
+  type GraphRequestAbandonRequest } from "../adapters/workflowConfigurationApi";
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import { graphClone, graphJsonSignature, graphUuid } from "../domain/workflowGraph";
 import { isGraphConfigurationDocument, isGraphConfigurationResult, isGraphConfigurationUpdateRequest,
@@ -21,11 +23,16 @@ export interface WorkflowConfigurationSelection {
 export interface WorkflowConfigurationConfirmation {
   request: GraphConfigurationUpdateRequest;
 }
+/** Terminal answer of the S1-01b arbitration command for one unresolved request. */
+export type WorkflowConfigurationAbandonOutcome =
+  | { outcome: "committed"; result: GraphConfigurationResult; accepted: boolean }
+  | { outcome: "abandoned" };
 export interface WorkflowConfigurationApplicationPorts {
   extensions: WorkflowConfigurationSubmissionPorts["extensions"];
   evidence?: RequestEvidencePorts;
   update?: (request: GraphConfigurationUpdateRequest) => Promise<GraphConfigurationResult>;
   readReceipt?: (request: GraphConfigurationUpdateRequest) => Promise<GraphConfigurationResult>;
+  abandon?: typeof abandonGraphConfiguration;
 }
 
 const operation = "definition.update", ownerKind = "workflow-configuration";
@@ -48,6 +55,7 @@ export interface WorkflowConfigurationAcceptance {
 export function createWorkflowConfigurationApplication(ports: WorkflowConfigurationApplicationPorts) {
   const evidence = ports.evidence ?? requestEvidencePorts;
   const update = ports.update ?? updateGraphConfiguration, readReceipt = ports.readReceipt ?? readGraphConfigurationReceipt;
+  const abandon = ports.abandon ?? abandonGraphConfiguration;
   const documents = shallowReactive(new Map<string, GraphConfigurationDocument>());
   const selection = shallowRef<WorkflowConfigurationSelection | null>(null);
   let selectionSequence = 0;
@@ -128,9 +136,16 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
     const lastResult = shallowRef<GraphConfigurationResult | null>(null);
     const settledRequestKey = ref("");
     const error = ref(""), busy = ref(false), initialized = ref(false);
+    // A confirmed formal result that the local accepted projection could not take yet:
+    // editing stays blocked until the formal read is accepted, never by resubmitting.
+    const acceptanceFailed = ref(false);
     const progress = ref<RequestProgress>("ready");
-    const locked = computed(() => !initialized.value || busy.value || pending.value !== null);
+    const locked = computed(() => !initialized.value || busy.value || pending.value !== null
+      || acceptanceFailed.value);
     let record: RequestEvidenceRecord | null = null, initializing: Promise<boolean> | null = null;
+    /** Saved arbitration key for a response-lost retry (R2); never auto-replaced. */
+    let arbitration: GraphRequestAbandonRequest | null = null;
+    const arbitrationPending = computed(() => arbitration !== null);
     function checkedRecord(value: unknown): RequestEvidenceRecord {
       if (!isRequestEvidenceRecord(value) || value.owner_kind !== ownerKind || value.owner_id !== workflowId
         || value.operation !== operation || !isGraphConfigurationUpdateRequest(value.request)
@@ -144,18 +159,26 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
       if (initializing) return initializing;
       initializing = (async () => {
         try {
-          const records = await evidence.read(ownerKind, workflowId);
-          if (!Array.isArray(records) || !records.every(value => isRequestEvidenceRecord(value)
-            && value.owner_kind === ownerKind && value.owner_id === workflowId)
-            || records.filter(value => value.resolution === "pending").length > 1)
-            throw failure("unknown", "工作流原请求证据无法核对", "graph_configuration_evidence_invalid");
-          const durable = records.find(value => value.resolution === "pending");
+          // Q07 layered initialization: the pending summary decides whether this
+          // workflow has an unresolved request, and only then is its complete
+          // original body read by point lookup.  Historical evidence is not read
+          // on the normal path; that intentional reduction of the old "validate the
+          // owner's entire evidence history on every save" check is accepted.
+          const durable = await readPendingEvidence(evidence, ownerKind, workflowId);
           if (durable) {
             const captured = checkedRecord(durable);
-            if (pending.value && !same(pending.value, captured.request))
+            if (pending.value && !same(pending.value, captured.request)) {
+              // Rare conflict path: a refresh may match an already-resolved record
+              // for the captured request, so that specific check keeps the legacy
+              // full read instead of guessing from the narrow summary.
+              const records = await evidence.read(ownerKind, workflowId);
+              if (!Array.isArray(records) || !records.every(value => isRequestEvidenceRecord(value)
+                && value.owner_kind === ownerKind && value.owner_id === workflowId))
+                throw failure("unknown", "工作流原请求证据无法核对", "graph_configuration_evidence_invalid");
               if (!refresh || !records.some(row => row.resolution !== "pending"
                 && row.operation === operation && same(row.request, pending.value)))
                 throw failure("unknown", "待核实证据与捕获原请求不同", "graph_configuration_evidence_conflict");
+            }
             record = captured;
             pending.value = graphClone(captured.request) as unknown as GraphConfigurationUpdateRequest;
             progress.value = "restored";
@@ -192,10 +215,12 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
       progress.value = "business-confirmed";
       try { if (acceptResult) accept(result, request, selected); }
       catch (cause) {
+        acceptanceFailed.value = true;
         progress.value = "acceptance-failed";
         error.value = `配置正式结果已确认，当前视图接纳失败：${cause instanceof Error ? cause.message : "接纳失败"}`;
         throw cause;
       }
+      acceptanceFailed.value = false;
       try { await resolveOriginal(); }
       catch (cause) {
         progress.value = "closure-failed";
@@ -301,12 +326,76 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
         throw cause;
       } finally { busy.value = false; }
     }
+    // The user asked the service to arbitrate this unresolved original request (S1-01b).
+    // Only a definite terminal answer may end the local block; an unavailable
+    // arbitration keeps the request pending and visible as "result unresolved".
+    async function abandonRequest(): Promise<WorkflowConfigurationAbandonOutcome> {
+      await initialize();
+      if (busy.value || !pending.value)
+        throw failure("rejected", "没有可终止的工作流原请求", "graph_configuration_receipt_missing");
+      if (!record || !same(record.request, pending.value))
+        throw failure("unknown", "原请求证据不完整，未发起仲裁", "graph_configuration_evidence_invalid");
+      const captured = checkedRecord(record), original = graphClone(pending.value), selected = selectionSequence;
+      // R2: the arbitration command is not receipt-readable. A lost response is recovered
+      // by resending the SAME arbitration idempotency key, never a new one.
+      if (arbitration && (arbitration.target_idempotency_key !== captured.idempotency_key
+        || arbitration.target_request_digest !== captured.request_digest)) arbitration = null;
+      if (!arbitration) arbitration = { workflow_definition_id: workflowId,
+        target_operation: operation, target_idempotency_key: captured.idempotency_key,
+        target_request_digest: captured.request_digest, idempotency_key: crypto.randomUUID() };
+      const request = graphClone(arbitration);
+      busy.value = true; error.value = ""; progress.value = "request-in-flight";
+      try {
+        const terminal = await abandon(request, original);
+        // The service resolved the original evidence during arbitration; this layer
+        // must not call evidence.resolve again.
+        arbitration = null;
+        record = null; pending.value = null; initialized.value = true;
+        if (terminal.outcome === "abandoned") {
+          progress.value = "abandoned";
+          error.value = "";
+          settledRequestKey.value = captured.idempotency_key;
+          return { outcome: "abandoned" };
+        }
+        const result = terminal.result!;
+        lastResult.value = graphClone(result);
+        progress.value = "business-confirmed";
+        let accepted = true;
+        try { accept(result, original, selected); }
+        catch (cause) {
+          accepted = false; acceptanceFailed.value = true; progress.value = "acceptance-failed";
+          error.value = `服务端已确认该次修改，当前视图接纳失败：${cause instanceof Error ? cause.message : "接纳失败"}`;
+        }
+        if (accepted) {
+          acceptanceFailed.value = false; error.value = ""; progress.value = "completed";
+        }
+        settledRequestKey.value = captured.idempotency_key;
+        return { outcome: "committed", result, accepted };
+      } catch (cause) {
+        // A response-lost arbitration keeps the same key for the explicit retry; a
+        // definite refusal is reported without pretending the request was cancelled.
+        if (!(cause instanceof WorkbenchApiError && cause.kind === "unknown")) arbitration = null;
+        if (progress.value === "request-in-flight") progress.value = "result-unknown";
+        error.value = cause instanceof Error ? cause.message
+          : "原请求仲裁未完成，结果未决，不能解锁；请稍后用同一仲裁 key 重试";
+        throw cause;
+      } finally { busy.value = false; }
+    }
+    // Called after the formal current was re-read and projected locally (Q03-3).
+    function markAcceptanceRestored(): void {
+      acceptanceFailed.value = false;
+      if (progress.value === "acceptance-failed") {
+        progress.value = pending.value ? "closure-failed" : "completed";
+        error.value = pending.value ? "正式配置已重新读取；保存结果已确认，原请求证据待结案" : "";
+      }
+    }
     return { pending: readonly(pending), confirmation: readonly(confirmation), lastResult: readonly(lastResult),
       error: readonly(error), busy: readonly(busy), initialized: readonly(initialized), progress: readonly(progress),
+      acceptanceFailed: readonly(acceptanceFailed), arbitrationPending,
       settledRequestKey: readonly(settledRequestKey), locked,
       matchesEvidence: (value: PendingRequestEvidence) => !!record
         && evidenceCoordinate(record) === evidenceCoordinate(value) && record.request_digest === value.request_digest,
-      initialize, submit, confirm, reject, reconcile };
+      initialize, submit, confirm, reject, reconcile, abandon: abandonRequest, markAcceptanceRestored };
   }
   function forWorkflow(workflowId: string) {
     if (!graphUuid(workflowId) || workflowId !== workflowId.toLowerCase())
@@ -326,7 +415,8 @@ export function createWorkflowConfigurationApplication(ports: WorkflowConfigurat
   function forget(workflowId: string) {
     documents.delete(workflowId);
     const request = entries.get(workflowId);
-    if (request && !request.pending.value && !request.confirmation.value && !request.busy.value)
+    if (request && !request.pending.value && !request.confirmation.value && !request.busy.value
+      && !request.acceptanceFailed.value)
       entries.delete(workflowId);
   }
   const sdk = createWorkflowConfigurationSdk({ document: () => current.value,

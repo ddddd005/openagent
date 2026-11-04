@@ -1,0 +1,546 @@
+{
+  "harness": "s4-00-application-layer-baseline",
+  "generated_at": "2026-11-04T22:58:21+0800",
+  "workdir": "C:\\Users\\Lament\\AppData\\Local\\Temp\\s4-02-after-r2-683426aa",
+  "argv": [
+    "tests/measurement_harness.py",
+    "--workdir",
+    "C:\\Users\\Lament\\AppData\\Local\\Temp\\s4-02-after-r2-683426aa",
+    "--scenario",
+    "history,q08",
+    "--repeat",
+    "5",
+    "--json",
+    "tests/measurement_results/s4-02-after-2026-11-04-run2.json"
+  ],
+  "repeat": 5,
+  "environment": {
+    "python": "3.12.8",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "machine": "AMD64",
+    "processor": "AMD64 Family 26 Model 68 Stepping 0, AuthenticAMD",
+    "code_snapshot_sha256_16": {
+      "backend/src/phase1_agent/graph_contracts.py": "ea867de7f4be0f6b",
+      "backend/src/phase1_agent/workflow_configuration.py": "02dc2a8e1004792f",
+      "backend/src/phase1_agent/configuration_data.py": "5b53a934d67a68e8",
+      "backend/src/phase1_agent/configuration_service.py": "39d5d4b6ceb1b41c",
+      "backend/src/phase1_agent/graph_store.py": "937b765912e6f92c",
+      "backend/src/phase1_agent/graph_service.py": "e1071366e56448bb",
+      "backend/src/phase1_agent/graph_application.py": "02df83de738c5b43",
+      "backend/src/phase1_agent/graph_application_contracts.py": "9111a4d905c542a7",
+      "backend/src/phase1_agent/request_evidence.py": "d5aafd89befb39c2",
+      "backend/src/phase1_agent/workflow_modification_gate.py": "ef1ce8b564526e2c",
+      "frontend/src/application/workflowConfiguration.ts": "493ba30637669978",
+      "frontend/src/stores/workflowGraph.ts": "c513cb984a796a17",
+      "backend/tests/measurement_harness.py": "ad79b2696ebb19cf"
+    }
+  },
+  "limitations": [
+    "application layer only: no HTTP hop, no network RTT, no server scheduling",
+    "no real frontend wait or edit-lock window is measured",
+    "request/response bytes are canonical JSON bodies without HTTP headers",
+    "runs use in-process synthetic node executors; no package files, no tools, no model calls",
+    "unknown-result path is measured through the read-only receipt verification; no post-commit fault injection was used for a simulated lost response",
+    "history/q08 cases build their fixtures once per size and are not repeated for timing"
+  ],
+  "scenarios": {
+    "history": {
+      "scenario": "history-size-grid",
+      "note": "each row builds a real fixed-revision history, then measures one display-only, one fixed and one unchanged save at that history size; the fixed case shows the first save-time scan plus the second MAX scan that Q08 may remove, while the first scan stays and keeps growing with history",
+      "rows": [
+        {
+          "fixed_revisions": 1,
+          "build_seconds": 0.010867,
+          "build_seconds_per_revision": 0.010867,
+          "cases": {
+            "display-only": {
+              "seconds": 0.010845,
+              "request_bytes": 591,
+              "response_bytes": 1651,
+              "outcome": {
+                "outcome": "saved",
+                "definition_revision": 1,
+                "edit_sequence": 2,
+                "workflow_definition_id": "7c84a615-b158-4396-a392-d9c374f72b22",
+                "changed_categories": [
+                  "display"
+                ]
+              },
+              "error": null,
+              "definition_revisions_calls": 1,
+              "historical_rows_validated": 1,
+              "history_validation_seconds": 0.000168,
+              "history_validated_bytes": 605,
+              "history_scan_error": null,
+              "validate_graph_document_calls": 4,
+              "validate_graph_document_bytes": 1651,
+              "validate_graph_document_seconds": 0.000296
+            },
+            "fixed": {
+              "seconds": 0.011189,
+              "request_bytes": 603,
+              "response_bytes": 1659,
+              "outcome": {
+                "outcome": "saved",
+                "definition_revision": 2,
+                "edit_sequence": 3,
+                "workflow_definition_id": "7c84a615-b158-4396-a392-d9c374f72b22",
+                "changed_categories": [
+                  "fixed"
+                ]
+              },
+              "error": null,
+              "definition_revisions_calls": 1,
+              "historical_rows_validated": 1,
+              "history_validation_seconds": 0.000174,
+              "history_validated_bytes": 605,
+              "history_scan_error": null,
+              "validate_graph_document_calls": 8,
+              "validate_graph_document_bytes": 3376,
+              "validate_graph_document_seconds": 0.000628
+            },
+            "unchanged": {
+              "seconds": 0.010538,
+              "request_bytes": 603,
+              "response_bytes": 1653,
+              "outcome": {
+                "outcome": "unchanged",
+                "definition_revision": 2,
+                "edit_sequence": 3,
+                "workflow_definition_id": "7c84a615-b158-4396-a392-d9c374f72b22",
+                "changed_categories": []
+              },
+              "error": null,
+              "definition_revisions_calls": 1,
+              "historical_rows_validated": 2,
+              "history_validation_seconds": 0.000286,
+              "history_validated_bytes": 1227,
+              "history_scan_error": null,
+              "validate_graph_document_calls": 5,
+              "validate_graph_document_bytes": 2121,
+              "validate_graph_document_seconds": 0.000357
+            }
+          }
+        },
+        {
+          "fixed_revisions": 10,
+          "build_seconds": 0.109797,
+          "build_seconds_per_revision": 0.0122,
+          "cases": {
+            "display-only": {
+              "seconds": 0.010442,
+              "request_bytes": 604,
+              "response_bytes": 1667,
+              "outcome": {
+                "outcome": "saved",
+                "definition_revision": 10,
+                "edit_sequence": 11,
+                "workflow_definition_id": "37299c4c-8c16-44e0-ac7b-a6c3edc06754",
+                "changed_categories": [
+                  "display"
+                ]
+              },
+              "error": null,
+              "definition_revisions_calls": 1,
+              "historical_rows_validated": 10,
+              "history_validation_seconds": 0.001234,
+              "history_validated_bytes": 6133,
+              "history_scan_error": null,
+              "validate_graph_document_calls": 13,
+              "validate_graph_document_bytes": 5428,
+              "validate_graph_document_seconds": 0.000831
+            },
+            "fixed": {
+              "seconds": 0.01102,
+              "request_bytes": 607,
+              "response_bytes": 1666,
+              "outcome": {
+                "outcome": "saved",
+                "definition_revision": 11,
+                "edit_sequence": 12,
+                "workflow_definition_id": "37299c4c-8c16-44e0-ac7b-a6c3edc06754",
+                "changed_categories": [
+                  "fixed"
+                ]
+              },
+              "error": null,
+              "definition_revisions_calls": 1,
+              "historical_rows_validated": 10,
+              "history_validation_seconds": 0.001074,
+              "history_validated_bytes": 6133,
+              "history_scan_error": null,
+              "validate_graph_document_calls": 17,
+              "validate_graph_document_bytes": 7144,
+              "validate_graph_document_seconds": 0.001144
+            },
+            "unchanged": {
+              "seconds": 0.01031,
+              "request_bytes": 607,
+              "response_bytes": 1660,
+              "outcome": {
+                "outcome": "unchanged",
+                "definition_revision": 11,
+                "edit_sequence": 12,
+                "workflow_definition_id": "37299c4c-8c16-44e0-ac7b-a6c3edc06754",
+                "changed_categories": []
+              },
+              "error": null,
+              "definition_revisions_calls": 1,
+              "historical_rows_validated": 11,
+              "history_validation_seconds": 0.00127,
+              "history_validated_bytes": 6758,
+              "history_scan_error": null,
+              "validate_graph_document_calls": 14,
+              "validate_graph_document_bytes": 5875,
+              "validate_graph_document_seconds": 0.000835
+            }
+          }
+        },
+        {
+          "fixed_revisions": 44,
+          "build_seconds": 0.603065,
+          "build_seconds_per_revision": 0.014025,
+          "cases": {
+            "display-only": {
+              "seconds": 0.013614,
+              "request_bytes": 605,
+              "response_bytes": 1668,
+              "outcome": {
+                "outcome": "saved",
+                "definition_revision": 44,
+                "edit_sequence": 45,
+                "workflow_definition_id": "cb9c7526-55a6-49b6-9c8d-2551caeb6df3",
+                "changed_categories": [
+                  "display"
+                ]
+              },
+              "error": null,
+              "definition_revisions_calls": 1,
+              "historical_rows_validated": 44,
+              "history_validation_seconds": 0.004434,
+              "history_validated_bytes": 27111,
+              "history_scan_error": null,
+              "validate_graph_document_calls": 47,
+              "validate_graph_document_bytes": 19643,
+              "validate_graph_document_seconds": 0.002331
+            },
+            "fixed": {
+              "seconds": 0.014811,
+              "request_bytes": 607,
+              "response_bytes": 1666,
+              "outcome": {
+                "outcome": "saved",
+                "definition_revision": 45,
+                "edit_sequence": 46,
+                "workflow_definition_id": "cb9c7526-55a6-49b6-9c8d-2551caeb6df3",
+                "changed_categories": [
+                  "fixed"
+                ]
+              },
+              "error": null,
+              "definition_revisions_calls": 1,
+              "historical_rows_validated": 44,
+              "history_validation_seconds": 0.004384,
+              "history_validated_bytes": 27111,
+              "history_scan_error": null,
+              "validate_graph_document_calls": 51,
+              "validate_graph_document_bytes": 21357,
+              "validate_graph_document_seconds": 0.002537
+            },
+            "unchanged": {
+              "seconds": 0.014089,
+              "request_bytes": 607,
+              "response_bytes": 1660,
+              "outcome": {
+                "outcome": "unchanged",
+                "definition_revision": 45,
+                "edit_sequence": 46,
+                "workflow_definition_id": "cb9c7526-55a6-49b6-9c8d-2551caeb6df3",
+                "changed_categories": []
+              },
+              "error": null,
+              "definition_revisions_calls": 1,
+              "historical_rows_validated": 45,
+              "history_validation_seconds": 0.004728,
+              "history_validated_bytes": 27736,
+              "history_scan_error": null,
+              "validate_graph_document_calls": 48,
+              "validate_graph_document_bytes": 20087,
+              "validate_graph_document_seconds": 0.002419
+            }
+          }
+        },
+        {
+          "fixed_revisions": 100,
+          "build_seconds": 1.691748,
+          "build_seconds_per_revision": 0.017088,
+          "cases": {
+            "display-only": {
+              "seconds": 0.030786,
+              "request_bytes": 609,
+              "response_bytes": 1675,
+              "outcome": {
+                "outcome": "saved",
+                "definition_revision": 100,
+                "edit_sequence": 101,
+                "workflow_definition_id": "566af4b7-0a04-4845-a1bf-62b143787c1c",
+                "changed_categories": [
+                  "display"
+                ]
+              },
+              "error": null,
+              "definition_revisions_calls": 1,
+              "historical_rows_validated": 100,
+              "history_validation_seconds": 0.01682,
+              "history_validated_bytes": 61665,
+              "history_scan_error": null,
+              "validate_graph_document_calls": 103,
+              "validate_graph_document_bytes": 43057,
+              "validate_graph_document_seconds": 0.006162
+            },
+            "fixed": {
+              "seconds": 0.02721,
+              "request_bytes": 611,
+              "response_bytes": 1673,
+              "outcome": {
+                "outcome": "saved",
+                "definition_revision": 101,
+                "edit_sequence": 102,
+                "workflow_definition_id": "566af4b7-0a04-4845-a1bf-62b143787c1c",
+                "changed_categories": [
+                  "fixed"
+                ]
+              },
+              "error": null,
+              "definition_revisions_calls": 1,
+              "historical_rows_validated": 100,
+              "history_validation_seconds": 0.013029,
+              "history_validated_bytes": 61665,
+              "history_scan_error": null,
+              "validate_graph_document_calls": 107,
+              "validate_graph_document_bytes": 44780,
+              "validate_graph_document_seconds": 0.006424
+            },
+            "unchanged": {
+              "seconds": 0.022995,
+              "request_bytes": 611,
+              "response_bytes": 1667,
+              "outcome": {
+                "outcome": "unchanged",
+                "definition_revision": 101,
+                "edit_sequence": 102,
+                "workflow_definition_id": "566af4b7-0a04-4845-a1bf-62b143787c1c",
+                "changed_categories": []
+              },
+              "error": null,
+              "definition_revisions_calls": 1,
+              "historical_rows_validated": 101,
+              "history_validation_seconds": 0.011488,
+              "history_validated_bytes": 62293,
+              "history_scan_error": null,
+              "validate_graph_document_calls": 104,
+              "validate_graph_document_bytes": 43505,
+              "validate_graph_document_seconds": 0.005613
+            }
+          }
+        }
+      ],
+      "wall_seconds": 3.566232
+    },
+    "q08": {
+      "scenario": "corrupt-history-behaviour",
+      "note": "corrupt rows are appended directly to isolated temp copies; product database untouched; this is the behaviour baseline Q08 must not change silently",
+      "rows": [
+        {
+          "corruption": "invalid_json",
+          "display-only": {
+            "label": "display-only",
+            "reached": true,
+            "outcome": {
+              "outcome": "saved",
+              "definition_revision": 2,
+              "edit_sequence": 3,
+              "workflow_definition_id": "638cfd30-dbf4-4138-9cd0-001fff6f8da1",
+              "changed_categories": [
+                "display"
+              ]
+            },
+            "seconds": 0.010005,
+            "error": null,
+            "history_scan_calls_before_failure": 1,
+            "history_rows_before_failure": 2,
+            "history_scan_error": null,
+            "edit_sequence_before": 2,
+            "edit_sequence_after": 3,
+            "wrote_anything": true
+          },
+          "fixed": {
+            "label": "fixed",
+            "reached": true,
+            "outcome": {
+              "outcome": "saved",
+              "definition_revision": 3,
+              "edit_sequence": 3,
+              "workflow_definition_id": "638cfd30-dbf4-4138-9cd0-001fff6f8da1",
+              "changed_categories": [
+                "fixed"
+              ]
+            },
+            "seconds": 0.011299,
+            "error": null,
+            "history_scan_calls_before_failure": 1,
+            "history_rows_before_failure": 2,
+            "history_scan_error": null,
+            "edit_sequence_before": 2,
+            "edit_sequence_after": 3,
+            "wrote_anything": true
+          }
+        },
+        {
+          "corruption": "valid_json_not_graph",
+          "display-only": {
+            "label": "display-only",
+            "reached": true,
+            "outcome": {
+              "outcome": "saved",
+              "definition_revision": 2,
+              "edit_sequence": 3,
+              "workflow_definition_id": "638cfd30-dbf4-4138-9cd0-001fff6f8da1",
+              "changed_categories": [
+                "display"
+              ]
+            },
+            "seconds": 0.008776,
+            "error": null,
+            "history_scan_calls_before_failure": 1,
+            "history_rows_before_failure": 2,
+            "history_scan_error": null,
+            "edit_sequence_before": 2,
+            "edit_sequence_after": 3,
+            "wrote_anything": true
+          },
+          "fixed": {
+            "label": "fixed",
+            "reached": true,
+            "outcome": {
+              "outcome": "saved",
+              "definition_revision": 3,
+              "edit_sequence": 3,
+              "workflow_definition_id": "638cfd30-dbf4-4138-9cd0-001fff6f8da1",
+              "changed_categories": [
+                "fixed"
+              ]
+            },
+            "seconds": 0.010783,
+            "error": null,
+            "history_scan_calls_before_failure": 1,
+            "history_rows_before_failure": 2,
+            "history_scan_error": null,
+            "edit_sequence_before": 2,
+            "edit_sequence_after": 3,
+            "wrote_anything": true
+          }
+        },
+        {
+          "corruption": "graph_record_bad_fields",
+          "display-only": {
+            "label": "display-only",
+            "reached": false,
+            "outcome": null,
+            "seconds": 0.006055,
+            "error": {
+              "type": "ContractValidationError",
+              "reason_code": "storage_contract_violation",
+              "status": 500,
+              "message": "Graph record fields differ"
+            },
+            "history_scan_calls_before_failure": 0,
+            "history_rows_before_failure": 0,
+            "history_scan_error": {
+              "type": "ContractValidationError",
+              "reason_code": "storage_contract_violation",
+              "status": 500,
+              "message": "Graph record fields differ"
+            },
+            "edit_sequence_before": 2,
+            "edit_sequence_after": 2,
+            "wrote_anything": false
+          },
+          "fixed": {
+            "label": "fixed",
+            "reached": false,
+            "outcome": null,
+            "seconds": 0.007249,
+            "error": {
+              "type": "ContractValidationError",
+              "reason_code": "storage_contract_violation",
+              "status": 500,
+              "message": "Graph record fields differ"
+            },
+            "history_scan_calls_before_failure": 0,
+            "history_rows_before_failure": 0,
+            "history_scan_error": {
+              "type": "ContractValidationError",
+              "reason_code": "storage_contract_violation",
+              "status": 500,
+              "message": "Graph record fields differ"
+            },
+            "edit_sequence_before": 2,
+            "edit_sequence_after": 2,
+            "wrote_anything": false
+          }
+        },
+        {
+          "corruption": "graph_record_bad_document",
+          "display-only": {
+            "label": "display-only",
+            "reached": false,
+            "outcome": null,
+            "seconds": 0.006339,
+            "error": {
+              "type": "DiagnosticError",
+              "reason_code": "graph_invalid_document",
+              "status": 400,
+              "message": "Graph node array exceeds its limit"
+            },
+            "history_scan_calls_before_failure": 0,
+            "history_rows_before_failure": 0,
+            "history_scan_error": {
+              "type": "DiagnosticError",
+              "reason_code": "graph_invalid_document",
+              "status": 400,
+              "message": "Graph node array exceeds its limit"
+            },
+            "edit_sequence_before": 2,
+            "edit_sequence_after": 2,
+            "wrote_anything": false
+          },
+          "fixed": {
+            "label": "fixed",
+            "reached": false,
+            "outcome": null,
+            "seconds": 0.005633,
+            "error": {
+              "type": "DiagnosticError",
+              "reason_code": "graph_invalid_document",
+              "status": 400,
+              "message": "Graph node array exceeds its limit"
+            },
+            "history_scan_calls_before_failure": 0,
+            "history_rows_before_failure": 0,
+            "history_scan_error": {
+              "type": "DiagnosticError",
+              "reason_code": "graph_invalid_document",
+              "status": 400,
+              "message": "Graph node array exceeds its limit"
+            },
+            "edit_sequence_before": 2,
+            "edit_sequence_after": 2,
+            "wrote_anything": false
+          }
+        }
+      ],
+      "wall_seconds": 0.409618
+    }
+  }
+}

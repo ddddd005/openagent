@@ -2,14 +2,52 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from copy import deepcopy
+from pathlib import Path
+import sqlite3
 from typing import Any, Callable
 
+from .contract_errors import DiagnosticError
 from .contract_json import canonical_bytes, content_digest, loads_strict
 from .graph_application_identity import persist_application_command_identity
 from .graph_records import (is_graph_record, require, validate_graph_bundle,
                             validate_graph_record)
-from .storage import SqliteStore, _record_id
+from .storage import SqliteStore, _record_id, is_storage_busy
+from .workflow_request_abandon import abandoned_command
+
+
+def replayed_result(database, operation: str, key: str, request: dict):
+    """Return one exact persisted replay without opening a writer.
+
+    Reading an accepted result is not a second real modification, so this probe
+    runs before (and without) the modification entitlement: it uses a read-only
+    SQLite connection that never blocks an in-flight writer.  A missing receipt
+    returns ``None`` and the caller takes the normal transaction path; the same
+    key with another request keeps the existing ``idempotency_conflict``.
+    """
+    digest = "workflow-op-v1:" + content_digest(request).rsplit(":", 1)[1]
+    try:
+        uri = Path(database).resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, isolation_level=None)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only=ON")
+            row = connection.execute(
+                "SELECT request_digest,digest,result_payload FROM idempotency "
+                "WHERE operation=? AND key=?", (operation, key)).fetchone()
+    except sqlite3.Error:
+        # A probe that cannot read must not change command semantics; the normal
+        # transaction path still replays or executes under its full protection.
+        return None
+    if row is None:
+        return None
+    stored = row["request_digest"] or row["digest"]
+    require(stored == digest, "idempotency_conflict", "The key has a different request", 409)
+    payload = loads_strict(row["result_payload"])
+    require(type(payload) is list and len(payload) == 1 and type(payload[0]) is dict
+            and set(payload[0]) == {"graph_result"},
+            "storage_contract_violation", "Invalid graph receipt", 500)
+    return deepcopy(payload[0]["graph_result"])
 
 
 class GraphRecordStore:
@@ -44,6 +82,32 @@ class GraphRecordStore:
     def maybe(self, kind: str, **identity: Any) -> dict | None:
         row = self.store._get(kind, _record_id(kind, identity))
         return validate_graph_record(kind, row) if is_graph_record(kind, row) else None
+
+    def max_definition_revision(self, identity: str) -> int:
+        """Return the highest stored fixed revision of one workflow (read-only).
+
+        This is the SQL equivalent of the maximum over ``rows(
+        "workflow_definition_revision", workflow_definition_id=identity)`` for a
+        caller that has already read and validated the same identity's history
+        inside the same transaction (Q08 second-pass optimisation).  The filter
+        reproduces ``rows`` exactly: invalid JSON and non-graph payloads are
+        skipped, and only records owned by this workflow contribute.  A record
+        that ``rows`` would reject is rejected by the caller's unchanged first
+        pass before this method runs; corrupt-but-skipped rows can never change
+        the returned revision.
+        """
+        row = self.store._connection.execute(
+            "SELECT MAX(json_extract(payload,'$.revision')) AS revision FROM records "
+            "WHERE record_type='workflow_definition_revision' AND json_valid(payload) "
+            "AND json_extract(payload,'$.execution_model')='graph' "
+            "AND json_extract(payload,'$.workflow_definition_id')=?",
+            (identity,)).fetchone()
+        value = None if row is None else row["revision"]
+        if value is None:
+            return 0
+        require(type(value) is int and value >= 1, "storage_contract_violation",
+                "Invalid graph revision", 500)
+        return value
 
     def current_configuration(self, identity: str) -> dict | None:
         row = self.store._connection.execute(
@@ -143,6 +207,13 @@ class GraphRecordStore:
                         "storage_contract_violation", "Invalid graph receipt", 500)
                 connection.execute("COMMIT")
                 return deepcopy(prior[1][0]["graph_result"])
+            terminated = abandoned_command(connection, operation, key)
+            if terminated is not None:
+                require(terminated == digest, "idempotency_conflict",
+                        "The key has a different request", 409)
+                raise DiagnosticError(
+                    "request_abandoned",
+                    "This request was explicitly terminated and cannot execute", status=409)
             result = change(self)
             self._validate_changes()
             payload = canonical_bytes([{"graph_result": result}]).decode("utf-8")
@@ -163,9 +234,13 @@ class GraphRecordStore:
                 self.store._inject("before_commit")
                 connection.execute("COMMIT")
             return deepcopy(result)
-        except BaseException:
+        except BaseException as exc:
             if connection.in_transaction:
                 connection.execute("ROLLBACK")
+            if is_storage_busy(exc):
+                raise DiagnosticError(
+                    "graph_storage_busy", "Storage is busy; the request was not processed",
+                    status=409, phase="storage") from exc
             raise
 
     @staticmethod

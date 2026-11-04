@@ -130,9 +130,9 @@ describe("local package composition lifecycle", () => {
     graph.packageLock = [fake.package]; graph.frontendExtensions = fake.declarations;
     const definition = { ...graphClone(frontendCatalog[0]), component_id: "plugin.custom-node",
       component_version: "4", config_schema: { properties: { generic: { type: "string" } } } };
-    graph.catalog = [definition]; const id = graph.createWorkflow();
+    graph.catalog = [definition]; const id = await graph.createWorkflow();
     await vi.waitFor(() => expect(graph.locked).toBe(false));
-    const nodeId = graph.addNode("plugin.custom-node@4", { x: 0, y: 0 })!;
+    const nodeId = (await graph.addNode("plugin.custom-node@4", { x: 0, y: 0 }))!;
     const node = graph.document!.nodes.find(row => row.node_binding_id === nodeId)!;
     const session = frontendSession(id), object = session.objects!.chat;
     object.type_id = "plugin.custom-state"; object.schema_version = 7;

@@ -8,17 +8,20 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import sqlite3
 from threading import RLock
 from typing import Any
 from uuid import uuid4
 
 from jsonschema import Draft202012Validator
 
+from .contract_errors import ContractValidationError, DiagnosticError
 from .contract_json import canonical_bytes, validate_json_value
 from .configuration_data import WorkflowConfigurationData, WorkflowDataManagement
 from .configuration_service import WorkflowConfigurationService
 from .graph_records import graph_record, graph_error, require, uuid_value
 from .graph_store import GraphRecordStore
+from .storage import is_storage_busy
 from .run_basis import RunBasis
 from .program_variable_store import ProgramVariableStore
 from .preparation_program import validate_program_state
@@ -323,7 +326,8 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
 
     def _check_application_operation(self, name, parameters):
         independent = ("provider.", "credential.", "resource.", "content.metadata.")
-        if name in ("platform", "receipt.read", "request-evidence.read") or name.startswith(independent):
+        if name in ("platform", "receipt.read", "request-evidence.read",
+                    "request.abandon") or name.startswith(independent):
             return
         if name in ("request-evidence.write", "request-evidence.resolve") \
                 and parameters["operation"].startswith(independent):
@@ -452,9 +456,39 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                    for node in document["nodes"])
 
     def _change(self, operation, key, request, callback):
-        with self._lock, closing(self._store()) as store:
-            self._check_open()
-            return GraphRecordStore(store, definition_registry=self.registry).atomic(operation, key, request, callback)
+        try:
+            with self._lock, closing(self._store()) as store:
+                self._check_open()
+                return GraphRecordStore(store, definition_registry=self.registry).atomic(
+                    operation, key, request, callback)
+        except sqlite3.OperationalError as exc:
+            # SQLite refusing the write lock is a storage-busy condition, not an
+            # internal failure: map only that shape, never another OperationalError.
+            if is_storage_busy(exc):
+                raise DiagnosticError(
+                    "graph_storage_busy", "Storage is busy; the request was not processed",
+                    status=409, phase="storage") from exc
+            raise
+
+    def _modification_gate(self, workflow_definition_id):
+        """Process-shared per-workflow entitlement for definition modifications.
+
+        All workflow services in this process over the same database share the
+        registry, so a second service instance observes the same in-flight edit.
+        """
+        from . import workflow_modification_gate
+        return workflow_modification_gate.modification_gate(self.database, workflow_definition_id)
+
+    def _replayed_configuration(self, operation, key, request):
+        """Return an exact accepted replay without taking the modification gate.
+
+        Reading an accepted result is not a second real modification, so an
+        exact replay stays available while another modification is in flight.
+        A missing receipt returns ``None`` (normal command path); the same key
+        with another request keeps its ``idempotency_conflict``.
+        """
+        from .graph_store import replayed_result
+        return replayed_result(self.database, operation, key, request)
 
     def _configuration_change(self, operation, key, request, callback):
         """Run a configuration command in the original transaction.
@@ -478,7 +512,8 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
             ports = [*node["inputs"], *node["outputs"]]
             for mode in node.get("port_modes", {}).values():
                 ports.extend([*mode["inputs"], *mode["outputs"]])
-            if all(port["data_type"] in builtin and port.get("data_schema_version", 1) == 1 for port in ports) \
+            if all(port["data_type"] in builtin and port.get("data_schema_version", 1) == 1
+                   and not port.get("accepted_types") for port in ports) \
                     and not set(node["capabilities"]) & {"objects:read", "objects:write"}:
                 legacy.append(node)
         return {"schema_version": 1, "node_types": legacy}
@@ -537,6 +572,15 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
             document, workflow_definition_id=workflow_definition_id,
             expected_edit_sequence=expected_edit_sequence, idempotency_key=idempotency_key,
             confirm_derivation=confirm_derivation)
+
+    def abandon_request(self, workflow_definition_id, *, target_operation,
+                        target_idempotency_key, target_request_digest, idempotency_key):
+        """Arbitrate one unknown configuration request and settle it durably."""
+        from .workflow_request_abandon import abandon_request
+        return abandon_request(
+            self, workflow_definition_id, target_operation=target_operation,
+            target_idempotency_key=target_idempotency_key,
+            target_request_digest=target_request_digest, idempotency_key=idempotency_key)
 
     def _definition(self, node, *, registry=None):
         registry = self.registry if registry is None else registry
@@ -961,9 +1005,15 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
         return self._view(data, sid)
 
     def _start_run(self, sid, idempotency_key, request, prepare, *, operation="graph.run.start"):
-        self._require_execution_owner()
-        progress = _StartRunProgress(sid, idempotency_key, request, prepare, operation)
-        self._run_prepare_stage(progress)
+        try:
+            self._require_execution_owner()
+            progress = _StartRunProgress(sid, idempotency_key, request, prepare, operation)
+            self._run_prepare_stage(progress)
+        except ContractValidationError as exc:
+            # Everything before the accepted prepare commit belongs to the
+            # prepare stage: the caller must keep this original error response
+            # because a failed prepare leaves no chain/node_run to re-read.
+            raise self._phase_marked(exc, "prepare")
         response = progress.response
         # A persisted receipt replay never creates another execution frame.
         if not progress.accepted:
@@ -980,6 +1030,19 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                     self._futures[chain_id] = self._executor.submit(
                         self._execute, sid, chain_id, progress.background_steps)
         return response
+
+    @staticmethod
+    def _phase_marked(exc, phase):
+        """Attach the stage to diagnostics that do not have one yet."""
+        diagnostics = getattr(exc, "diagnostics", None)
+        if type(diagnostics) is list and diagnostics and type(diagnostics[0]) is dict:
+            diagnostic = diagnostics[0]
+            diagnostic.setdefault("phase", phase)
+            # Legacy graph errors keep only reason_code; the contract promises
+            # that code and reason_code identify the same failure category.
+            if "code" not in diagnostic and "reason_code" in diagnostic:
+                diagnostic["code"] = diagnostic["reason_code"]
+        return exc
 
     def _declared_steps(self, stage, bindings):
         """Validate the static declaration and its trusted bindings before any write."""
@@ -1350,6 +1413,7 @@ class GraphWorkflowService(WorkflowChatService, WorkflowConfiguration, WorkflowL
                                         "result_committed_notification_failed" if acknowledged_failure else
                                         "host_result_recovery_ambiguous" if ambiguous_recovery else
                                         "execution_result_unknown"),
+                        "phase": "settlement" if retryable else "run",
                         "message": ("This invocation has no retained run basis" if missing_basis else
                                     "Completed execution awaits checkpoint commit" if completion_retry else
                                     "Completed result awaits acceptance" if result_retry else

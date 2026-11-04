@@ -41,12 +41,16 @@ class GraphApplication:
         return spec
 
     def describe(self):
+        from .graph_contracts import DOCUMENT_CONTRACT_VERSION
         return {"schema_version": 1, "kind": "workflow.application", "scope": self.scope,
                 "boundary": {"caller": "trusted_local", "remote_plugin_authentication": False,
                              "consumer_policy": "original_receipts_and_stored_drafts_readonly",
                              "object_node_identity": "trusted_management_input",
                              "execution_authority": "graph_workflow_service",
-                             "receipt_authority": "existing_service_transactions"},
+                             "receipt_authority": "existing_service_transactions",
+                             "document_contract": "document.contract",
+                             "document_contract_version": DOCUMENT_CONTRACT_VERSION,
+                             "preview_query": "definition.preview"},
                 "commands": [spec.describe("command") for spec in COMMANDS
                              if self.scope == "management" or spec.consumer],
                 "queries": [spec.describe("query") for spec in QUERIES
@@ -74,7 +78,7 @@ class GraphApplication:
             "credential.", "provider.",
             )) else self if spec.method in (
                 "_management_actions", "_registration_list", "_information_read",
-                "_receipt_read", "_editor_inputs",
+                "_receipt_read", "_editor_inputs", "_document_contract",
             ) else self._invocation_service(spec)
         callback = getattr(target, spec.method)
         positional = []
@@ -139,6 +143,11 @@ class GraphApplication:
         service = self._management_service()
         return editor_input_declarations(
             service.registry, document, definitions=getattr(service, "definition_query", None))
+
+    def _document_contract(self):
+        """Versioned document/save/diagnostic contract reachable from describe()."""
+        from .graph_contracts import document_contract
+        return document_contract()
 
     def _management_actions(self, session_id):
         service = self._management_service()

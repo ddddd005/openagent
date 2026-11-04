@@ -44,15 +44,15 @@ async function setup(existing?: "fixed" | "adjustable" | "missing") {
     document.nodes = [{ node_binding_id: crypto.randomUUID(), component_id: editableInputType.component_id,
       component_version: "1", title: "Existing", config: { text: "original" }, position: { x: 0, y: 0 },
       ...(existing === "missing" ? {} : { configuration_policy: { schema_version: 1, prompt_mode: existing } }) }];
-    id = graph.createWorkflow();
+    id = await graph.createWorkflow();
     graph.entries[id].document = { ...document, workflow_definition_id: id };
     await vi.waitFor(() => expect(graph.locked).toBe(false));
     graph.installWorkflowConfigurationApplication(application);
     await vi.waitFor(() => expect(graph.locked).toBe(false));
-    graph.patchNode(document.nodes[0]!.node_binding_id, { title: "Existing input" });
+    await graph.patchNode(document.nodes[0]!.node_binding_id, { title: "Existing input" });
   } else {
     graph.installWorkflowConfigurationApplication(application);
-    id = graph.createWorkflow();
+    id = await graph.createWorkflow();
   }
   await vi.waitFor(() => expect(graph.locked).toBe(false));
   expect(requests).toHaveLength(1);
@@ -65,12 +65,12 @@ async function saved(graph: ReturnType<typeof useWorkflowGraphStore>) {
 describe("editable input through trusted configuration declarations", () => {
   it("uses the exact installed default for new input and keeps undeclared types fixed", async () => {
     const { graph, requests } = await setup();
-    const input = graph.addNode("tools.editable-input@1", { x: 0, y: 0 })!;
+    const input = (await graph.addNode("tools.editable-input@1", { x: 0, y: 0 }))!;
     await saved(graph);
     expect(graph.document!.nodes.find(node => node.node_binding_id === input)).toMatchObject({
       config: { text: "" }, configuration_policy: { schema_version: 1, prompt_mode: "adjustable" },
     });
-    graph.addNode("tools.text@1", { x: 200, y: 0 });
+    await graph.addNode("tools.text@1", { x: 200, y: 0 });
     await saved(graph);
     expect(requests.at(-1)!.document.nodes.at(-1)!.configuration_policy.prompt_mode).toBe("fixed");
     expect(graph.catalog[0]!.default_configuration_policy!.prompt_mode).toBe("adjustable");
@@ -85,7 +85,7 @@ describe("editable input through trusted configuration declarations", () => {
   it.each(["fixed", "adjustable"] as const)("preserves selected %s policy and text when duplicating", async mode => {
     const { graph } = await setup(mode);
     graph.selectedNodeIds = [graph.document!.nodes[0]!.node_binding_id];
-    graph.duplicateSelection(); await saved(graph);
+    await graph.duplicateSelection(); await saved(graph);
     expect(graph.document!.nodes).toHaveLength(2);
     expect(graph.document!.nodes[1]!.configuration_policy!.prompt_mode).toBe(mode);
     expect(graph.document!.nodes[1]!.config.text).toBe("original");
@@ -94,12 +94,13 @@ describe("editable input through trusted configuration declarations", () => {
   it("saves both policy switches and ordinary text edits through formal configuration", async () => {
     const { graph, id, requests } = await setup("fixed");
     const nodeId = graph.document!.nodes[0]!.node_binding_id;
-    expect(graph.patchNodeConfigurationPolicy(nodeId, "adjustable")).toBe(id); await saved(graph);
+    expect(await graph.patchNodeConfigurationPolicy(nodeId, "adjustable"))
+      .toMatchObject({ outcome: "accepted", workflowId: id });
     expect(requests.at(-1)!.document.nodes[0]!.configuration_policy.prompt_mode).toBe("adjustable");
-    expect(graph.patchNode(nodeId, { config: { text: "  untouched whitespace\nnext line  " } })).toBe(id);
-    await saved(graph);
+    expect(await graph.patchNode(nodeId, { config: { text: "  untouched whitespace\nnext line  " } }))
+      .toMatchObject({ outcome: "accepted" });
     expect(requests.at(-1)!.document.nodes[0]!.config).toEqual({ text: "  untouched whitespace\nnext line  " });
-    expect(graph.patchNodeConfigurationPolicy(nodeId, "fixed")).toBe(id); await saved(graph);
+    expect(await graph.patchNodeConfigurationPolicy(nodeId, "fixed")).toMatchObject({ outcome: "accepted" });
     expect(requests.at(-1)!.document.nodes[0]!.configuration_policy.prompt_mode).toBe("fixed");
   });
 
@@ -110,27 +111,28 @@ describe("editable input through trusted configuration declarations", () => {
       if (reason === "malformed") graph.catalog[0]!.adjustable_configuration = { policy: "input" } as never;
       if (reason === "another-version") graph.catalog[0]!.component_version = "2";
       const before = graphClone(graph.document);
-      expect(graph.patchNodeConfigurationPolicy(graph.document!.nodes[0]!.node_binding_id, "adjustable")).toBeNull();
+      expect(await graph.patchNodeConfigurationPolicy(graph.document!.nodes[0]!.node_binding_id, "adjustable"))
+        .toMatchObject({ outcome: "no-change" });
       expect(requests).toHaveLength(1); expect(graph.document).toEqual(before);
     });
 
   it("keeps explicit fixed on replacement and returns unsupported adjustable replacements to fixed", async () => {
     const { graph, id } = await setup("fixed"), nodeId = graph.document!.nodes[0]!.node_binding_id;
-    expect(graph.replaceNode(nodeId, "tools.editable-input@1")).toBe(id); await saved(graph);
+    expect(await graph.replaceNode(nodeId, "tools.editable-input@1")).toMatchObject({ outcome: "accepted", workflowId: id });
     expect(graph.document!.nodes[0]!.configuration_policy!.prompt_mode).toBe("fixed");
-    graph.patchNodeConfigurationPolicy(nodeId, "adjustable"); await saved(graph);
-    graph.patchNode(nodeId, { config: { text: "replace this config" } }); await saved(graph);
-    expect(graph.replaceNode(nodeId, "tools.editable-input@1")).toBe(id); await saved(graph);
+    expect(await graph.patchNodeConfigurationPolicy(nodeId, "adjustable")).toMatchObject({ outcome: "accepted" });
+    expect(await graph.patchNode(nodeId, { config: { text: "replace this config" } })).toMatchObject({ outcome: "accepted" });
+    expect(await graph.replaceNode(nodeId, "tools.editable-input@1")).toMatchObject({ outcome: "accepted", workflowId: id });
     expect(graph.document!.nodes[0]!.configuration_policy!.prompt_mode).toBe("adjustable");
     expect(graph.document!.nodes[0]!.config.text).toBe("");
-    graph.replaceNode(nodeId, "tools.text@1"); await saved(graph);
+    expect(await graph.replaceNode(nodeId, "tools.text@1")).toMatchObject({ outcome: "accepted" });
     expect(graph.document!.nodes[0]!.configuration_policy!.prompt_mode).toBe("fixed");
   });
 
   it("uses the replacement definition default only when the old node has no selected policy", async () => {
     const { graph } = await setup("fixed"), nodeId = graph.document!.nodes[0]!.node_binding_id;
     delete graph.document!.nodes[0]!.configuration_policy;
-    graph.replaceNode(nodeId, "tools.editable-input@1"); await saved(graph);
+    expect(await graph.replaceNode(nodeId, "tools.editable-input@1")).toMatchObject({ outcome: "accepted" });
     expect(graph.document!.nodes[0]!.configuration_policy!.prompt_mode).toBe("adjustable");
   });
 });

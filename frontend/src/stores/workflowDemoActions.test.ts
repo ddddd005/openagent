@@ -24,12 +24,11 @@ async function fixture() {
   vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
   vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
   const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
-  graph.setPersistenceGuard(() => true);
   graph.catalog = [graphClone(type)]; graph.packageLock = [{ package_id: "plugin", version: "1.0.0" }];
   graph.frontendExtensions = [graphClone(extension)];
-  const workflowId = graph.createWorkflow();
+  const workflowId = await graph.createWorkflow();
   await vi.waitFor(() => expect(graph.locked).toBe(false));
-  const nodeId = graph.addNode("plugin.config@1", { x: 0, y: 0 })!;
+  const nodeId = (await graph.addNode("plugin.config@1", { x: 0, y: 0 }))!;
   const request: WorkflowNodeConfigurationRequest = { workflowId, nodeId, componentId: "plugin.config",
     componentVersion: "1", expectedConfig: graphClone(type.default_config), patch: { text: "edited" },
     extensionId: extension.extension_id, lifecycle: "host-checked" };
@@ -48,7 +47,7 @@ describe("package configuration edits and ordinary workflow creation", () => {
   });
   it("does not treat a legacy node configuration call as saved after selection or package changes", async () => {
     const { graph, workspace, workflowId, request } = await fixture();
-    graph.createWorkflow();
+    await graph.createWorkflow();
     await expect(graph.patchNodeConfiguration(request)).rejects.toMatchObject({ kind: "unavailable" });
     workspace.openWorkflow(workflowId);
     graph.packageLock = [];
@@ -64,17 +63,17 @@ describe("package configuration edits and ordinary workflow creation", () => {
     expect(graph.entries[workflowId].saved_document).toEqual(original);
     expect(graph.document!.nodes[0].config.text).toBe("original");
   });
-  it("creates independent blank workflows without preset builders, publishing or starting", () => {
+  it("creates independent blank workflows without preset builders, publishing or starting", async () => {
     const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
     graph.selectedNodeIds = [crypto.randomUUID()]; graph.selectedEdgeId = crypto.randomUUID();
     const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
-    const id = graph.createWorkflow();
+    const id = await graph.createWorkflow();
     expect(workspace.activeWorkflowId).toBe(id);
     expect(graph.entries[id].saved_revision).toBe(0); expect(graph.entries[id].session_id).toBeNull();
     expect(graph.selectedNodeIds).toEqual([]); expect(graph.selectedEdgeId).toBeNull();
     expect(graph.history[id]).toEqual({ past: [], future: [] });
     const before = graphClone(graph.entries[id]);
-    const next = graph.createWorkflow();
+    const next = await graph.createWorkflow();
     expect(next).not.toBe(id); expect(graph.entries[id]).toEqual(before);
     expect(graph.document!.nodes).toEqual([]); expect(graph.document!.edges).toEqual([]);
     expect(graph.document!.object_bindings).toEqual([]);

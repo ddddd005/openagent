@@ -1,7 +1,7 @@
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import {
   graphClone, isGraphDocument, isGraphSession,
-  graphObject, graphUuid, type GraphCommand, type GraphDocument, type GraphEntry, type GraphSession, type GraphManagementResult,
+  graphObject, graphUuid, type GraphCommand, type GraphDocument, type GraphSession, type GraphManagementResult,
 } from "../domain/workflowGraph";
 import { newerGraphObservation } from "../domain/graphObservation";
 
@@ -10,7 +10,6 @@ export type GraphReceipt =
   | { kind: "session"; session: GraphSession; observation?: GraphSession; historicalDocument?: GraphDocument }
   | { kind: "management"; result: GraphManagementResult };
 export interface GraphCommandPorts {
-  persist?(): boolean | Promise<boolean>;
   request?(path: string, body: Record<string, unknown>): Promise<unknown>;
   readReceipt(path: string, body: Record<string, unknown>): Promise<unknown>;
   readDefinition(id: string, revision: number): Promise<GraphDocument>;
@@ -71,33 +70,6 @@ async function readReceipt(value: unknown, request: GraphCommand,
     || latest.definition_revision !== historicalDocument.revision)
     unknown("原候选操作已有回执，但定义读取期间会话已采用另一版本；刷新后核实");
   return { kind: "session", session: value, observation: latest, historicalDocument };
-}
-
-export async function dispatchGraphCommand(entry: GraphEntry, command: GraphCommand, ports: GraphCommandPorts,
-  reconcile = false) {
-  const request = graphClone(command);
-  if (!reconcile && ["rebind", "candidate-select", "candidate-fork"].includes(request.action))
-    throw new WorkbenchApiError("rejected", request.action === "rebind"
-      ? "会话修订重绑入口已退役；请新建会话"
-      : "候选历史恢复与分叉入口已退役；未提交新请求");
-  if (!reconcile) {
-    const message = request.action === "save"
-      ? "旧整图发布入口已退役；正式工作流保存暂不可用，未提交新请求"
-      : "当前工作流命令写入暂不可用；未提交新请求";
-    throw new WorkbenchApiError("unavailable", message, undefined, "graph_command_write_unavailable");
-  }
-  const samePending = () => entry.pending !== null && JSON.stringify(entry.pending) === JSON.stringify(request);
-  const current = () => ports.current() && samePending();
-  if (entry.pending === null) unknown("未保留原工作流请求");
-  if (!samePending()) unknown("待核实请求已变化");
-  if (!current()) unknown("工作流已关闭或原请求已变化");
-  const receipt = await readGraphCommandReceipt(request, {
-    definitionId: entry.document.workflow_definition_id,
-    savedRevision: entry.saved_revision,
-    sessionId: entry.session_id,
-  }, ports);
-  if (!current()) unknown("工作流已关闭或原请求已变化；回执仅供核实");
-  return receipt;
 }
 
 export async function readGraphCommandReceipt(command: GraphCommand,

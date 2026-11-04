@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { X } from "lucide-vue-next";
-import { nodeCategories, profileForAxis, type NodeFamily } from "../domain/nodeCatalog";
+import { nodeCategories, nodePortLabel, profileForAxis, type NodeFamily } from "../domain/nodeCatalog";
 import { nodePorts, type GraphNodeType, type GraphPort } from "../domain/workflowGraph";
 
 const props = defineProps<{ families: NodeFamily[]; familyId: string; currentKey?: string; issue?: string | null }>();
@@ -37,7 +37,10 @@ function ports(definition: GraphNodeType, direction: "inputs" | "outputs") {
     component_version: definition.component_version, title: definition.display_name,
     position: { x: 0, y: 0 }, config: definition.default_config }, direction);
 }
-const contract = (port: GraphPort) => `${port.data_type}@${port.data_schema_version ?? 1}`;
+const contract = (port: GraphPort) => [
+  `${port.data_type}@${port.data_schema_version ?? 1}`,
+  ...(port.accepted_types ?? []).map(type => `${type.data_type}@${type.data_schema_version}`),
+].join(" / ");
 function confirm() {
   if (canConfirm.value && selected.value) emit("confirm", selected.value.key, resetConfirmed.value);
 }
@@ -100,7 +103,7 @@ onBeforeUnmount(() => {
                   <h3>{{ direction === 'inputs' ? '输入' : '输出' }}</h3>
                   <dl v-if="ports(selected.definition, direction).length">
                     <div v-for="port in ports(selected.definition, direction)" :key="port.port_id">
-                      <dt>{{ port.port_id }}<small v-if="port.required">必需</small><small v-if="port.multiple">多路</small></dt>
+                      <dt>{{ nodePortLabel(selected.definition, port.port_id) }}<small v-if="port.required">必需</small><small v-if="port.multiple">多路</small></dt>
                       <dd>{{ contract(port) }}</dd>
                     </div>
                   </dl>

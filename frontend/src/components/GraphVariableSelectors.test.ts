@@ -22,6 +22,7 @@ vi.mock("@vue-flow/core", () => ({
   MarkerType: { ArrowClosed: "arrowclosed" },
   Position: { Left: "left", Right: "right", Top: "top", Bottom: "bottom" },
   Handle: { render: () => null }, VueFlow: { render: () => null },
+  useVueFlow: () => ({ updateNodeInternals: vi.fn() }),
 }));
 vi.mock("@vue-flow/background", () => ({ Background: { render: () => null } }));
 
@@ -92,10 +93,10 @@ describe("exact variable selectors and local registration state", () => {
   it("shows an explicit disabled registration button without a session, then displays false and zero in the selected session", async () => {
     vi.spyOn(requestEvidencePorts, "read").mockResolvedValue([]);
     const pinia = createPinia(), graph = useWorkflowGraphStore(pinia);
-    const id = graph.createWorkflow();
+    const id = await graph.createWorkflow();
     await vi.waitFor(() => expect(graph.locked).toBe(false));
     graph.catalog = graphClone(variableCatalog);
-    const nodeId = graph.addNode("tools.variable-register@2", { x: 0, y: 0 })!;
+    const nodeId = (await graph.addNode("tools.variable-register@2", { x: 0, y: 0 }))!;
     const render = () => renderToString(createSSRApp(GraphVariableRegistration, { nodeId }).use(pinia));
     try {
       const noSession = await render();
@@ -143,18 +144,18 @@ describe("exact variable selectors and local registration state", () => {
   it("presents registration as active interaction without exposing execution-root controls", async () => {
     vi.spyOn(requestEvidencePorts, "read").mockResolvedValue([]);
     const pinia = createPinia(), graph = useWorkflowGraphStore(pinia);
-    graph.catalog = graphClone(variableCatalog); graph.createWorkflow();
+    graph.catalog = graphClone(variableCatalog); await graph.createWorkflow();
     await vi.waitFor(() => expect(graph.locked).toBe(false));
     const render = () => renderToString(createSSRApp(GraphWorkbench).use(pinia).provide(workbenchFrontendHostKey,
       createWorkbenchFrontendHost(() => [], () => [])));
     try {
-      graph.addNode("tools.variable-register@2", { x: 0, y: 0 });
+      await graph.addNode("tools.variable-register@2", { x: 0, y: 0 });
       const registration = await render();
       expect(registration).toContain("主动交互");
       expect(registration).toContain("注册变量及初值");
       expect(registration).not.toContain("作为运行目标");
       expect(registration).not.toContain("运行目标");
-      graph.addNode("tools.variable-assign@1", { x: 200, y: 0 });
+      await graph.addNode("tools.variable-assign@1", { x: 200, y: 0 });
       const assignment = await render();
       expect(assignment).not.toContain("主动交互");
       expect(assignment).not.toContain("注册变量及初值");

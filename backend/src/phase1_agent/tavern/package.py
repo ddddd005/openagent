@@ -34,6 +34,15 @@ CURRENT_TAVERN_FRONTEND_EXTENSIONS = (
         **deepcopy(row), "extension_id": row["extension_id"] + "-v1-2",
         "entrypoint": row["entrypoint"] + "-v1-2",
     } for row in GLOBAL_TAVERN_FRONTEND_EXTENSIONS),
+    *({
+        **deepcopy(row), "extension_id": row["extension_id"] + "-v1-2-node-v2",
+        "entrypoint": row["entrypoint"] + "-v1-2-node-v2",
+        "component_version": "2",
+        "binding": {**deepcopy(row["binding"]),
+                    "target": {**deepcopy(row["binding"]["target"]), "component_version": "2"}},
+    } for row in GLOBAL_TAVERN_FRONTEND_EXTENSIONS
+      if row["binding"]["slot"] == "node-fields"
+      and row["component_id"] != "lorebook.global-reference"),
 )
 
 
@@ -63,12 +72,15 @@ def create_global_tavern_package():
 def create_current_tavern_package():
     original = create_global_tavern_package()
     exports = deepcopy(original.manifest.exports)
+    exports["nodes"] += [
+        {"component_id": identity, "component_version": "2"}
+        for identity in ("lorebook.item", "lorebook.group", "lorebook.global-activate")]
     exports["frontend_extensions"] = [
         {"extension_id": row["extension_id"]} for row in CURRENT_TAVERN_FRONTEND_EXTENSIONS]
 
     def register(host):
-        register_inline_lorebook(host)
-        register_global_lorebook(host)
+        register_inline_lorebook(host, content_version=True)
+        register_global_lorebook(host, content_version=True)
         for extension in CURRENT_TAVERN_FRONTEND_EXTENSIONS:
             protocol = 2 if extension["binding"]["slot"] == "node-fields" else 1
             host.register_frontend_extension(**extension, host_protocol_version=protocol)

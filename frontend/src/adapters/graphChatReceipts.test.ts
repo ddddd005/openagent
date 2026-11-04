@@ -102,7 +102,7 @@ describe("static graph chat receipt-only pending custody", () => {
     expect(keyFactory).toHaveBeenCalledOnce();
     const draftWrite = saved.save.mock.calls[0]![0];
     expect(draftWrite.address).toEqual(stateAddress);
-    expect(draftWrite.value).toMatchObject({ kind: "workflow.chat-client", workflow_session_id: another, pending: null });
+    expect(draftWrite.value).toMatchObject({ kind: "workflow.chat-client", workflow_session_id: another});
     expect(draftWrite.idempotency_key).toBe(keyFactory.mock.results[0]!.value);
     expect(draftWrite.idempotency_key).not.toBe(original.body.idempotency_key);
     expect(draftWrite.value.pending).toBeNull();
@@ -192,7 +192,7 @@ describe("static graph chat receipt-only pending custody", () => {
     expect(result.receipt.workflow_session_id).toBe(another);
     expect(value.sessionId).toBe(another); expect(value.pending).toBeNull(); expect(value.consumer).toBeNull();
     expect(value.registrations).toEqual([]); expect(value.eventBindings).toBeNull();
-    expect(saved.value(stateAddress)).toMatchObject({ workflow_session_id: another, pending: null });
+    expect(saved.value(stateAddress)).toMatchObject({ workflow_session_id: another});
     expect(request.mock.calls[0]![0]).toBe("/api/graph/consumer/receipts/read");
     expect(keyFactory).toHaveBeenCalledOnce();
     expect(saved.save.mock.calls[0]![0].idempotency_key).toBe(keyFactory.mock.results[0]!.value);

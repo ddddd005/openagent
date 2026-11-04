@@ -97,7 +97,7 @@ function stubTransport(options: {
 function seedSource(graph = useWorkflowGraphStore(), workspace = useWorkspaceStore()) {
   const id = crypto.randomUUID(), document = currentDocument(id);
   graph.entries[id] = { document: graphClone(document), saved_document: graphClone(document),
-    saved_revision: 1, latest_published_revision: 1, session_id: null, pending: null };
+    saved_revision: 1, latest_published_revision: 1, session_id: null};
   workspace.registerGraphWorkflow({ id, title: "Source workflow", description: "", nodeCount: 0,
     state: "saved", fixedDefinitionRevision: 1, editSequence: 3, hasCurrentConfiguration: true });
   workspace.openWorkflow(id);
@@ -163,7 +163,7 @@ describe("formal configuration copy in the workflow store", () => {
     const id = crypto.randomUUID();
     graph.entries[id] = { document: { schema_version: 2, workflow_definition_id: id, revision: 1,
       name: "draft", nodes: [], edges: [] } as unknown as GraphDocument, saved_revision: 0,
-      session_id: null, pending: null };
+      session_id: null};
     workspace.registerGraphWorkflow({ id, title: "draft", description: "", nodeCount: 0, state: "draft" });
     workspace.openWorkflow(id);
     const transport = stubTransport();
@@ -229,7 +229,7 @@ describe("formal configuration copy in the workflow store", () => {
     const { graph, workspace, id } = seedSource();
     const otherId = crypto.randomUUID();
     graph.entries[otherId] = { document: currentDocument(otherId, 1, "Other"), saved_revision: 1,
-      session_id: null, pending: null };
+      session_id: null};
     workspace.registerGraphWorkflow({ id: otherId, title: "Other", description: "", nodeCount: 0,
       state: "saved", fixedDefinitionRevision: 1, editSequence: 1, hasCurrentConfiguration: true });
     let release!: () => void;
@@ -278,7 +278,7 @@ describe("formal configuration copy in the workflow store", () => {
     const id = crypto.randomUUID(), longName = "名".repeat(128);
     const document = currentDocument(id, 1, longName);
     graph.entries[id] = { document: graphClone(document), saved_document: graphClone(document),
-      saved_revision: 1, session_id: null, pending: null };
+      saved_revision: 1, session_id: null};
     workspace.registerGraphWorkflow({ id, title: longName, description: "", nodeCount: 0,
       state: "saved", fixedDefinitionRevision: 1, editSequence: 1, hasCurrentConfiguration: true });
     workspace.openWorkflow(id);

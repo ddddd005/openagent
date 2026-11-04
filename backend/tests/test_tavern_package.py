@@ -13,9 +13,10 @@ from phase1_agent.context_prompt_v6 import assemble_native_context_prompt
 from phase1_agent.context_v4 import read_native_context_v5
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.graph_contracts import GraphCompiler, NodeDefinition, NodePort
-from phase1_agent.graph_execution import NodeExecutionContext
+from phase1_agent.graph_execution import NodeExecutionContext, execute_graph
 from phase1_agent.host_sdk import DataTypeDefinition, ObjectBinding
 from phase1_agent.lorebook_engine import default_lorebook_entry
+from phase1_agent.lorebook_nodes import execute_lorebook_content
 from phase1_agent.model_package import create_model_package
 from phase1_agent.prompt_package import create_prompt_package
 from phase1_agent.tavern_package import (
@@ -145,6 +146,76 @@ def test_builtins_install_tavern_but_exact_selection_does_not_silently_add_it():
     legacy = loader.load({**DEFAULT_PACKAGES, "workflow.tavern": "1.0.0"})
     assert legacy.registry.get("lorebook.item", "1") is not None
     assert legacy.registry.get("lorebook.global-activate", "1") is None
+
+
+def test_content_node_checks_each_accepted_artifact_and_rejects_mismatch():
+    class Context:
+        node_binding_id = NODE_ID
+        reads = []
+
+        def input_artifact_refs(self, port):
+            return ([{"output_id": uid(930)}, {"output_id": uid(931)}]
+                    if port == "text" else [])
+
+        def host_call(self, capability, operation, payload):
+            assert (capability, operation) == ("artifacts:read", "resolve-artifact")
+            return {"value": accepted[payload["reference"]["output_id"]]}
+
+    accepted = {uid(930): text_content("unrelated"), uid(931): text_content("match")}
+    inputs = {"text": list(accepted.values()), "structured": []}
+    original = deepcopy(inputs)
+    config = {"entry": entry(primary_keywords=["match"]), "object_keys": []}
+    result = execute_lorebook_content(config, inputs, Context())
+    assert inputs == original
+    assert [item["text"] for item in result["output"]["items"]] == ["activated content"]
+    accepted[uid(931)] = text_content("different")
+    with pytest.raises(ContractValidationError):
+        execute_lorebook_content(config, inputs, Context())
+
+
+def test_current_package_text_to_lorebook_runtime_and_extensions():
+    loaded = CapabilityPackageLoader(builtin_capability_packages()).load(DEFAULT_PACKAGES)
+    registry = loaded.registry
+    for component in ("item", "group", "global-activate"):
+        assert registry.get(f"lorebook.{component}", "2") is not None
+        assert any(row.get("component_id") == f"lorebook.{component}"
+                   and row.get("component_version") == "2"
+                   for row in loaded.frontend_extensions)
+    nodes = [{
+        "node_binding_id": uid(1), "component_id": "tools.text", "component_version": "1",
+        "title": "text", "position": {"x": 0, "y": 0}, "config": {"text": "match"},
+    }, {
+        "node_binding_id": uid(2), "component_id": "lorebook.item", "component_version": "2",
+        "title": "lorebook", "position": {"x": 0, "y": 0},
+        "config": {"entry": entry(primary_keywords=["match"]), "object_keys": []},
+    }]
+    document = {
+        "schema_version": 2, "workflow_definition_id": uid(900), "revision": 1, "name": "test",
+        "nodes": nodes, "edges": [{
+            "edge_id": uid(3), "source_node_id": uid(1), "source_port_id": "output",
+            "target_node_id": uid(2), "target_port_id": "text", "order": 0,
+        }], "object_bindings": [],
+    }
+    plan = GraphCompiler(registry)._compile(document, targets=[uid(2)])
+    artifacts = {}
+
+    def accept(event):
+        if event["event"] == "succeeded":
+            event["output_refs"] = event["candidate_output_refs"]
+            for port, output_id in event["output_refs"].items():
+                artifacts[output_id] = deepcopy(event["outputs"][port])
+
+    def host(context, capability, operation, payload):
+        assert (capability, operation) == ("artifacts:read", "resolve-artifact")
+        return {"value": deepcopy(artifacts[payload["reference"]["output_id"]])}
+
+    result = execute_graph(
+        plan, registry, workflow_session_id=uid(800), chain_run_id=uid(801),
+        node_run_ids={uid(1): uid(802), uid(2): uid(803)}, state={"revision": 0, "values": {}},
+        on_node=accept, host=host,
+    )
+    assert result.status == "succeeded", result.diagnostic
+    assert [item["text"] for item in result.outputs[uid(2)]["output"]["items"]] == ["activated content"]
 
 
 @pytest.mark.parametrize("component", TAVERN_COMPONENTS)

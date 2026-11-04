@@ -17,6 +17,7 @@ def _exact_input(context, port):
 def create_context_package():
     def register(host):
         from .context_host_service import NATIVE_CONTEXT_SERVICE_DEFINITION, create_native_context_host_service
+        from .context_host_service import SUMMARY_CONTEXT_SERVICE_DEFINITION
         from .agent_receipt_contract import (
             agent_receipts_data_type_definition, agent_receipts_data_type_definition_v2,
         )
@@ -26,6 +27,7 @@ def create_context_package():
         from .context_v4_nodes import register_native_context
         from .host_sdk import DataTypeDefinition
         host.register_service(NATIVE_CONTEXT_SERVICE_DEFINITION, create_native_context_host_service)
+        host.register_service(SUMMARY_CONTEXT_SERVICE_DEFINITION, create_native_context_host_service)
         host.register_data_type(DataTypeDefinition(
             "CONTEXT_COMMIT", 2, {"type": "object"}, scope="content",
             validator=validate_context_receipt_v2, references=lambda value: [value["view_ref"]],
@@ -37,11 +39,18 @@ def create_context_package():
         host.register_shared_data_type(agent_receipts_data_type_definition())
         host.register_shared_data_type(agent_receipts_data_type_definition_v2())
         register_native_context(host)
+        from .content_summary_nodes import register_content_summary_nodes
+        register_content_summary_nodes(host)
 
-    from .context_host_service import NATIVE_CONTEXT_SERVICE_REF
+    from .context_host_service import NATIVE_CONTEXT_SERVICE_REF, SUMMARY_CONTEXT_SERVICE_REF
     return CapabilityPackage(PackageManifest(
         CONTEXT_PACKAGE_ID, "1.0.0", (PackageDependency("workflow.content", "1.0.0"),
                                     PackageDependency("workflow.prompts", "1.0.0"),
                                     PackageDependency("workflow.models", "1.0.0")),
-        exports={"services": [NATIVE_CONTEXT_SERVICE_REF.to_dict()]},
+        exports={"services": [NATIVE_CONTEXT_SERVICE_REF.to_dict(), SUMMARY_CONTEXT_SERVICE_REF.to_dict()],
+                 "nodes": [{"component_id": "context.output", "component_version": "5"},
+                           {"component_id": "context.assembly", "component_version": "5"},
+                           {"component_id": "context.merge", "component_version": "6"},
+                           {"component_id": "prompts.summary", "component_version": "3"},
+                           {"component_id": "context.assembly", "component_version": "7"}]},
         schema_version=3), register)

@@ -21,16 +21,16 @@ afterEach(() => {
 });
 describe("frontend catalog fail-closed lifecycle", () => {
   it("retains an existing explicit graph with only execution locks when UI is disabled", async () => {
-    const graph = useWorkflowGraphStore(); graph.setPersistenceGuard(() => true);
+    const graph = useWorkflowGraphStore();
     const packet = { schema_version: 2, node_types: frontendCatalog, data_types: [],
       package_lock: frontendProjectLock, execution_package_lock: frontendExecutionLock,
       frontend_extensions: workflowFrontendExtensions };
     const fetcher = vi.fn(async () => new Response(JSON.stringify(packet)));
     vi.stubGlobal("fetch", fetcher);
     await graph.loadCatalog();
-    const id = graph.createWorkflow();
+    const id = await graph.createWorkflow();
     await vi.waitFor(() => expect(graph.locked).toBe(false));
-    expect(graph.addNode("frontend.node@2", { x: 0, y: 0 })).toBeTruthy();
+    expect(await graph.addNode("frontend.node@2", { x: 0, y: 0 })).toBeTruthy();
     const before = graphClone(graph.document);
     expect(graph.packageLock).toEqual(frontendProjectLock);
     expect(graph.document!.package_lock).toEqual(frontendExecutionLock);
@@ -42,8 +42,8 @@ describe("frontend catalog fail-closed lifecycle", () => {
     expect(graph.document).toEqual(before);
   });
   it("unloads the old UI before refreshing and retains graph/data when loading fails", async () => {
-    const graph = useWorkflowGraphStore(); graph.setPersistenceGuard(() => true);
-    const id = graph.createWorkflow(), session = frontendSession(id);
+    const graph = useWorkflowGraphStore();
+    const id = await graph.createWorkflow(), session = frontendSession(id);
     graph.entries[id].session_id = session.workflow_session_id; graph.views[session.workflow_session_id] = session;
     graph.frontendExtensions = graphClone(workflowFrontendExtensions);
     const document = graphClone(graph.document), data = graphClone(graph.session);

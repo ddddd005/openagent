@@ -10,7 +10,7 @@ from .host_sdk import bounded_name
 from .lorebook_engine import (
     default_lorebook_entry, lorebook_entry_schema, validate_lorebook_entries,
 )
-from .lorebook_nodes import execute_lorebook
+from .lorebook_nodes import execute_lorebook, execute_lorebook_content
 from .variable_contract import VARIABLE_SCHEMA_VERSION, VARIABLE_TYPE
 
 
@@ -50,7 +50,15 @@ def validate_lorebook_node_config(config, *, grouped=False):
             "Lorebook configuration exceeds its transport budget")
 
 
-def register_inline_lorebook(host):
+def lorebook_content_ports():
+    return (
+        NodePort("structured", "CONTENT_SUMMARY", data_schema_version=1, multiple=True, required=False,
+                 accepted_types=(("CONTEXT_VIEW", 5), ("PROMPT_MATERIALS", 1), ("PROMPT", 2))),
+        NodePort("text", "TEXT", data_schema_version=2, multiple=True, required=False),
+    )
+
+
+def register_inline_lorebook(host, *, content_version=False):
     for name, title in (("item", "Lorebook 单条目"), ("group", "Lorebook 条目组")):
         grouped = name == "group"
         entry = default_lorebook_entry()
@@ -70,6 +78,21 @@ def register_inline_lorebook(host):
             config, inputs, context, grouped=grouped),
             config_validator=lambda config, grouped=grouped: validate_lorebook_node_config(
                 config, grouped=grouped))
+        if content_version:
+            host.register_node(NodeDefinition(
+                "lorebook." + name, "2", title, "类酒馆", deepcopy(default),
+                lorebook_node_schema(grouped=grouped),
+                inputs=lorebook_content_ports(),
+                outputs=(NodePort("output", "PROMPT_MATERIALS"),),
+                capabilities=("objects:read", "artifacts:read"), input_storage="references",
+                object_accesses=({
+                    "config_field": "object_keys", "multiple": True, "access": "read",
+                    "type_id": VARIABLE_TYPE, "schema_version": VARIABLE_SCHEMA_VERSION,
+                },),
+            ), lambda config, inputs, context, grouped=grouped: execute_lorebook_content(
+                config, inputs, context, grouped=grouped),
+                config_validator=lambda config, grouped=grouped: validate_lorebook_node_config(
+                    config, grouped=grouped))
 
 
 def create_tavern_package():

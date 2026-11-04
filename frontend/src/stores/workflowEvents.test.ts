@@ -12,13 +12,13 @@ async function fixture() {
   vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
   vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
   vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
-  const graph = useWorkflowGraphStore(); graph.setPersistenceGuard(() => true); graph.catalog = graphClone(frontendCatalog);
-  const id = graph.createWorkflow();
+  const graph = useWorkflowGraphStore(); graph.catalog = graphClone(frontendCatalog);
+  const id = await graph.createWorkflow();
   await vi.waitFor(() => expect(graph.locked).toBe(false));
-  const node = graph.addNode("tools.current-input@1", { x: 0, y: 0 })!;
+  const node = (await graph.addNode("tools.current-input@1", { x: 0, y: 0 }))!;
   const binding = { event_id: "edit", schema_version: 1, display_name: "Edit", audience: "consumer" as const,
     target_node_ids: [node], payload_schema: { type: "object" as const } };
-  graph.setEventBindings([binding]);
+  await graph.setEventBindings([binding]);
   const session = frontendSession(id); session.status = "idle";
   graph.entries[id].session_id = session.workflow_session_id; graph.views[session.workflow_session_id] = session;
   graph.entries[id].saved_revision = 1; graph.entries[id].saved_document = graphClone(graph.document!);
@@ -71,10 +71,11 @@ describe("local event management and original outbox", () => {
   it("preserves declaration targets and the workflow identity while leaving node copies outside the route", async () => {
     const { graph, id, node, binding } = await fixture(); graph.entries[id].session_id = null;
     useWorkspaceStore().markWorkflowSaved(id);
-    const copied = graph.setEventBindings([{ ...binding, display_name: "Changed" }])!;
-    expect(copied).toBe(id); expect(graph.document!.event_bindings![0].target_node_ids).toEqual([node]);
+    const copied = await graph.setEventBindings([{ ...binding, display_name: "Changed" }]);
+    expect(copied).toMatchObject({ outcome: "accepted" });
+    expect(graph.document!.event_bindings![0].target_node_ids).toEqual([node]);
     expect(graph.entries[id].saved_document!.event_bindings![0].display_name).toBe("Edit");
-    graph.selectedNodeIds = [node]; graph.duplicateSelection();
+    graph.selectedNodeIds = [node]; await graph.duplicateSelection();
     expect(graph.document!.event_bindings![0].target_node_ids).toEqual([node]);
   });
 });

@@ -32,6 +32,12 @@ export const globalTavernFrontendExtensions: FrontendExtension[] = [
 export const currentTavernFrontendExtensions: FrontendExtension[] = [
   ...globalTavernFrontendExtensions.map(row => ({ ...row, package_version: "1.2.0",
     extension_id: row.extension_id + "-v1-2", entrypoint: row.entrypoint + "-v1-2" })),
+  ...[0, 1, 4].map(index => {
+    const row = globalTavernFrontendExtensions[index]!;
+    return { ...row, package_version: "1.2.0", component_version: "2",
+      extension_id: row.extension_id + "-v1-2-node-v2", entrypoint: row.entrypoint + "-v1-2-node-v2",
+      binding: { ...row.binding, target: { component_id: row.component_id!, component_version: "2" } } };
+  }),
 ];
 
 export function tavernExtensionsFor(packages: readonly { package_id: string; version: string }[]) {

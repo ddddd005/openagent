@@ -169,6 +169,10 @@ def application_accepted_result(result):
     if result.get("kind") == "workflow.request-evidence":
         return {field: deepcopy(result[field]) for field in (
             "operation", "idempotency_key", "owner_kind", "owner_id", "request_digest", "resolution")}
+    if result.get("kind") == "workflow.request-arbitration":
+        return {field: deepcopy(result[field]) for field in (
+            "outcome", "operation", "idempotency_key", "request_digest",
+            "workflow_definition_id", "evidence_resolution")}
     if result.get("kind") == "workflow.session-metadata":
         return {field: deepcopy(result[field]) for field in (
             "workflow_definition_id", "workflow_session_id", "name", "metadata_sequence")}

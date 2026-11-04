@@ -2,6 +2,7 @@
 
 from contextlib import closing
 from copy import deepcopy
+from uuid import uuid4
 
 import pytest
 
@@ -9,7 +10,9 @@ from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.execution_data import RunData
 from phase1_agent.graph_store import GraphRecordStore
 
-from frontend_node_test_support import create as _create, graph as _graph, owner as _owner, save as _save
+from frontend_node_test_support import (
+    create as _create, graph as _graph, owner as _owner, save as _save, seed as _seed,
+)
 from test_graph_service import run
 from phase1_agent.graph_service import GraphWorkflowService
 from phase1_agent.session_objects import SessionObjectStore
@@ -80,7 +83,10 @@ def test_snapshot_direct_read_rejects_wrong_access_registration_and_type(tmp_pat
         if failure == "registrar":
             frontends[0]["config"]["object_key"] = "chat-1"
             graph["object_bindings"][1]["readers"].append(frontends[0]["node_binding_id"])
-        graph = _save(service, graph)
+        # S3-01: the normal save now rejects this ACL-inconsistent document with
+        # session_object_access_denied, so seed the stored revision directly to
+        # keep covering the snapshot read-side defence.
+        graph = _seed(service, graph) if failure in ("reader", "registrar") else _save(service, graph)
         initial = _create(service, graph)
         if failure == "type":
             original = SessionObjectStore.read
@@ -94,6 +100,31 @@ def test_snapshot_direct_read_rejects_wrong_access_registration_and_type(tmp_pat
         assert error.value.reason_code == (
             "session_object_access_denied" if failure == "reader" else "frontend_node_registration_mismatch")
         assert service._frontend_node_snapshots == {}
+
+
+@pytest.mark.parametrize("failure", ["reader", "registrar"])
+def test_normal_save_rejects_acl_inconsistent_document_with_location(tmp_path, failure):
+    """S3-01 behaviour change: ACL-inconsistent graphs are no longer savable."""
+    with closing(GraphWorkflowService(tmp_path / f"snapshot-save-reject-{failure}.sqlite")) as service:
+        graph, _, frontends = _graph(service, count=2, readers=failure != "reader")
+        if failure == "registrar":
+            frontends[0]["config"]["object_key"] = "chat-1"
+            graph["object_bindings"][1]["readers"].append(frontends[0]["node_binding_id"])
+        with pytest.raises(ContractValidationError) as error:
+            service.update_definition(
+                graph, workflow_definition_id=graph["workflow_definition_id"],
+                expected_edit_sequence=0, idempotency_key=str(uuid4()))
+        assert error.value.reason_code == "session_object_access_denied"
+        assert error.value.status_code == 400
+        diagnostic = error.value.diagnostics[0]
+        assert diagnostic["phase"] == "save"
+        assert diagnostic["node_id"] == frontends[0]["node_binding_id"]
+        assert diagnostic["path"] == "/nodes/2/config/object_key"
+        assert diagnostic["expected"] == {"access": "read_write"}
+        assert diagnostic["actual"] == {
+            "read": failure == "registrar", "write": failure == "reader"}
+        # The rejected save wrote neither a revision nor a receipt.
+        assert service.list_definitions(include_archived=True) == []
 
 
 def test_failed_frontend_node_does_not_create_snapshot_cache(tmp_path, monkeypatch):

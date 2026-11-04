@@ -37,11 +37,16 @@ const RETIRED_COMPONENTS = [
   ["prompts.summary", "1"], ["prompts.assembly", "1"], ["prompts.global-reference", "1"],
   ["prompts.global-resolve", "1"], ["prompts.tool", "1"], ["prompts.tool-summary", "1"],
 ] as const;
+/** Stored legacy envelopes may still carry a frozen original request; this field is
+ *  read-only evidence and is no longer part of the runtime GraphEntry. */
+export interface SavedWorkbenchEntry extends GraphEntry {
+  pending?: GraphCommand | null;
+}
 export interface WorkbenchConfiguration {
   activeWorkflowId: string;
   selectedWorkflowId: string;
   catalog: WorkspaceWorkflow[];
-  graph: { schema_version: 1; entries: Record<string, GraphEntry> };
+  graph: { schema_version: 1; entries: Record<string, SavedWorkbenchEntry> };
 }
 export interface SavedWorkbench extends WorkbenchConfiguration {
   schemaVersion: 7;
@@ -82,11 +87,11 @@ function workflow(value: unknown): value is WorkspaceWorkflow {
     && (value.archived === undefined || typeof value.archived === "boolean")
     && (value.deleted === undefined || typeof value.deleted === "boolean");
 }
-function entry(value: unknown): value is GraphEntry {
+function entry(value: unknown): value is SavedWorkbenchEntry {
   return graphObject(value) && isGraphDocument(value.document)
     && Number.isSafeInteger(value.saved_revision) && Number(value.saved_revision) >= 0
     && (value.session_id === null || graphUuid(value.session_id))
-    && (value.pending === null || graphObject(value.pending));
+    && (value.pending === undefined || value.pending === null || graphObject(value.pending));
 }
 function explicitLegacy(document: unknown, row?: Record<string, unknown>) {
   if (row && Object.hasOwn(row, "compatibility")) return true;
@@ -107,7 +112,7 @@ export function isSavedWorkbench(value: unknown): value is SavedWorkbench {
   const entries = value.graph.entries;
   return Object.keys(entries).length === value.catalog.length
     && value.catalog.every(row => entry(entries[row.id]) && !explicitLegacy(
-      (entries[row.id] as GraphEntry).document, entries[row.id] as unknown as Record<string, unknown>))
+      (entries[row.id] as SavedWorkbenchEntry).document, entries[row.id] as unknown as Record<string, unknown>))
     && (value.catalog.length === 0 ? value.activeWorkflowId === "" && value.selectedWorkflowId === ""
       : value.catalog.some(row => row.id === value.activeWorkflowId)
         && value.catalog.some(row => row.id === value.selectedWorkflowId));

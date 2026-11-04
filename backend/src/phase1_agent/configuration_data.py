@@ -80,13 +80,22 @@ class ConfigurationRepository:
             (identity,)).fetchone()
         return row is not None
 
-    def save_fixed_revision(self, document: dict, expected_revision: int) -> dict:
+    def save_fixed_revision(self, document: dict, expected_revision: int, *,
+                            history_validated: bool = False) -> dict:
         """Write one fixed revision and its node projections through ``repo.put``.
 
         Using ``repo.put`` keeps the original changed-definition tracking, so
         ``GraphRecordStore.atomic`` still validates the affected bundle before
         commit.  The expected revision and one-step advance checks are the same
         storage conditions as the former ``_save_definition``.
+
+        ``history_validated`` is the Q08 second-pass optimisation: a caller that
+        already read and validated the whole revision history of the same
+        workflow identity inside this transaction passes ``True`` and only the
+        maximum revision is read (SQL), keeping the first pass as the single
+        full scan.  Every other caller keeps the original full scan, including
+        new/derived/copied target identities and the legacy ``_save_definition``
+        adapter.
         """
         from .graph_contracts import validate_graph_document
         from .graph_records import graph_record
@@ -95,8 +104,12 @@ class ConfigurationRepository:
         document.pop("edit_sequence", None)
         require(type(expected_revision) is int and expected_revision >= 0,
                 "invalid_request", "Invalid expected revision")
-        existing = self.definition_revisions(document["workflow_definition_id"])
-        current = max((row["revision"] for row in existing), default=0)
+        if history_validated:
+            current = self._records.max_definition_revision(
+                document["workflow_definition_id"])
+        else:
+            existing = self.definition_revisions(document["workflow_definition_id"])
+            current = max((row["revision"] for row in existing), default=0)
         require(current == expected_revision, "stale_revision", "Definition changed", 409)
         require(document["revision"] == current + 1, "invalid_request",
                 "Definition revision must advance once")
@@ -185,8 +198,10 @@ class ConfigurationDataSession:
         return current, self._access.fixed_document(
             identity, current["fixed_definition_revision"])
 
-    def save_fixed_revision(self, document: dict, expected_revision: int) -> dict:
-        return self._access.save_fixed_revision(document, expected_revision)
+    def save_fixed_revision(self, document: dict, expected_revision: int, *,
+                            history_validated: bool = False) -> dict:
+        return self._access.save_fixed_revision(
+            document, expected_revision, history_validated=history_validated)
 
     def save_current_configuration(self, value: dict) -> None:
         self._access.save_current_configuration(value)

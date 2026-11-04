@@ -244,6 +244,98 @@ describe("uninstalled configuration application and SDK2", () => {
     expect(f.readReceipt).toHaveBeenCalledTimes(1); expect(f.update).not.toHaveBeenCalled();
     expect(f.entry.locked.value).toBe(true);
   });
+  it("returns a terminal abandoned arbitration and ends the local block without replaying the update", async () => {
+    const f = fixture();
+    f.update.mockRejectedValue(new WorkbenchApiError("unknown", "Response lost"));
+    await f.entry.initialize();
+    await expect(f.app.sdk.submitNodeConfiguration(f.input)).rejects.toMatchObject({ kind: "unknown" });
+    const original = graphClone(f.update.mock.calls[0][0]);
+    const record = [...f.evidence.records.values()][0]!;
+    const abandon = vi.fn<NonNullable<WorkflowConfigurationApplicationPorts["abandon"]>>(async request => ({
+      schema_version: 1, kind: "workflow.request-arbitration", outcome: "abandoned", operation: "definition.update",
+      idempotency_key: request.target_idempotency_key, request_digest: request.target_request_digest,
+      workflow_definition_id: request.workflow_definition_id, evidence_resolution: "archived", result: null }));
+    const app = createWorkflowConfigurationApplication({ ...f.ports, abandon });
+    app.observe(f.document); app.select(f.document.workflow_definition_id);
+    const entry = app.forWorkflow(f.document.workflow_definition_id);
+    await entry.initialize();
+    expect(entry.pending.value).not.toBeNull();
+    await expect(entry.abandon()).resolves.toEqual({ outcome: "abandoned" });
+    expect(abandon).toHaveBeenCalledOnce();
+    expect(abandon.mock.calls[0]![0]).toMatchObject({ workflow_definition_id: f.document.workflow_definition_id,
+      target_operation: "definition.update", target_idempotency_key: original.idempotency_key,
+      target_request_digest: record.request_digest });
+    expect(entry.pending.value).toBeNull(); expect(entry.locked.value).toBe(false);
+    expect(entry.progress.value).toBe("abandoned"); expect(f.update).toHaveBeenCalledTimes(1);
+  });
+  it("retries a response-lost arbitration with the same arbitration idempotency key", async () => {
+    const f = fixture();
+    f.update.mockRejectedValue(new WorkbenchApiError("unknown", "Response lost"));
+    await f.entry.initialize();
+    await expect(f.app.sdk.submitNodeConfiguration(f.input)).rejects.toMatchObject({ kind: "unknown" });
+    const original = graphClone(f.update.mock.calls[0][0]);
+    const record = [...f.evidence.records.values()][0]!;
+    const keys: string[] = [];
+    const abandon = vi.fn<NonNullable<WorkflowConfigurationApplicationPorts["abandon"]>>(async request => {
+      keys.push(request.idempotency_key);
+      if (keys.length === 1) throw new WorkbenchApiError("unknown", "Arbitration response lost");
+      return { schema_version: 1, kind: "workflow.request-arbitration", outcome: "abandoned",
+        operation: "definition.update", idempotency_key: request.target_idempotency_key,
+        request_digest: request.target_request_digest, workflow_definition_id: request.workflow_definition_id,
+        evidence_resolution: "archived", result: null };
+    });
+    const app = createWorkflowConfigurationApplication({ ...f.ports, abandon });
+    app.observe(f.document); app.select(f.document.workflow_definition_id);
+    const entry = app.forWorkflow(f.document.workflow_definition_id);
+    await entry.initialize();
+    await expect(entry.abandon()).rejects.toMatchObject({ kind: "unknown" });
+    expect(entry.locked.value).toBe(true); expect(entry.progress.value).toBe("result-unknown");
+    await expect(entry.abandon()).resolves.toEqual({ outcome: "abandoned" });
+    expect(keys).toHaveLength(2); expect(keys[1]).toBe(keys[0]!);
+    expect(original.idempotency_key).toBe(abandon.mock.calls[0]![0].target_idempotency_key);
+    expect(record.request_digest).toBe(abandon.mock.calls[0]![0].target_request_digest);
+    expect(entry.locked.value).toBe(false); expect(f.update).toHaveBeenCalledTimes(1);
+  });
+  it("accepts a committed arbitration whose evidence was already archived (R7) without another update", async () => {
+    const f = fixture();
+    f.update.mockRejectedValue(new WorkbenchApiError("unknown", "Response lost"));
+    await f.entry.initialize();
+    await expect(f.app.sdk.submitNodeConfiguration(f.input)).rejects.toMatchObject({ kind: "unknown" });
+    const original = graphClone(f.update.mock.calls[0][0]);
+    const committed = result(original);
+    const abandon = vi.fn<NonNullable<WorkflowConfigurationApplicationPorts["abandon"]>>(async request => ({
+      schema_version: 1, kind: "workflow.request-arbitration", outcome: "committed", operation: "definition.update",
+      idempotency_key: request.target_idempotency_key, request_digest: request.target_request_digest,
+      workflow_definition_id: request.workflow_definition_id, evidence_resolution: "archived", result: committed }));
+    const app = createWorkflowConfigurationApplication({ ...f.ports, abandon });
+    app.observe(f.document); app.select(f.document.workflow_definition_id);
+    const entry = app.forWorkflow(f.document.workflow_definition_id);
+    await entry.initialize();
+    await expect(entry.abandon()).resolves.toMatchObject({ outcome: "committed", accepted: true });
+    expect(entry.pending.value).toBeNull(); expect(entry.locked.value).toBe(false);
+    expect(entry.progress.value).toBe("completed");
+    expect(app.current.value?.nodes[0].config.text).toBe("After");
+    expect(f.update).toHaveBeenCalledTimes(1);
+    expect(f.evidence.ports.resolve).not.toHaveBeenCalled();
+  });
+  it("keeps the request blocked when arbitration is unavailable", async () => {
+    const f = fixture();
+    f.update.mockRejectedValue(new WorkbenchApiError("unknown", "Response lost"));
+    await f.entry.initialize();
+    await expect(f.app.sdk.submitNodeConfiguration(f.input)).rejects.toMatchObject({ kind: "unknown" });
+    const abandon = vi.fn<NonNullable<WorkflowConfigurationApplicationPorts["abandon"]>>(async () => {
+      throw new WorkbenchApiError("rejected", "Arbitration unavailable", 409, "request_arbitration_unavailable");
+    });
+    const app = createWorkflowConfigurationApplication({ ...f.ports, abandon });
+    app.observe(f.document); app.select(f.document.workflow_definition_id);
+    const entry = app.forWorkflow(f.document.workflow_definition_id);
+    await entry.initialize();
+    await expect(entry.abandon()).rejects.toMatchObject({ kind: "rejected", code: "request_arbitration_unavailable" });
+    expect(entry.pending.value).not.toBeNull(); expect(entry.locked.value).toBe(true);
+    expect(entry.progress.value).toBe("result-unknown");
+    expect(entry.error.value).toContain("Arbitration unavailable");
+    expect(f.update).toHaveBeenCalledTimes(1);
+  });
   it("retains actual success and its lock when evidence resolution fails, then reconciles without another update", async () => {
     const f = fixture(), resolve = f.evidence.ports.resolve;
     f.evidence.ports.resolve = vi.fn(async () => { throw new Error("Evidence disk unavailable"); });
@@ -313,8 +405,19 @@ describe("uninstalled configuration application and SDK2", () => {
     vi.stubGlobal("localStorage", { getItem, setItem });
     vi.stubGlobal("fetch", vi.fn(async (path: string, init: RequestInit) => {
       const command = JSON.parse(String(init.body)), parameters = command.parameters;
+      const ownerRecords = await evidence.ports.read(parameters.owner_kind, parameters.owner_id);
+      if (command.operation === "request-evidence.pending")
+        return new Response(JSON.stringify({ schema_version: 1, kind: "workflow.request-evidence-page",
+          next_cursor: null, items: ownerRecords.filter(record => record.resolution === "pending"
+            && record.owner_kind === parameters.owner_kind && record.owner_id === parameters.owner_id)
+            .map(record => ({ owner_kind: record.owner_kind, owner_id: record.owner_id,
+              operation: record.operation, idempotency_key: record.idempotency_key,
+              request_digest: record.request_digest, resolution: "pending" })) }));
       if (command.operation === "request-evidence.read")
-        return new Response(JSON.stringify(await evidence.ports.read(parameters.owner_kind, parameters.owner_id)));
+        return new Response(JSON.stringify(parameters.operation
+          ? ownerRecords.filter(record => record.operation === parameters.operation
+            && record.idempotency_key === parameters.idempotency_key)
+          : ownerRecords));
       if (command.operation === "request-evidence.write")
         return requestEvidenceCommandResponse(command.operation, await evidence.ports.write(parameters));
       if (command.operation === "request-evidence.resolve")
@@ -397,5 +500,130 @@ describe("unified current acceptance", () => {
     expect(accepted.map(row => row.status)).toEqual(["invalid", "accepted", "accepted", "conflict", "accepted"]);
     expect(f.app.accepted(key)).toMatchObject({ revision: 3, edit_sequence: 7 });
     expect(f.app.accepted(key)!.nodes[0]!.config.text).toBe("Fixed");
+  });
+});
+
+describe("Q07 layered evidence initialization and narrow confirm reads", () => {
+  function narrowFixture() {
+    const document = source(), memory = memoryRequestEvidence();
+    const readPending = vi.fn(async (owner_kind: string, owner_id: string) => [
+      ...memory.records.values()].filter(record => record.owner_kind === owner_kind
+        && record.owner_id === owner_id && record.resolution === "pending")
+      .map(record => ({ owner_kind: record.owner_kind, owner_id: record.owner_id,
+        operation: record.operation, idempotency_key: record.idempotency_key,
+        request_digest: record.request_digest, resolution: "pending" as const })));
+    const readPoint = vi.fn(async (owner_kind: string, owner_id: string,
+      operation: string, idempotency_key: string) => [...memory.records.values()]
+      .filter(record => record.owner_kind === owner_kind && record.owner_id === owner_id
+        && record.operation === operation && record.idempotency_key === idempotency_key)
+      .map(record => graphClone(record)));
+    const update = vi.fn(async (request: GraphConfigurationUpdateRequest) => result(request));
+    const readReceipt = vi.fn(async (request: GraphConfigurationUpdateRequest) => result(request));
+    const ports: WorkflowConfigurationApplicationPorts = {
+      evidence: { ...memory.ports, readPending, readPoint }, update, readReceipt,
+      extensions: () => [{ declaration: declaration(), configurationFields: ["text"] }],
+    };
+    const app = createWorkflowConfigurationApplication(ports);
+    app.observe(document); app.select(document.workflow_definition_id);
+    const entry = app.forWorkflow(document.workflow_definition_id);
+    return { app, document, input: submission(document), entry, ports, memory,
+      update, readReceipt, readPending, readPoint,
+      fullRead: vi.mocked(memory.ports.read), write: vi.mocked(memory.ports.write),
+      resolve: vi.mocked(memory.ports.resolve) };
+  }
+  async function persistPending(f: ReturnType<typeof narrowFixture>) {
+    const request: GraphConfigurationUpdateRequest = {
+      workflow_definition_id: f.document.workflow_definition_id,
+      expected_edit_sequence: f.document.edit_sequence,
+      document: { ...graphClone(f.document), name: "Captured original" },
+      idempotency_key: crypto.randomUUID() };
+    const record = await f.memory.ports.write({
+      operation: "definition.update", idempotency_key: request.idempotency_key,
+      owner_kind: "workflow-configuration", owner_id: f.document.workflow_definition_id,
+      request: { ...graphClone(request) } as unknown as Record<string, unknown> });
+    return { request, record };
+  }
+  it("initializes from the bodyless pending summary without reading history", async () => {
+    const f = narrowFixture();
+    await f.entry.initialize();
+    expect(f.readPending).toHaveBeenCalledTimes(1);
+    expect(f.readPoint).not.toHaveBeenCalled();
+    expect(f.fullRead).not.toHaveBeenCalled();
+    expect(f.entry.locked.value).toBe(false);
+    expect(f.entry.progress.value).toBe("ready");
+  });
+  it("restores a pending request by exact point read after the summary says it exists", async () => {
+    const f = narrowFixture(), { request, record } = await persistPending(f);
+    await f.entry.initialize();
+    expect(f.readPending).toHaveBeenCalledTimes(1);
+    expect(f.readPoint).toHaveBeenCalledWith("workflow-configuration",
+      f.document.workflow_definition_id, "definition.update", request.idempotency_key);
+    expect(f.readPoint).toHaveBeenCalledTimes(1);
+    expect(f.fullRead).not.toHaveBeenCalled();
+    expect(f.entry.pending.value).toEqual(request);
+    expect(f.entry.locked.value).toBe(true);
+    expect(f.entry.progress.value).toBe("restored");
+    expect(f.entry.matchesEvidence({ owner_kind: record.owner_kind, owner_id: record.owner_id,
+      operation: record.operation, idempotency_key: record.idempotency_key,
+      request_digest: record.request_digest, resolution: "pending" })).toBe(true);
+  });
+  it("treats an untrustworthy summary as an explicit failure, never as no pending", async () => {
+    const f = narrowFixture();
+    const payload = { owner_kind: "workflow-configuration",
+      owner_id: f.document.workflow_definition_id, operation: "definition.update",
+      request_digest: "a".repeat(64), resolution: "pending" as const };
+    f.readPending.mockResolvedValueOnce([
+      { ...payload, idempotency_key: crypto.randomUUID() },
+      { ...payload, idempotency_key: crypto.randomUUID() }]);
+    await expect(f.entry.initialize()).rejects.toThrow(/多条未结案|摘要/);
+    expect(f.entry.locked.value).toBe(true);
+    expect(f.entry.pending.value).toBeNull();
+    expect(f.fullRead).not.toHaveBeenCalled();
+    // A malformed summary item is also a failure, not "no pending".
+    f.readPending.mockResolvedValueOnce([{ ...payload, idempotency_key: "k", request_digest: "x" }]);
+    await expect(f.entry.initialize(true)).rejects.toThrow(/摘要/);
+  });
+  it("rejects a summary/point mismatch instead of restoring the wrong request", async () => {
+    const f = narrowFixture(), { request, record } = await persistPending(f);
+    f.readPoint.mockResolvedValueOnce([{ ...record, request_digest: "b".repeat(64) }]);
+    await expect(f.entry.initialize()).rejects.toThrow(/摘要与精确证据不同|无法核对/);
+    expect(f.entry.locked.value).toBe(true);
+    expect(f.entry.pending.value).toBeNull();
+    expect(f.entry.matchesEvidence({ owner_kind: record.owner_kind, owner_id: record.owner_id,
+      operation: record.operation, idempotency_key: request.idempotency_key,
+      request_digest: record.request_digest, resolution: "pending" })).toBe(false);
+  });
+  it("keeps the five-step save chain with point reads for both confirm steps", async () => {
+    const f = narrowFixture();
+    await f.entry.initialize();
+    await expect(f.app.sdk.submitNodeConfiguration(f.input)).resolves.toMatchObject({ outcome: "saved" });
+    expect(f.readPending).toHaveBeenCalledTimes(1);
+    expect(f.fullRead).not.toHaveBeenCalled();
+    expect(f.write).toHaveBeenCalledTimes(1);
+    expect(f.readPoint).toHaveBeenCalledTimes(2);
+    expect(f.update).toHaveBeenCalledTimes(1);
+    expect(f.resolve).toHaveBeenCalledTimes(1);
+    const written = await f.write.mock.results[0].value;
+    for (const call of f.readPoint.mock.calls)
+      expect(call.slice(2)).toEqual(["definition.update", written.idempotency_key]);
+    const timeline = [
+      ...f.write.mock.invocationCallOrder.map(order => ({ order, name: "write" })),
+      ...f.readPoint.mock.invocationCallOrder.map((order, index) => ({ order, name: `point:${index}` })),
+      ...f.update.mock.invocationCallOrder.map(order => ({ order, name: "update" })),
+      ...f.resolve.mock.invocationCallOrder.map(order => ({ order, name: "resolve" })),
+    ].sort((left, right) => left.order - right.order).map(event => event.name);
+    expect(timeline).toEqual(["write", "point:0", "update", "point:1", "resolve"]);
+  });
+  it("never replays a lost business response and keeps unknown verification on the receipt route", async () => {
+    const f = narrowFixture();
+    await f.entry.initialize();
+    f.update.mockRejectedValueOnce(new WorkbenchApiError("unknown", "Response lost"));
+    await expect(f.app.sdk.submitNodeConfiguration(f.input)).rejects.toMatchObject({ kind: "unknown" });
+    expect(f.update).toHaveBeenCalledTimes(1);
+    expect(f.fullRead).not.toHaveBeenCalled();
+    await f.entry.reconcile();
+    expect(f.update).toHaveBeenCalledTimes(1);
+    expect(f.readReceipt).toHaveBeenCalledTimes(1);
+    expect(f.resolve).toHaveBeenCalledTimes(1);
   });
 });

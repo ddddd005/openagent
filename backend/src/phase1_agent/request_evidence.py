@@ -8,7 +8,7 @@ from re import fullmatch
 import sqlite3
 from threading import RLock
 
-from .contract_errors import DiagnosticError
+from .contract_errors import ContractValidationError, DiagnosticError
 from .contract_json import canonical_bytes, content_digest, loads_strict, validate_json_value
 from .graph_application_identity import application_command_digest, persist_application_command_identity
 from .graph_records import require, uuid_value
@@ -35,16 +35,32 @@ def _valid_pending_coordinates(value):
             and _text(value["operation"], 128) and _text(value["idempotency_key"], 128))
 
 
-def validate_pending_page(limit=50, cursor=None):
+def validate_pending_page(limit=50, cursor=None, owner_kind=None, owner_id=None):
     require(type(limit) is int and 1 <= limit <= 100, "invalid_request",
             "Pending request page limit is invalid")
     require(cursor is None or _valid_pending_coordinates(cursor), "invalid_request",
             "Pending request cursor is invalid")
+    require((owner_kind is None) == (owner_id is None), "invalid_request",
+            "Pending request owner filter requires both owner fields")
+    if owner_kind is not None:
+        validate_evidence_owner(owner_kind, owner_id)
+        require(owner_kind in _WORKFLOW_OWNERS, "invalid_request",
+                "Pending request owner kind is not a workflow owner")
+        require(cursor is None, "invalid_request",
+                "An owner-scoped pending request page takes no cursor")
 
 
-def read_workflow_pending(database_path, *, limit=50, cursor=None):
-    """Discover workflow request coordinates without reading bodies or opening a writer."""
-    validate_pending_page(limit, cursor)
+def read_workflow_pending(database_path, *, limit=50, cursor=None, owner_kind=None, owner_id=None):
+    """Discover workflow request coordinates without reading bodies or opening a writer.
+
+    An owner-scoped page (``owner_kind`` + ``owner_id``) is the layered
+    initialization summary: it returns at most the owner's one unresolved
+    request coordinate and digest, never a body.  A stored uniqueness anomaly is
+    reported instead of being hidden.  The global page keeps its existing
+    cursor/limit behaviour.
+    """
+    validate_pending_page(limit, cursor, owner_kind, owner_id)
+    owner_scoped = owner_kind is not None
     page = {"schema_version": 1, "kind": "workflow.request-evidence-page",
             "items": [], "next_cursor": None}
     path = Path(database_path).resolve()
@@ -60,15 +76,24 @@ def read_workflow_pending(database_path, *, limit=50, cursor=None):
                                   "AND name='pending_commands'").fetchone() is None:
                 return page
             coordinates = ",".join(_PENDING_COORDINATES)
-            parameters = sorted(_WORKFLOW_OWNERS)
-            after = ""
-            if cursor is not None:
-                after = f" AND ({coordinates}) > (?,?,?,?)"
-                parameters.extend(cursor[key] for key in _PENDING_COORDINATES)
-            rows = connection.execute(
-                f"SELECT {coordinates},request_digest,resolution FROM pending_commands "
-                "WHERE resolution='pending' AND owner_kind IN (?,?,?)" + after
-                + f" ORDER BY {coordinates} LIMIT ?", [*parameters, limit + 1]).fetchall()
+            if owner_scoped:
+                rows = connection.execute(
+                    f"SELECT {coordinates},request_digest,resolution FROM pending_commands "
+                    "WHERE resolution='pending' AND owner_kind=? AND owner_id=? "
+                    f"ORDER BY {coordinates} LIMIT 3",
+                    (owner_kind, owner_id)).fetchall()
+                require(len(rows) <= 1, "storage_contract_violation",
+                        "This owner has more than one unresolved request", 500)
+            else:
+                parameters = sorted(_WORKFLOW_OWNERS)
+                after = ""
+                if cursor is not None:
+                    after = f" AND ({coordinates}) > (?,?,?,?)"
+                    parameters.extend(cursor[key] for key in _PENDING_COORDINATES)
+                rows = connection.execute(
+                    f"SELECT {coordinates},request_digest,resolution FROM pending_commands "
+                    "WHERE resolution='pending' AND owner_kind IN (?,?,?)" + after
+                    + f" ORDER BY {coordinates} LIMIT ?", [*parameters, limit + 1]).fetchall()
             for row in rows:
                 item = dict(row)
                 coordinate = {key: item[key] for key in _PENDING_COORDINATES}
@@ -77,11 +102,12 @@ def read_workflow_pending(database_path, *, limit=50, cursor=None):
                         and fullmatch("[0-9a-f]{64}", item["request_digest"]) is not None,
                         "storage_contract_violation", "Pending request summary is invalid", 500)
             page["items"] = [dict(row) for row in rows[:limit]]
-            if len(rows) > limit:
+            if not owner_scoped and len(rows) > limit:
                 page["next_cursor"] = {key: rows[limit - 1][key] for key in _PENDING_COORDINATES}
             return page
     except (sqlite3.Error, OSError) as exc:
         raise DiagnosticError("storage_unavailable", "Pending requests cannot be read", status=503) from exc
+
 
 
 def initialize_request_evidence(connection):
@@ -200,13 +226,81 @@ class RequestEvidenceService:
             "request": loads_strict(row["request_json"]),
         })
 
-    def read_evidence(self, owner_kind, owner_id):
+    def _read(self, owner_kind, owner_id, *, operation=None, idempotency_key=None,
+              resolution=None, unique=False):
+        """Read full evidence records with an optional narrow condition.
+
+        The rows are always decoded and validated as complete evidence records:
+        a damaged stored row raises ``storage_contract_violation`` instead of
+        looking like a missing request.  A narrowed read that matches more than
+        one row raises the same contract error instead of silently picking one;
+        the database keeps the single-pending guarantee through the partial
+        unique index, this check only makes a broken index visible.
+        """
+        try:
+            with self._lock, closing(self._store_factory()) as store:
+                if operation is not None:
+                    # A point read is keyed by the global operation+key identity, then
+                    # verified against the requested owner: a key stored under another
+                    # owner is a conflict, never an empty "no request" answer.
+                    statement = ("SELECT * FROM pending_commands "
+                                 "WHERE operation=? AND idempotency_key=?")
+                    parameters = [operation, idempotency_key]
+                else:
+                    statement = "SELECT * FROM pending_commands WHERE owner_kind=? AND owner_id=?"
+                    parameters = [owner_kind, owner_id]
+                if resolution is not None:
+                    statement += " AND resolution=?"
+                    parameters.append(resolution)
+                rows = store._connection.execute(statement + " ORDER BY rowid", parameters).fetchall()
+        except DiagnosticError:
+            raise
+        except (sqlite3.Error, OSError, ContractValidationError) as exc:
+            raise DiagnosticError("storage_unavailable",
+                                  "Request evidence cannot be read", status=503) from exc
+        records = []
+        for row in rows:
+            try:
+                records.append(self._record(row))
+            except DiagnosticError:
+                raise
+            except ContractValidationError as exc:
+                raise DiagnosticError("storage_contract_violation",
+                                      "Stored request evidence is invalid", status=500) from exc
+        if operation is not None or unique:
+            require(len(records) <= 1, "storage_contract_violation",
+                    "Narrow request evidence read is not unique", 500)
+        if operation is not None and records:
+            record = records[0]
+            require(record["owner_kind"] == owner_kind and record["owner_id"] == owner_id,
+                    "request_evidence_conflict",
+                    "Request evidence belongs to another owner", 409)
+        return records
+
+    def read_evidence(self, owner_kind, owner_id, *, operation=None, idempotency_key=None,
+                      resolution=None):
+        """Full owner history, or a narrow owner/pending or owner+operation+key read.
+
+        ``operation`` + ``idempotency_key`` is the exact point read used by the
+        confirm steps; ``resolution="pending"`` is the narrow unresolved read.
+        Omitting all three keeps the original full-history read unchanged.
+        """
         validate_evidence_owner(owner_kind, owner_id)
-        with self._lock, closing(self._store_factory()) as store:
-            rows = store._connection.execute(
-                "SELECT * FROM pending_commands WHERE owner_kind=? AND owner_id=? ORDER BY rowid",
-                (owner_kind, owner_id))
-            return [self._record(row) for row in rows]
+        require((operation is None) == (idempotency_key is None), "invalid_request",
+                "A point evidence read requires both operation and idempotency key")
+        if operation is not None:
+            require(_text(operation, 128) and _text(idempotency_key, 128),
+                    "invalid_request", "Point evidence read identity is invalid")
+            require(resolution is None, "invalid_request",
+                    "A point evidence read cannot also filter by resolution")
+            return self._read(owner_kind, owner_id, operation=operation,
+                              idempotency_key=idempotency_key)
+        if resolution is not None:
+            require(resolution == "pending", "invalid_request",
+                    "A narrow evidence read can only select pending evidence")
+            return self._read(owner_kind, owner_id, resolution=resolution, unique=True)
+        return self._read(owner_kind, owner_id)
+
 
     def _mutate(self, native_operation, request, idempotency_key, update):
         digest = "workflow-op-v1:" + content_digest(request).rsplit(":", 1)[1]

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { Handle, Position } from "@vue-flow/core";
+import { computed, watch } from "vue";
+import { Handle, Position, useVueFlow } from "@vue-flow/core";
 import { AlertCircle, Box, Flag } from "lucide-vue-next";
 import { nodePorts, type GraphNode, type GraphNodeType, type GraphPort } from "../domain/workflowGraph";
-import { nodeDisplayTitle, nodeProfileLabel, nodeTypeLabel } from "../domain/nodeCatalog";
+import { nodeDisplayTitle, nodePortLabel, nodeProfileLabel, nodeTypeLabel } from "../domain/nodeCatalog";
 import { resultStatusLabel } from "../domain/resultPresentation";
 const props = defineProps<{ selected?: boolean; data: { node: GraphNode; definition?: GraphNodeType;
   displayTitle?: string; status: string; inputs: string[]; outputs: string[]; error: boolean;
@@ -18,6 +18,17 @@ const outputs = computed(() => ports("outputs"));
 const summary = computed(() => typeof props.data.node.config.text === "string" ? props.data.node.config.text
   : props.data.definition ? nodeTypeLabel(props.data.definition) : props.data.node.component_id);
 const profile = computed(() => props.data.definition ? nodeProfileLabel(props.data.definition) : "");
+const { updateNodeInternals } = useVueFlow();
+const layoutSignature = computed(() => JSON.stringify({
+  nodeId: props.data.node.node_binding_id,
+  inputs: inputs.value.map(port => [port.port_id, nodePortLabel(props.data.node, port.port_id)]),
+  outputs: outputs.value.map(port => [port.port_id, nodePortLabel(props.data.node, port.port_id)]),
+  title: props.data.displayTitle ?? nodeDisplayTitle(props.data.node, props.data.definition),
+  summary: summary.value, profile: profile.value,
+  output: !!props.data.definition?.is_output, error: props.data.error, missing: !props.data.definition,
+}));
+// Port rows can move while the taller column keeps the node's outer size unchanged.
+watch(layoutSignature, () => updateNodeInternals([props.data.node.node_binding_id]), { flush: "post" });
 </script>
 
 <template>
@@ -33,12 +44,12 @@ const profile = computed(() => props.data.definition ? nodeProfileLabel(props.da
           <Handle :id="port.port_id" type="target" :position="Position.Left"
             :class="{ compatible: data.inputIssues?.[port.port_id] === null, incompatible: !!data.inputIssues?.[port.port_id] }"
             :title="data.inputIssues?.[port.port_id] ?? `${port.port_id} · ${port.data_type}`" />
-          <span>{{ port.port_id }}</span><small>{{ port.data_type }}</small>
+          <span>{{ nodePortLabel(data.node, port.port_id) }}</span><small>{{ port.data_type }}</small>
         </div>
       </div>
       <div class="port-column">
         <div v-for="port in outputs" :key="port.port_id" class="port-row output">
-          <small>{{ port.data_type }}</small><span>{{ port.port_id }}</span>
+          <small>{{ port.data_type }}</small><span>{{ nodePortLabel(data.node, port.port_id) }}</span>
           <Handle :id="port.port_id" type="source" :position="Position.Right"
             :class="{ compatible: data.outputIssues?.[port.port_id] === null, incompatible: !!data.outputIssues?.[port.port_id] }"
             :title="data.outputIssues?.[port.port_id] ?? `${port.port_id} · ${port.data_type}`" />

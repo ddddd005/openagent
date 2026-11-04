@@ -67,6 +67,24 @@ def save(service, value):
     return saved["document"]
 
 
+def seed(service, value):
+    """Store a fixed revision without the save-time declared-reference checks.
+
+    S3-01 moved declared object-access registration checks into the normal save
+    path (Q05-2/Q06-3), so a structurally valid document with inconsistent
+    object ACLs can no longer be saved through ``definition.update``.  Read-side
+    boundary tests still need such a stored document: this helper writes the
+    exact revision through the legacy definition writer inside one command
+    transaction, skipping the configuration-save declarations check while
+    keeping real stored graph records.
+    """
+    document = deepcopy(value)
+    return service._change(
+        "test.fixture.frontend.seed", str(uuid4()),
+        {"document": deepcopy(document), "expected_revision": 0},
+        lambda repo: service._save_definition(repo, document, 0))
+
+
 def create(service, value):
     return service.create_session(
         value["workflow_definition_id"], value["revision"], idempotency_key=str(uuid4()),

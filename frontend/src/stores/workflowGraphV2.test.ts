@@ -19,14 +19,14 @@ const sink: GraphNodeType = { ...writer, component_id: "plugin.output", display_
     data_schema_version: 2, required: true, multiple: false }], outputs: source.outputs };
 const lock = [{ package_id: "plugin", version: "1.0.0" }];
 async function fixture() {
-  const graph = useWorkflowGraphStore(); graph.setPersistenceGuard(() => true);
+  const graph = useWorkflowGraphStore();
   graph.catalog = [writer, source, sink]; graph.packageLock = lock;
-  const id = graph.createWorkflow();
+  const id = await graph.createWorkflow();
   await graph.reconcile(id);
-  const write = graph.addNode("plugin.writer@1", { x: 0, y: 0 })!;
-  const read = graph.addNode("plugin.source@1", { x: 100, y: 0 })!;
-  const output = graph.addNode("plugin.output@1", { x: 200, y: 0 })!;
-  graph.connect({ source_node_id: read, source_port_id: "output", target_node_id: output, target_port_id: "input" });
+  const write = (await graph.addNode("plugin.writer@1", { x: 0, y: 0 }))!;
+  const read = (await graph.addNode("plugin.source@1", { x: 100, y: 0 }))!;
+  const output = (await graph.addNode("plugin.output@1", { x: 200, y: 0 }))!;
+  await graph.connect({ source_node_id: read, source_port_id: "output", target_node_id: output, target_port_id: "input" });
   return { graph, id, write, read, output };
 }
 function binding(readers: string[], writers: string[]) {
@@ -44,16 +44,16 @@ afterEach(() => { useWorkflowGraphStore().$dispose(); useWorkspaceStore().$dispo
 
 describe("minimum v2 tools/prompt workbench wiring", () => {
   it("keeps an explicitly locked in-memory document separate from retired snapshot restoration", async () => {
-    const graph = useWorkflowGraphStore(); graph.setPersistenceGuard(() => true);
+    const graph = useWorkflowGraphStore();
     graph.catalog = [writer]; graph.packageLock = [{ package_id: "plugin", version: "2.0.0" }];
     graph.executionPackageLock = lock;
-    const workflowId = graph.createWorkflow();
+    const workflowId = await graph.createWorkflow();
     await graph.reconcile(workflowId);
     expect(graph.document?.schema_version).toBe(2);
     expect(graph.document?.package_lock).toEqual(lock);
     expect(graph.document?.object_bindings).toEqual([]);
     expect(graph.document?.control_edges).toEqual([]);
-    const writerId = graph.addNode("plugin.writer@1", { x: 0, y: 0 });
+    const writerId = await graph.addNode("plugin.writer@1", { x: 0, y: 0 });
     expect(writerId).not.toBeNull();
     expect(graph.document?.nodes).toEqual([expect.objectContaining({
       node_binding_id: writerId, component_id: "plugin.writer", component_version: "1",
@@ -63,38 +63,37 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
     expect(graph.document?.package_lock).toEqual(lock);
     expect(graph.document?.object_bindings).toEqual([]);
     expect(graph.catalog[0].outputs).toEqual([]);
-    expect(graph.restoreSnapshot(graph.storeSnapshot())).toBe(false);
   });
   it("keeps control predecessor edits undoable with stable identities", async () => {
     const { graph, write, read } = await fixture();
-    graph.setControlDependencies(read, [write]);
+    await graph.setControlDependencies(read, [write]);
     const controlId = graph.document!.control_edges![0].edge_id;
-    graph.setControlDependencies(read, [write]);
+    await graph.setControlDependencies(read, [write]);
     expect(graph.document!.control_edges![0].edge_id).toBe(controlId);
-    graph.undo();
+    await graph.undo();
     expect(graph.document?.control_edges).toEqual([]);
-    graph.undo(true);
+    await graph.undo(true);
     expect(graph.document!.control_edges![0].edge_id).toBe(controlId);
-    expect(graph.setControlDependencies(read, [crypto.randomUUID()])).toBeNull();
+    expect(await graph.setControlDependencies(read, [crypto.randomUUID()])).toMatchObject({ outcome: "no-change" });
     expect(isGraphDocument(graph.document)).toBe(true);
   });
   it("validates binding edits against real node UUIDs and keeps node object keys explicit", async () => {
     const { graph, write, read } = await fixture();
-    expect(graph.setObjectBindings([binding([write, read], [write])])).toBeTruthy();
+    expect(await graph.setObjectBindings([binding([write, read], [write])])).toMatchObject({ outcome: "accepted" });
     expect(graph.document?.nodes[0].config.object_key).toBe("shared/main");
     const before = graphClone(graph.document);
-    expect(graph.setObjectBindings([binding([crypto.randomUUID()], [write])])).toBeNull();
+    expect(await graph.setObjectBindings([binding([crypto.randomUUID()], [write])])).toBeNull();
     expect(graph.document).toEqual(before);
-    expect(graph.setObjectBindings([binding([write], [write]), binding([write], [write])])).toBeNull();
+    expect(await graph.setObjectBindings([binding([write], [write]), binding([write], [write])])).toBeNull();
   });
   it("duplicates controls and shared permissions while initializing a separate private binding", async () => {
     const { graph, write, read } = await fixture();
     const owned = { ...binding([write], [write]), object_key: "private/main",
       scope: "private" as const, owner_node_id: write, default_value: { count: 0 } };
-    graph.patchNode(write, { config: { object_key: owned.object_key, object_keys: ["shared/main", owned.object_key] } });
-    graph.setObjectBindings([binding([write, read], [write]), owned]);
-    graph.setControlDependencies(read, [write]);
-    graph.selectedNodeIds = [write, read]; graph.duplicateSelection();
+    await graph.patchNode(write, { config: { object_key: owned.object_key, object_keys: ["shared/main", owned.object_key] } });
+    await graph.setObjectBindings([binding([write, read], [write]), owned]);
+    await graph.setControlDependencies(read, [write]);
+    graph.selectedNodeIds = [write, read]; await graph.duplicateSelection();
     const [copiedWriter, copiedReader] = graph.selectedNodeIds;
     expect(graph.document?.control_edges?.find(edge => edge.target_node_id === copiedReader)?.source_node_id).toBe(copiedWriter);
     const shared = graph.document!.object_bindings!.find(item => item.scope === "shared")!;
@@ -107,27 +106,56 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
     expect(config.object_key).toBe(privateCopy.object_key);
     expect(config.object_keys).toEqual(["shared/main", privateCopy.object_key]);
     expect(isGraphDocument(graph.document)).toBe(true);
-    graph.undo();
+    await graph.undo();
     expect(graph.document?.object_bindings).toEqual([binding([write, read], [write]), owned]);
   });
   it("removes control dependencies and deleted-node permissions without leaving an ownerless private binding", async () => {
     const { graph, write, read } = await fixture();
-    graph.setObjectBindings([binding([write, read], [write]),
+    await graph.setObjectBindings([binding([write, read], [write]),
       { ...binding([write], [write]), object_key: "private/main", scope: "private", owner_node_id: write }]);
-    graph.setControlDependencies(read, [write]);
-    graph.selectedNodeIds = [write]; graph.removeSelection();
+    await graph.setControlDependencies(read, [write]);
+    graph.selectedNodeIds = [write]; await graph.removeSelection();
     expect(graph.document?.control_edges).toEqual([]);
     expect(graph.document?.object_bindings).toEqual([binding([read], [])]);
     expect(isGraphDocument(graph.document)).toBe(true);
-    graph.undo(); expect(graph.document?.object_bindings?.length).toBe(2);
+    await graph.undo(); expect(graph.document?.object_bindings?.length).toBe(2);
   });
   it("removes a selected control edge without changing the content graph", async () => {
     const { graph, write, read } = await fixture();
-    graph.setControlDependencies(read, [write]);
+    await graph.setControlDependencies(read, [write]);
     const data = graphClone(graph.document!.edges);
     graph.selectedNodeIds = []; graph.selectedEdgeId = graph.document!.control_edges![0].edge_id;
-    graph.removeSelection();
+    await graph.removeSelection();
     expect(graph.document?.control_edges).toEqual([]); expect(graph.document?.edges).toEqual(data);
+  });
+  it("keeps a control-edge selection mutually exclusive with nodes and prunes stale identities", async () => {
+    const { graph, write, read } = await fixture();
+    await graph.setControlDependencies(read, [write]);
+    const controlId = graph.document!.control_edges![0].edge_id;
+    graph.selectEdge(controlId);
+    expect(graph.selectedEdgeId).toBe(controlId);
+    expect(graph.selectedNodeIds).toEqual([]);
+    graph.selectNodes([read]);
+    expect(graph.selectedNodeIds).toEqual([read]);
+    expect(graph.selectedEdgeId).toBeNull();
+    // A stale control-edge identity is dropped without submitting a no-change save.
+    graph.selectedNodeIds = []; graph.selectedEdgeId = crypto.randomUUID();
+    const before = graphClone(graph.document!);
+    expect(await graph.removeSelection()).toMatchObject({ outcome: "no-change" });
+    expect(graph.selectedEdgeId).toBeNull();
+    expect(graph.document).toEqual(before);
+  });
+  it("deletes only the selected control edge and leaves nodes and content edges intact", async () => {
+    const { graph, write, read } = await fixture();
+    await graph.setControlDependencies(read, [write]);
+    const controlId = graph.document!.control_edges![0].edge_id;
+    const data = graphClone(graph.document!.edges), nodeCount = graph.document!.nodes.length;
+    graph.selectEdge(controlId);
+    expect(await graph.removeSelection()).toMatchObject({ outcome: "accepted" });
+    expect(graph.document!.control_edges).toEqual([]);
+    expect(graph.document!.edges).toEqual(data);
+    expect(graph.document!.nodes).toHaveLength(nodeCount);
+    expect(graph.selectedEdgeId).toBeNull();
   });
   it("loads exact catalog metadata and submits complete schema 3 controls and bindings before a run", async () => {
     const { graph, id, write, read } = await fixture();
@@ -146,11 +174,11 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
     stubGraphApplicationFetch( fetcher);
     await graph.loadCatalog();
     expect(graph.dataTypes[0].type_id).toBe("plugin.object");
-    graph.setControlDependencies(read, [write]);
-    graph.setObjectBindings([binding([write, read], [write])]);
+    await graph.setControlDependencies(read, [write]);
+    await graph.setObjectBindings([binding([write, read], [write])]);
     const configuration = installDebtCleanupConfiguration(graph, installDebtCleanupEvidence());
     await configuration.application.forWorkflow(id).initialize();
-    graph.renameWorkflow("Formal plugin workflow");
+    await graph.renameWorkflow("Formal plugin workflow");
     await configuration.settled(id);
     saved = graphClone(graph.document!);
     await graph.submitPrimary();
@@ -164,12 +192,12 @@ describe("minimum v2 tools/prompt workbench wiring", () => {
   });
   it("keeps the workflow identity, controls and object declarations when editing a saved graph", async () => {
     const { graph, id, write, read } = await fixture();
-    graph.setObjectBindings([binding([write, read], [write])]);
-    graph.setControlDependencies(read, [write]);
+    await graph.setObjectBindings([binding([write, read], [write])]);
+    await graph.setControlDependencies(read, [write]);
     const before = graphClone(graph.document!);
     graph.entries[id].saved_document = graphClone(before); graph.entries[id].saved_revision = 1;
     useWorkspaceStore().activeWorkflow.state = "saved";
-    graph.patchNode(write, { title: "copied edit" });
+    await graph.patchNode(write, { title: "copied edit" });
     expect(useWorkspaceStore().activeWorkflowId).toBe(id);
     expect(graph.document?.control_edges).toEqual(before.control_edges);
     expect(graph.document?.object_bindings).toEqual(before.object_bindings);

@@ -1,5 +1,5 @@
 import { diagnosticRecovery } from "../domain/diagnosticPresentation";
-import { graphObject, graphUuid } from "../domain/workflowGraph";
+import { graphObject, graphUuid, isGraphJsonValue } from "../domain/workflowGraph";
 
 export type FailureKind = "unavailable" | "rejected" | "unknown";
 
@@ -20,6 +20,18 @@ export class WorkbenchApiError extends Error {
 
 const publicReasons: Record<string, string> = {
   stale_revision: "状态修订已变化，请刷新",
+  stale_edit_sequence: "工作流修改基线已变化；请按最新正式配置重新编辑",
+  graph_missing_edge_node: "数据边端点节点不存在；请检查连线目标或删除该连线后重试",
+  graph_missing_config_reference: "声明的节点引用目标不存在；请先修正引用",
+  session_object_unbound: "会话对象引用未绑定或已失效；请先修正对象键",
+  graph_invalid_control_edge: "控制依赖或连线结构无效；请按定位修正",
+  configuration_run_locked: "工作流会话正在运行或被占用，配置修改被阻止",
+  package_missing_dependency: "执行包依赖缺失，运行准备失败",
+  workflow_modification_busy: "工作流正在修改，请等待当前请求结束后按原基线重试",
+  graph_storage_busy: "存储繁忙，本次修改未执行，请稍后重试",
+  request_abandoned: "原请求已被终止，不会再执行",
+  request_arbitration_unavailable: "服务端暂无法仲裁该原请求，结果仍未决",
+  request_evidence_conflict: "原请求证据与请求内容不一致，不能结案或重发",
   idempotency_conflict: "请求身份与既有请求不一致",
   invalid_request: "请求字段无效",
   ownership_mismatch: "请求归属不匹配",
@@ -141,11 +153,32 @@ export async function workbenchRequest<T>(
     failure.diagnostics = diagnostics.filter(graphObject)
       .map(item => {
         const diagnostic = item as Record<string, unknown>;
+        const value = (candidate: unknown): unknown => {
+          if (candidate === undefined || !isGraphJsonValue(candidate)) return undefined;
+          try { return JSON.stringify(candidate).length <= 2000 ? candidate : undefined; }
+          catch { return undefined; }
+        };
+        const occupying = Array.isArray(diagnostic.occupying_sessions)
+          ? diagnostic.occupying_sessions.filter(graphObject).flatMap(row => {
+            const workflowSessionId = row.workflow_session_id, chain = row.active_chain_run_id;
+            if (typeof workflowSessionId !== "string" || !workflowSessionId
+              || !(chain === null || chain === undefined || typeof chain === "string")) return [];
+            return [{ workflow_session_id: workflowSessionId, active_chain_run_id: chain ?? null }];
+          }) : undefined;
         return { reason_code: token(diagnostic.reason_code) ? diagnostic.reason_code : token(diagnostic.code) ? diagnostic.code : code,
           message: typeof diagnostic.message === "string" ? diagnostic.message : reason,
+          ...(typeof diagnostic.code === "string" && /^[A-Za-z0-9_]{1,128}$/.test(diagnostic.code) ? { code: diagnostic.code } : {}),
+          ...(token(diagnostic.phase) ? { phase: diagnostic.phase } : {}),
+          ...(typeof diagnostic.path === "string" && diagnostic.path.length <= 512 ? { path: diagnostic.path } : {}),
+          ...(value(diagnostic.expected) !== undefined ? { expected: value(diagnostic.expected) } : {}),
+          ...(value(diagnostic.actual) !== undefined ? { actual: value(diagnostic.actual) } : {}),
+          ...(token(diagnostic.failure_stage) ? { failure_stage: diagnostic.failure_stage } : {}),
+          ...(occupying?.length ? { occupying_sessions: occupying } : {}),
           ...(typeof diagnostic.node_id === "string" ? { node_id: diagnostic.node_id } : {}),
           ...(typeof diagnostic.port_id === "string" ? { port_id: diagnostic.port_id } : {}),
           ...(typeof diagnostic.edge_id === "string" ? { edge_id: diagnostic.edge_id } : {}),
+          ...(typeof diagnostic.object_key === "string" && /^[\x20-\x7e]{1,128}$/.test(diagnostic.object_key)
+            ? { object_key: diagnostic.object_key } : {}),
           ...(Array.isArray(diagnostic.dependent_outputs) ? { dependent_outputs: diagnostic.dependent_outputs.filter((v): v is string => typeof v === "string") } : {}),
           ...(token(diagnostic.cause_code) ? { cause_code: diagnostic.cause_code } : {}),
           ...(token(diagnostic.step) ? { step: diagnostic.step } : {}),

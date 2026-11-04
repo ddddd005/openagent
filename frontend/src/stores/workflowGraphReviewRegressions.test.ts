@@ -38,8 +38,8 @@ function view(document: GraphDocument, status = "idle"): GraphSession {
     nodes: [], chains: [], outputs: [], data: { revision: 0, values: {} } };
 }
 async function setup(status = "idle") {
-  const graph = useWorkflowGraphStore(); graph.setPersistenceGuard(() => true); graph.catalog = [textType];
-  const id = graph.createWorkflow();
+  const graph = useWorkflowGraphStore(); graph.catalog = [textType];
+  const id = await graph.createWorkflow();
   await graph.reconcile(id);
   const current = view(graph.document!, status);
   graph.entries[id].saved_revision = current.definition_revision;
@@ -54,26 +54,6 @@ afterEach(() => {
   vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals();
 });
 describe("reviewed graph receipt and operation races", () => {
-  it("never treats a frozen whole-graph save request as verifiable evidence", async () => {
-    const { graph, id } = await setup();
-    graph.entries[id].session_id = null;
-    const saved = graphClone(graph.entries[id].saved_document);
-    const request = createGraphCommand("/api/graph/definitions", {
-      document: { ...graphClone(graph.document!), revision: 2 }, expected_revision: 1,
-    }, "save");
-    graph.entries[id].pending = graphClone(request);
-    const fetcher = vi.fn(async (path: string) => {
-      expect(path).not.toBe("/api/graph/receipts/read");
-      return response([]);
-    });
-    stubGraphApplicationFetch(fetcher);
-    await graph.reconcile(id);
-    expect(graph.pending).toEqual(request);
-    expect(graph.entries[id].saved_revision).toBe(1);
-    expect(graph.entries[id].saved_document).toEqual(saved);
-    expect(fetcher.mock.calls.some(([path]) => path === "/api/graph/receipts/read")).toBe(false);
-  });
-
   it("blocks start during selection while preserving only read-only workbench preferences", async () => {
     const { graph, id, current } = await setup();
     const storage = memory(), backend = memoryLocalDraftStorage(); const persistence = useWorkbenchPersistenceStore();
@@ -135,7 +115,7 @@ describe("reviewed graph receipt and operation races", () => {
       return Promise.resolve(response(current));
     }));
     const selecting = graph.selectSession(next.workflow_session_id);
-    const other = graph.createWorkflow(); await graph.activate(other);
+    const other = await graph.createWorkflow(); await graph.activate(other);
     workspace.openWorkflow(id); await graph.activate(id);
     choice.resolve(response(next)); await selecting;
     expect(graph.entries[id].session_id).toBe(current.workflow_session_id); expect(graph.locked).toBe(false);
@@ -154,7 +134,7 @@ describe("reviewed graph receipt and operation races", () => {
       return response(current);
     }));
     const selecting = graph.selectSession(next.workflow_session_id);
-    expect(graph.renameWorkflow("blocked edit")).toBeNull();
+    expect(await graph.renameWorkflow("blocked edit")).toMatchObject({ outcome: "failed" });
     expect(await graph.saveWorkflow()).toBe(false);
     expect(configuration.update).not.toHaveBeenCalled();
     expect(graph.entries[id].document).toEqual(document);
@@ -167,7 +147,7 @@ describe("reviewed graph receipt and operation races", () => {
   it("retains the displayed workflow poll after a hidden command receipt", async () => {
     const { graph, id: a, current, workspace } = await setup("running");
     const command = deferred<Response>();
-    const b = graph.createWorkflow(); const bView = view(graph.document!, "running");
+    const b = await graph.createWorkflow(); const bView = view(graph.document!, "running");
     graph.entries[b].session_id = bView.workflow_session_id; graph.views[bView.workflow_session_id] = bView;
     const paths: string[] = [];
     stubGraphApplicationFetch( vi.fn(async path => {
@@ -182,7 +162,6 @@ describe("reviewed graph receipt and operation races", () => {
     workspace.openWorkflow(b); await graph.activate(b);
     paths.length = 0;
     command.resolve(response({ ...current, revision: 2 })); await pausing;
-    expect(graph.entries[a].pending).toBeNull();
     expect(graph.views[current.workflow_session_id].revision).toBe(2);
     await vi.advanceTimersByTimeAsync(350);
     expect(paths).toEqual([`/api/graph/definitions/${b}/sessions`, `/api/graph/sessions/${bView.workflow_session_id}`]);
@@ -190,7 +169,7 @@ describe("reviewed graph receipt and operation races", () => {
 
   it("retains the displayed workflow poll after a hidden in-flight poll finishes", async () => {
     const { graph, id: a, current, workspace } = await setup("running");
-    const b = graph.createWorkflow(), bView = view(graph.document!, "running"), oldPoll = deferred<Response>();
+    const b = await graph.createWorkflow(), bView = view(graph.document!, "running"), oldPoll = deferred<Response>();
     graph.entries[b].session_id = bView.workflow_session_id; graph.views[bView.workflow_session_id] = bView;
     let polling = false; const paths: string[] = [];
     stubGraphApplicationFetch( vi.fn(async path => {
@@ -286,18 +265,18 @@ describe("duplicated graph context references", () => {
           target_types: [{ component_id: "agents.execute", component_version: "2" }] },
       ] };
     graph.catalog = [agentType, contextType];
-    const agent = graph.addNode("agents.execute@2", { x: 0, y: 0 })!;
-    const external = graph.addNode("agents.execute@2", { x: 0, y: 100 })!;
-    const context = graph.addNode("plugin.bound-context@1", { x: 100, y: 0 })!;
-    graph.patchNode(context, { config: { agent_node_id: agent, related_node_ids: [agent, external],
+    const agent = (await graph.addNode("agents.execute@2", { x: 0, y: 0 }))!;
+    const external = (await graph.addNode("agents.execute@2", { x: 0, y: 100 }))!;
+    const context = (await graph.addNode("plugin.bound-context@1", { x: 100, y: 0 }))!;
+    await graph.patchNode(context, { config: { agent_node_id: agent, related_node_ids: [agent, external],
       unrelated_text: agent } });
     const original = graphClone(graph.document!);
-    graph.selectedNodeIds = [agent, context]; graph.duplicateSelection();
+    graph.selectedNodeIds = [agent, context]; await graph.duplicateSelection();
     const [copiedAgent, copiedContext] = graph.document!.nodes.slice(3);
     expect(copiedContext.config).toEqual({ agent_node_id: copiedAgent.node_binding_id,
       related_node_ids: [copiedAgent.node_binding_id, external], unrelated_text: agent });
     expect(graph.document!.nodes.slice(0, 3)).toEqual(original.nodes);
-    graph.undo(); expect(graph.document).toEqual(original);
+    await graph.undo(); expect(graph.document).toEqual(original);
   });
 
   it("remaps declared plugin sources and edges as one undoable transaction", async () => {
@@ -319,7 +298,7 @@ describe("duplicated graph context references", () => {
     graph.entries[id].document = doc;
     const original = graphClone(doc);
     graph.selectedNodeIds = doc.nodes.map(row => row.node_binding_id);
-    graph.duplicateSelection();
+    await graph.duplicateSelection();
     const copies = graph.document!.nodes.slice(4);
     expect(copies[1].config.source_node_id).toBe(copies[0].node_binding_id);
     expect(copies[2].config.source_node_id).toBe(external);
@@ -328,9 +307,12 @@ describe("duplicated graph context references", () => {
       source_node_id: copies[0].node_binding_id, target_node_id: copies[1].node_binding_id,
     });
     expect(doc).toEqual(original); expect(graph.document!.nodes.slice(0, 4)).toEqual(original.nodes);
-    graph.undo(); expect(graph.document).toEqual(original);
-    graph.undo(true); expect(graph.document!.nodes).toHaveLength(8);
-    graph.selectedNodeIds = [agent]; graph.removeSelection();
+    await graph.undo(); expect(graph.document).toEqual(original);
+    await graph.undo(true); expect(graph.document!.nodes).toHaveLength(8);
+    // Q05-2: the original context still declares a reference to the agent, so it must be
+    // handled in the same batch instead of leaving a dangling declared reference.
+    graph.selectedNodeIds = [agent, context.node_binding_id]; await graph.removeSelection();
+    expect(graph.document!.nodes.some(node => node.node_binding_id === context.node_binding_id)).toBe(false);
     expect(graph.document!.nodes.find(n => n.node_binding_id === copies[1].node_binding_id)?.config.source_node_id)
       .toBe(copies[0].node_binding_id);
     expect(graph.document!.edges).toEqual([expect.objectContaining({

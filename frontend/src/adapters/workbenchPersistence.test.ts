@@ -7,7 +7,7 @@ function fixture(): SavedWorkbench {
     activeWorkflowId: id, selectedWorkflowId: id,
     catalog: [{ id, title: document.name, description: "", nodeCount: 0, state: "saved" }],
     graph: { schema_version: 1, entries: { [id]: {
-      document, saved_revision: 1, session_id: null, pending: null,
+      document, saved_revision: 1, session_id: null,
     } } } };
 }
 describe("current backend workbench format", () => {

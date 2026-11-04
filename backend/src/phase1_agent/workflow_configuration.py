@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Callable
 from uuid import uuid4
 
-from .contract_errors import require, uuid4_string, uuid_value
+from .contract_errors import ContractValidationError, require, uuid4_string, uuid_value
 from .contract_json import canonical_bytes
 from .host_sdk import bounded_name
 from .session_preloads import validate_session_preloads
@@ -266,7 +266,7 @@ def classify_configuration_changes(previous, proposed, descriptor_lookup):
 
 
 class WorkflowConfiguration:
-    def _configuration_descriptor(self, node, *, definitions=None):
+    def _configuration_descriptor(self, node, *, definitions=None, phase=None):
         from .workflow_definitions import WorkflowDefinitionCatalog
 
         if definitions is None:
@@ -280,8 +280,19 @@ class WorkflowConfiguration:
         })
         require(view is not None, "graph_missing_node_type",
                 "Current trusted node definition is unavailable", 409,
-                node_id=node["node_binding_id"])
+                node_id=node["node_binding_id"], phase=phase)
         return deepcopy(view["declaration"])
+
+    @staticmethod
+    def _located_save_error(exc):
+        """Give save-phase validation errors their stage and legacy code key."""
+        diagnostics = getattr(exc, "diagnostics", None)
+        if type(diagnostics) is list and diagnostics and type(diagnostics[0]) is dict:
+            diagnostic = diagnostics[0]
+            diagnostic.setdefault("phase", "save")
+            if "code" not in diagnostic and "reason_code" in diagnostic:
+                diagnostic["code"] = diagnostic["reason_code"]
+        return exc
 
     def _compose_configuration(self, current, fixed_document, *, registry=None, definitions=None):
         if definitions is not None:
@@ -381,48 +392,79 @@ class WorkflowConfiguration:
         The rule is scoped to the workflow definition identity and needs the
         persisted sessions only, so a process restart does not unlock a run.
         """
-        unfinished = any(session.get("active_chain_run_id") is not None
-                         for session in data.definition_sessions(workflow_definition_id))
+        unfinished = [session for session in data.definition_sessions(workflow_definition_id)
+                      if session.get("active_chain_run_id") is not None]
         require(not unfinished, "configuration_run_locked",
                 "Configuration cannot change while a workflow run is unfinished", 409,
-                workflow_definition_id=workflow_definition_id)
+                workflow_definition_id=workflow_definition_id, phase="save", path="",
+                occupying_sessions=[{
+                    "workflow_session_id": session["workflow_session_id"],
+                    "active_chain_run_id": session["active_chain_run_id"],
+                } for session in unfinished])
 
     def _save_configuration_update(self, data, document, *, workflow_definition_id, expected_edit_sequence,
                                    confirm_derivation):
-        from .graph_contracts import validate_graph_document, validate_session_item_registrations
+        from .graph_contracts import (
+            validate_document_references, validate_graph_document,
+            validate_session_item_registrations,
+        )
         uuid4_string(workflow_definition_id)
         self._validate_configuration_edit_basis(expected_edit_sequence, confirm_derivation)
-        proposed = validate_graph_document(document)
+        proposed = validate_graph_document(document, phase="save")
         require(proposed["schema_version"] == 3, "graph_invalid_document",
-                "Configuration updates require graph document schema 3")
-        validate_session_item_registrations(proposed, self.registry)
+                "Configuration updates require graph document schema 3",
+                phase="save", path="/schema_version", expected={"schema_version": 3},
+                actual={"schema_version": proposed["schema_version"]})
+        validate_session_item_registrations(proposed, self.registry, phase="save")
         validate_session_preloads(proposed, self.registry.data_types)
         require(proposed["workflow_definition_id"] == workflow_definition_id, "invalid_request",
-                "Submitted document identity must equal the source workflow")
+                "Submitted document identity must equal the source workflow",
+                phase="save", path="/workflow_definition_id",
+                expected={"workflow_definition_id": workflow_definition_id},
+                actual={"workflow_definition_id": proposed["workflow_definition_id"]})
         require("edit_sequence" not in proposed or proposed["edit_sequence"] == expected_edit_sequence,
-                "invalid_request", "Document edit sequence differs from its editing basis")
+                "invalid_request", "Document edit sequence differs from its editing basis",
+                phase="save", path="/edit_sequence",
+                expected={"edit_sequence": expected_edit_sequence},
+                actual={"edit_sequence": proposed.get("edit_sequence")})
         proposed.pop("edit_sequence", None)
         self._require_definition_active_in(data, workflow_definition_id)
         self._require_no_unfinished_run(data, workflow_definition_id)
         current = data.current_configuration(workflow_definition_id)
         require((current["edit_sequence"] if current else 0) == expected_edit_sequence,
-                "stale_edit_sequence", "Workflow configuration changed", 409)
+                "stale_edit_sequence", "Workflow configuration changed", 409,
+                phase="save", path="",
+                expected={"edit_sequence": expected_edit_sequence},
+                actual={"edit_sequence": current["edit_sequence"] if current else 0})
         existing = data.definition_revisions(workflow_definition_id)
         require(current is not None or not existing, "graph_configuration_missing",
-                "An existing definition has no current schema 3 configuration", 409)
+                "An existing definition has no current schema 3 configuration", 409,
+                phase="save", path="")
         effective = any(not data.archived("session", session["workflow_session_id"])
                         for session in data.definition_sessions(workflow_definition_id))
         for node in proposed["nodes"]:
-            validate_node_configuration(node, self._configuration_descriptor(node))
+            try:
+                validate_node_configuration(
+                    node, self._configuration_descriptor(node, phase="save"))
+            except ContractValidationError as exc:
+                raise self._located_save_error(exc)
+        # Q05-2: declared but dangling references of the submitted live document
+        # are rejected here with the same rule the compiler applies later.
+        validate_document_references(proposed, self.registry, phase="save")
         if current is None:
             require(proposed["revision"] == 1, "invalid_request", "A new workflow starts at fixed revision 1")
             categories = ["fixed"]
             outcome, sequence = "saved", 1
-            data.save_fixed_revision(proposed, 0)
+            # Q08: line 439 above already read and validated this identity's
+            # (empty) history inside this transaction, so only the max is read.
+            data.save_fixed_revision(proposed, 0, history_validated=True)
             self._write_configuration(data, proposed, sequence)
         else:
             require(proposed["revision"] == current["fixed_definition_revision"], "stale_revision",
-                    "Document fixed revision differs from its editing basis", 409)
+                    "Document fixed revision differs from its editing basis", 409,
+                    phase="save", path="/revision",
+                    expected={"revision": current["fixed_definition_revision"]},
+                    actual={"revision": proposed["revision"]})
             previous = self._configuration_view(data, workflow_definition_id)
             categories = classify_configuration_changes(
                 previous, proposed, self._configuration_descriptor)
@@ -445,6 +487,9 @@ class WorkflowConfiguration:
                 proposed["workflow_definition_id"] = str(uuid4())
                 proposed["revision"] = 1
                 sequence = 1
+                # Q08: this write targets an identity created in this call, so
+                # no first full validation exists for it; keep the original
+                # scan (it runs over an empty set) instead of assuming.
                 data.save_fixed_revision(proposed, 0)
                 self._write_configuration(data, proposed, sequence)
             elif categories:
@@ -453,7 +498,11 @@ class WorkflowConfiguration:
                 sequence = current["edit_sequence"] + 1
                 if "fixed" in categories:
                     proposed["revision"] += 1
-                    data.save_fixed_revision(proposed, current["fixed_definition_revision"])
+                    # Q08: line 439 above already read and validated this same
+                    # workflow identity's whole history in this transaction, so
+                    # this writer only needs the max revision (no second scan).
+                    data.save_fixed_revision(proposed, current["fixed_definition_revision"],
+                                             history_validated=True)
                 self._write_configuration(data, proposed, sequence)
             else:
                 sequence = current["edit_sequence"]
@@ -532,14 +581,23 @@ class WorkflowConfiguration:
         proposed["revision"] = 1
         proposed["name"] = target_name
         proposed.pop("edit_sequence", None)
-        proposed = validate_graph_document(proposed)
+        proposed = validate_graph_document(proposed, phase="save")
         require(proposed["schema_version"] == 3, "graph_invalid_document",
-                "Configuration copies require graph document schema 3")
-        validate_session_item_registrations(proposed, self.registry)
+                "Configuration copies require graph document schema 3",
+                phase="save", path="/schema_version", expected={"schema_version": 3},
+                actual={"schema_version": proposed["schema_version"]})
+        validate_session_item_registrations(proposed, self.registry, phase="save")
         validate_session_preloads(proposed, self.registry.data_types)
         for node in proposed["nodes"]:
-            validate_node_configuration(node, self._configuration_descriptor(node))
-        data.save_fixed_revision(proposed, 0)
+            try:
+                validate_node_configuration(
+                    node, self._configuration_descriptor(node, phase="save"))
+            except ContractValidationError as exc:
+                raise self._located_save_error(exc)
+        # Q08: the target identity's empty history was read and validated above
+        # in this transaction (the graph_definition_conflict check), so this
+        # writer only needs the max revision.
+        data.save_fixed_revision(proposed, 0, history_validated=True)
         self._write_configuration(data, proposed, 1)
         actual = self._configuration_view(data, target_workflow_definition_id)
         return {
@@ -553,3 +611,149 @@ class WorkflowConfiguration:
                             for node in actual["nodes"]},
             "document": actual,
         }
+
+    def preview_configuration(self, document, *, workflow_definition_id, expected_edit_sequence):
+        """Q06-2 read-only save preview.  Writes nothing and reserves no right.
+
+        Structure/reference/compile checks reuse the exact save and compiler
+        rules.  The submitted baseline counters are only compared with a read
+        snapshot; actual submission still re-runs the modification entitlement,
+        CAS, G21, idempotency and resource checks.
+        """
+        from .graph_contracts import (
+            DOCUMENT_CONTRACT_VERSION, GraphCompiler, validate_document_references,
+            validate_graph_document, validate_session_item_registrations,
+        )
+
+        def _diagnostics(error):
+            return deepcopy(getattr(error, "diagnostics", None) or [{
+                "code": getattr(error, "reason_code", "graph_invalid_document"),
+                "message": str(error),
+            }])
+
+        result = {
+            "schema_version": 1, "kind": "workflow.configuration-preview",
+            "contract_version": DOCUMENT_CONTRACT_VERSION,
+            "workflow_definition_id": workflow_definition_id,
+            "expected_edit_sequence": expected_edit_sequence,
+            "read_only": True, "reserves_save_right": False,
+            "structure": {"ok": True, "diagnostics": []},
+            "declared_references": {"ok": True, "diagnostics": []},
+            "compilation": {"ok": True, "skipped": False, "diagnostics": []},
+            "baseline": {}, "changes": {}, "run_conditions": {},
+        }
+        proposed = None
+        try:
+            proposed = validate_graph_document(document, phase="save")
+            require(proposed["schema_version"] == 3, "graph_invalid_document",
+                    "Configuration updates require graph document schema 3",
+                    phase="save", path="/schema_version", expected={"schema_version": 3},
+                    actual={"schema_version": proposed["schema_version"]})
+        except ContractValidationError as exc:
+            result["structure"] = {"ok": False, "diagnostics": _diagnostics(exc)}
+        if proposed is not None:
+            try:
+                validate_session_item_registrations(proposed, self.registry, phase="save")
+                validate_session_preloads(proposed, self.registry.data_types)
+                for node in proposed["nodes"]:
+                    try:
+                        validate_node_configuration(
+                            node, self._configuration_descriptor(node, phase="save"))
+                    except ContractValidationError as exc:
+                        raise self._located_save_error(exc)
+                validate_document_references(proposed, self.registry, phase="save")
+            except ContractValidationError as exc:
+                result["declared_references"] = {"ok": False, "diagnostics": _diagnostics(exc)}
+        if proposed is not None:
+            try:
+                plan = GraphCompiler(self.registry).compile(proposed)
+                result["compilation"] = {
+                    "ok": True, "skipped": False, "diagnostics": [],
+                    "target_node_ids": list(plan.target_node_ids),
+                    "ordered_node_count": len(plan.ordered_node_ids),
+                }
+            except ContractValidationError as exc:
+                result["compilation"] = {
+                    "ok": False, "skipped": False, "diagnostics": _diagnostics(exc),
+                }
+        else:
+            result["compilation"] = {"ok": False, "skipped": True, "diagnostics": []}
+
+        with self._lock, self._configuration_data.read() as data:
+            current = data.current_configuration(workflow_definition_id)
+            sessions = data.definition_sessions(workflow_definition_id)
+            archived = data.archived("definition", workflow_definition_id)
+            occupying = [{"workflow_session_id": session["workflow_session_id"],
+                          "active_chain_run_id": session["active_chain_run_id"]}
+                         for session in sessions if session["active_chain_run_id"] is not None]
+            effective = any(not data.archived("session", session["workflow_session_id"])
+                            for session in sessions)
+            current_sequence = current["edit_sequence"] if current else 0
+            current_revision = current["fixed_definition_revision"] if current else 1
+            submitted_revision = (document.get("revision")
+                                 if isinstance(document, dict) else None)
+            result["baseline"] = {
+                "configuration_exists": current is not None,
+                "expected_edit_sequence": expected_edit_sequence,
+                "current_edit_sequence": current_sequence,
+                "edit_sequence_matches": current_sequence == expected_edit_sequence,
+                "current_fixed_definition_revision": current_revision,
+                "document_revision": submitted_revision,
+                "revision_matches": submitted_revision == current_revision,
+                "archived": archived,
+                "run_locked": bool(occupying),
+                "occupying_sessions": occupying,
+                "has_effective_session": effective,
+            }
+            if proposed is not None:
+                try:
+                    if current is None:
+                        categories = ["fixed"]
+                        would_outcome, derive = "saved", False
+                    else:
+                        previous = self._configuration_view(data, workflow_definition_id)
+                        categories = classify_configuration_changes(
+                            previous, proposed, self._configuration_descriptor)
+                        if not categories:
+                            would_outcome, derive = "unchanged", False
+                        elif effective and "fixed" in categories:
+                            would_outcome, derive = "confirmation_required", True
+                        else:
+                            would_outcome, derive = "saved", False
+                    result["changes"] = {
+                        "categories": categories,
+                        "would_outcome": would_outcome,
+                        "would_require_confirmation": would_outcome == "confirmation_required",
+                        "would_derive_after_confirmation": derive,
+                    }
+                except ContractValidationError as exc:
+                    result["changes"] = {"categories": None, "would_outcome": None,
+                                         "diagnostics": _diagnostics(exc)}
+            else:
+                result["changes"] = {"categories": None, "would_outcome": None,
+                                     "diagnostics": []}
+        package_lock = document.get("package_lock") if isinstance(document, dict) else None
+        available_packages = {(item["package_id"], item["version"])
+                              for item in self.registry.package_lock}
+        result["run_conditions"] = {
+            "package_lock_available": (
+                type(package_lock) is list
+                and all((item["package_id"], item["version"]) in available_packages
+                        for item in package_lock if type(item) is dict)),
+            "checked": ["structure", "declared_references", "compilation",
+                        "package_lock_membership", "baseline_counters"],
+            "not_checked": [
+                "modification entitlement and CAS re-check at submit",
+                "G21 run lock re-check at submit",
+                "idempotency replay",
+                "global/session resource availability and preflight",
+                "tool or business service availability",
+                "model credentials and model calls",
+                "actual background execution and result acceptance",
+            ],
+        }
+        result["notes"] = [
+            "preview writes nothing, reserves no save right and does not take the modification entitlement",
+            "a successful preview does not guarantee that a later submit or run succeeds",
+        ]
+        return result

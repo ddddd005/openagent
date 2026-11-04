@@ -1,8 +1,9 @@
 import { WorkbenchApiError } from "./workbenchApi";
 import { graphApplicationQuery } from "./workflowApplicationApi";
 import { isFrontendExtension } from "../domain/frontendExtensions";
-import { graphObject, isGraphCatalog, isGraphDocument, isGraphSession, isGraphPackageLock, type GraphDocument,
+import { graphObject, isGraphCatalog, isGraphDocument, isGraphSession, isGraphPackageLock, graphClone, type GraphDocument,
   graphUuid, type GraphNodeType, type GraphDataType, type GraphSession, type GraphRunDetail } from "../domain/workflowGraph";
+import { normalizeWorkflowPreview, type WorkflowPreview } from "../domain/workflowPreview";
 import { isWorkflowDefinitionSummary, isWorkflowSessionSummary,
   type WorkflowDefinitionSummary, type WorkflowSessionSummary } from "../domain/workflowDirectory";
 
@@ -27,21 +28,10 @@ export async function readGraphCatalogDetails() {
     frontend_extensions: response.frontend_extensions ?? [],
     data_types: response.data_types as GraphDataType[] };
 }
-export async function readGraphCatalog(): Promise<GraphNodeType[]> {
-  return (await readGraphCatalogDetails()).node_types;
-}
 export async function readGraphDefinition(id: string, revision?: number): Promise<GraphDocument> {
   const value = await graphApplicationQuery("definition.read", { identity: id, ...(revision ? { revision } : {}) });
   if (!isGraphDocument(value) || value.workflow_definition_id !== id || revision && value.revision !== revision)
     throw new WorkbenchApiError("unavailable", "工作流定义身份或版本不匹配");
-  return value;
-}
-export async function readGraphDefinitions(includeArchived = true): Promise<{ document: GraphDocument; archived: boolean }[]> {
-  const value = await graphApplicationQuery("definition.list", { include_archived: includeArchived });
-  if (!Array.isArray(value) || !value.every(row => graphObject(row) && Object.keys(row).length === 2
-    && isGraphDocument(row.document) && typeof row.archived === "boolean")
-    || new Set(value.map(row => row.document.workflow_definition_id)).size !== value.length)
-    throw new WorkbenchApiError("unavailable", "工作流目录身份或格式无效");
   return value;
 }
 /** Lightweight formal workflow directory. Rows are never configuration documents. */
@@ -62,13 +52,6 @@ export async function readSessionSummaries(workflowDefinitionId: string,
     && row.workflow_definition_id === workflowDefinitionId)
     || new Set(value.map(row => row.workflow_session_id)).size !== value.length)
     throw new WorkbenchApiError("unavailable", "工作流会话摘要身份或格式无效");
-  return value;
-}
-
-export async function readGraphSessions(definitionId: string): Promise<GraphSession[]> {
-  const value = await graphApplicationQuery("definition.sessions", { workflow_definition_id: definitionId });
-  if (!Array.isArray(value) || !value.every(session => isGraphSession(session, definitionId)))
-    throw new WorkbenchApiError("unavailable", "会话目录契约无效");
   return value;
 }
 export async function readGraphSession(id: string, definitionId: string): Promise<GraphSession> {
@@ -97,4 +80,13 @@ export async function readGraphRun(sessionId: string, chainId: string): Promise<
     const { agent: _privateAgent, ...record } = run as typeof run & { agent?: unknown };
     return record;
   }) };
+}
+/** Read-only save preview (Q06-2); it writes nothing and reserves no save right. */
+export async function readGraphDefinitionPreview(parameters: { workflow_definition_id: string;
+  document: GraphDocument; expected_edit_sequence: number }): Promise<WorkflowPreview> {
+  const value = await graphApplicationQuery("definition.preview", graphClone(parameters));
+  const preview = normalizeWorkflowPreview(value);
+  if (!preview)
+    throw new WorkbenchApiError("unavailable", "保存预演契约无效（需 document contract version ≥ 2）");
+  return preview;
 }

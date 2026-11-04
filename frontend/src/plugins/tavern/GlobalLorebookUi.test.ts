@@ -340,11 +340,13 @@ describe("global lorebook workbench UI", () => {
     const host = createWorkbenchFrontendHost(() => currentTavernFrontendExtensions,
       () => [{ package_id: "workflow.tavern", version: "1.2.0" }]);
     expect(host.issues.value).toEqual([]);
-    expect(host.extensions.value).toHaveLength(5);
+    expect(host.extensions.value).toHaveLength(8);
     expect(host.extensions.value.map(row => row.declaration.extension_id)).toEqual([
       "workflow.tavern.item-fields-v1-1-v1-2", "workflow.tavern.group-fields-v1-1-v1-2",
       "workflow.tavern.lorebook-resources-v1-2", "workflow.tavern.global-reference-fields-v1-2",
       "workflow.tavern.global-activate-fields-v1-2",
+      "workflow.tavern.item-fields-v1-1-v1-2-node-v2", "workflow.tavern.group-fields-v1-1-v1-2-node-v2",
+      "workflow.tavern.global-activate-fields-v1-2-node-v2",
     ]);
     const inline = fixture();
     inline.document.package_lock = [{ package_id: "workflow.tavern", version: "1.2.0" }];
@@ -353,6 +355,9 @@ describe("global lorebook workbench UI", () => {
     const inlineRoot = await mount(LorebookFields, inline);
     await trigger(label(inlineRoot, "Lorebook 配置"), "Submit");
     expect(inline.configureNode.mock.calls[0]![0].extensionId).toBe("workflow.tavern.item-fields-v1-1-v1-2");
+    inline.node.component_version = "2"; await flush();
+    await trigger(label(inlineRoot, "Lorebook 配置"), "Submit");
+    expect(inline.configureNode.mock.calls[1]![0].extensionId).toBe("workflow.tavern.item-fields-v1-1-v1-2-node-v2");
     const global = fixture();
     global.document.package_lock = [{ package_id: "workflow.tavern", version: "1.2.0" }];
     const globalRoot = await mount(GlobalLorebookFields, global);
@@ -361,6 +366,12 @@ describe("global lorebook workbench UI", () => {
     global.document.package_lock = [globalTavernPackage]; await flush();
     await trigger(label(globalRoot, "全局 Lorebook 节点配置"), "Submit");
     expect(global.configureNode.mock.calls[1]![0].extensionId).toBe("workflow.tavern.global-reference-fields");
+    const activate = fixture([], true);
+    activate.document.package_lock = [{ package_id: "workflow.tavern", version: "1.2.0" }];
+    activate.node.component_version = "2";
+    const activateRoot = await mount(GlobalLorebookFields, activate);
+    await trigger(label(activateRoot, "全局 Lorebook 节点配置"), "Submit");
+    expect(activate.configureNode.mock.calls[0]![0].extensionId).toBe("workflow.tavern.global-activate-fields-v1-2-node-v2");
   });
   it("edits content, keywords, presentation and ordering without adding session authorization", async () => {
     const record = newLorebookResource(), first = newLorebookEntry(), second = newLorebookEntry();

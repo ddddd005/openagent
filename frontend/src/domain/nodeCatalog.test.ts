@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildNodeFamilies, nodeDisplayTitle, nodeMenuGroups, nodeProfileLabel } from "./nodeCatalog";
+import { buildNodeFamilies, nodeDisplayTitle, nodeMenuGroups, nodePortLabel, nodeProfileLabel } from "./nodeCatalog";
 import { graphClone, type GraphNodeType } from "./workflowGraph";
 import { editableInputType } from "../testUtils/editableInputFixture";
 
@@ -40,13 +40,13 @@ describe("current node directory", () => {
       ...versions("agents.compaction-policy", ["2", "1"]),
       ...versions("tools.output", ["2", "1"]),
       ...versions("context.output", ["5", "4"]),
-      ...versions("context.assembly", ["5", "4"]),
+      ...versions("context.assembly", ["7", "5", "4"]),
       ...versions("context.merge", ["6", "5", "4"]), type("plugin.text", "9")];
     const before = graphClone(catalog), families = buildNodeFamilies(catalog);
     expect(catalog).toEqual(before);
     for (const [id, version] of [["models.source", "7"], ["models.chat", "5"],
       ["agents.execute", "10"], ["agents.compaction-policy", "2"], ["tools.output", "1"],
-      ["context.output", "5"], ["context.assembly", "5"], ["context.merge", "6"]]) {
+      ["context.output", "5"], ["context.assembly", "7"], ["context.merge", "6"]]) {
       const family = families.find(row => row.id === id)!;
       expect(family.preferredKey).toBe(`${id}@${version}`);
       expect(family.profiles.map(row => row.key)).toEqual([`${id}@${version}`]);
@@ -84,14 +84,29 @@ describe("current node directory", () => {
       .toEqual([["prompts.item@3"], ["context.merge@6"]]);
   });
   it("keeps world-book families while refusing the retired Tavern chat families", () => {
-    const catalog = ["lorebook.item", "lorebook.group", "lorebook.global-reference", "lorebook.global-activate",
-      "tavern.chat.output", "tavern.chat.append", "tavern.chat.presentation"].map(id => type(id));
+    const catalog = ["lorebook.item", "lorebook.group", "lorebook.global-activate"].flatMap(id => versions(id, ["1", "2"]))
+      .concat(["lorebook.global-reference", "tavern.chat.output", "tavern.chat.append", "tavern.chat.presentation"].map(id => type(id)));
     const before = graphClone(catalog), families = buildNodeFamilies(catalog);
     expect(catalog).toEqual(before);
     expect(families.map(row => row.id)).toEqual([
       "lorebook.item", "lorebook.group", "lorebook.global-reference", "lorebook.global-activate",
     ]);
     expect(nodeMenuGroups(families)).toMatchObject([{ id: "tavern", label: "世界书" }]);
+  });
+  it("offers the new summary and assembly declarations and keeps old assembly out of the menu", () => {
+    const families = buildNodeFamilies([...versions("prompts.summary", ["2", "3"]),
+      ...versions("context.assembly", ["5", "7"]), type("prompts.assembly", "2"),
+      ...versions("tools.prompt-to-text", ["1", "2"])]);
+    expect(families.map(row => [row.id, row.preferredKey, row.label])).toEqual([
+      ["tools.prompt-to-text", "tools.prompt-to-text@2", "提示词转文本"],
+      ["prompts.summary", "prompts.summary@3", "提示词/上下文汇总"],
+      ["context.assembly", "context.assembly@7", "输入装配"],
+    ]);
+    expect(nodePortLabel(type("lorebook.item", "2"), "structured")).toBe("结构内容");
+    expect(nodePortLabel(type("prompts.summary", "3"), "input")).toBe("提示词材料");
+    expect(nodePortLabel(type("prompts.summary", "3"), "summary")).toBe("汇总");
+    expect(nodePortLabel(type("lorebook.global-activate", "2"), "resource")).toBe("世界书资源");
+    expect(nodePortLabel(type("lorebook.item", "1"), "structured")).toBe("structured");
   });
   it("uses the latest installed external declaration and excludes unknown model versions", () => {
     const families = buildNodeFamilies([...versions("plugin.node", ["7", "42"]), type("models.source", "99")]);

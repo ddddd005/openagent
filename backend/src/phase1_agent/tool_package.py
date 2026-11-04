@@ -110,6 +110,14 @@ def _prompt_to_text(config, inputs, context):
     return {"output": text_content(config["separator"].join(texts))}
 
 
+def _prompt_materials_to_text(config, inputs, context):
+    value = inputs["input"]
+    if value["kind"] == "workflow.prompt":
+        return _prompt_to_text(config, inputs, context)
+    texts = [item["text"] for item in value["items"] if item["enabled"]]
+    return {"output": text_content(config["separator"].join(texts))}
+
+
 def _text_to_json(config, inputs, context):
     return {"output": json_content(loads_strict(inputs["input"]["text"]))}
 
@@ -310,6 +318,10 @@ def create_tool_package() -> CapabilityPackage:
         install("prompt-to-text", "提示词转文本", "格式转换",
                 {"separator": "\n"}, {"separator": _STRING}, _prompt_to_text,
                 inputs=(_port("input", "PROMPT"),), outputs=(_port("output", "TEXT"),))
+        install("prompt-to-text", "提示词转文本", "格式转换",
+                {"separator": "\n"}, {"separator": _STRING}, _prompt_materials_to_text,
+                inputs=(NodePort("input", "PROMPT_MATERIALS", accepted_types=(("PROMPT", 2),)),),
+                outputs=(_port("output", "TEXT"),), version="2")
         for name, display, executor, source, target in (
             ("text-to-json", "文本转 JSON", _text_to_json, "TEXT", "JSON"),
             ("json-to-text", "JSON 转文本", _json_to_text, "JSON", "TEXT"),
@@ -359,6 +371,7 @@ def create_tool_package() -> CapabilityPackage:
             "nodes": [{"component_id": "tools." + name, "component_version": "1"}
                       for name in node_names if name not in ("output", "variable-register")]
                     + [{"component_id": "tools.variable-register", "component_version": "2"}]
+                    + [{"component_id": "tools.prompt-to-text", "component_version": "2"}]
                     + [{"component_id": "tools.output", "component_version": "1"}],
         },
     ), register)

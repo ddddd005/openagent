@@ -80,11 +80,18 @@ def test_independent_package_exports_exact_v2_ports_and_no_agent(registry):
         {"package_id": "workflow.tools", "version": "1.0.0"},
     ]
     tool_nodes = [item for item in registry.catalog() if item["component_id"].startswith("tools.")]
-    assert len(tool_nodes) == 16
+    assert len(tool_nodes) == 17
     for item in tool_nodes:
         assert item["component_id"].startswith("tools.")
         port_sets = [(item["inputs"], item["outputs"])] + [
             (mode["inputs"], mode["outputs"]) for mode in item.get("port_modes", {}).values()]
+        if (item["component_id"], item["component_version"]) == ("tools.prompt-to-text", "2"):
+            assert item["inputs"] == [{
+                "port_id": "input", "data_type": "PROMPT_MATERIALS", "required": True,
+                "multiple": False, "data_schema_version": 1,
+                "accepted_types": [{"data_type": "PROMPT", "data_schema_version": 2}],
+            }]
+            continue
         assert all(port["data_schema_version"] == 2
                    for inputs, outputs in port_sets for port in inputs + outputs)
     for name in ("variable-register", "variable-assign"):

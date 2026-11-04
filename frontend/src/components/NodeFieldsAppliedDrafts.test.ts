@@ -142,7 +142,7 @@ async function mount(kind: "model" | "lorebook") {
   const lock = kind === "model" ? [{ package_id: "workflow.models", version: "1.0.0" }] : [lorebookPackage];
   graph.catalog = [definition]; graph.packageLock = lock; graph.executionPackageLock = lock;
   graph.frontendExtensions = graphClone(kind === "model" ? modelFrontendExtensions : tavernFrontendExtensions);
-  const workflowId = graph.createWorkflow();
+  const workflowId = await graph.createWorkflow();
   const document = { schema_version: 3 as const, workflow_definition_id: workflowId, revision: 1, edit_sequence: 1,
     name: kind, nodes: [node, otherNode], edges: [], object_bindings: [] };
   Object.assign(graph.entries[workflowId]!, { document: graphClone(document), saved_document: graphClone(document),

@@ -2,10 +2,65 @@
 
 from contextlib import closing
 from copy import deepcopy
+from datetime import datetime, timezone
+import sqlite3
 
+from phase1_agent.contract_json import canonical_bytes, content_digest
 from phase1_agent.graph_application_contracts import RETIRED_RECEIPT_COMMANDS, validate_parameters
-from phase1_agent.graph_application_identity import application_command_receipt, bind_application_command
-from phase1_agent.graph_drafts import LocalDraftStore
+from phase1_agent.graph_application_identity import (
+    application_command_receipt, bind_application_command, persist_application_command_identity,
+)
+
+
+def seed_local_draft(service, operation, scope, request):
+    """Write one accepted local-draft record and its frozen application receipt.
+
+    ``LocalDraftStore.save`` retired with S4-05a because no production path wrote
+    drafts any more; tests and legacy receipt fixtures still need an already
+    accepted draft.  This seeds exactly the rows the retired writer produced in
+    one native transaction: the ``local_editor_drafts`` row, the native
+    ``idempotency`` receipt and the application-command identity row.
+    """
+    address = request["address"]
+    value = request["value"]
+    record = {
+        "schema_version": 1, "kind": "workflow.local-draft", "address": deepcopy(address),
+        "format_version": request["format_version"],
+        "sequence": request["expected_sequence"] + 1,
+        "updated_at": datetime.now(timezone.utc).isoformat(
+            timespec="milliseconds").replace("+00:00", "Z"),
+        "value": deepcopy(value), "deleted": value is None,
+    }
+    native_request = {key: item for key, item in request.items() if key != "idempotency_key"}
+    native_operation = "graph." + operation
+    digest = "workflow-op-v1:" + content_digest(native_request).rsplit(":", 1)[1]
+    with bind_application_command(operation, scope, request):
+        with closing(sqlite3.connect(service.database, isolation_level=None)) as connection:
+            connection.row_factory = sqlite3.Row
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    "INSERT INTO local_editor_drafts VALUES(?,?,?,?,?,?,?) "
+                    "ON CONFLICT(address) DO UPDATE SET sequence=excluded.sequence,"
+                    "payload=excluded.payload",
+                    (canonical_bytes(address).decode("utf-8"), address["scope"], address["kind"],
+                     address["workflow_definition_id"], address["workflow_session_id"],
+                     record["sequence"], canonical_bytes(record).decode("utf-8")))
+                connection.execute(
+                    "INSERT INTO idempotency "
+                    "(operation,key,digest,result_refs,result_payload,request_digest) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (native_operation, request["idempotency_key"], digest, "[]",
+                     canonical_bytes([{"graph_result": record}]).decode("utf-8"), digest))
+                persist_application_command_identity(
+                    connection, table="idempotency", operation=native_operation,
+                    key=request["idempotency_key"], request_digest=digest)
+                connection.execute("COMMIT")
+            except BaseException:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+                raise
+    return record
 
 
 def seed_legacy_consumer_receipt(service, operation, parameters):
@@ -15,10 +70,7 @@ def seed_legacy_consumer_receipt(service, operation, parameters):
     key = request["idempotency_key"]
     with bind_application_command(operation, "consumer", request):
         if operation == "consumer.draft.save":
-            with closing(service._store()) as store:
-                raw = LocalDraftStore(store).save(
-                    "graph.consumer.draft.save", arguments, key,
-                    lambda owner, content: service._draft_owner(store, owner, content))
+            raw = seed_local_draft(service, operation, "consumer", request)
         elif operation == "consumer.session.create":
             raw = service.create_session(**arguments, idempotency_key=key)
         else:

@@ -9,6 +9,7 @@ import GraphResult from "./GraphResult.vue";
 import { modelPresentationJson } from "../domain/modelPresentation";
 import { nodeDisplayTitle } from "../domain/nodeCatalog";
 import { resultStatusLabel } from "../domain/resultPresentation";
+import GraphDiagnosticList from "./GraphDiagnosticList.vue";
 const graph = useWorkflowGraphStore();
 const selected = ref<string | null>(null);
 const detail = ref<GraphRunDetail | null>(null);
@@ -33,24 +34,42 @@ function inputEvidence(run: GraphRunDetail["node_runs"][number]) {
     references: run.input_refs, controls: run.control_refs ?? [], reads: run.reads };
 }
 let generation = 0;
+const definitionRetry = ref(0);
+function retryDefinition() { definitionRetry.value++; }
 watch(() => graph.session?.workflow_session_id, () => {
   selected.value = graph.session?.selected_chain_run_id ?? history.value.at(-1)?.chain_run_id ?? null;
 }, { immediate: true });
 watch(() => [graph.session?.workflow_session_id, selected.value,
-  history.value.find(row => row.chain_run_id === selected.value)?.revision] as const, async ([sessionId, chainId]) => {
-  const version = ++generation; informationOpen.value = false; detail.value = null; frozenDefinition.value = null; definitionError.value = ""; error.value = null; loading.value = false;
-  if (!sessionId || !chainId) return;
+  history.value.find(row => row.chain_run_id === selected.value)?.revision, definitionRetry.value] as const,
+  async ([sessionId, chainId]) => {
+  const version = ++generation; informationOpen.value = false; detail.value = null;
+  definitionError.value = ""; error.value = null; loading.value = false;
+  if (!sessionId || !chainId) { frozenDefinition.value = null; return; }
   loading.value = true;
   try {
+    // Q09: run.read stays the trigger for a selected chain; the frozen definition is a
+    // separate immutable read that is reused by its formal identity.
     const record = await graph.management.queries.run(sessionId, chainId);
     if (version !== generation) return;
     detail.value = record;
     const identity = record.chain.workflow_definition_id, revision = record.chain.definition_revision;
     try {
-      if (!graphUuid(identity) || !Number.isSafeInteger(revision) || Number(revision) < 1) throw new Error("历史记录缺少精确冻结定义身份");
-      const document = await graph.management.queries.definition(identity, revision);
+      if (!graphUuid(identity) || typeof revision !== "number"
+        || !Number.isSafeInteger(revision) || revision < 1)
+        throw new Error("历史记录缺少精确冻结定义身份");
+      // A chain revision update alone must not re-download the same frozen revision.
+      if (frozenDefinition.value?.workflow_definition_id !== identity
+        || frozenDefinition.value?.revision !== revision) frozenDefinition.value = null;
+      const document = await graph.readFrozenDefinition(identity, revision);
       if (version === generation) frozenDefinition.value = document;
-    } catch (failure) { if (version === generation) definitionError.value = failure instanceof Error ? failure.message : "历史定义版本缺失"; }
+    } catch (failure) {
+      if (version === generation) {
+        // A failed read is shown as missing and can be retried; the current edit graph is
+        // never substituted for the frozen revision.
+        frozenDefinition.value = null;
+        definitionError.value = failure instanceof Error ? failure.message : "历史定义版本缺失";
+      }
+    }
   }
   catch (failure) { if (version === generation) error.value = failure instanceof Error ? failure.message : "历史读取失败"; }
   finally { if (version === generation) loading.value = false; }
@@ -61,10 +80,11 @@ onUnmounted(() => { generation++; });
   <section class="graph-history" aria-label="工作流运行历史">
     <aside><header>运行历史</header><button v-for="(run, index) in history" :key="run.chain_run_id" type="button" :class="{ active: selected === run.chain_run_id }" @click="selected = run.chain_run_id"><strong>第 {{ index + 1 }} 次运行</strong><span>{{ resultStatusLabel(run.status) }}<template v-if="run.workflow_session_id && run.workflow_session_id !== graph.session?.workflow_session_id"> · 复制来源</template></span></button></aside>
     <main>
-      <p v-if="loading">读取中</p><p v-if="error" class="error" role="status">{{ error }}</p><p v-if="definitionError" class="error" role="status">{{ definitionError }}；未使用当前编辑图替代。</p><p v-if="chain">工作流修订 r{{ chain.definition_revision }} · {{ resultStatusLabel(chain.status) }}</p>
+      <p v-if="loading">读取中</p><p v-if="error" class="error" role="status">{{ error }}</p><p v-if="definitionError" class="error" role="status">{{ definitionError }}；未使用当前编辑图替代。<button type="button" class="definition-retry" aria-label="重试读取历史定义" @click="retryDefinition">重试读取</button></p><p v-if="chain">工作流修订 r{{ chain.definition_revision }} · {{ resultStatusLabel(chain.status) }}</p>
       <details v-if="chain"><summary>运行技术详情</summary><pre>{{ modelPresentationJson(chain) }}</pre></details>
       <p v-if="contextMaintenanceDiagnosis(chain?.diagnostic)" class="error" role="status">{{ contextMaintenanceDiagnosis(chain?.diagnostic) }}</p>
-      <pre v-if="chain?.diagnostic" class="error">{{ JSON.stringify(chain.diagnostic, null, 2) }}</pre>
+      <GraphDiagnosticList v-if="chain?.diagnostic" :diagnostics="[chain.diagnostic]" />
+      <details v-if="chain?.diagnostic"><summary>原始链诊断响应</summary><pre class="error">{{ JSON.stringify(chain.diagnostic, null, 2) }}</pre></details>
       <details v-if="selected && graph.session" @toggle="informationOpen = ($event.target as HTMLDetailsElement).open"><summary>登记与读取依据</summary><GraphInformation v-if="informationOpen" :session-id="graph.session.workflow_session_id" :chain-id="selected" initial-kind="information_binding" /></details>
       <section v-for="run in detail?.node_runs ?? []" :key="run.run_id" class="node-history">
         <header>{{ title(run.node_binding_id) }} · {{ resultStatusLabel(run.status) }}</header>
@@ -73,7 +93,8 @@ onUnmounted(() => { generation++; });
         <details><summary>输入与读取依据</summary><pre>{{ modelPresentationJson(inputEvidence(run)) }}</pre></details>
         <details v-if="run.effects.length"><summary>会话写入</summary><pre>{{ modelPresentationJson(run.effects) }}</pre></details>
         <p v-if="contextMaintenanceDiagnosis(run.diagnostic)" class="error" role="status">{{ contextMaintenanceDiagnosis(run.diagnostic) }}</p>
-        <pre v-if="run.diagnostic" class="error">{{ JSON.stringify(run.diagnostic, null, 2) }}</pre>
+        <GraphDiagnosticList v-if="run.diagnostic" :diagnostics="[run.diagnostic]" />
+        <details v-if="run.diagnostic"><summary>原始节点诊断响应</summary><pre class="error">{{ JSON.stringify(run.diagnostic, null, 2) }}</pre></details>
       </section>
       <section v-for="output in outputs" :key="output.output_id"><header>{{ title(output.node_binding_id) }} / {{ output.port_id }}</header><GraphResult :value="output.payload" /></section><p v-if="!outputs.length && !loading">暂无结果</p>
     </main>
@@ -91,6 +112,7 @@ p { color:#a3a3ad; font-size:12px; }
 .error { color:#e0a0a0; }
 details { padding:10px; font-size:11px; color:#b3c8be; border-bottom:1px solid #404047; }
 .node-history { margin-bottom:12px; }
+.definition-retry { display:inline-flex; width:auto; margin-left:6px; padding:2px 8px; border:1px solid #505059; border-radius:3px; font-size:11px; color:#e0a0a0; }
 button:disabled { opacity:.4; }
 h3 { font-size:11px; font-weight:500; margin:8px 0; }
 </style>

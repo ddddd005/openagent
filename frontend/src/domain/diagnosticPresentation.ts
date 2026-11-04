@@ -1,4 +1,50 @@
-import type { GraphDiagnostic } from "./workflowGraph";
+import type { GraphDiagnostic, GraphOccupyingSession } from "./workflowGraph";
+
+export const diagnosticPhaseLabels: Record<string, string> = {
+  save: "保存校验", compile: "编译", prepare: "运行准备",
+  run: "节点执行", settlement: "结算", storage: "存储",
+};
+export function diagnosticPhaseLabel(phase: string | undefined): string {
+  return phase ? diagnosticPhaseLabels[phase] ?? phase : "阶段未标注";
+}
+/** Value summaries are deliberately bounded and type-first; never render a whole payload. */
+export function diagnosticValueSummary(value: unknown, limit = 120): string {
+  if (value === undefined) return "";
+  let summary: string;
+  if (value === null) summary = "null";
+  else if (typeof value === "string") summary = `"${value.length > limit ? `${value.slice(0, limit)}…` : value}"`;
+  else if (typeof value === "number" || typeof value === "boolean") summary = String(value);
+  else if (Array.isArray(value)) summary = `array(${value.length})${JSON.stringify(value).slice(0, limit)}`;
+  else if (typeof value === "object") summary = `object${JSON.stringify(value).slice(0, limit)}`;
+  else summary = String(value);
+  return summary.length > limit ? `${summary.slice(0, limit)}…` : summary;
+}
+export function diagnosticLocation(diagnostic: GraphDiagnostic): string {
+  const parts: string[] = [];
+  if (diagnostic.code ?? diagnostic.reason_code) parts.push(diagnostic.code ?? diagnostic.reason_code);
+  if (diagnostic.path) parts.push(diagnostic.path);
+  if (diagnostic.edge_id) parts.push(`连线 ${diagnostic.edge_id}`);
+  if (diagnostic.node_id) parts.push(`节点 ${diagnostic.node_id}`);
+  if (diagnostic.port_id) parts.push(`端口 ${diagnostic.port_id}`);
+  if (diagnostic.object_key) parts.push(`对象键 ${diagnostic.object_key}`);
+  if (diagnostic.dependent_outputs?.length) parts.push(`关联输出 ${diagnostic.dependent_outputs.join("、")}`);
+  return parts.join(" · ");
+}
+export function diagnosticExpectation(diagnostic: GraphDiagnostic): string {
+  const expected = diagnosticValueSummary(diagnostic.expected), actual = diagnosticValueSummary(diagnostic.actual);
+  return [expected ? `期望 ${expected}` : "", actual ? `实际 ${actual}` : ""].filter(Boolean).join("；");
+}
+export function diagnosticFailureStage(diagnostic: GraphDiagnostic): string {
+  return [diagnosticPhaseLabel(diagnostic.phase), diagnostic.failure_stage].filter(Boolean).join(" / ");
+}
+export function occupyingSessionLabels(rows: GraphOccupyingSession[] | undefined,
+  labels: Record<string, string> = {}): string[] {
+  return (rows ?? []).map(row => {
+    const name = labels[row.workflow_session_id];
+    return `${name ? `${name} ` : ""}会话 ${row.workflow_session_id}`
+      + (row.active_chain_run_id ? ` · 活动链 ${row.active_chain_run_id}` : " · 无活动链");
+  });
+}
 
 const recoveryLabels: Record<string, string> = {
   enable_provider: "在模型供应商中启用供应商，再开始新运行",

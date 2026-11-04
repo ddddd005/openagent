@@ -87,6 +87,12 @@ def _node_dependencies(declaration):
                 "registration_ref": {"scope": "content", "type_id": port["data_type"],
                                      "schema_version": port.get("data_schema_version", 1)},
             })
+            for accepted in port.get("accepted_types", []):
+                result.append({
+                    "kind": "data_type", "relation": "port",
+                    "registration_ref": {"scope": "content", "type_id": accepted["data_type"],
+                                         "schema_version": accepted["data_schema_version"]},
+                })
     for reference in declaration.get("config_node_references", []):
         for target in reference.get("target_types", []):
             result.append({

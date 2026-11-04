@@ -1,11 +1,10 @@
 """Local editor records, separate from executable graph facts."""
 
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime
 
 from .contract_errors import ContractValidationError
-from .contract_json import canonical_bytes, content_digest, loads_strict, validate_json_value
-from .graph_application_identity import persist_application_command_identity
+from .contract_json import canonical_bytes, loads_strict, validate_json_value
 from .graph_records import require, uuid_value
 
 
@@ -187,17 +186,6 @@ def validate_draft_record(value):
     return deepcopy(value)
 
 
-def validate_draft_acceptance(record, request):
-    validate_draft_record(record)
-    require(record["address"] == request["address"]
-            and record["sequence"] == request["expected_sequence"] + 1
-            and record["format_version"] == request["format_version"]
-            and canonical_bytes(record["value"]) == canonical_bytes(request["value"])
-            and record["deleted"] == (request["value"] is None),
-            "storage_contract_violation", "Draft acceptance differs from its request", 500)
-    return record
-
-
 class LocalDraftStore:
     def __init__(self, store):
         self.store = store
@@ -242,52 +230,3 @@ class LocalDraftStore:
             parameters,
         )
         return [self._record(row) for row in rows]
-
-    def save(self, operation, request, idempotency_key, check_owner):
-        digest = "workflow-op-v1:" + content_digest(request).rsplit(":", 1)[1]
-        try:
-            self.connection.execute("BEGIN IMMEDIATE")
-            prior = self.store.read_receipt_with_digest(operation, idempotency_key)
-            if prior is not None:
-                require(prior[0] == digest, "idempotency_conflict", "Draft request identity differs", 409)
-                require(type(prior[1]) is list and len(prior[1]) == 1 and set(prior[1][0]) == {"graph_result"},
-                        "storage_contract_violation", "Draft receipt is invalid", 500)
-                result = validate_draft_acceptance(prior[1][0]["graph_result"], request)
-                self.connection.execute("COMMIT")
-                return result
-            check_owner(request["address"], request["value"])
-            current = self.read(request["address"])
-            sequence = current["sequence"] if current else 0
-            require(sequence == request["expected_sequence"], "stale_draft_sequence",
-                    "Local draft has changed; keep the unsaved input", 409)
-            require(sequence < MAX_DRAFT_SEQUENCE, "draft_sequence_exhausted", "Draft sequence is exhausted", 409)
-            record = {
-                "schema_version": 1, "kind": "workflow.local-draft", "address": deepcopy(request["address"]),
-                "format_version": request["format_version"], "sequence": sequence + 1,
-                "updated_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-                "value": deepcopy(request["value"]), "deleted": request["value"] is None,
-            }
-            address = record["address"]
-            self.connection.execute(
-                "INSERT INTO local_editor_drafts VALUES(?,?,?,?,?,?,?) "
-                "ON CONFLICT(address) DO UPDATE SET sequence=excluded.sequence,payload=excluded.payload",
-                (canonical_bytes(address).decode("utf-8"), address["scope"], address["kind"],
-                 address["workflow_definition_id"], address["workflow_session_id"], record["sequence"],
-                 canonical_bytes(record).decode("utf-8")),
-            )
-            self.store._inject("after_draft_write")
-            self.connection.execute(
-                "INSERT INTO idempotency (operation,key,digest,result_refs,result_payload,request_digest) "
-                "VALUES(?,?,?,?,?,?)",
-                (operation, idempotency_key, digest, "[]",
-                 canonical_bytes([{"graph_result": record}]).decode("utf-8"), digest),
-            )
-            persist_application_command_identity(self.connection, table="idempotency", operation=operation,
-                                                 key=idempotency_key, request_digest=digest)
-            self.store._inject("before_commit")
-            self.connection.execute("COMMIT")
-            return deepcopy(record)
-        except BaseException:
-            if self.connection.in_transaction:
-                self.connection.execute("ROLLBACK")
-            raise

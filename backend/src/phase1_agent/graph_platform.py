@@ -263,11 +263,6 @@ class GraphPlatform:
 
         return self._change("graph.objects.update", idempotency_key, request, change)
 
-    def adopt_context_view(self, sid, *, node_id, view_output_id, expected_revision, idempotency_key):
-        """Reject the retired out-of-workflow context write path."""
-        require(False, "context_adoption_retired",
-                "Context updates must be accepted by an in-workflow write node", 410)
-
     def get_state_manifest(self, sid, *, snapshot_id=None, chain_id=None, boundary="end"):
         with self._lock, closing(self._store()) as store:
             self._check_open()

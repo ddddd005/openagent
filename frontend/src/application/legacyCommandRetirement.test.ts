@@ -2,89 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { saveLocalDraft, workbenchDraftAddress } from "../adapters/localDraftsApi";
 import { readGraphReceipt, sendGraphCommand } from "../adapters/workflowApplicationApi";
 import { readLegacyWorkbenchEvidence } from "../adapters/workbenchPersistence";
-import { graphClone, newGraph, type GraphCommand, type GraphEntry } from "../domain/workflowGraph";
-import { createGraphCommand, dispatchGraphCommand, type GraphCommandPorts } from "./workflowCommands";
+import { graphClone, newGraph, type GraphCommand } from "../domain/workflowGraph";
 import { graphReceiptReadResponse } from "../testUtils/graphApplicationServer";
 
 afterEach(() => vi.unstubAllGlobals());
 
-function commandPorts(overrides: Partial<GraphCommandPorts> = {}): GraphCommandPorts {
-  return {
-    persist: vi.fn(() => true),
-    request: vi.fn(async () => ({})),
-    readReceipt: vi.fn(async () => ({})),
-    readDefinition: vi.fn(async () => { throw new Error("Unexpected definition read"); }),
-    current: vi.fn(() => true),
-    accept: vi.fn(),
-    ...overrides,
-  };
-}
-
 describe("legacy graph command retirement", () => {
-  it.each([
-    ["save", "/api/graph/definitions", (document: ReturnType<typeof newGraph>) => ({
-      document, expected_revision: 0,
-    })],
-    ["create", "/api/graph/sessions", (document: ReturnType<typeof newGraph>) => ({
-      workflow_definition_id: document.workflow_definition_id, definition_revision: 1,
-    })],
-    ["start", `/api/graph/sessions/${crypto.randomUUID()}/runs`, () => ({
-      expected_revision: 1, inputs: { prompt: "frozen input" },
-    })],
-    ["session-archive", `/api/graph/sessions/${crypto.randomUUID()}/archive`, () => ({
-      expected_revision: 2,
-    })],
-    ["session-delete", `/api/graph/sessions/${crypto.randomUUID()}/delete`, () => ({
-      expected_revision: 2,
-    })],
-    ["data", `/api/graph/sessions/${crypto.randomUUID()}/data`, () => ({
-      expected_revision: 2, expected_data_revision: 1, variables: { value: 3 },
-    })],
-    ["copy", `/api/graph/sessions/${crypto.randomUUID()}/copy`, (document: ReturnType<typeof newGraph>) => ({
-      document, expected_session_revision: 2, expected_data_revision: 1,
-      expected_definition_revision: 1, expected_head_revision: 1,
-    })],
-  ])("refuses a new %s command before persistence or transport", async (action, path, bodyFor) => {
-    const document = newGraph("Legacy workflow");
-    const entry: GraphEntry = { document, saved_revision: 1, session_id: crypto.randomUUID(), pending: null };
-    const command = createGraphCommand(path, bodyFor(document), action);
-    const ports = commandPorts();
-
-    await expect(dispatchGraphCommand(entry, command, ports)).rejects.toMatchObject({ kind: "unavailable" });
-
-    expect(entry.pending).toBeNull();
-    expect(ports.persist).not.toHaveBeenCalled();
-    expect(ports.request).not.toHaveBeenCalled();
-    expect(ports.readReceipt).not.toHaveBeenCalled();
-    expect(ports.accept).not.toHaveBeenCalled();
-  });
-
-  it("reconciles an exact old pending command by receipt read only, without accepting or clearing it", async () => {
-    const document = newGraph("Frozen workflow");
-    const definitionId = document.workflow_definition_id;
-    const entry: GraphEntry = { document, saved_revision: 1, session_id: null, pending: null };
-    const command = createGraphCommand(`/api/graph/definitions/${definitionId}/archive`, {
-      identity: definitionId, expected_revision: 1,
-    }, "definition-archive");
-    entry.pending = graphClone(command);
-    const before = graphClone(entry);
-    const result = {
-      schema_version: 1, kind: "workflow.definition-management", workflow_definition_id: definitionId,
-      revision: 1, archived: true, deleted: false,
-    };
-    const ports = commandPorts({ readReceipt: vi.fn(async () => graphClone(result)) });
-
-    await expect(dispatchGraphCommand(entry, command, ports, true))
-      .resolves.toEqual({ kind: "management", result });
-
-    expect(ports.readReceipt).toHaveBeenCalledOnce();
-    expect(ports.readReceipt).toHaveBeenCalledWith(command.path, command.body);
-    expect(ports.request).not.toHaveBeenCalled();
-    expect(ports.persist).not.toHaveBeenCalled();
-    expect(ports.accept).not.toHaveBeenCalled();
-    expect(entry).toEqual(before);
-  });
-
   it("rejects direct whole-graph save transport and receipt reads before fetch", async () => {
     const fetcher = vi.fn();
     vi.stubGlobal("fetch", fetcher);

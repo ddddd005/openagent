@@ -39,6 +39,9 @@ COMMANDS = (
               ("operation", "idempotency_key", "owner_kind", "owner_id", "request")),
     operation("request-evidence.resolve", "resolve_evidence",
               ("operation", "idempotency_key", "request_digest", "resolution")),
+    operation("request.abandon", "abandon_request",
+              ("workflow_definition_id", "target_operation", "target_idempotency_key",
+               "target_request_digest", "idempotency_key")),
     operation("content.metadata.update", "update_content_metadata",
               ("reference", "display_name", "expected_metadata_sequence", "idempotency_key")),
     operation("session.metadata.update", "update_session_metadata",
@@ -130,8 +133,11 @@ STORED_EVIDENCE_COMMANDS = (
 _STORED_ZERO_REVISION_NAMES = frozenset({"definition.save"})
 
 QUERIES = (
-    operation("request-evidence.pending", "_workflow_pending", optional=("limit", "cursor")),
-    operation("request-evidence.read", "read_evidence", ("owner_kind", "owner_id")),
+    operation("document.contract", "_document_contract"),
+    operation("request-evidence.pending", "_workflow_pending",
+              optional=("limit", "cursor", "owner_kind", "owner_id")),
+    operation("request-evidence.read", "read_evidence", ("owner_kind", "owner_id"),
+              ("operation", "idempotency_key", "resolution")),
     operation("content.metadata.read", "read_content_metadata", ("reference",)),
     operation("session.metadata.read", "get_session_metadata", session=True),
     operation("provider.credential.receipt", "provider_credential_receipt", ("request",)),
@@ -152,6 +158,8 @@ QUERIES = (
     operation("definition.summaries", "definition_summaries", optional=("include_archived",)),
     operation("definition.read", "get_definition", ("identity",), ("revision",)),
     operation("definition.inputs", "_editor_inputs", ("document",)),
+    operation("definition.preview", "preview_configuration",
+              ("workflow_definition_id", "document", "expected_edit_sequence")),
     operation("definition.sessions", "list_sessions", ("workflow_definition_id",)),
     operation("session.summaries", "session_summaries",
               ("workflow_definition_id",), ("include_archived",)),
@@ -199,7 +207,7 @@ LIFECYCLE_COMMANDS = frozenset({
 })
 MANAGEMENT_COMMANDS = frozenset({
     "definition.update", "definition.copy", "session.create", "object.write",
-    "session.metadata.update", "checkpoint.fork",
+    "session.metadata.update", "checkpoint.fork", "request.abandon",
 })
 MANAGEMENT_OPERATION_PREFIXES = (
     "provider.", "credential.", "resource.", "content.metadata.", "request-evidence.",
@@ -244,10 +252,33 @@ def validate_parameters(spec, parameters, *, stored_evidence=False):
                     and fullmatch("[0-9a-f]{64}", parameters["request_digest"]) is not None
                     and parameters["resolution"] in ("verified", "archived"),
                     "invalid_request", "Request evidence resolution is invalid")
+    if spec.name == "request.abandon":
+        from re import fullmatch
+        require(parameters["target_operation"] in (
+                    "definition.update", "definition.copy"),
+                "invalid_request", "Abandon target operation is invalid")
+        require(type(parameters["target_idempotency_key"]) is str
+                and 1 <= len(parameters["target_idempotency_key"]) <= 128
+                and bool(parameters["target_idempotency_key"].strip()),
+                "invalid_request", "Abandon target identity is invalid")
+        require(type(parameters["target_request_digest"]) is str
+                and fullmatch("[0-9a-f]{64}", parameters["target_request_digest"]) is not None,
+                "invalid_request", "Abandon target digest is invalid")
     if "expected_metadata_sequence" in parameters:
         require(type(parameters["expected_metadata_sequence"]) is int
                 and 0 <= parameters["expected_metadata_sequence"] < 2**53 - 1,
                 "invalid_request", "Metadata expected sequence is invalid")
+    if spec.name == "definition.preview":
+        from .contract_json import canonical_bytes
+        from .graph_contracts import MAX_GRAPH_BYTES
+        require(type(parameters["document"]) is dict, "invalid_request",
+                "Preview document must be an object")
+        try:
+            validate_json_value(parameters["document"])
+        except ContractValidationError:
+            require(False, "invalid_request", "Preview document must contain only JSON values")
+        require(len(canonical_bytes(parameters["document"])) <= MAX_GRAPH_BYTES,
+                "invalid_request", "Preview document exceeds its wire limit")
     if "expected_edit_sequence" in parameters:
         require(type(parameters["expected_edit_sequence"]) is int
                 and 0 <= parameters["expected_edit_sequence"] < 2**53 - 1,

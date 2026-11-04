@@ -46,6 +46,24 @@ describe("same-origin workbench adapter", () => {
     expect(String(failure)).not.toContain("PRIVATE");
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+  it("maps located diagnostics and G21 occupant identities from a rejection", async () => {
+    const session = crypto.randomUUID(), chain = crypto.randomUUID(), node = crypto.randomUUID();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { reason_code: "configuration_run_locked", message: "PRIVATE trace",
+        diagnostics: [{ code: "configuration_run_locked", message: "工作流会话正在运行",
+          phase: "save", path: "/baseline/run_lock", node_id: node, object_key: "shared/main",
+          expected: "no-active-run", actual: "active",
+          occupying_sessions: [{ workflow_session_id: session, active_chain_run_id: chain }] }] },
+    }), { status: 409 })));
+    let failure;
+    try { await workbenchRequest("/api/graph/commands", { body: {} }); } catch (error) { failure = error; }
+    expect(failure).toMatchObject({ kind: "rejected", status: 409, code: "configuration_run_locked",
+      diagnostics: [{ reason_code: "configuration_run_locked",
+        code: "configuration_run_locked", phase: "save", path: "/baseline/run_lock",
+        node_id: node, object_key: "shared/main", expected: "no-active-run", actual: "active",
+        occupying_sessions: [{ workflow_session_id: session, active_chain_run_id: chain }] }] });
+    expect(JSON.stringify(failure)).not.toContain("PRIVATE");
+  });
   it("treats malformed successful response and mutation 500 as unknown", async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(new Response("not-json", { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "internal_error" } }), { status: 500 }));

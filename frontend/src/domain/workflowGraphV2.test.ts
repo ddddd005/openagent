@@ -73,6 +73,11 @@ describe("v2 workflow document and registered object boundaries", () => {
     expect(graphClone(type).plugin_metadata).toEqual({ owner: "package" });
     const port = { port_id: "input", data_type: "JSON", data_schema_version: 2, required: false, multiple: false };
     expect(isGraphCatalog([{ ...type, inputs: [port] }])).toBe(true);
+    const alternative = { data_type: "TEXT", data_schema_version: 2 };
+    expect(isGraphCatalog([{ ...type, inputs: [{ ...port, accepted_types: [alternative] }] }])).toBe(true);
+    expect(isGraphCatalog([{ ...type, outputs: [{ ...port, accepted_types: [alternative] }] }])).toBe(false);
+    expect(isGraphCatalog([{ ...type, inputs: [{ ...port, accepted_types: [alternative, alternative] }] }])).toBe(false);
+    expect(isGraphCatalog([{ ...type, inputs: [{ ...port, accepted_types: [{ data_type: "JSON", data_schema_version: 2 }] }] }])).toBe(false);
     for (const data_schema_version of [0, -1, "2", true])
       expect(isGraphCatalog([{ ...type, inputs: [{ ...port, data_schema_version }] }])).toBe(false);
     expect(isGraphCatalog([{ ...type, input_storage: "cache" }])).toBe(false);

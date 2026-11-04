@@ -38,21 +38,18 @@ async function fixture() {
   return { graph, mutations, storage };
 }
 describe("ordinary workbench entry retirement", () => {
-  it.each(["unsaved", "saved", "pending"] as const)(
+  it.each(["unsaved", "saved"] as const)(
     "renders %s without a workflow-only chat link or any opening side effect", async state => {
       const f = await fixture(), entry = f.graph.active!;
       if (state !== "unsaved") { entry.saved_revision = 1; entry.saved_document = graphClone(entry.document); }
       if (state === "saved") entry.session_id = crypto.randomUUID();
-      if (state === "pending") entry.pending = { action: "save", path: "/api/graph/definitions",
-        body: { document: graphClone(entry.document), expected_revision: 1, idempotency_key: crypto.randomUUID() } };
-      const before = graphClone(f.graph.storeSnapshot()), pending = entry.pending;
+      const before = graphClone(f.graph.storeSnapshot());
       const writes = f.storage.setItem.mock.calls.length;
       const html = await renderToString(createSSRApp(App).use(pinia));
       expect(html).not.toContain("打开聊天前端");
       expect(html).not.toContain("workbench-interface-rail");
       expect(html).not.toContain("graph_workflow=");
       expect(f.graph.storeSnapshot()).toEqual(before);
-      expect(entry.pending).toBe(pending);
       expect(f.storage.setItem).toHaveBeenCalledTimes(writes);
       expect(fetch).not.toHaveBeenCalled();
       f.mutations.forEach(spy => expect(spy).not.toHaveBeenCalled());

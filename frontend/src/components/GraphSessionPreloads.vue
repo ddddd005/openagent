@@ -54,7 +54,7 @@ function changeType() {
   if (!selectedType) return;
   json.value = selectedType.has_default ? JSON.stringify(selectedType.default_value, null, 2) : "{}";
 }
-function save() {
+async function save() {
   if (!editing.value || locked.value || !type.value) return;
   try {
     let value: unknown;
@@ -70,14 +70,18 @@ function save() {
       owner_node_id: scope.value === "private" ? owner.value : null,
       readers: scope.value === "private" ? readers.value.filter(id => id === owner.value) : [...readers.value],
       writers: scope.value === "private" ? writers.value.filter(id => id === owner.value) : [...writers.value] };
-    if (!graph.setSessionPreload(binding, graphClone(value), selected.value ?? undefined))
-      throw new Error("无法应用预加载项，请检查对象键、权限和工作流状态。");
+    const result = await graph.setSessionPreload(binding, graphClone(value), selected.value ?? undefined);
+    if (!result || result.outcome !== "accepted")
+      throw new Error(result?.outcome === "failed" ? result.error.message
+        : "无法应用预加载项，请检查对象键、权限和工作流状态。");
     error.value = "";
   } catch (failure) { error.value = failure instanceof Error ? failure.message : "初值无效。"; }
 }
-function remove() {
+async function remove() {
   if (locked.value || !selected.value) return;
-  graph.removeSessionPreload(selected.value);
+  const result = await graph.removeSessionPreload(selected.value);
+  if (result?.outcome === "failed") error.value = result.error.message;
+  else if (result?.outcome === "no-change") error.value = "所选预加载项已不存在，未写入";
 }
 </script>
 

@@ -15,7 +15,8 @@ LIFECYCLE = {
     "definition.archive", "definition.delete", "session.archive", "session.delete",
 }
 MANAGEMENT = {
-    "request-evidence.write", "request-evidence.resolve", "content.metadata.update",
+    "request-evidence.write", "request-evidence.resolve", "request.abandon",
+    "content.metadata.update",
     "session.metadata.update", "provider.credential.save", "credential.delete",
     "definition.update", "definition.copy", "session.create", "checkpoint.fork", "object.write",
     "resource.save", "resource.delete",
@@ -32,6 +33,7 @@ def test_golden_classification_for_every_current_command():
     assert _command_authorities() == {
         "request-evidence.write": "management",
         "request-evidence.resolve": "management",
+        "request.abandon": "management",
         "content.metadata.update": "management",
         "session.metadata.update": "management",
         "provider.credential.save": "management",
@@ -61,7 +63,7 @@ def test_golden_classification_for_every_current_command():
     assert LIFECYCLE_COMMANDS == LIFECYCLE
     assert MANAGEMENT_COMMANDS == {
         "definition.update", "definition.copy", "session.create", "object.write",
-        "session.metadata.update", "checkpoint.fork",
+        "session.metadata.update", "checkpoint.fork", "request.abandon",
     }
     assert MANAGEMENT_OPERATION_PREFIXES == PREFIXES
 

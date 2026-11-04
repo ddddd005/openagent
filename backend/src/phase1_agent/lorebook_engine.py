@@ -11,7 +11,7 @@ from .content_contracts import default_presentation, object_schema, presentation
 from .context_prompt_v6 import native_history_floor_starts, validate_native_context_prompt
 from .contract_json import canonical_bytes, validate_json_value
 from .graph_contracts import require, uuid4_string
-from .prompt_contract import _source_origins, check_prompt_schema
+from .prompt_contract import _source_origins, check_prompt_schema, merge_prompt_materials
 from .prompt_lifecycle import (
     lifecycle_prompt_content, make_lifecycle_prompt_item, merge_lifecycle_prompt_materials,
 )
@@ -212,9 +212,101 @@ def evaluate_lorebook(entries, scan_prompt, *, node_id, variables=None, random_v
     uuid4_string(node_id)
     entries = validate_lorebook_entries(entries)
     prompt = validate_native_context_prompt(scan_prompt)
+    floors, upstream_texts = _scan_inputs(prompt)
+    return _evaluate(entries, [floors], [], upstream_texts, node_id=node_id,
+                     variables=variables, random_value=random_value)
+
+
+def _view_floors(view):
+    floors = []
+    starts = native_history_floor_starts(view)
+    for start, end in zip(starts, starts[1:]):
+        texts = []
+        for message, layout in zip(view["messages"][start:end], view["layout"][start:end]):
+            if layout["kind"] == "history" and message["role"] in ("user", "assistant"):
+                texts.extend(_message_texts(message))
+        floors.append(texts)
+    return floors
+
+
+def _text_value(value):
+    require(type(value) is dict and set(value) == {"schema_version", "kind", "text"}
+            and type(value["schema_version"]) is int and value["schema_version"] == 2
+            and value["kind"] == "workflow.text" and type(value["text"]) is str,
+            "lorebook_invalid_text", "Lorebook text input requires TEXT@2")
+    return value["text"]
+
+
+def _source_kinds(source):
+    pending = [source]
+    ordinary, lorebook = False, False
+    while pending:
+        origin = pending.pop()
+        if origin.get("kind") == "merged":
+            pending.extend(_source_origins(origin))
+            continue
+        if origin.get("kind") == "lorebook":
+            lorebook = True
+        elif origin.get("kind") == "prompt_projection" and type(origin.get("original")) is dict:
+            pending.append(origin["original"])
+        else:
+            ordinary = True
+    return ordinary, lorebook
+
+
+def evaluate_lorebook_content(entries, structured_values, text_values, *, node_id,
+                              variables=None, random_value=None):
+    """Evaluate separate structured and text inputs without forwarding either."""
+    from .content_summary import validate_content_summary
+    from .context_v4 import validate_native_context_view_v5
+    from .prompt_lifecycle import validate_lifecycle_prompt_materials
+
+    require(type(structured_values) is list and type(text_values) is list
+            and bool(structured_values or text_values),
+            "lorebook_input_required", "Lorebook requires structured or text input")
+    require(len(structured_values) + len(text_values) <= MAX_ENTRIES,
+            "lorebook_budget_exceeded", "Lorebook input count exceeds its budget")
+    require(len(canonical_bytes([structured_values, text_values])) <= MAX_WIRE_BYTES,
+            "lorebook_budget_exceeded", "Lorebook inputs exceed their shared transport budget")
+    floor_sets, recursive_texts, ordinary_texts = [], [], []
+    for value in structured_values:
+        require(type(value) is dict, "lorebook_invalid_structured", "Invalid structured input")
+        kind = value.get("kind")
+        if kind == "workflow.content-summary":
+            summary = validate_content_summary(value)
+            if summary.get("context") is not None:
+                floors = _view_floors(summary["context"])
+                if summary.get("current_input") is not None:
+                    floors.append([_text_value(summary["current_input"])])
+                floor_sets.append(floors)
+            elif summary.get("current_input") is not None:
+                floor_sets.append([[_text_value(summary["current_input"])]])
+            items = summary["materials"]["items"]
+        elif kind == "workflow.context-view":
+            floor_sets.append(_view_floors(validate_native_context_view_v5(value)))
+            items = []
+        elif kind == "workflow.prompt-materials":
+            items = validate_lifecycle_prompt_materials(value)["items"]
+        elif kind == "workflow.prompt":
+            items = merge_prompt_materials([value])["items"]
+        else:
+            require(False, "lorebook_invalid_structured", "Unsupported structured input")
+        for item in items:
+            if item["enabled"]:
+                ordinary, lorebook = _source_kinds(item["source"])
+                if ordinary:
+                    ordinary_texts.append(item["text"])
+                elif lorebook:
+                    recursive_texts.append(item["text"])
+    return _evaluate(validate_lorebook_entries(entries), floor_sets,
+                     ordinary_texts + [_text_value(value) for value in text_values], recursive_texts,
+                     node_id=node_id, variables=variables, random_value=random_value)
+
+
+def _evaluate(entries, floor_sets, text_values, upstream_texts, *, node_id, variables, random_value):
+    uuid4_string(node_id)
     values = _variables(variables)
     budget, cache = _Budget(), {}
-    floors, upstream_texts = _scan_inputs(prompt)
     resolved, diagnostics, probability = [], [], []
     random_value = random.random if random_value is None else random_value
     for entry in entries:
@@ -253,7 +345,9 @@ def evaluate_lorebook(entries, scan_prompt, *, node_id, variables=None, random_v
                 passed = True
             else:
                 depth = entry["scan_depth"]
-                texts = [text for floor in floors[-depth:] for text in floor] if depth else []
+                texts = ([text for floors in floor_sets for floor in floors[-depth:] for text in floor]
+                         if depth else [])
+                texts.extend(text_values)
                 if entry["recursive"]:
                     texts.extend(recursive_texts)
                 primary = _group_matches(

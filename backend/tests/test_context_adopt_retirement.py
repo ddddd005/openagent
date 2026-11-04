@@ -55,7 +55,6 @@ def test_context_adopt_entrypoints_are_retired_without_changing_live_merge(tmp_p
         assert "context.adopt" not in {
             item["name"] for item in GraphApplication(service).describe()["commands"]
         }
-        assert hasattr(service, "adopt_context_view")
         assert not management_request("POST", retired_path, {})
         assert management_request("POST", "/api/graph/commands", {
             "operation": "context.adopt", "parameters": request,
@@ -75,15 +74,9 @@ def test_context_adopt_entrypoints_are_retired_without_changing_live_merge(tmp_p
                 invoke()
             assert denied.value.reason_code == "not_found"
 
-        with pytest.raises(ContractValidationError) as direct:
-            service.adopt_context_view(
-                session_id,
-                node_id=request["node_id"],
-                view_output_id=request["view_output_id"],
-                expected_revision=request["expected_revision"],
-                idempotency_key=request["idempotency_key"],
-            )
-        assert direct.value.reason_code == "context_adoption_retired"
+        # No direct rejection stub remains: the retired command is rejected by
+        # the command/route layer only, and frozen receipts stay readable.
+        assert not hasattr(service, "adopt_context_view")
         assert service.database.read_bytes() == before
         assert service.get_session(session_id)["objects"]["context"] == current
         assert len(transport.calls) == 1

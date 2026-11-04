@@ -28,14 +28,15 @@ async function refresh() {
     if (token === generation && basis() === fixedBasis) error.value = failure instanceof Error ? failure.message : "事件目录读取失败";
   } finally { if (token === generation) loading.value = false; }
 }
-function apply() {
+async function apply() {
   if (graph.locked || applying.value) return;
   applying.value = true;
   try {
     const value: unknown = JSON.parse(draft.value);
     if (!isGraphEventBindings(value, graph.document?.nodes)) throw new Error("事件绑定、目标节点或本地对象 schema 无效");
-    if (graph.locked) return;
-    graph.setEventBindings(value); error.value = null;
+    const result = await graph.setEventBindings(value);
+    if (result.outcome === "failed") error.value = result.error.message;
+    else error.value = null;
   } catch (failure) { error.value = failure instanceof Error ? failure.message : "事件 JSON 无效"; }
   finally { applying.value = false; }
 }

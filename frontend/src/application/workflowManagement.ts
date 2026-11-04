@@ -1,7 +1,7 @@
 import { WorkbenchApiError } from "../adapters/workbenchApi";
 import {
-  readDefinitionSummaries, readGraphCatalogDetails, readGraphDefinition, readGraphDefinitions,
-  readGraphRun, readGraphSession, readGraphSessions, readSessionSummaries,
+  readDefinitionSummaries, readGraphCatalogDetails, readGraphDefinition, readGraphDefinitionPreview,
+  readGraphRun, readGraphSession, readSessionSummaries,
 } from "../adapters/workflowGraphApi";
 import {
   graphClone, graphSignature, type GraphCommand, type GraphEntry, type GraphSession,
@@ -24,9 +24,7 @@ export interface WorkflowManagementPorts {
 export const workflowManagementQueries = {
   catalog: readGraphCatalogDetails,
   definition: readGraphDefinition,
-  definitions: readGraphDefinitions,
   definitionSummaries: readDefinitionSummaries,
-  sessions: readGraphSessions,
   sessionSummaries: readSessionSummaries,
   session: readGraphSession,
   run: readGraphRun,
@@ -34,6 +32,7 @@ export const workflowManagementQueries = {
   information: readGraphInformation,
   events: readWorkflowEventBindings,
   event: readWorkflowEvent,
+  preview: readGraphDefinitionPreview,
 };
 
 export function createWorkflowManagement(ports: WorkflowManagementPorts) {
@@ -55,7 +54,6 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
   function entryFor({ workflowId }: WorkflowTarget) {
     const entry = ports.entry(workflowId);
     if (!entry) throw new WorkbenchApiError("unavailable", "工作流不存在");
-    if (entry.pending) throw new WorkbenchApiError("unknown", "原请求尚待核实，不能提交新操作");
     return entry;
   }
   async function createSession(target: WorkflowTarget) {
@@ -144,7 +142,7 @@ export function createWorkflowManagement(ports: WorkflowManagementPorts) {
   function inspect(target: WorkflowTarget) {
     const entry = ports.entry(target.workflowId);
     return entry ? graphClone({ document: entry.document, savedRevision: entry.saved_revision,
-      selectedSessionId: entry.session_id, pending: entry.pending }) : null;
+      selectedSessionId: entry.session_id }) : null;
   }
   async function retiredSave(_target: WorkflowTarget): Promise<void> {
     throw new WorkbenchApiError("unavailable", "旧整图发布入口已退役；正式保存暂不可用，未提交新请求");

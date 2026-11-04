@@ -71,12 +71,12 @@ async function acceptedA() {
   });
   const graph = useWorkflowGraphStore();
   graph.catalog = [graphClone(nodeType)];
-  const id = graph.createWorkflow();
+  const id = await graph.createWorkflow();
   await graph.reconcile(id);
-  const nodeId = graph.addNode("sample.text@1", { x: 0, y: 0 })!;
+  const nodeId = (await graph.addNode("sample.text@1", { x: 0, y: 0 }))!;
   graph.installWorkflowConfigurationApplication(application);
   await application.forWorkflow(id).initialize();
-  expect(graph.renameWorkflow("A")).toBe(id);
+  expect(await graph.renameWorkflow("A")).toMatchObject({ outcome: "accepted", workflowId: id });
   await vi.waitFor(() => expect(updates).toHaveLength(1));
   await vi.waitFor(() => expect(application.document(id)?.edit_sequence).toBe(1));
   await vi.waitFor(() => expect(graph.entries[id]!.document.edit_sequence).toBe(1));
@@ -90,7 +90,8 @@ async function acceptedA() {
 describe("workflow configuration basis re-read and late directory responses", () => {
   it("re-reads current B from the formal directory while the fixed revision stays A and an old receipt cannot replace current", async () => {
     const initial = await acceptedA();
-    expect(initial.graph.patchNode(initial.nodeId, { config: { text: "B" } })).toBe(initial.id);
+    expect(await initial.graph.patchNode(initial.nodeId, { config: { text: "B" } }))
+      .toMatchObject({ outcome: "accepted" });
     await vi.waitFor(() => expect(initial.updates).toHaveLength(2));
     await vi.waitFor(() => expect(initial.application.document(initial.id)?.edit_sequence).toBe(2));
     await vi.waitFor(() => expect(initial.graph.entries[initial.id]!.document.nodes[0]!.config.text).toBe("B"));
@@ -164,7 +165,7 @@ describe("workflow configuration basis re-read and late directory responses", ()
     const waiting = new Promise<void>(resolve => { release = resolve; });
     channel.initialize = vi.fn(async () => { await waiting; return true; });
     const before = updates.length;
-    expect(graph.renameWorkflow("Changed while waiting")).toBe(id);
+    const renaming = graph.renameWorkflow("Changed while waiting");
 
     // A newer current is accepted while the captured body is still waiting.
     const newer = { ...graphClone(application.document(id)!), revision: 2, edit_sequence: 3,
@@ -172,6 +173,7 @@ describe("workflow configuration basis re-read and late directory responses", ()
     application.observe(newer);
     release();
 
+    expect(await renaming).toMatchObject({ outcome: "failed" });
     await vi.waitFor(() => expect(useWorkbenchNoticesStore().error?.reason).toContain("依据已变化"));
     expect(updates).toHaveLength(before);
     expect(application.document(id)).toMatchObject({ revision: 2, edit_sequence: 3, name: "Formal elsewhere" });
@@ -200,7 +202,7 @@ describe("workflow configuration basis re-read and late directory responses", ()
     expect(captured).toEqual(aDocument);
     expect(captured!.edit_sequence).toBe(1);
 
-    expect(graph.patchNode(nodeId, { config: { text: "B" } })).toBe(id);
+    expect(await graph.patchNode(nodeId, { config: { text: "B" } })).toMatchObject({ outcome: "accepted" });
     await vi.waitFor(() => expect(updates).toHaveLength(2));
     await vi.waitFor(() => expect(application.document(id)?.edit_sequence).toBe(2));
     await vi.waitFor(() => expect(graph.entries[id]!.document.nodes[0]!.config.text).toBe("B"));

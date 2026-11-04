@@ -78,7 +78,7 @@ def create_tool_prompt_package() -> CapabilityPackage:
     adapter = replace(ADAPTER, prompt_output=_TOOL_PROMPT_OUTPUT)
 
     def register(host):
-        host.register_data_type(tool_prompt_definition())
+        host.register_shared_data_type(tool_prompt_definition())
         register_native_context_v6(host)
         host.register_node(NodeDefinition(
             LOADER_COMPONENT, LOADER_VERSION, "变量工具加载", "变量",

@@ -17,15 +17,9 @@ function deferred<T>() {
   const promise = new Promise<T>(release => { resolve = release; });
   return { promise, resolve };
 }
-function memory() {
-  const workspace = useWorkspaceStore();
-  return graphWorkbenchStorage({ graph: useWorkflowGraphStore().storeSnapshot(), catalog: workspace.workflows,
-    activeWorkflowId: workspace.activeWorkflowId, selectedWorkflowId: workspace.selectedWorkflowId });
-}
 async function fixture() {
   const graph = useWorkflowGraphStore();
-  graph.setPersistenceGuard(() => true);
-  const id = graph.createWorkflow();
+  const id = await graph.createWorkflow();
   await graph.reconcile(id);
   const current = graphClone(graph.document!); current.revision = 2; current.name = "current definition";
   const old = newGraph("historical definition");
@@ -36,7 +30,7 @@ async function fixture() {
     head_revision: 2, status: "succeeded", can_submit: true, nodes: [], chains: [], outputs: [],
     data: { revision: 2, values: {} }, selected_chain_run_id: null };
   graph.entries[id] = { document: current, saved_document: graphClone(current), saved_revision: 2,
-    session_id: view.workflow_session_id, pending: null };
+    session_id: view.workflow_session_id};
   graph.views[view.workflow_session_id] = view;
   const candidate = { candidate_id: crypto.randomUUID(), chain_run_id: crypto.randomUUID(),
     source_workflow_definition_id: old.workflow_definition_id, source_definition_revision: old.revision };
@@ -61,42 +55,14 @@ afterEach(() => {
 });
 
 describe("workflow application coordination", () => {
-  it("reconciles a previously selected candidate without replacing the editor or starting a run", async () => {
+  it("retains the frozen candidate target and original body after reload and a lost receipt", async () => {
     const { graph, id, current, old, selected, candidate, view } = await fixture();
     const original = pendingCandidateSelect(view, candidate);
-    graph.entries[id].pending = graphClone(original);
-    const paths: string[] = [];
-    stubGraphApplicationFetch( vi.fn(async (path, init) => {
-      paths.push(path);
-      if (path === "/api/graph/receipts/read") {
-        const envelope = JSON.parse(init.body);
-        return graphReceiptReadResponse(envelope.operation, envelope.parameters, selected);
-      }
-      if (path.endsWith(`/revisions/${old.revision}`)) return json(old);
-      if (path.endsWith("/sessions")) return json([selected]);
-      return json(selected);
-    }));
-    await graph.reconcile(id);
-    expect(graph.document).toEqual(current);
-    expect(graph.entries[id].saved_document).toEqual(current);
-    expect(graph.entries[id].session_document).toBeUndefined();
-    expect(useWorkspaceStore().activeWorkflow).toMatchObject({ id, title: "新工作流", state: "draft" });
-    expect(id).not.toBe(old.workflow_definition_id);
-    expect(paths[0]).toBe("/api/graph/receipts/read");
-    expect(paths.some(path => path.endsWith("/candidates/select") || path.endsWith("/runs"))).toBe(false);
-    paths.length = 0;
-    await graph.submitPrimary();
-    expect(paths.some(path => path.endsWith("/runs"))).toBe(false);
-    expect(graph.entries[id].pending).toEqual(original);
-    expect(graph.session).toEqual(view);
-    expect(graph.receiptChecks[id]).toContain("pending 证据保留");
-  });
-
-  it("retains the frozen candidate target and original body after reload and a lost receipt", async () => {
-    const { graph, id, old, selected, candidate, view } = await fixture();
-    const original = pendingCandidateSelect(view, candidate);
-    graph.entries[id].pending = graphClone(original);
-    const storage = memory(), backend = memoryLocalDraftStorage();
+    const workspace = useWorkspaceStore();
+    const storage = graphWorkbenchStorage({ activeWorkflowId: id, selectedWorkflowId: id, catalog: workspace.workflows,
+      graph: { schema_version: 1, entries: { [id]: { document: current, saved_revision: 2,
+        session_id: view.workflow_session_id, pending: graphClone(original) } as never } } });
+    const backend = memoryLocalDraftStorage();
     const record = await backend.ports.save({ address: workbenchDraftAddress, format_version: 1,
       value: JSON.parse(storage.getItem()!), expected_sequence: 0, idempotency_key: crypto.randomUUID() });
     graph.$dispose(); setActivePinia(createPinia());
@@ -128,68 +94,6 @@ describe("workflow application coordination", () => {
     expect(backend.ports.save).toHaveBeenCalledOnce();
   });
 
-  it("keeps an accepted original request unknown when a later definition arrives during exact definition lookup", async () => {
-    const { graph, id, old, current, selected, view, candidate } = await fixture();
-    const original = pendingCandidateSelect(view, candidate);
-    graph.entries[id].pending = graphClone(original);
-    const lookup = deferred<Response>();
-    const fetcher = vi.fn(async (path, init) => path === "/api/graph/receipts/read"
-      ? graphReceiptReadResponse("candidate.select", JSON.parse(init.body).parameters, selected)
-      : path.includes("/revisions/") ? lookup.promise : json(selected));
-    stubGraphApplicationFetch( fetcher);
-    const restoring = graph.reconcile(id);
-    await vi.waitFor(() => expect(fetcher.mock.calls.some(([path]) => path.includes("/revisions/"))).toBe(true));
-    const later = { ...view, revision: 8, head_revision: 6, data_revision: 5 };
-    graph.views[view.workflow_session_id] = later;
-    lookup.resolve(json(old));
-    await restoring;
-    expect(graph.pending?.action).toBe("candidate-select");
-    expect(graph.document).toEqual(current);
-    expect(graph.session).toEqual(later);
-    expect(useWorkbenchNoticesStore().error).toMatchObject({ kind: "unknown" });
-  });
-
-  it("verifies the original receipt without saving or replacing a newer definition and session", async () => {
-    const { graph, id, old, current, selected, view, candidate } = await fixture();
-    const original = pendingCandidateSelect(view, candidate);
-    graph.entries[id].pending = graphClone(original);
-    let saves = 0;
-    graph.setPersistenceGuard(() => ++saves !== 1);
-    stubGraphApplicationFetch( vi.fn(async (path, init) => path === "/api/graph/receipts/read"
-      ? graphReceiptReadResponse("candidate.select", JSON.parse(init.body).parameters, selected)
-      : path.includes("/revisions/") ? json(old) : json(selected)));
-    await graph.reconcile(id);
-    expect(graph.document).toEqual(current);
-    expect(graph.entries[id].session_document).toBeUndefined();
-    const later = { ...view, revision: 8, data_revision: 5, head_revision: 6 };
-    graph.views[view.workflow_session_id] = later;
-    const requests: unknown[] = [];
-    stubGraphApplicationFetch( vi.fn(async (path, init) => {
-      if (path === "/api/graph/receipts/read") {
-        const envelope = JSON.parse(init.body);
-        expect(envelope.operation).toBe("candidate.select");
-        const { session_id, ...body } = envelope.parameters;
-        expect(session_id).toBe(original.source_session_id);
-        requests.push(body);
-        return graphReceiptReadResponse(envelope.operation, envelope.parameters, selected);
-      }
-      expect(path).not.toBe(original.path);
-      if (path.includes("/revisions/")) {
-        expect(path).toBe(`/api/graph/definitions/${current.workflow_definition_id}/revisions/2`);
-        return json(current);
-      }
-      if (path.endsWith("/sessions")) return json([later]);
-      return json(later);
-    }));
-    await graph.reconcile(id);
-    expect(requests).toEqual([original.body]);
-    expect(graph.pending).toEqual(original);
-    expect(graph.document).toEqual(current);
-    expect(graph.entries[id].saved_document).toEqual(current);
-    expect(graph.session).toEqual(later);
-    expect(saves).toBe(0);
-  });
-
   it("locks editing and concurrent callers throughout a direct application start, including its pre-run query", async () => {
     const { graph, id, view, current } = await fixture();
     const query = deferred<Response>();
@@ -205,7 +109,7 @@ describe("workflow application coordination", () => {
     target.workflowId = crypto.randomUUID();
     graph.entries[id].external_inputs = { prompt: { text: "later input" } };
     expect(graph.locked).toBe(true);
-    expect(graph.moveNodes([])).toBeNull();
+    expect(await graph.moveNodes([])).toMatchObject({ outcome: "failed" });
     await expect(graph.management.commands.control({ workflowId: id }, "close")).rejects.toThrow("正在提交");
     expect(graph.document).toEqual(current);
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -231,25 +135,24 @@ describe("workflow application coordination", () => {
     const fetcher = vi.fn(); stubGraphApplicationFetch( fetcher);
     await expect(graph.management.commands.start({ workflowId: id })).rejects.toThrow("副本");
     expect(fetcher).not.toHaveBeenCalled();
-    expect(graph.entries[id].pending).toBeNull();
   });
 
   it("accepts a detached edit through the scoped editor without granting another mutable document reference", async () => {
     const { graph, id, current } = await fixture();
     let edited!: GraphDocument;
-    expect(graph.editing.edit({ workflowId: id }, document => {
+    expect(await graph.editing.edit({ workflowId: id }, document => {
       edited = document; document.name = "accepted edit"; return true;
-    })).toBe(id);
+    })).toMatchObject({ outcome: "accepted", workflowId: id });
     edited.name = "later mutation";
     expect(graph.document?.name).toBe("accepted edit");
     expect(graph.history[id].past).toEqual([current]);
-    graph.undo(); expect(graph.document).toEqual(current);
+    await graph.undo(); expect(graph.document).toEqual(current);
   });
 
   it("keeps the retired editor clone out of the application and leaves the displayed workflow untouched", async () => {
     const { graph, id, current } = await fixture();
     useWorkspaceStore().markWorkflowSaved(id);
-    const displayed = graph.createWorkflow();
+    const displayed = await graph.createWorkflow();
     const fetcher = vi.fn();
     stubGraphApplicationFetch(fetcher);
     expect("copy" in graph.editing).toBe(false);
@@ -264,7 +167,6 @@ describe("workflow application coordination", () => {
     expect(useWorkspaceStore().activeWorkflowId).toBe(displayed);
     expect(graph.storeSnapshot()).toEqual(before);
     expect(useWorkspaceStore().workflows).toHaveLength(count);
-    expect(graph.entries[id].pending).toBeNull();
     expect(fetcher).not.toHaveBeenCalled();
   });
 

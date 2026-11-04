@@ -65,7 +65,7 @@ git ls-remote --heads origin main
 | 原生 Agent、工具及精简 | `agent_package.py`、`agent_executor.py`、`context_compaction.py`、`context_compaction_policy.py` |
 | 模型调用与受控失败 | `model_service.py`、`model_host_service.py`、`adapter.py`、`contract_errors.py` |
 | Gemini 协议、思考及签名 | `gemini_adapter.py`、`gemini_capabilities.py`、`provider_metadata.py` |
-| 原生上下文装配与写回 | `context_package.py`、`context_v4_nodes.py`、`context_v4.py`、`context_prompt_v6.py`、`context_receipt.py` |
+| 结构化汇总、输入装配与上下文写回 | `content_summary.py`、`content_summary_nodes.py`、`context_host_service.py`、`context_package.py`、`context_v4_nodes.py`、`context_v4.py`、`context_prompt_v6.py`、`context_receipt.py` |
 | 前端节点与逻辑聊天 | `frontend_node_v2.py`、`frontend_node_channel.py`、`frontend_node_operations.py`、`chat_contracts.py` |
 | 独立操作 | `workflow_operations.py`、`workflow_chat_operations.py`、`workflow_chat_service.py`；功能不绑定按钮/页面 |
 | 检查点 | `checkpoint_collection.py`、`runtime_checkpoints.py`、`checkpoint_repository.py`、`checkpoint_loading.py` |

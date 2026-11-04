@@ -435,8 +435,13 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
                     require(edge["source_port_id"] in source_outputs,
                             "graph_linked_output_missing", "Producer did not return the required output",
                             node_id=identity, port_id=port.port_id, edge_id=edge["edge_id"])
+                    source_node = nodes[edge["source_node_id"]]
+                    source_ports = plan.definitions[edge["source_node_id"]].ports(source_node["config"])[1]
+                    source_port = next(item for item in source_ports if item.port_id == edge["source_port_id"])
+                    require(port.accepts(source_port), "graph_type_mismatch", "Linked content types differ",
+                            node_id=identity, port_id=port.port_id, edge_id=edge["edge_id"])
                     values.append(registry.validate_content(source_outputs[edge["source_port_id"]],
-                                                           port.data_type, port.data_schema_version))
+                                                           source_port.data_type, source_port.data_schema_version))
                     output_id = accepted_refs.get(edge["source_node_id"], {}).get(edge["source_port_id"])
                     if output_id is not None:
                         input_refs.setdefault(port.port_id, []).append({
@@ -554,7 +559,8 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
             from .runtime_control import NodeExecutionSuspended
             if isinstance(exc, NodeExecutionSuspended):
                 diagnostic = {"code": exc.reason_code, "message": str(exc), "node_id": identity,
-                              "port_id": None, "edge_id": None, "dependent_outputs": list(plan.target_node_ids)}
+                              "port_id": None, "edge_id": None, "phase": "run",
+                              "dependent_outputs": list(plan.target_node_ids)}
                 event.update(event=exc.status, effects=context.effects if context else [],
                              reads=context.reads if context else [], diagnostic=diagnostic,
                               object_writes=[])
@@ -578,7 +584,9 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
             private.clear()
             private.update(before_private)
             diagnostic = {"code": code, "message": str(exc), "node_id": identity,
-                          "port_id": None, "edge_id": None, "dependent_outputs": list(plan.target_node_ids)}
+                          "port_id": None, "edge_id": None,
+                          "phase": "settlement" if retryable else "run",
+                          "dependent_outputs": list(plan.target_node_ids)}
             if retryable:
                 diagnostic.update(
                     failure_stage=getattr(exc, "_result_failure_stage", "result_acceptance"),
@@ -586,6 +594,7 @@ def execute_graph(plan: GraphPlan, registry: NodeRegistry, *, workflow_session_i
             if isinstance(exc, GraphDiagnosticError):
                 diagnostic.update(exc.diagnostics[0])
                 diagnostic["node_id"] = diagnostic["node_id"] or identity
+                diagnostic.setdefault("phase", "settlement" if retryable else "run")
             elif isinstance(getattr(exc, "public_diagnostic", None), PublicDiagnostic):
                 diagnostic.update(exc.public_diagnostic.to_dict())
                 diagnostic["node_id"] = diagnostic.get("node_id") or identity

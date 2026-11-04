@@ -79,7 +79,7 @@ export function variableRegistrationTarget(entry: GraphEntry | undefined, sessio
   const stable = !!matchingSession && session!.can_submit && !session!.archived && !session!.readonly
     && !["prepared", "running", "pausing", "paused"].includes(session!.status);
   const issue = Object.values(variableRegistrationIssues(node.config))[0];
-  const canSubmit = !!binding && !!event && saved && stable && !entry?.pending && !issue;
+  const canSubmit = !!binding && !!event && saved && stable && !issue;
   const state = !binding ? "登记项或读写权限无效"
     : issue ? issue
     : !matchingSession ? "尚无当前修订的会话"

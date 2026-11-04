@@ -43,7 +43,7 @@ export function frontendNodeLaunchTarget(entry: GraphEntry | undefined,
   unresolved = false): FrontendNodeLaunchTarget {
   const unavailable = (diagnosis: string): FrontendNodeLaunchTarget => ({ owner: null, diagnosis });
   if (!entry || entry.saved_revision < 1) return unavailable("正式保存前端节点后打开");
-  if (entry.pending || unresolved) return unavailable("先核实原请求，再打开前端节点");
+  if (unresolved) return unavailable("先核实原请求，再打开前端节点");
   const saved = entry.saved_document, node = target.node;
   if (!saved || saved.schema_version !== 3 || saved.revision !== entry.saved_revision
     || saved.workflow_definition_id !== entry.document.workflow_definition_id

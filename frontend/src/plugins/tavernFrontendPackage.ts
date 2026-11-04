@@ -28,5 +28,11 @@ export const tavernFrontendPackage: WorkbenchFrontendPackageModule = {
       configurationFields: ["reference"] },
     { declaration: currentTavernFrontendExtensions[4]!, implementation: GlobalLorebookFields,
       configurationFields: ["object_keys"] },
+    { declaration: currentTavernFrontendExtensions[5]!, implementation: LorebookFields,
+      configurationFields: ["entry", "object_keys"] },
+    { declaration: currentTavernFrontendExtensions[6]!, implementation: LorebookFields,
+      configurationFields: ["entries", "object_keys"] },
+    { declaration: currentTavernFrontendExtensions[7]!, implementation: GlobalLorebookFields,
+      configurationFields: ["object_keys"] },
   ],
 };

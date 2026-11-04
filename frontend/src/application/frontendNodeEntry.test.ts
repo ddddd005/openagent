@@ -35,7 +35,7 @@ describe("frontend node saved entry", () => {
     expect(other.owner!.node_binding_id).toBe(f.nodes[1]!.node_binding_id);
     expect(f.entry).toEqual(before);
   });
-  it.each(["unsaved", "missing-snapshot", "missing-node", "changed-config", "wrong-version", "pending", "wrong-workflow"])(
+  it.each(["unsaved", "missing-snapshot", "missing-node", "changed-config", "wrong-version", "wrong-workflow"])(
     "refuses %s without creating a session or changing the graph", reason => {
       const f = fixture();
       if (reason === "unsaved") f.entry.saved_revision = 0;
@@ -43,7 +43,6 @@ describe("frontend node saved entry", () => {
       if (reason === "missing-node") f.entry.saved_document!.nodes = [];
       if (reason === "changed-config") f.target.node.config.input_node_id = f.inputs[0]!.node_binding_id;
       if (reason === "wrong-version") f.target.node.component_version = "1";
-      if (reason === "pending") f.entry.pending = { action: "start", path: "/unused", body: {} };
       if (reason === "wrong-workflow") f.entry.saved_document!.workflow_definition_id = crypto.randomUUID();
       const before = graphClone(f.entry), result = f.launch();
       expect(result.owner).toBeNull(); expect(result.diagnosis).toBeTruthy(); expect(f.entry).toEqual(before);

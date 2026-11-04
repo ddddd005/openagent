@@ -9,6 +9,7 @@ import { memoryRequestEvidence } from "../testUtils/requestEvidence";
 import { stubGraphApplicationFetch } from "../testUtils/graphApplicationServer";
 import { frontendCatalog, frontendExecutionLock, frontendProjectLock, frontendSession } from "../testUtils/frontendFixture";
 import { requestEvidencePorts } from "../adapters/requestEvidenceApi";
+import type { GraphRequestAbandonRequest } from "../adapters/workflowConfigurationApi";
 import { useWorkflowGraphStore } from "./workflowGraph";
 import { useWorkspaceStore } from "./workspace";
 import { useWorkbenchNoticesStore } from "./workbenchNotices";
@@ -171,10 +172,10 @@ describe("workflow configuration store wiring", () => {
     graph.catalog = [graphClone(nodeType)];
     graph.packageLock = [{ package_id: "sample", version: "1.0.0" }];
 
-    const workflowId = graph.createWorkflow();
+    const workflowId = await graph.createWorkflow();
     await vi.waitFor(() => expect(graph.entries[workflowId]?.saved_revision).toBe(1));
     await vi.waitFor(() => expect(graph.locked).toBe(false));
-    const nodeId = graph.addNode("sample.node@1", { x: 20, y: 30 })!;
+    const nodeId = (await graph.addNode("sample.node@1", { x: 20, y: 30 }))!;
     await vi.waitFor(() => expect(requests).toHaveLength(2));
     expect(requests[0]).toMatchObject({
       workflow_definition_id: workflowId, expected_edit_sequence: 0, document: { schema_version: 3 },
@@ -193,9 +194,15 @@ describe("workflow configuration store wiring", () => {
     expect(requests[2]!.workflow_definition_id).toBe(requests[1]!.workflow_definition_id);
 
     pending = deferred<GraphConfigurationResult>();
-    graph.patchNode(nodeId, { config: { text: "ordinary edit" } });
+    const saving = graph.patchNode(nodeId, { config: { text: "ordinary edit" } });
     expect(graph.editorLocked).toBe(true);
-    expect(graph.patchNode(nodeId, { config: { text: "blocked while submitting" } })).toBeNull();
+    // A second edit entry must be refused with a reason, not silently return null.
+    const blocked = await graph.patchNode(nodeId, { config: { text: "blocked while submitting" } });
+    expect(blocked).toMatchObject({ outcome: "failed" });
+    expect((blocked as { error: Error }).error.message).toContain("工作流配置正在提交");
+    expect(useWorkbenchNoticesStore().notices).toEqual([
+      expect.objectContaining({ kind: "rejected", reason: expect.stringContaining("工作流配置正在提交") }),
+    ]);
     const archive = vi.fn(async () => new Response("{}"));
     vi.stubGlobal("fetch", archive);
     // A management write must not interleave with the configuration submit,
@@ -205,26 +212,26 @@ describe("workflow configuration store wiring", () => {
     await vi.waitFor(() => expect(requests).toHaveLength(4));
     expect(graph.configurationPendingRequests()).toEqual([]);
     expect(application.forWorkflow(workflowId).progress.value).toBe("request-in-flight");
-    expect(useWorkbenchNoticesStore().notices).toEqual([]);
     pending.resolve(accepted(requests[3]!));
+    expect(await saving).toMatchObject({ outcome: "accepted" });
     await vi.waitFor(() => expect(graph.document?.nodes[0]?.config.text).toBe("ordinary edit"));
     expect(graph.active?.saved_document?.nodes[0]?.config.text).toBe("ordinary edit");
-    await vi.waitFor(() => expect(graph.locked).toBe(false));
-    expect(useWorkbenchNoticesStore().notices).toEqual([]);
+    expect(graph.locked).toBe(false);
     pending = null;
     for (let step = 1; step <= 3; step++) {
-      expect(graph.moveNodes([{ id: nodeId, position: { x: 20 + step * 10, y: 30 } }])).toBe(workflowId);
-      await vi.waitFor(() => expect(graph.locked).toBe(false));
+      expect(await graph.moveNodes([{ id: nodeId, position: { x: 20 + step * 10, y: 30 } }]))
+        .toMatchObject({ outcome: "accepted" });
+      expect(graph.locked).toBe(false);
       expect(requests).toHaveLength(4 + step);
       expect(graph.document?.nodes[0]?.position).toEqual({ x: 20 + step * 10, y: 30 });
       expect(graph.configurationPendingRequests()).toEqual([]);
-      expect(useWorkbenchNoticesStore().notices).toEqual([]);
     }
     // A save accepted before evidence closing failed still projects the real
     // written body; the lock and original evidence remain until reconcile.
     const resolveEvidence = evidence.ports.resolve;
     evidence.ports.resolve = vi.fn(async () => { throw new Error("Evidence disk unavailable"); });
-    expect(graph.patchNode(nodeId, { config: { text: "evidence failure" } })).toBe(workflowId);
+    expect(await graph.patchNode(nodeId, { config: { text: "evidence failure" } }))
+      .toMatchObject({ outcome: "failed" });
     await vi.waitFor(() => expect(graph.document?.nodes[0]?.config.text).toBe("evidence failure"));
     expect(graph.editorLocked).toBe(true);
     expect(graph.configurationPendingRequests()).toHaveLength(1);
@@ -235,6 +242,310 @@ describe("workflow configuration store wiring", () => {
     expect(graph.document?.nodes[0]?.config.text).toBe("evidence failure");
     expect([...evidence.records.values()].every(row => row.operation === "definition.update"
       && row.owner_kind === "workflow-configuration" && row.resolution === "verified")).toBe(true);
+  });
+
+  it("changes selection, document and removal only after the awaited formal result", async () => {
+    const evidence = memoryRequestEvidence();
+    vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+    vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+    vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
+    const graph = useWorkflowGraphStore();
+    const requests: GraphConfigurationUpdateRequest[] = [];
+    let gate: ReturnType<typeof deferred<GraphConfigurationResult>> | null = null;
+    const update = vi.fn(async (request: GraphConfigurationUpdateRequest) => {
+      requests.push(graphClone(request));
+      return gate?.promise ?? accepted(request);
+    });
+    const application = createWorkflowConfigurationApplication({
+      evidence: evidence.ports, extensions: () => [], update,
+      readReceipt: vi.fn(async (request: GraphConfigurationUpdateRequest) => accepted(request)),
+    });
+    graph.installWorkflowConfigurationApplication(application);
+    graph.catalog = [graphClone(nodeType)];
+
+    const workflowId = await graph.createWorkflow();
+    await vi.waitFor(() => expect(graph.locked).toBe(false));
+    const nodeId = (await graph.addNode("sample.node@1", { x: 0, y: 0 }))!;
+
+    // A move that is still in flight must not be applied to the formal document yet.
+    gate = deferred<GraphConfigurationResult>();
+    const moving = graph.moveNodes([{ id: nodeId, position: { x: 5, y: 5 } }]);
+    expect(graph.document!.nodes[0]!.position).toEqual({ x: 0, y: 0 });
+    expect(graph.locked).toBe(true);
+    // A second edit entry is refused with a reason instead of a silent null.
+    const overlapping = await graph.moveNodes([{ id: nodeId, position: { x: 9, y: 9 } }]);
+    expect(overlapping).toMatchObject({ outcome: "failed" });
+    expect((overlapping as { error: Error }).error.message).toContain("工作流配置正在提交");
+    // An add entry started while the lock was held neither submits nor changes selection.
+    expect(graph.selectedNodeIds).toEqual([nodeId]);
+    const pendingAdd = graph.addNode("sample.node@1", { x: 10, y: 0 });
+    expect(graph.selectedNodeIds).toEqual([nodeId]);
+    expect(await pendingAdd).toBeNull();
+    expect(graph.document!.nodes).toHaveLength(1);
+    gate.resolve(accepted(requests.at(-1)!));
+    expect(await moving).toMatchObject({ outcome: "accepted" });
+    expect(graph.document!.nodes[0]!.position).toEqual({ x: 5, y: 5 });
+
+    // An accepted add selects the node, but only after the formal acceptance.
+    gate = null;
+    const added = await graph.addNode("sample.node@1", { x: 30, y: 0 });
+    expect(added).toBeTruthy();
+    expect(graph.selectedNodeIds).toEqual([added]);
+
+    // Removal keeps the node and the selection until the result is accepted.
+    gate = deferred<GraphConfigurationResult>();
+    const beforeRemoval = requests.length;
+    const removing = graph.removeSelection();
+    await vi.waitFor(() => expect(requests.length).toBe(beforeRemoval + 1));
+    expect(graph.selectedNodeIds).toEqual([added]);
+    expect(graph.document!.nodes).toHaveLength(2);
+    gate.resolve(accepted(requests.at(-1)!));
+    expect(await removing).toMatchObject({ outcome: "accepted" });
+    expect(graph.selectedNodeIds).toEqual([]);
+    expect(graph.document!.nodes).toHaveLength(1);
+
+    // A definite rejection does not project the rejected body or advance history.
+    gate = null;
+    const before = graphClone(graph.document!), history = graphClone(graph.history[workflowId]);
+    update.mockRejectedValueOnce(new WorkbenchApiError(
+      "rejected", "Configuration CAS conflict", 409, "stale_edit_sequence"));
+    expect(await graph.moveNodes([{ id: nodeId, position: { x: 99, y: 99 } }]))
+      .toMatchObject({ outcome: "failed" });
+    expect(graph.document).toEqual(before);
+    expect(graph.history[workflowId]).toEqual(history);
+    expect(graph.locked).toBe(false);
+  });
+
+  it("keeps a definite refusal as a persistent failed proposal until handled", async () => {
+    const evidence = memoryRequestEvidence();
+    vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+    vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+    vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
+    const graph = useWorkflowGraphStore();
+    const update = vi.fn(async (request: GraphConfigurationUpdateRequest) => accepted(request));
+    const application = createWorkflowConfigurationApplication({ evidence: evidence.ports, extensions: () => [], update,
+      readReceipt: vi.fn(async (request: GraphConfigurationUpdateRequest) => accepted(request)) });
+    graph.installWorkflowConfigurationApplication(application);
+    graph.catalog = [graphClone(nodeType)];
+    const workflowId = await graph.createWorkflow();
+    await vi.waitFor(() => expect(graph.locked).toBe(false));
+    const nodeId = (await graph.addNode("sample.node@1", { x: 0, y: 0 }))!;
+
+    update.mockRejectedValueOnce(new WorkbenchApiError("rejected",
+      "工作流正在修改，请等待当前请求结束后按原基线重试", 409, "workflow_modification_busy"));
+    expect(await graph.patchNode(nodeId, { config: { text: "rejected proposal" } }))
+      .toMatchObject({ outcome: "failed" });
+    const rejected = graph.activeRejectedEdit!;
+    expect(rejected).toMatchObject({ code: "workflow_modification_busy", kind: "rejected" });
+    expect(rejected.reason).toContain("工作流正在修改");
+    expect(rejected.request.document.nodes[0]!.config.text).toBe("rejected proposal");
+    expect(rejected.request.expected_edit_sequence).toBe(2);
+    expect(graph.document!.nodes[0]!.config.text).toBe("before");
+    expect(graph.locked).toBe(false);
+
+    // A new edit uses the current formal baseline; acceptance clears the old failure.
+    expect(await graph.patchNode(nodeId, { config: { text: "second proposal" } }))
+      .toMatchObject({ outcome: "accepted" });
+    expect(graph.activeRejectedEdit).toBeNull();
+    expect(graph.document!.nodes[0]!.config.text).toBe("second proposal");
+
+    // Dismissal closes a retained failure without resubmitting anything.
+    update.mockRejectedValueOnce(new WorkbenchApiError("rejected", "再次被拒绝", 409, "workflow_modification_busy"));
+    await graph.patchNode(nodeId, { config: { text: "third proposal" } });
+    expect(graph.activeRejectedEdit).not.toBeNull();
+    const calls = update.mock.calls.length;
+    graph.dismissRejectedEdit();
+    expect(graph.activeRejectedEdit).toBeNull();
+    expect(update.mock.calls.length).toBe(calls);
+  });
+
+  it("terminates an unknown request through arbitration without resending the update", async () => {
+    const evidence = memoryRequestEvidence();
+    vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+    vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+    vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
+    const graph = useWorkflowGraphStore();
+    let fail = false;
+    const update = vi.fn(async (request: GraphConfigurationUpdateRequest) => {
+      if (!fail) return accepted(request);
+      throw new WorkbenchApiError("unknown", "Configuration response lost");
+    });
+    const application = createWorkflowConfigurationApplication({ evidence: evidence.ports, extensions: () => [], update,
+      readReceipt: vi.fn(async (request: GraphConfigurationUpdateRequest) => accepted(request)) });
+    graph.installWorkflowConfigurationApplication(application);
+    graph.catalog = [graphClone(nodeType)];
+    const workflowId = await graph.createWorkflow();
+    await vi.waitFor(() => expect(graph.locked).toBe(false));
+    const nodeId = (await graph.addNode("sample.node@1", { x: 0, y: 0 }))!;
+    fail = true;
+    expect(await graph.patchNode(nodeId, { config: { text: "lost edit" } }))
+      .toMatchObject({ outcome: "failed" });
+    expect(graph.locked).toBe(true);
+    const pendingKey = application.forWorkflow(workflowId).pending.value!.idempotency_key;
+    const record = [...evidence.records.values()].find(row => row.idempotency_key === pendingKey)!;
+    expect(record).toBeDefined();
+    const arbitration: GraphRequestAbandonRequest[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (path: string, init: RequestInit) => {
+      expect(path).toBe("/api/graph/commands");
+      const body = JSON.parse(String(init.body));
+      expect(body.operation).toBe("request.abandon");
+      arbitration.push(body.parameters);
+      return new Response(JSON.stringify({ schema_version: 1, kind: "workflow.application-command", result: {
+        schema_version: 1, kind: "workflow.request-arbitration", outcome: "abandoned",
+        operation: "definition.update", idempotency_key: body.parameters.target_idempotency_key,
+        request_digest: body.parameters.target_request_digest, workflow_definition_id: workflowId,
+        evidence_resolution: "archived", result: null } }));
+    }));
+    expect(await graph.abandonConfiguration(workflowId)).toBe(true);
+    expect(update).toHaveBeenCalledTimes(3);
+    expect(arbitration).toHaveLength(1);
+    expect(arbitration[0]).toMatchObject({ target_operation: "definition.update",
+      target_idempotency_key: record.idempotency_key, target_request_digest: record.request_digest });
+    expect(graph.locked).toBe(false);
+    expect(graph.configurationPendingRequests()).toEqual([]);
+    expect(application.forWorkflow(workflowId).progress.value).toBe("abandoned");
+    expect(useWorkbenchNoticesStore().notices.some(row => row.title === "原请求已终止")).toBe(true);
+  });
+
+  it("accepts a committed arbitration whose evidence was already archived (R7)", async () => {
+    const evidence = memoryRequestEvidence();
+    vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+    vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+    vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
+    const graph = useWorkflowGraphStore();
+    let fail = false;
+    const update = vi.fn(async (request: GraphConfigurationUpdateRequest) => {
+      if (!fail) return accepted(request);
+      throw new WorkbenchApiError("unknown", "Configuration response lost");
+    });
+    const application = createWorkflowConfigurationApplication({ evidence: evidence.ports, extensions: () => [], update,
+      readReceipt: vi.fn(async (request: GraphConfigurationUpdateRequest) => accepted(request)) });
+    graph.installWorkflowConfigurationApplication(application);
+    graph.catalog = [graphClone(nodeType)];
+    const workflowId = await graph.createWorkflow();
+    await vi.waitFor(() => expect(graph.locked).toBe(false));
+    const nodeId = (await graph.addNode("sample.node@1", { x: 0, y: 0 }))!;
+    fail = true;
+    await graph.patchNode(nodeId, { config: { text: "lost edit" } });
+    const pendingKey = application.forWorkflow(workflowId).pending.value!.idempotency_key;
+    const record = [...evidence.records.values()].find(row => row.idempotency_key === pendingKey)!;
+    const committed = accepted(record.request as unknown as GraphConfigurationUpdateRequest);
+    vi.stubGlobal("fetch", vi.fn(async (path: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      expect(path).toBe("/api/graph/commands"); expect(body.operation).toBe("request.abandon");
+      return new Response(JSON.stringify({ schema_version: 1, kind: "workflow.application-command", result: {
+        schema_version: 1, kind: "workflow.request-arbitration", outcome: "committed",
+        operation: "definition.update", idempotency_key: body.parameters.target_idempotency_key,
+        request_digest: body.parameters.target_request_digest, workflow_definition_id: workflowId,
+        evidence_resolution: "archived", result: committed } }));
+    }));
+    const abandonResult = await graph.abandonConfiguration(workflowId);
+    expect(abandonResult).toBe(true);
+    expect(update).toHaveBeenCalledTimes(3);
+    expect(graph.locked).toBe(false);
+    expect(graph.document!.nodes[0]!.config.text).toBe("lost edit");
+    expect(application.forWorkflow(workflowId).progress.value).toBe("completed");
+  });
+
+  it("keeps the request blocked when arbitration is unavailable", async () => {
+    const evidence = memoryRequestEvidence();
+    vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+    vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+    vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
+    const graph = useWorkflowGraphStore();
+    let fail = false;
+    const update = vi.fn(async (request: GraphConfigurationUpdateRequest) => {
+      if (!fail) return accepted(request);
+      throw new WorkbenchApiError("unknown", "Configuration response lost");
+    });
+    const application = createWorkflowConfigurationApplication({ evidence: evidence.ports, extensions: () => [], update,
+      readReceipt: vi.fn(async (request: GraphConfigurationUpdateRequest) => accepted(request)) });
+    graph.installWorkflowConfigurationApplication(application);
+    graph.catalog = [graphClone(nodeType)];
+    const workflowId = await graph.createWorkflow();
+    await vi.waitFor(() => expect(graph.locked).toBe(false));
+    const nodeId = (await graph.addNode("sample.node@1", { x: 0, y: 0 }))!;
+    fail = true;
+    await graph.patchNode(nodeId, { config: { text: "lost edit" } });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      error: { reason_code: "request_arbitration_unavailable" } }), { status: 409 })));
+    expect(await graph.abandonConfiguration(workflowId)).toBe(false);
+    expect(graph.locked).toBe(true);
+    expect(graph.configurationPendingRequests()).toHaveLength(1);
+    expect(useWorkbenchNoticesStore().notices.some(row => row.title === "结果未决")).toBe(true);
+  });
+
+  it("refuses a derivation confirm whose original proposal baseline changed", async () => {
+    const evidence = memoryRequestEvidence();
+    vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+    vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+    vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
+    const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore(), workflowId = await graph.createWorkflow();
+    const document = promptDocument(workflowId), sessionId = crypto.randomUUID();
+    graph.catalog = [graphClone(promptType)];
+    graph.entries[workflowId]!.document = graphClone(document);
+    graph.entries[workflowId]!.saved_document = graphClone(document);
+    graph.entries[workflowId]!.saved_revision = document.revision;
+    graph.entries[workflowId]!.session_id = sessionId;
+    graph.views[sessionId] = idleSession(document, sessionId);
+    workspace.markWorkflowSaved(workflowId, document.name);
+    const update = vi.fn(async (request: GraphConfigurationUpdateRequest) =>
+      configurationResult(request, { outcome: "confirmation_required", categories: ["fixed"], hasSession: true }));
+    const application = createWorkflowConfigurationApplication({ evidence: evidence.ports, extensions: () => [], update });
+    graph.installWorkflowConfigurationApplication(application, { seed: true });
+    await vi.waitFor(() => expect(graph.locked).toBe(false));
+    expect(await graph.patchNodeConfigurationPolicy(document.nodes[0]!.node_binding_id, "adjustable"))
+      .toMatchObject({ outcome: "confirmation-required" });
+    const acceptedDocument = application.accepted(workflowId)!;
+    const newer = { ...acceptedDocument, edit_sequence: acceptedDocument.edit_sequence + 1,
+      revision: acceptedDocument.revision + 1 };
+    application.observe(newer);
+    expect(await graph.confirmDerivation()).toBe(false);
+    expect(graph.activeDerivationAsk).toBeNull();
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(useWorkbenchNoticesStore().notices.some(row =>
+      row.reason.includes("基線") || row.reason.includes("基线"))).toBe(true);
+  });
+
+  it("re-reads the formal current after a closure failure without resubmitting", async () => {
+    const evidence = memoryRequestEvidence();
+    vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
+    vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
+    vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
+    const graph = useWorkflowGraphStore();
+    const update = vi.fn(async (request: GraphConfigurationUpdateRequest) => accepted(request));
+    const application = createWorkflowConfigurationApplication({ evidence: evidence.ports, extensions: () => [], update,
+      readReceipt: vi.fn(async (request: GraphConfigurationUpdateRequest) => accepted(request)) });
+    graph.installWorkflowConfigurationApplication(application);
+    graph.catalog = [graphClone(nodeType)];
+    const workflowId = await graph.createWorkflow();
+    await vi.waitFor(() => expect(graph.locked).toBe(false));
+    const nodeId = (await graph.addNode("sample.node@1", { x: 0, y: 0 }))!;
+    const resolve = evidence.ports.resolve;
+    evidence.ports.resolve = vi.fn(async () => { throw new Error("Evidence disk unavailable"); });
+    expect(await graph.patchNode(nodeId, { config: { text: "confirmed but not closed" } }))
+      .toMatchObject({ outcome: "failed" });
+    expect(application.forWorkflow(workflowId).progress.value).toBe("closure-failed");
+    expect(graph.locked).toBe(true);
+    const updateCalls = update.mock.calls.length;
+
+    // Read-only formal read repairs the local projection; it never resubmits the save.
+    stubGraphApplicationFetch(vi.fn(async path => {
+      expect(path).toBe(`/api/graph/definitions/${workflowId}`);
+      return new Response(JSON.stringify(application.accepted(workflowId)));
+    }));
+    expect(await graph.reloadAcceptedConfiguration(workflowId)).toBe(true);
+    expect(update.mock.calls.length).toBe(updateCalls);
+    // The original evidence is still open: editing stays blocked until it closes.
+    expect(graph.locked).toBe(true);
+    expect(graph.configurationPendingRequests()).toHaveLength(1);
+
+    evidence.ports.resolve = resolve;
+    expect(await graph.reconcileConfiguration(workflowId)).toBe(true);
+    expect(graph.locked).toBe(false);
+    expect(graph.configurationPendingRequests()).toEqual([]);
+    expect(update.mock.calls.length).toBe(updateCalls);
+    expect(graph.document!.nodes[0]!.config.text).toBe("confirmed but not closed");
   });
 
   it.each(["archive", "delete"] as const)(
@@ -255,10 +566,10 @@ describe("workflow configuration store wiring", () => {
       });
       graph.installWorkflowConfigurationApplication(application);
       graph.catalog = [graphClone(nodeType)];
-      const workflowId = graph.createWorkflow();
+      const workflowId = await graph.createWorkflow();
       await vi.waitFor(() => expect(graph.entries[workflowId]?.saved_revision).toBe(1));
       await vi.waitFor(() => expect(graph.locked).toBe(false));
-      expect(graph.renameWorkflow("unknown configuration")).toBe(workflowId);
+      expect(await graph.renameWorkflow("unknown configuration")).toMatchObject({ outcome: "failed" });
       await vi.waitFor(() => expect(application.forWorkflow(workflowId).pending.value).not.toBeNull());
       expect(application.forWorkflow(workflowId).locked.value).toBe(true);
       const records = evidence.records.size;
@@ -290,10 +601,10 @@ describe("workflow configuration store wiring", () => {
     });
     graph.installWorkflowConfigurationApplication(application);
     graph.catalog = [graphClone(nodeType)];
-    const workflowId = graph.createWorkflow();
+    const workflowId = await graph.createWorkflow();
     await vi.waitFor(() => expect(graph.entries[workflowId]?.saved_revision).toBe(1));
     await vi.waitFor(() => expect(graph.locked).toBe(false));
-    expect(graph.renameWorkflow("unknown configuration")).toBe(workflowId);
+    expect(await graph.renameWorkflow("unknown configuration")).toMatchObject({ outcome: "failed" });
     await vi.waitFor(() => expect(application.forWorkflow(workflowId).pending.value).not.toBeNull());
 
     const sessionId = crypto.randomUUID();
@@ -348,13 +659,13 @@ describe("workflow configuration store wiring", () => {
     });
     graph.installWorkflowConfigurationApplication(application);
 
-    const workflowId = graph.createWorkflow();
+    const workflowId = await graph.createWorkflow();
     const waitForUpdate = async (count: number) => {
       await vi.waitFor(() => expect(requests).toHaveLength(count));
       await vi.waitFor(() => expect(graph.locked).toBe(false));
     };
-    const add = (component: string, index: number) => {
-      const id = graph.addNode(component, { x: index * 250, y: 0 });
+    const add = async (component: string, index: number) => {
+      const id = await graph.addNode(component, { x: index * 250, y: 0 });
       expect(id).toBeTruthy();
       return id!;
     };
@@ -363,20 +674,29 @@ describe("workflow configuration store wiring", () => {
     expect(graph.entries[workflowId]!.session_id).toBeNull();
 
     graph.executionPackageLock = graphClone(executionLock);
-    const agentId = add("agents.execute@4", 1);
+    const agentId = await add("agents.execute@4", 1);
     await waitForUpdate(2);
-    const contextId = add("context.output@4", 2);
+    const contextId = await add("context.output@4", 2);
     await waitForUpdate(3);
-    const outputId = add("tools.output@1", 3);
+    const outputId = await add("tools.output@1", 3);
     await waitForUpdate(4);
-    const textId = add("tools.text@1", 4);
+    const textId = await add("tools.text@1", 4);
     await waitForUpdate(5);
-    expect(graph.connect({ source_node_id: textId, source_port_id: "output",
-      target_node_id: outputId, target_port_id: "input" })).toBe(workflowId);
+    expect(await graph.connect({ source_node_id: textId, source_port_id: "output",
+      target_node_id: outputId, target_port_id: "input" })).toMatchObject({ outcome: "accepted" });
     await waitForUpdate(6);
     const retainedEdge = graphClone(graph.document!.edges[0]!);
-    expect(graph.replaceNode(outputId, "agents.execute@4")).toBe(workflowId);
+    // Q05-3: the edge targets the old "input" port which the new component lacks, so the
+    // replacement is blocked (no submission) until the user disconnects it explicitly.
+    expect(await graph.replaceNode(outputId, "agents.execute@4")).toMatchObject({ outcome: "failed" });
+    expect(graph.activeEditBlock).toMatchObject({ action: "replace-node",
+      items: [expect.objectContaining({ kind: "edge-port", edgeId: retainedEdge.edge_id })] });
+    graph.dismissEditBlock();
+    graph.selectEdge(retainedEdge.edge_id);
+    expect(await graph.removeSelection()).toMatchObject({ outcome: "accepted" });
     await waitForUpdate(7);
+    expect(await graph.replaceNode(outputId, "agents.execute@4")).toMatchObject({ outcome: "accepted" });
+    await waitForUpdate(8);
 
     expect(requests[0]!.document.package_lock).toEqual(pinnedLock);
     expect(requests.slice(1).every(request => request.document.schema_version === 3)).toBe(true);
@@ -396,10 +716,11 @@ describe("workflow configuration store wiring", () => {
       .toMatchObject({ component_id: "context.output", component_version: "4" });
     expect(requests[3]!.document.nodes.find(node => node.node_binding_id === outputId))
       .toMatchObject({ component_id: "tools.output", component_version: "1" });
-    expect(requests[6]!.document.nodes.find(node => node.node_binding_id === outputId))
+    expect(requests[6]!.document.edges).toEqual([]);
+    expect(requests[7]!.document.nodes.find(node => node.node_binding_id === outputId))
       .toMatchObject({ component_id: "agents.execute", component_version: "4",
         configuration_policy: { schema_version: 1, prompt_mode: "fixed" } });
-    expect(requests[6]!.document.edges).toEqual([retainedEdge]);
+    expect(requests[7]!.document.edges).toEqual([]);
 
     expect(graph.document!.object_bindings).toEqual([]);
     expect(graph.entries[workflowId]!.session_id).toBeNull();
@@ -408,31 +729,32 @@ describe("workflow configuration store wiring", () => {
 
     const contextBinding = { object_key: "context", type_id: "workflow.effective-context", schema_version: 4,
       scope: "shared" as const, owner_node_id: null, readers: [contextId], writers: [] };
-    expect(graph.setControlDependencies(outputId, [agentId])).toBe(workflowId);
-    await waitForUpdate(8);
-    expect(requests[7]!.document.control_edges).toMatchObject([
+    expect(await graph.setControlDependencies(outputId, [agentId])).toMatchObject({ outcome: "accepted" });
+    await waitForUpdate(9);
+    expect(requests[8]!.document.control_edges).toMatchObject([
       { source_node_id: agentId, target_node_id: outputId },
     ]);
-    expect(graph.setObjectBindings([contextBinding])).toBe(workflowId);
-    await waitForUpdate(9);
-    expect(requests[8]!.document.object_bindings).toEqual([contextBinding]);
+    expect(await graph.setObjectBindings([contextBinding])).toMatchObject({ outcome: "accepted" });
+    await waitForUpdate(10);
+    expect(requests[9]!.document.object_bindings).toEqual([contextBinding]);
     const event = { event_id: "test.output", schema_version: 1, display_name: "Test output",
       audience: "consumer" as const, target_node_ids: [outputId], payload_schema: { type: "object" as const } };
-    expect(graph.setEventBindings([event])).toBe(workflowId);
-    await waitForUpdate(10);
-    expect(requests[9]!.document.event_bindings).toEqual([event]);
-    expect(requests.slice(7).every(request => request.document.schema_version === 3)).toBe(true);
-    expect(requests.slice(7).every(request => request.document.package_lock?.find(
+    expect(await graph.setEventBindings([event])).toMatchObject({ outcome: "accepted" });
+    await waitForUpdate(11);
+    expect(requests[10]!.document.event_bindings).toEqual([event]);
+    expect(requests.slice(8).every(request => request.document.schema_version === 3)).toBe(true);
+    expect(requests.slice(8).every(request => request.document.package_lock?.find(
       item => item.package_id === "workflow.tools")?.version === "0.9.0")).toBe(true);
 
     const countBeforeInvalidEdits = requests.length;
     const missingNodeId = crypto.randomUUID();
-    expect(graph.setControlDependencies(outputId, [missingNodeId])).toBeNull();
-    expect(graph.replaceNode(missingNodeId, "tools.output@1")).toBeNull();
-    expect(graph.setObjectBindings([{ ...contextBinding, readers: [missingNodeId] }])).toBeNull();
-    expect(graph.setObjectBindings([{ ...contextBinding, scope: "private", owner_node_id: contextId,
+    expect(await graph.setControlDependencies(outputId, [missingNodeId])).toMatchObject({ outcome: "no-change" });
+    expect(await graph.replaceNode(missingNodeId, "tools.output@1")).toMatchObject({ outcome: "no-change" });
+    expect(await graph.setObjectBindings([{ ...contextBinding, readers: [missingNodeId] }])).toBeNull();
+    expect(await graph.setObjectBindings([{ ...contextBinding, scope: "private", owner_node_id: contextId,
       readers: [contextId], writers: [outputId] }])).toBeNull();
-    expect(graph.setEventBindings([{ ...event, target_node_ids: [missingNodeId] }])).toBeNull();
+    expect(await graph.setEventBindings([{ ...event, target_node_ids: [missingNodeId] }]))
+      .toMatchObject({ outcome: "failed" });
     expect(requests).toHaveLength(countBeforeInvalidEdits);
 
     stubGraphApplicationFetch(async path => {
@@ -455,7 +777,7 @@ describe("workflow configuration store wiring", () => {
       vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
       vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
       const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
-      const workflowId = graph.createWorkflow();
+      const workflowId = await graph.createWorkflow();
       const document = promptDocument(workflowId);
       if (invalidTarget === "component version 2") document.nodes[0]!.component_version = "2";
       else if (invalidTarget === "another component") document.nodes[0]!.component_id = "prompts.group";
@@ -476,7 +798,8 @@ describe("workflow configuration store wiring", () => {
       graph.installWorkflowConfigurationApplication(application, { seed: true });
       await vi.waitFor(() => expect(graph.locked).toBe(false));
 
-      expect(graph.patchNodeConfigurationPolicy(document.nodes[0]!.node_binding_id, "adjustable")).toBeNull();
+      expect(await graph.patchNodeConfigurationPolicy(document.nodes[0]!.node_binding_id, "adjustable"))
+        .toMatchObject({ outcome: "no-change" });
       expect(graph.document!.nodes[0]!.configuration_policy).toEqual({ schema_version: 1, prompt_mode: "fixed" });
       expect(requests).toEqual([]);
     });
@@ -486,7 +809,7 @@ describe("workflow configuration store wiring", () => {
     vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
     vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
     vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
-    const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore(), workflowId = graph.createWorkflow();
+    const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore(), workflowId = await graph.createWorkflow();
     const document = promptDocument(workflowId);
     const sessionId = crypto.randomUUID();
     graph.catalog = [graphClone(promptType)];
@@ -509,11 +832,16 @@ describe("workflow configuration store wiring", () => {
     vi.stubGlobal("window", { confirm });
     await vi.waitFor(() => expect(graph.locked).toBe(false));
 
-    expect(graph.patchNodeConfigurationPolicy(document.nodes[0]!.node_binding_id, "adjustable")).toBe(workflowId);
+    expect(await graph.patchNodeConfigurationPolicy(document.nodes[0]!.node_binding_id, "adjustable"))
+      .toMatchObject({ outcome: "confirmation-required" });
     await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(graph.editorLocked).toBe(false));
+    expect(graph.editorLocked).toBe(false);
 
-    expect(confirm).toHaveBeenCalledWith("此固定配置修改需要创建新的工作流；原工作流及会话保持不变。继续吗？");
+    // The ask is scoped to the workflow, not a global blocking confirm().
+    expect(confirm).not.toHaveBeenCalled();
+    expect(graph.activeDerivationAsk).not.toBeNull();
+    expect(graph.declineDerivation()).toBe(true);
+    expect(graph.activeDerivationAsk).toBeNull();
     expect(requests[0]!.document.nodes[0]!.configuration_policy).toEqual({
       schema_version: 1, prompt_mode: "adjustable",
     });
@@ -531,7 +859,7 @@ describe("workflow configuration store wiring", () => {
     vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
     vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
     vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
-    const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore(), workflowId = graph.createWorkflow();
+    const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore(), workflowId = await graph.createWorkflow();
     const document = promptDocument(workflowId);
     const sessionId = crypto.randomUUID(), targetId = crypto.randomUUID();
     graph.catalog = [graphClone(promptType)];
@@ -552,10 +880,15 @@ describe("workflow configuration store wiring", () => {
     });
     const application = createWorkflowConfigurationApplication({ evidence: evidence.ports, extensions: () => [], update });
     graph.installWorkflowConfigurationApplication(application, { seed: true });
-    vi.stubGlobal("window", { confirm: vi.fn(() => true) });
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal("window", { confirm });
     await vi.waitFor(() => expect(graph.locked).toBe(false));
 
-    expect(graph.patchNodeConfigurationPolicy(document.nodes[0]!.node_binding_id, "adjustable")).toBe(workflowId);
+    expect(await graph.patchNodeConfigurationPolicy(document.nodes[0]!.node_binding_id, "adjustable"))
+      .toMatchObject({ outcome: "confirmation-required" });
+    expect(graph.activeDerivationAsk).not.toBeNull();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(await graph.confirmDerivation()).toBe(true);
     await vi.waitFor(() => expect(update).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(workspace.activeWorkflowId).toBe(targetId));
 
@@ -590,9 +923,9 @@ describe("workflow configuration store wiring", () => {
       graph.catalog = graphClone(frontendCatalog);
       graph.packageLock = graphClone(frontendProjectLock);
       graph.executionPackageLock = graphClone(frontendExecutionLock);
-      const workflowId = graph.createWorkflow();
+      const workflowId = await graph.createWorkflow();
       await vi.waitFor(() => expect(graph.locked).toBe(false));
-      const providerId = graph.addNode("frontend.node@2", { x: 0, y: 0 })!;
+      const providerId = (await graph.addNode("frontend.node@2", { x: 0, y: 0 }))!;
       expect(providerId).toBeTruthy();
       const session = frontendSession(workflowId);
       const sessionId = session.workflow_session_id;
@@ -625,12 +958,22 @@ describe("workflow configuration store wiring", () => {
         }),
       });
       graph.installWorkflowConfigurationApplication(application, { seed: true });
-      vi.stubGlobal("window", { confirm: vi.fn(() => confirmDerivation) });
+      const confirm = vi.fn(() => confirmDerivation);
+      vi.stubGlobal("window", { confirm });
       await vi.waitFor(() => expect(application.forWorkflow(workflowId).initialized.value).toBe(true));
 
       graph.selectedNodeIds = [providerId];
-      graph.duplicateSelection();
-      await vi.waitFor(() => expect(update).toHaveBeenCalledTimes(confirmDerivation ? 2 : 1));
+      expect(await graph.duplicateSelection()).toMatchObject({ outcome: "confirmation-required" });
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(confirm).not.toHaveBeenCalled();
+      expect(graph.activeDerivationAsk).not.toBeNull();
+      if (confirmDerivation) {
+        expect(await graph.confirmDerivation()).toBe(true);
+        await vi.waitFor(() => expect(update).toHaveBeenCalledTimes(2));
+      } else {
+        expect(graph.declineDerivation()).toBe(true);
+        expect(graph.activeDerivationAsk).toBeNull();
+      }
       await vi.waitFor(() => expect(graph.editorLocked).toBe(false));
 
       const registrationRequests = requests.map(request => request.document.object_bindings
@@ -671,7 +1014,7 @@ describe("workflow configuration store wiring", () => {
     vi.spyOn(requestEvidencePorts, "read").mockImplementation(evidence.ports.read);
     vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
     vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
-    const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore(), workflowId = graph.createWorkflow();
+    const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore(), workflowId = await graph.createWorkflow();
     const document = promptDocument(workflowId, "adjustable"), sessionId = crypto.randomUUID();
     graph.catalog = [graphClone(promptType)];
     graph.entries[workflowId]!.document = graphClone(document);
@@ -689,9 +1032,9 @@ describe("workflow configuration store wiring", () => {
     graph.installWorkflowConfigurationApplication(application, { seed: true });
     await vi.waitFor(() => expect(graph.locked).toBe(false));
 
-    expect(graph.patchNode(document.nodes[0]!.node_binding_id, {
+    expect(await graph.patchNode(document.nodes[0]!.node_binding_id, {
       config: { ...document.nodes[0]!.config, text: "updated prompt body" },
-    })).toBe(workflowId);
+    })).toMatchObject({ outcome: "accepted" });
     await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(graph.entries[workflowId]!.document.nodes[0]!.config.text)
       .toBe("updated prompt body"));

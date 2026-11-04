@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readGraphCatalog, readGraphCatalogDetails, readGraphRun, readGraphSessions } from "./workflowGraphApi";
+import { readGraphCatalogDetails, readGraphRun } from "./workflowGraphApi";
 import { workflowFrontendExtensions } from "../plugins/workflowFrontendManifest";
 afterEach(() => vi.unstubAllGlobals());
 describe("generic node run history decoding", () => {
@@ -31,7 +31,6 @@ describe("generic node run history decoding", () => {
       data_types: [{ type_id: "plugin.object", schema_version: 1, scope: "session", schema: {} }] };
     const fetcher = vi.fn(async (_path: string) => new Response(JSON.stringify(response)));
     vi.stubGlobal("fetch", fetcher);
-    expect(await readGraphCatalog()).toEqual([type]);
     expect(await readGraphCatalogDetails()).toEqual({
       node_types: [type], package_lock: response.package_lock, execution_package_lock: response.package_lock,
       data_types: response.data_types, frontend_extensions: [],
@@ -40,7 +39,7 @@ describe("generic node run history decoding", () => {
       method: "POST", body: JSON.stringify({ operation: "catalog.node-types", parameters: { protocol_version: 2 } }),
     }));
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ schema_version: 1, node_types: [type] }))));
-    await expect(readGraphCatalog()).rejects.toThrow("契约无效");
+    await expect(readGraphCatalogDetails()).rejects.toThrow("契约无效");
   });
   it("retains v2 UI declarations and rejects old v1 hints instead of enabling local UI", async () => {
     const response = { schema_version: 2, node_types: [], package_lock: [], data_types: [],
@@ -51,14 +50,6 @@ describe("generic node run history decoding", () => {
       extension_id: "workflow.frontend.session-object" }] };
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(invalid))));
     await expect(readGraphCatalogDetails()).rejects.toThrow("前端扩展目录契约无效");
-  });
-  it("uses the definition-scoped session directory endpoint", async () => {
-    const definition = crypto.randomUUID();
-    const fetcher = vi.fn(async (_path:string) => new Response("[]")); vi.stubGlobal("fetch",fetcher);
-    expect(await readGraphSessions(definition)).toEqual([]);
-    expect(fetcher).toHaveBeenCalledWith("/api/graph/queries", expect.objectContaining({
-      method: "POST", body: JSON.stringify({ operation: "definition.sessions", parameters: { workflow_definition_id: definition } }),
-    }));
   });
   it("preserves immutable original ownership when reading a copied session's frozen ancestor", async () => {
     const sid = crypto.randomUUID(); const source = crypto.randomUUID(); const chain = crypto.randomUUID();

@@ -10,7 +10,8 @@ from ..global_resources import (
 from ..graph_contracts import NodeDefinition, NodePort, require
 from ..host_sdk import DataTypeDefinition, ResourceIdentity, bounded_name
 from ..lorebook_engine import lorebook_entry_schema, validate_lorebook_entries
-from ..lorebook_nodes import execute_lorebook
+from ..lorebook_nodes import execute_lorebook, execute_lorebook_content
+from ..tavern_package import lorebook_content_ports
 from ..prompt_contract import check_prompt_schema
 from ..variable_contract import VARIABLE_SCHEMA_VERSION, VARIABLE_TYPE
 
@@ -65,7 +66,7 @@ def validate_activation_config(config):
             "lorebook_config_invalid", "Variable object keys must be explicit canonical identities")
 
 
-def activate_lorebook(config, inputs, context):
+def activate_lorebook(config, inputs, context, *, content_version=False):
     reference = validate_global_resource_reference(inputs["resource"])["reference"]
     validate_lorebook_reference({"reference": reference})
     record = context.host_call("resources:read", "current-global-resource", reference)
@@ -74,7 +75,8 @@ def activate_lorebook(config, inputs, context):
         "kind": "global_resource_read", "reference": deepcopy(reference),
         "update_sequence": record["update_sequence"],
     })
-    return execute_lorebook(
+    execute = execute_lorebook_content if content_version else execute_lorebook
+    return execute(
         {"entries": record["value"]["entries"], "object_keys": config["object_keys"]},
         inputs, context, grouped=True,
     )
@@ -88,7 +90,7 @@ def lorebook_resource_definition():
     )
 
 
-def register_global_lorebook(host):
+def register_global_lorebook(host, *, content_version=False):
     host.register_data_type(lorebook_resource_definition())
     reference = ResourceIdentity("workspace", LOREBOOK_RESOURCE_TYPE, _DEFAULT_RESOURCE_ID).to_dict()
     host.register_node(NodeDefinition(
@@ -114,3 +116,18 @@ def register_global_lorebook(host):
         },),
     ), activate_lorebook, config_validator=validate_activation_config,
         resource_input_ports=("resource",), resource_preflight_validator=preflight_lorebook)
+    if content_version:
+        host.register_node(NodeDefinition(
+            "lorebook.global-activate", "2", "全局 Lorebook 触发", "类酒馆",
+            {"object_keys": []}, object_schema({"object_keys": deepcopy(OBJECT_KEYS_SCHEMA)}),
+            inputs=(*lorebook_content_ports(), NodePort("resource", "GLOBAL_RESOURCE_REF")),
+            outputs=(NodePort("output", "PROMPT_MATERIALS"),),
+            capabilities=("resources:read", "objects:read", "artifacts:read"), input_storage="references",
+            object_accesses=({
+                "config_field": "object_keys", "multiple": True, "access": "read",
+                "type_id": VARIABLE_TYPE, "schema_version": VARIABLE_SCHEMA_VERSION,
+            },),
+        ), lambda config, inputs, context: activate_lorebook(
+            config, inputs, context, content_version=True),
+            config_validator=validate_activation_config,
+            resource_input_ports=("resource",), resource_preflight_validator=preflight_lorebook)

@@ -1,0 +1,1089 @@
+﻿{
+    "generated_at":  "2026-11-04T23:59:51+08:00",
+    "baseline":  {
+                     "file":  "s4-00-baseline-2026-11-04-run2.json",
+                     "generated_at":  "2026-11-04T22:52:20+0800",
+                     "repeat":  5
+                 },
+    "after":  {
+                  "file":  "s4-05-exit-2026-11-04.json",
+                  "generated_at":  "2026-11-04T23:39:50+0800",
+                  "repeat":  3
+              },
+    "code_snapshot_before":  {
+                                 "backend/src/phase1_agent/graph_contracts.py":  "ea867de7f4be0f6b",
+                                 "backend/src/phase1_agent/workflow_configuration.py":  "3fad3c909c491d3b",
+                                 "backend/src/phase1_agent/configuration_data.py":  "b541ac25749c4388",
+                                 "backend/src/phase1_agent/configuration_service.py":  "39d5d4b6ceb1b41c",
+                                 "backend/src/phase1_agent/graph_store.py":  "843aa06d18040a53",
+                                 "backend/src/phase1_agent/graph_service.py":  "e1071366e56448bb",
+                                 "backend/src/phase1_agent/graph_application.py":  "02df83de738c5b43",
+                                 "backend/src/phase1_agent/graph_application_contracts.py":  "9eca013169599ac7",
+                                 "backend/src/phase1_agent/request_evidence.py":  "687371594f8691c2",
+                                 "backend/src/phase1_agent/workflow_modification_gate.py":  "ef1ce8b564526e2c",
+                                 "frontend/src/application/workflowConfiguration.ts":  "493ba30637669978",
+                                 "frontend/src/stores/workflowGraph.ts":  "e156239f3a641e67",
+                                 "backend/tests/measurement_harness.py":  "ad79b2696ebb19cf"
+                             },
+    "code_snapshot_after":  {
+                                "backend/src/phase1_agent/graph_contracts.py":  "ea867de7f4be0f6b",
+                                "backend/src/phase1_agent/workflow_configuration.py":  "02dc2a8e1004792f",
+                                "backend/src/phase1_agent/configuration_data.py":  "5b53a934d67a68e8",
+                                "backend/src/phase1_agent/configuration_service.py":  "39d5d4b6ceb1b41c",
+                                "backend/src/phase1_agent/graph_store.py":  "937b765912e6f92c",
+                                "backend/src/phase1_agent/graph_service.py":  "e1071366e56448bb",
+                                "backend/src/phase1_agent/graph_drafts.py":  "eceddd45f7e502d8",
+                                "backend/src/phase1_agent/context_host_service.py":  "c60fcf66bcd1c8fc",
+                                "backend/src/phase1_agent/context_package.py":  "2d370a6d4b93a901",
+                                "backend/src/phase1_agent/graph_application.py":  "02df83de738c5b43",
+                                "backend/src/phase1_agent/graph_application_contracts.py":  "9111a4d905c542a7",
+                                "backend/src/phase1_agent/request_evidence.py":  "d5aafd89befb39c2",
+                                "backend/src/phase1_agent/workflow_modification_gate.py":  "ef1ce8b564526e2c",
+                                "frontend/src/application/workflowConfiguration.ts":  "bdeff3bd17d42660",
+                                "frontend/src/adapters/requestEvidenceApi.ts":  "cc2180077714158f",
+                                "frontend/src/application/workflowConfigurationCopy.ts":  "73eeea3a21fa62e5",
+                                "frontend/src/components/GraphHistory.vue":  "8228e1e88fc6ff31",
+                                "frontend/src/components/GraphRunControls.vue":  "3aca78a67ff4ac2e",
+                                "frontend/src/components/WorkflowWorkspace.vue":  "983570222f244a33",
+                                "frontend/src/stores/workflowGraph.ts":  "6675b14005106103",
+                                "frontend/src/adapters/workflowGraphApi.ts":  "8940bc997983f9e5",
+                                "backend/tests/measurement_harness.py":  "e0353c216db2c006"
+                            },
+    "save":  {
+                 "no_history_chain_before":  {
+                                                 "rows":  [
+                                                              {
+                                                                  "node_count":  1,
+                                                                  "application_calls":  5,
+                                                                  "request_bytes":  1701,
+                                                                  "response_bytes":  6692,
+                                                                  "validate_graph_document_calls":  6,
+                                                                  "replay_probe_calls":  1
+                                                              },
+                                                              {
+                                                                  "node_count":  20,
+                                                                  "application_calls":  5,
+                                                                  "request_bytes":  19157,
+                                                                  "response_bytes":  53296,
+                                                                  "validate_graph_document_calls":  6,
+                                                                  "replay_probe_calls":  1
+                                                              },
+                                                              {
+                                                                  "node_count":  100,
+                                                                  "application_calls":  5,
+                                                                  "request_bytes":  92907,
+                                                                  "response_bytes":  250151,
+                                                                  "validate_graph_document_calls":  6,
+                                                                  "replay_probe_calls":  1
+                                                              }
+                                                          ],
+                                                 "seconds_median":  [
+                                                                        0.033469,
+                                                                        0.052845,
+                                                                        0.132796
+                                                                    ]
+                                             },
+                 "no_history_chain_narrow_after":  {
+                                                       "rows":  [
+                                                                    {
+                                                                        "node_count":  1,
+                                                                        "application_calls":  6,
+                                                                        "request_bytes":  1978,
+                                                                        "response_bytes":  6782
+                                                                    },
+                                                                    {
+                                                                        "node_count":  20,
+                                                                        "application_calls":  6,
+                                                                        "request_bytes":  19434,
+                                                                        "response_bytes":  53386
+                                                                    },
+                                                                    {
+                                                                        "node_count":  100,
+                                                                        "application_calls":  6,
+                                                                        "request_bytes":  93184,
+                                                                        "response_bytes":  250241
+                                                                    }
+                                                                ],
+                                                       "seconds_median":  [
+                                                                              0.031642,
+                                                                              0.058745,
+                                                                              0.137795
+                                                                          ]
+                                                   },
+                 "history_100_rows":  [
+                                          {
+                                              "node_count":  1,
+                                              "mode":  "baseline",
+                                              "application_calls":  6,
+                                              "response_bytes":  272559,
+                                              "request_bytes":  1826,
+                                              "seconds_median":  0.069853,
+                                              "sample_calls":  [
+                                                                   {
+                                                                       "call":  "query:request-evidence.read",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.012968,
+                                                                       "request_bytes":  89,
+                                                                       "response_bytes":  88601,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:request-evidence.write",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.008184,
+                                                                       "request_bytes":  775,
+                                                                       "response_bytes":  1621,
+                                                                       "outcome":  {
+
+                                                                                   },
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "query:request-evidence.read",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.013435,
+                                                                       "request_bytes":  89,
+                                                                       "response_bytes":  89538,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:definition.update",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.009926,
+                                                                       "request_bytes":  586,
+                                                                       "response_bytes":  1636,
+                                                                       "outcome":  {
+                                                                                       "outcome":  "unchanged",
+                                                                                       "definition_revision":  1,
+                                                                                       "edit_sequence":  1,
+                                                                                       "workflow_definition_id":  "dc73fcb4-9ae4-4edd-be22-50676b2c4faa",
+                                                                                       "changed_categories":  [
+
+                                                                                                              ]
+                                                                                   },
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "query:request-evidence.read",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.014,
+                                                                       "request_bytes":  89,
+                                                                       "response_bytes":  89538,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:request-evidence.resolve",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.008956,
+                                                                       "request_bytes":  198,
+                                                                       "response_bytes":  1625,
+                                                                       "outcome":  {
+
+                                                                                   },
+                                                                       "error":  null
+                                                                   }
+                                                               ]
+                                          },
+                                          {
+                                              "node_count":  1,
+                                              "mode":  "narrow",
+                                              "application_calls":  6,
+                                              "response_bytes":  6848,
+                                              "request_bytes":  2014,
+                                              "seconds_median":  0.036842,
+                                              "sample_calls":  [
+                                                                   {
+                                                                       "call":  "query:request-evidence.pending",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.001042,
+                                                                       "request_bytes":  99,
+                                                                       "response_bytes":  90,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:request-evidence.write",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.008126,
+                                                                       "request_bytes":  775,
+                                                                       "response_bytes":  1621,
+                                                                       "outcome":  {
+
+                                                                                   },
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "query:request-evidence.read",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.00448,
+                                                                       "request_bytes":  178,
+                                                                       "response_bytes":  938,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:definition.update",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.009137,
+                                                                       "request_bytes":  586,
+                                                                       "response_bytes":  1636,
+                                                                       "outcome":  {
+                                                                                       "outcome":  "unchanged",
+                                                                                       "definition_revision":  1,
+                                                                                       "edit_sequence":  1,
+                                                                                       "workflow_definition_id":  "6091714a-1e85-4acd-af81-832764b59a5c",
+                                                                                       "changed_categories":  [
+
+                                                                                                              ]
+                                                                                   },
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "query:request-evidence.read",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.004754,
+                                                                       "request_bytes":  178,
+                                                                       "response_bytes":  938,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:request-evidence.resolve",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.011066,
+                                                                       "request_bytes":  198,
+                                                                       "response_bytes":  1625,
+                                                                       "outcome":  {
+
+                                                                                   },
+                                                                       "error":  null
+                                                                   }
+                                                               ]
+                                          },
+                                          {
+                                              "node_count":  20,
+                                              "mode":  "baseline",
+                                              "application_calls":  6,
+                                              "response_bytes":  2937563,
+                                              "request_bytes":  19282,
+                                              "seconds_median":  0.304834,
+                                              "sample_calls":  [
+                                                                   {
+                                                                       "call":  "query:request-evidence.read",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.08531,
+                                                                       "request_bytes":  89,
+                                                                       "response_bytes":  961401,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:request-evidence.write",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.014186,
+                                                                       "request_bytes":  9503,
+                                                                       "response_bytes":  10349,
+                                                                       "outcome":  {
+
+                                                                                   },
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "query:request-evidence.read",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.08044,
+                                                                       "request_bytes":  89,
+                                                                       "response_bytes":  971066,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:definition.update",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.023905,
+                                                                       "request_bytes":  9314,
+                                                                       "response_bytes":  13328,
+                                                                       "outcome":  {
+                                                                                       "outcome":  "unchanged",
+                                                                                       "definition_revision":  1,
+                                                                                       "edit_sequence":  1,
+                                                                                       "workflow_definition_id":  "d3bfb170-4b5b-410b-90b7-52841825f8ae",
+                                                                                       "changed_categories":  [
+
+                                                                                                              ]
+                                                                                   },
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "query:request-evidence.read",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.087772,
+                                                                       "request_bytes":  89,
+                                                                       "response_bytes":  971066,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:request-evidence.resolve",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.010491,
+                                                                       "request_bytes":  198,
+                                                                       "response_bytes":  10353,
+                                                                       "outcome":  {
+
+                                                                                   },
+                                                                       "error":  null
+                                                                   }
+                                                               ]
+                                          },
+                                          {
+                                              "node_count":  20,
+                                              "mode":  "narrow",
+                                              "application_calls":  6,
+                                              "response_bytes":  53452,
+                                              "request_bytes":  19470,
+                                              "seconds_median":  0.058608,
+                                              "sample_calls":  [
+                                                                   {
+                                                                       "call":  "query:request-evidence.pending",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.00131,
+                                                                       "request_bytes":  99,
+                                                                       "response_bytes":  90,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:request-evidence.write",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.010693,
+                                                                       "request_bytes":  9503,
+                                                                       "response_bytes":  10349,
+                                                                       "outcome":  {
+
+                                                                                   },
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "query:request-evidence.read",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.004836,
+                                                                       "request_bytes":  178,
+                                                                       "response_bytes":  9666,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:definition.update",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.023912,
+                                                                       "request_bytes":  9314,
+                                                                       "response_bytes":  13328,
+                                                                       "outcome":  {
+                                                                                       "outcome":  "unchanged",
+                                                                                       "definition_revision":  1,
+                                                                                       "edit_sequence":  1,
+                                                                                       "workflow_definition_id":  "fc3e4969-520c-4ebf-bcea-0dc3da51fcc7",
+                                                                                       "changed_categories":  [
+
+                                                                                                              ]
+                                                                                   },
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "query:request-evidence.read",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.006085,
+                                                                       "request_bytes":  178,
+                                                                       "response_bytes":  9666,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:request-evidence.resolve",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.012637,
+                                                                       "request_bytes":  198,
+                                                                       "response_bytes":  10353,
+                                                                       "outcome":  {
+
+                                                                                   },
+                                                                       "error":  null
+                                                                   }
+                                                               ]
+                                          },
+                                          {
+                                              "node_count":  100,
+                                              "mode":  "baseline",
+                                              "application_calls":  6,
+                                              "response_bytes":  14196918,
+                                              "request_bytes":  93032,
+                                              "seconds_median":  1.281319,
+                                              "sample_calls":  [
+                                                                   {
+                                                                       "call":  "query:request-evidence.read",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.374497,
+                                                                       "request_bytes":  89,
+                                                                       "response_bytes":  4648901,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:request-evidence.write",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.024889,
+                                                                       "request_bytes":  46378,
+                                                                       "response_bytes":  47224,
+                                                                       "outcome":  {
+
+                                                                                   },
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "query:request-evidence.read",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.415859,
+                                                                       "request_bytes":  89,
+                                                                       "response_bytes":  4695441,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:definition.update",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.076884,
+                                                                       "request_bytes":  46189,
+                                                                       "response_bytes":  62683,
+                                                                       "outcome":  {
+                                                                                       "outcome":  "unchanged",
+                                                                                       "definition_revision":  1,
+                                                                                       "edit_sequence":  1,
+                                                                                       "workflow_definition_id":  "b776f3d8-c1b9-429e-a0bd-11c61c4f7d33",
+                                                                                       "changed_categories":  [
+
+                                                                                                              ]
+                                                                                   },
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "query:request-evidence.read",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.367627,
+                                                                       "request_bytes":  89,
+                                                                       "response_bytes":  4695441,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:request-evidence.resolve",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.015036,
+                                                                       "request_bytes":  198,
+                                                                       "response_bytes":  47228,
+                                                                       "outcome":  {
+
+                                                                                   },
+                                                                       "error":  null
+                                                                   }
+                                                               ]
+                                          },
+                                          {
+                                              "node_count":  100,
+                                              "mode":  "narrow",
+                                              "application_calls":  6,
+                                              "response_bytes":  250307,
+                                              "request_bytes":  93220,
+                                              "seconds_median":  0.14722,
+                                              "sample_calls":  [
+                                                                   {
+                                                                       "call":  "query:request-evidence.pending",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.001707,
+                                                                       "request_bytes":  99,
+                                                                       "response_bytes":  90,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:request-evidence.write",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.025322,
+                                                                       "request_bytes":  46378,
+                                                                       "response_bytes":  47224,
+                                                                       "outcome":  {
+
+                                                                                   },
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "query:request-evidence.read",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.008444,
+                                                                       "request_bytes":  178,
+                                                                       "response_bytes":  46541,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:definition.update",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.081366,
+                                                                       "request_bytes":  46189,
+                                                                       "response_bytes":  62683,
+                                                                       "outcome":  {
+                                                                                       "outcome":  "unchanged",
+                                                                                       "definition_revision":  1,
+                                                                                       "edit_sequence":  1,
+                                                                                       "workflow_definition_id":  "fa1a7d56-c5ba-42d0-952d-3f86f69525cf",
+                                                                                       "changed_categories":  [
+
+                                                                                                              ]
+                                                                                   },
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "query:request-evidence.read",
+                                                                       "kind":  "query",
+                                                                       "seconds":  0.008436,
+                                                                       "request_bytes":  178,
+                                                                       "response_bytes":  46541,
+                                                                       "outcome":  null,
+                                                                       "error":  null
+                                                                   },
+                                                                   {
+                                                                       "call":  "command:request-evidence.resolve",
+                                                                       "kind":  "command",
+                                                                       "seconds":  0.013746,
+                                                                       "request_bytes":  198,
+                                                                       "response_bytes":  47228,
+                                                                       "outcome":  {
+
+                                                                                   },
+                                                                       "error":  null
+                                                                   }
+                                                               ]
+                                          }
+                                      ]
+             },
+    "q08_history":  {
+                        "before":  [
+                                       {
+                                           "fixed_revisions":  1,
+                                           "build_seconds":  0.011091,
+                                           "display_calls":  1,
+                                           "fixed_calls":  2,
+                                           "fixed_rows":  2,
+                                           "fixed_validation_seconds":  0.000326,
+                                           "fixed_save_seconds":  0.010032,
+                                           "unchanged_calls":  1
+                                       },
+                                       {
+                                           "fixed_revisions":  10,
+                                           "build_seconds":  0.114758,
+                                           "display_calls":  1,
+                                           "fixed_calls":  2,
+                                           "fixed_rows":  20,
+                                           "fixed_validation_seconds":  0.003412,
+                                           "fixed_save_seconds":  0.016027,
+                                           "unchanged_calls":  1
+                                       },
+                                       {
+                                           "fixed_revisions":  44,
+                                           "build_seconds":  0.747317,
+                                           "display_calls":  1,
+                                           "fixed_calls":  2,
+                                           "fixed_rows":  88,
+                                           "fixed_validation_seconds":  0.009886,
+                                           "fixed_save_seconds":  0.022031,
+                                           "unchanged_calls":  1
+                                       },
+                                       {
+                                           "fixed_revisions":  100,
+                                           "build_seconds":  2.421198,
+                                           "display_calls":  1,
+                                           "fixed_calls":  2,
+                                           "fixed_rows":  200,
+                                           "fixed_validation_seconds":  0.023981,
+                                           "fixed_save_seconds":  0.043365,
+                                           "unchanged_calls":  1
+                                       }
+                                   ],
+                        "after":  [
+                                      {
+                                          "fixed_revisions":  1,
+                                          "build_seconds":  0.009544,
+                                          "display_calls":  1,
+                                          "fixed_calls":  1,
+                                          "fixed_rows":  1,
+                                          "fixed_validation_seconds":  0.000143,
+                                          "fixed_save_seconds":  0.010083,
+                                          "unchanged_calls":  1
+                                      },
+                                      {
+                                          "fixed_revisions":  10,
+                                          "build_seconds":  0.104096,
+                                          "display_calls":  1,
+                                          "fixed_calls":  1,
+                                          "fixed_rows":  10,
+                                          "fixed_validation_seconds":  0.001356,
+                                          "fixed_save_seconds":  0.01161,
+                                          "unchanged_calls":  1
+                                      },
+                                      {
+                                          "fixed_revisions":  44,
+                                          "build_seconds":  0.597394,
+                                          "display_calls":  1,
+                                          "fixed_calls":  1,
+                                          "fixed_rows":  44,
+                                          "fixed_validation_seconds":  0.006246,
+                                          "fixed_save_seconds":  0.01881,
+                                          "unchanged_calls":  1
+                                      },
+                                      {
+                                          "fixed_revisions":  100,
+                                          "build_seconds":  1.629783,
+                                          "display_calls":  1,
+                                          "fixed_calls":  1,
+                                          "fixed_rows":  100,
+                                          "fixed_validation_seconds":  0.011571,
+                                          "fixed_save_seconds":  0.024478,
+                                          "unchanged_calls":  1
+                                      }
+                                  ]
+                    },
+    "q09_poll":  [
+                     {
+                         "case":  "idle session poll tick (350 ms interval, 2 queries)",
+                         "seconds":  null,
+                         "response_bytes":  null,
+                         "per_tick_calls":  2,
+                         "per_tick_bytes":  2129,
+                         "chain_revision_advances":  null,
+                         "frozen_definition_reads_today":  null,
+                         "frozen_definition_reads_before_s4_03":  null,
+                         "frozen_definition_reads_after_s4_03_with_identity_reuse":  null
+                     },
+                     {
+                         "case":  "no-selected-session poll tick (1 query)",
+                         "seconds":  null,
+                         "response_bytes":  null,
+                         "per_tick_calls":  1,
+                         "per_tick_bytes":  257,
+                         "chain_revision_advances":  null,
+                         "frozen_definition_reads_today":  null,
+                         "frozen_definition_reads_before_s4_03":  null,
+                         "frozen_definition_reads_after_s4_03_with_identity_reuse":  null
+                     },
+                     {
+                         "case":  "frozen definition read (history panel per chain revision today)",
+                         "seconds":  0.004243,
+                         "response_bytes":  2264,
+                         "per_tick_calls":  null,
+                         "per_tick_bytes":  null,
+                         "chain_revision_advances":  null,
+                         "frozen_definition_reads_today":  null,
+                         "frozen_definition_reads_before_s4_03":  null,
+                         "frozen_definition_reads_after_s4_03_with_identity_reuse":  null
+                     },
+                     {
+                         "case":  "current definition read (manual refreshPublishedRevision before S4-03)",
+                         "seconds":  0.005892,
+                         "response_bytes":  2282,
+                         "per_tick_calls":  null,
+                         "per_tick_bytes":  null,
+                         "chain_revision_advances":  null,
+                         "frozen_definition_reads_today":  null,
+                         "frozen_definition_reads_before_s4_03":  null,
+                         "frozen_definition_reads_after_s4_03_with_identity_reuse":  null
+                     },
+                     {
+                         "case":  "definition summaries read (refreshPublishedRevision after Q09)",
+                         "seconds":  0.004813,
+                         "response_bytes":  224,
+                         "per_tick_calls":  null,
+                         "per_tick_bytes":  null,
+                         "chain_revision_advances":  null,
+                         "frozen_definition_reads_today":  null,
+                         "frozen_definition_reads_before_s4_03":  null,
+                         "frozen_definition_reads_after_s4_03_with_identity_reuse":  null
+                     },
+                     {
+                         "case":  "completed session poll tick (chained run views)",
+                         "seconds":  null,
+                         "response_bytes":  null,
+                         "per_tick_calls":  2,
+                         "per_tick_bytes":  14367,
+                         "chain_revision_advances":  null,
+                         "frozen_definition_reads_today":  null,
+                         "frozen_definition_reads_before_s4_03":  null,
+                         "frozen_definition_reads_after_s4_03_with_identity_reuse":  null
+                     },
+                     {
+                         "case":  "history panel: run.read for one selected chain",
+                         "seconds":  0.009014,
+                         "response_bytes":  8395,
+                         "per_tick_calls":  null,
+                         "per_tick_bytes":  null,
+                         "chain_revision_advances":  null,
+                         "frozen_definition_reads_today":  null,
+                         "frozen_definition_reads_before_s4_03":  null,
+                         "frozen_definition_reads_after_s4_03_with_identity_reuse":  null
+                     },
+                     {
+                         "case":  "history panel: frozen definition read after run.read",
+                         "seconds":  0.00437,
+                         "response_bytes":  2264,
+                         "per_tick_calls":  null,
+                         "per_tick_bytes":  null,
+                         "chain_revision_advances":  null,
+                         "frozen_definition_reads_today":  null,
+                         "frozen_definition_reads_before_s4_03":  null,
+                         "frozen_definition_reads_after_s4_03_with_identity_reuse":  null
+                     },
+                     {
+                         "case":  "Q09 duplicate-read multiplier for one measured round",
+                         "seconds":  null,
+                         "response_bytes":  null,
+                         "per_tick_calls":  null,
+                         "per_tick_bytes":  null,
+                         "chain_revision_advances":  9,
+                         "frozen_definition_reads_today":  9,
+                         "frozen_definition_reads_before_s4_03":  null,
+                         "frozen_definition_reads_after_s4_03_with_identity_reuse":  null
+                     },
+                     {
+                         "case":  "Q09 frozen definition identity reuse (after S4-03)",
+                         "seconds":  null,
+                         "response_bytes":  null,
+                         "per_tick_calls":  null,
+                         "per_tick_bytes":  null,
+                         "chain_revision_advances":  9,
+                         "frozen_definition_reads_today":  null,
+                         "frozen_definition_reads_before_s4_03":  9,
+                         "frozen_definition_reads_after_s4_03_with_identity_reuse":  1
+                     },
+                     {
+                         "case":  "running session poll tick (gated in-process node, no model)",
+                         "seconds":  null,
+                         "response_bytes":  null,
+                         "per_tick_calls":  2,
+                         "per_tick_bytes":  4469,
+                         "chain_revision_advances":  null,
+                         "frozen_definition_reads_today":  null,
+                         "frozen_definition_reads_before_s4_03":  null,
+                         "frozen_definition_reads_after_s4_03_with_identity_reuse":  null
+                     },
+                     {
+                         "case":  "running -\u003e completed view size delta",
+                         "seconds":  null,
+                         "response_bytes":  null,
+                         "per_tick_calls":  null,
+                         "per_tick_bytes":  null,
+                         "chain_revision_advances":  null,
+                         "frozen_definition_reads_today":  null,
+                         "frozen_definition_reads_before_s4_03":  null,
+                         "frozen_definition_reads_after_s4_03_with_identity_reuse":  null
+                     }
+                 ],
+    "evidence":  {
+                     "before":  [
+                                    {
+                                        "history_rows":  0,
+                                        "pending_rows":  0,
+                                        "full_seconds":  0.004435,
+                                        "full_bytes":  2
+                                    },
+                                    {
+                                        "history_rows":  0,
+                                        "pending_rows":  1,
+                                        "full_seconds":  0.004934,
+                                        "full_bytes":  938
+                                    },
+                                    {
+                                        "history_rows":  50,
+                                        "pending_rows":  0,
+                                        "full_seconds":  0.011516,
+                                        "full_bytes":  44301
+                                    },
+                                    {
+                                        "history_rows":  50,
+                                        "pending_rows":  1,
+                                        "full_seconds":  0.009043,
+                                        "full_bytes":  45238
+                                    },
+                                    {
+                                        "history_rows":  200,
+                                        "pending_rows":  0,
+                                        "full_seconds":  0.029734,
+                                        "full_bytes":  177201
+                                    },
+                                    {
+                                        "history_rows":  200,
+                                        "pending_rows":  1,
+                                        "full_seconds":  0.027881,
+                                        "full_bytes":  178138
+                                    },
+                                    {
+                                        "history_rows":  600,
+                                        "pending_rows":  0,
+                                        "full_seconds":  0.066732,
+                                        "full_bytes":  531601
+                                    },
+                                    {
+                                        "history_rows":  600,
+                                        "pending_rows":  1,
+                                        "full_seconds":  0.0676,
+                                        "full_bytes":  532538
+                                    }
+                                ],
+                     "after":  [
+                                   {
+                                       "history_rows":  0,
+                                       "pending_rows":  0,
+                                       "full_seconds":  0.004166,
+                                       "full_bytes":  2,
+                                       "narrow":  {
+                                                      "owner_pending_page_seconds":  0.000997,
+                                                      "owner_pending_page_bytes":  90,
+                                                      "owner_pending_page_items":  0,
+                                                      "point_read_seconds":  0.004033,
+                                                      "point_read_bytes":  2,
+                                                      "point_read_rows":  0,
+                                                      "pending_narrow_seconds":  0.003843,
+                                                      "pending_narrow_bytes":  2,
+                                                      "pending_narrow_rows":  0,
+                                                      "errors":  [
+
+                                                                 ]
+                                                  }
+                                   },
+                                   {
+                                       "history_rows":  0,
+                                       "pending_rows":  1,
+                                       "full_seconds":  0.003953,
+                                       "full_bytes":  938,
+                                       "narrow":  {
+                                                      "owner_pending_page_seconds":  0.000888,
+                                                      "owner_pending_page_bytes":  375,
+                                                      "owner_pending_page_items":  1,
+                                                      "point_read_seconds":  0.004137,
+                                                      "point_read_bytes":  938,
+                                                      "point_read_rows":  1,
+                                                      "pending_narrow_seconds":  0.004758,
+                                                      "pending_narrow_bytes":  938,
+                                                      "pending_narrow_rows":  1,
+                                                      "errors":  [
+
+                                                                 ]
+                                                  }
+                                   },
+                                   {
+                                       "history_rows":  50,
+                                       "pending_rows":  0,
+                                       "full_seconds":  0.008138,
+                                       "full_bytes":  44301,
+                                       "narrow":  {
+                                                      "owner_pending_page_seconds":  0.000861,
+                                                      "owner_pending_page_bytes":  90,
+                                                      "owner_pending_page_items":  0,
+                                                      "point_read_seconds":  0.003577,
+                                                      "point_read_bytes":  2,
+                                                      "point_read_rows":  0,
+                                                      "pending_narrow_seconds":  0.003548,
+                                                      "pending_narrow_bytes":  2,
+                                                      "pending_narrow_rows":  0,
+                                                      "errors":  [
+
+                                                                 ]
+                                                  }
+                                   },
+                                   {
+                                       "history_rows":  50,
+                                       "pending_rows":  1,
+                                       "full_seconds":  0.009066,
+                                       "full_bytes":  45238,
+                                       "narrow":  {
+                                                      "owner_pending_page_seconds":  0.001103,
+                                                      "owner_pending_page_bytes":  375,
+                                                      "owner_pending_page_items":  1,
+                                                      "point_read_seconds":  0.005156,
+                                                      "point_read_bytes":  938,
+                                                      "point_read_rows":  1,
+                                                      "pending_narrow_seconds":  0.004585,
+                                                      "pending_narrow_bytes":  938,
+                                                      "pending_narrow_rows":  1,
+                                                      "errors":  [
+
+                                                                 ]
+                                                  }
+                                   },
+                                   {
+                                       "history_rows":  200,
+                                       "pending_rows":  0,
+                                       "full_seconds":  0.022164,
+                                       "full_bytes":  177201,
+                                       "narrow":  {
+                                                      "owner_pending_page_seconds":  0.000988,
+                                                      "owner_pending_page_bytes":  90,
+                                                      "owner_pending_page_items":  0,
+                                                      "point_read_seconds":  0.004224,
+                                                      "point_read_bytes":  2,
+                                                      "point_read_rows":  0,
+                                                      "pending_narrow_seconds":  0.003573,
+                                                      "pending_narrow_bytes":  2,
+                                                      "pending_narrow_rows":  0,
+                                                      "errors":  [
+
+                                                                 ]
+                                                  }
+                                   },
+                                   {
+                                       "history_rows":  200,
+                                       "pending_rows":  1,
+                                       "full_seconds":  0.020575,
+                                       "full_bytes":  178138,
+                                       "narrow":  {
+                                                      "owner_pending_page_seconds":  0.001045,
+                                                      "owner_pending_page_bytes":  375,
+                                                      "owner_pending_page_items":  1,
+                                                      "point_read_seconds":  0.004107,
+                                                      "point_read_bytes":  938,
+                                                      "point_read_rows":  1,
+                                                      "pending_narrow_seconds":  0.004047,
+                                                      "pending_narrow_bytes":  938,
+                                                      "pending_narrow_rows":  1,
+                                                      "errors":  [
+
+                                                                 ]
+                                                  }
+                                   },
+                                   {
+                                       "history_rows":  600,
+                                       "pending_rows":  0,
+                                       "full_seconds":  0.061804,
+                                       "full_bytes":  531601,
+                                       "narrow":  {
+                                                      "owner_pending_page_seconds":  0.001432,
+                                                      "owner_pending_page_bytes":  90,
+                                                      "owner_pending_page_items":  0,
+                                                      "point_read_seconds":  0.004879,
+                                                      "point_read_bytes":  2,
+                                                      "point_read_rows":  0,
+                                                      "pending_narrow_seconds":  0.004836,
+                                                      "pending_narrow_bytes":  2,
+                                                      "pending_narrow_rows":  0,
+                                                      "errors":  [
+
+                                                                 ]
+                                                  }
+                                   },
+                                   {
+                                       "history_rows":  600,
+                                       "pending_rows":  1,
+                                       "full_seconds":  0.062449,
+                                       "full_bytes":  532538,
+                                       "narrow":  {
+                                                      "owner_pending_page_seconds":  0.00106,
+                                                      "owner_pending_page_bytes":  375,
+                                                      "owner_pending_page_items":  1,
+                                                      "point_read_seconds":  0.004924,
+                                                      "point_read_bytes":  938,
+                                                      "point_read_rows":  1,
+                                                      "pending_narrow_seconds":  0.00457,
+                                                      "pending_narrow_bytes":  938,
+                                                      "pending_narrow_rows":  1,
+                                                      "errors":  [
+
+                                                                 ]
+                                                  }
+                                   }
+                               ]
+                 },
+    "preview":  {
+                    "before":  [
+                                   {
+                                       "node_count":  2,
+                                       "request_bytes":  1012,
+                                       "response_bytes":  1567,
+                                       "read_only":  true,
+                                       "reserves_save_right":  false,
+                                       "wrote_deltas":  [
+                                                            0,
+                                                            0,
+                                                            0
+                                                        ]
+                                   },
+                                   {
+                                       "node_count":  20,
+                                       "request_bytes":  9327,
+                                       "response_bytes":  2270,
+                                       "read_only":  true,
+                                       "reserves_save_right":  false,
+                                       "wrote_deltas":  [
+                                                            0,
+                                                            0,
+                                                            0
+                                                        ]
+                                   },
+                                   {
+                                       "node_count":  100,
+                                       "request_bytes":  46443,
+                                       "response_bytes":  5391,
+                                       "read_only":  true,
+                                       "reserves_save_right":  false,
+                                       "wrote_deltas":  [
+                                                            0,
+                                                            0,
+                                                            0
+                                                        ]
+                                   }
+                               ],
+                    "after":  [
+                                  {
+                                      "node_count":  2,
+                                      "request_bytes":  1012,
+                                      "response_bytes":  1567,
+                                      "read_only":  true,
+                                      "reserves_save_right":  false,
+                                      "wrote_deltas":  [
+                                                           0,
+                                                           0,
+                                                           0
+                                                       ]
+                                  },
+                                  {
+                                      "node_count":  20,
+                                      "request_bytes":  9327,
+                                      "response_bytes":  2270,
+                                      "read_only":  true,
+                                      "reserves_save_right":  false,
+                                      "wrote_deltas":  [
+                                                           0,
+                                                           0,
+                                                           0
+                                                       ]
+                                  },
+                                  {
+                                      "node_count":  100,
+                                      "request_bytes":  46443,
+                                      "response_bytes":  5391,
+                                      "read_only":  true,
+                                      "reserves_save_right":  false,
+                                      "wrote_deltas":  [
+                                                           0,
+                                                           0,
+                                                           0
+                                                       ]
+                                  }
+                              ]
+                },
+    "contract":  {
+                     "document_contract_bytes":  47033,
+                     "describe_bytes":  15628,
+                     "note":  "document.contract code unchanged since S4-00 baseline (graph_contracts.py hash identical); describe gains the new optional narrow-read fields"
+                 }
+}

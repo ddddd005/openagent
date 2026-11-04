@@ -165,6 +165,51 @@ def test_named_multi_input_order_overrides_node_and_edge_array_order():
     assert [item["text"] for item in result.outputs[identity(4)]["output"]["items"]] == ["second", "first"]
 
 
+def test_input_accepts_registered_alternative_and_validates_source_type():
+    registry = _registry()
+    observed = []
+    registry.register(NodeDefinition(
+        "test.alternative", "1", "Alternative", "Test", {}, {"type": "object"},
+        inputs=(NodePort("input", "PROMPT", data_schema_version=2,
+                         accepted_types=(("TEXT", 2),)),),
+        outputs=(NodePort("output", "TEXT", data_schema_version=2),),
+    ), lambda config, inputs, context: (observed.append(inputs["input"]) or {"output": inputs["input"]}))
+    value = document([node(1, config={"text": "hello"}), node(2, "test.alternative", registry=registry),
+                      node(3, "tools.output")], [edge(10, 1, 2), edge(11, 2, 3)])
+    result = run_graph(value, registry)
+    assert result.status == "succeeded"
+    assert observed == [text_content("hello")]
+    assert registry.get("test.alternative", "1").definition.inputs[0].to_dict()["accepted_types"] == [
+        {"data_type": "TEXT", "data_schema_version": 2}]
+
+    # A different, undeclared version is rejected.
+    registry.register(NodeDefinition(
+        "test.legacy-text", "1", "Legacy", "Test", {}, {"type": "object"},
+        outputs=(NodePort("output", "TEXT"),),
+    ), lambda config, inputs, context: {"output": {"schema_version": 1, "text": "old"}})
+    value["nodes"][0] = node(1, "test.legacy-text", registry=registry)
+    with pytest.raises(GraphDiagnosticError) as caught:
+        GraphCompiler(registry).compile(value)
+    assert caught.value.reason_code == "graph_type_mismatch"
+
+
+@pytest.mark.parametrize("accepted,output", [
+    ((("TEXT", 2), ("TEXT", 2)), False),
+    ((("PROMPT", 2),), False),
+    ((("UNKNOWN", 1),), False),
+    ((("TEXT", 2),), True),
+    ((("TEXT", True),), False),
+    ([("TEXT", 2)], False),
+])
+def test_registry_rejects_invalid_additional_port_types(accepted, output):
+    registry = _registry()
+    port = NodePort("port", "PROMPT", data_schema_version=2, accepted_types=accepted)
+    definition = NodeDefinition("test.invalid-alt", "1", "Invalid", "Test", {}, {"type": "object"},
+                                inputs=() if output else (port,), outputs=(port,) if output else ())
+    with pytest.raises(GraphDiagnosticError):
+        registry.register(definition, lambda config, inputs, context: {})
+
+
 def test_ready_nodes_follow_creation_order_but_dependencies_run_first():
     registry = _registry()
     observed = []

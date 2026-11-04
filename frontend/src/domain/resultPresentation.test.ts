@@ -23,4 +23,14 @@ describe("user result presentation", () => {
       content: "Schema 3 answer", fact_refs: [{ fact_id: crypto.randomUUID() }] }))
       .toEqual([{ label: "回答", text: "Schema 3 answer" }]);
   });
+  it("presents summary materials and assembled message text in order", () => {
+    expect(resultTexts({ kind: "workflow.content-summary", schema_version: 1,
+      materials: { kind: "workflow.prompt-materials", schema_version: 1, items: [{ role: "system", text: "Rule" }] },
+      current_input: { kind: "workflow.text", schema_version: 2, text: "Question" } }))
+      .toEqual([{ label: "system", text: "Rule" }, { label: "正文", text: "Question" }]);
+    expect(resultTexts({ kind: "workflow.prompt", schema_version: 6, messages: [
+      { role: "system", blocks: [{ kind: "text", text: "Rule" }] },
+      { role: "user", blocks: [{ kind: "text", text: "Question" }] },
+    ] })).toEqual([{ label: "system", text: "Rule" }, { label: "user", text: "Question" }]);
+  });
 });

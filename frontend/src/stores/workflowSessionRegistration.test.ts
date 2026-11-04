@@ -23,11 +23,10 @@ async function setup() {
   vi.spyOn(requestEvidencePorts, "write").mockImplementation(evidence.ports.write);
   vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
   const graph = useWorkflowGraphStore();
-  graph.setPersistenceGuard(() => true);
   graph.catalog = graphClone(frontendCatalog);
   graph.packageLock = graphClone(frontendProjectLock);
   graph.executionPackageLock = graphClone(frontendExecutionLock);
-  const workflowId = graph.createWorkflow();
+  const workflowId = await graph.createWorkflow();
   await vi.waitFor(() => expect(graph.locked).toBe(false));
   return { graph, workflowId, evidence };
 }
@@ -38,7 +37,7 @@ describe("registered session items", () => {
     const chatFixture = frontendNodeFixture("2");
     graph.catalog = graphClone([...graph.catalog, chatFixture.catalog[0]!, frontendNodeType]);
 
-    const legacyId = graph.addNode("frontend.node@1", { x: 0, y: 0 })!;
+    const legacyId = (await graph.addNode("frontend.node@1", { x: 0, y: 0 }))!;
     const legacyBinding = graphClone(graph.document!.object_bindings!.find(row =>
       row.registrar_node_id === legacyId)!);
     const families = buildNodeFamilies(graph.catalog);
@@ -47,8 +46,8 @@ describe("registered session items", () => {
       .toContainEqual({ id: "frontend.node", label: "前端节点", disabled: false });
     expect(family.profiles.map(row => row.key)).toEqual(["frontend.node@2"]);
 
-    const firstId = graph.addNode(family.preferredKey!, { x: 250, y: 0 })!;
-    const secondId = graph.addNode(family.preferredKey!, { x: 500, y: 0 })!;
+    const firstId = (await graph.addNode(family.preferredKey!, { x: 250, y: 0 }))!;
+    const secondId = (await graph.addNode(family.preferredKey!, { x: 500, y: 0 }))!;
     const first = graph.document!.nodes.find(row => row.node_binding_id === firstId)!;
     const second = graph.document!.nodes.find(row => row.node_binding_id === secondId)!;
     const bindings = graph.document!.object_bindings!.filter(row => row.type_id === "workflow.chat-context");
@@ -67,8 +66,8 @@ describe("registered session items", () => {
     expect(graph.document!.object_bindings!.find(row => row.registrar_node_id === legacyId)).toEqual(legacyBinding);
     expect(graph.entries[workflowId]!.session_id).toBeNull();
 
-    const inputId = graph.addNode("tools.editable-input@1", { x: 0, y: 150 })!;
-    graph.patchNode(firstId, { config: { ...first.config, input_node_id: inputId } });
+    const inputId = (await graph.addNode("tools.editable-input@1", { x: 0, y: 150 }))!;
+    await graph.patchNode(firstId, { config: { ...first.config, input_node_id: inputId } });
     const entry = graph.entries[workflowId]!;
     const savedDocument = graphClone(entry.document);
     savedDocument.schema_version = 3;

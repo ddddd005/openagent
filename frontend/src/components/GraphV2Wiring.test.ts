@@ -17,6 +17,7 @@ vi.mock("@vue-flow/core", () => ({
   MarkerType: { ArrowClosed: "arrowclosed" },
   Position: { Left: "left", Right: "right", Top: "top", Bottom: "bottom" },
   Handle: { render: () => null }, VueFlow: { render: () => null },
+  useVueFlow: () => ({ updateNodeInternals: vi.fn() }),
 }));
 vi.mock("@vue-flow/background", () => ({ Background: { render: () => null } }));
 
@@ -39,8 +40,7 @@ describe("v2 workflow controls and object presentation", () => {
     expect(html).toContain("预加载项的初值在会话预加载数据中维护");
   });
   it("presents authoritative session objects without exposing legacy variables or writes", async () => {
-    const pinia = createPinia(); const graph = useWorkflowGraphStore(pinia);
-    graph.setPersistenceGuard(() => true); const id = graph.createWorkflow();
+    const pinia = createPinia(); const graph = useWorkflowGraphStore(pinia); const id = await graph.createWorkflow();
     const sid = crypto.randomUUID(); const revision = crypto.randomUUID();
     const session: GraphSession = { schema_version: 2, execution_model: "graph", workflow_session_id: sid,
       workflow_definition_id: id, definition_revision: 1, revision: 1, data_revision: 0, head_revision: 1,
@@ -63,8 +63,7 @@ describe("v2 workflow controls and object presentation", () => {
       display_name: "register", category: "plugin", config_schema: {}, default_config: {},
       inputs: [], outputs: [], is_output: false, executable: true, input_storage: "references",
       object_accesses: [{ config_field: "object_key", multiple: false, access: "write",
-        type_id: "plugin.state", schema_version: 1 }] };
-    graph.setPersistenceGuard(() => true); graph.catalog = [definition]; graph.createWorkflow();
+        type_id: "plugin.state", schema_version: 1 }] }; graph.catalog = [definition]; graph.createWorkflow();
     const nodeId = graph.addNode("plugin.register@1", { x: 0, y: 0 })!;
     const html = await renderToString(createSSRApp(GraphWorkbench).use(pinia).provide(workbenchFrontendHostKey,
       createWorkbenchFrontendHost(() => graph.frontendExtensions, () => graph.packageLock)));

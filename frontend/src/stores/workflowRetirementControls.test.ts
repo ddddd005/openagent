@@ -33,16 +33,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function seedSavedWorkflow(name: string) {
+async function seedSavedWorkflow(name: string) {
   const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
-  const id = graph.createWorkflow();
+  const id = await graph.createWorkflow();
   const document: GraphDocument = {
     schema_version: 3, workflow_definition_id: id, revision: 4, edit_sequence: 8,
     name, nodes: [], edges: [], object_bindings: [], package_lock: [],
     control_edges: [],
   };
   graph.entries[id] = { document: graphClone(document), saved_document: graphClone(document),
-    saved_revision: document.revision, session_id: null, pending: null };
+    saved_revision: document.revision, session_id: null};
   workspace.markWorkflowSaved(id, name);
   return { graph, workspace, id, document };
 }
@@ -81,7 +81,7 @@ function deferred<T>() {
 
 describe("retired node definition workflow controls", () => {
   it("keeps old exhausted-budget state readable but cannot construct a new budget-extension action", async () => {
-    const { graph, id, document } = seedSavedWorkflow("Legacy exhausted budget");
+    const { graph, id, document } = await seedSavedWorkflow("Legacy exhausted budget");
     await initializeManagement(graph, id);
     const old = session(document, { status: "budget_exhausted", can_submit: false,
       available_actions: ["extend_budget"], nodes: [{
@@ -103,7 +103,7 @@ describe("retired node definition workflow controls", () => {
   });
 
   it("keeps readonly sessions readonly while pause, close, and result acceptance use management evidence", async () => {
-    const { graph, id, document } = seedSavedWorkflow("Readonly controls");
+    const { graph, id, document } = await seedSavedWorkflow("Readonly controls");
     await initializeManagement(graph, id);
     const running = session(document, { status: "running", available_actions: ["pause", "close"] });
     attachSession(graph, id, running);
@@ -134,7 +134,7 @@ describe("retired node definition workflow controls", () => {
     expect(evidenceFor("run.control", id)).toHaveLength(2);
     expect(evidenceFor("run.control", id).every(row => row.resolution === "verified")).toBe(true);
 
-    const resultTarget = seedSavedWorkflow("Readonly result acceptance");
+    const resultTarget = await seedSavedWorkflow("Readonly result acceptance");
     await initializeManagement(resultTarget.graph, resultTarget.id);
     const awaitingAcceptance = session(resultTarget.document, {
       status: "archive_failed", available_actions: ["retry_acceptance"],
@@ -154,7 +154,7 @@ describe("retired node definition workflow controls", () => {
       { resolution: "verified", request: expect.objectContaining({ action: "retry_acceptance" }) },
     ]);
 
-    const resumeTarget = seedSavedWorkflow("Readonly continuation");
+    const resumeTarget = await seedSavedWorkflow("Readonly continuation");
     await initializeManagement(resumeTarget.graph, resumeTarget.id);
     const retainedPause = session(resumeTarget.document, {
       status: "paused", available_actions: ["resume"],
@@ -175,7 +175,7 @@ describe("retired node definition workflow controls", () => {
   });
 
   it("blocks edits and new start on readonly sessions, and requires the advertised action", async () => {
-    const { graph, id, document } = seedSavedWorkflow("Readonly start");
+    const { graph, id, document } = await seedSavedWorkflow("Readonly start");
     await initializeManagement(graph, id);
     graph.entries[id]!.external_inputs = { retained: "before" };
     const readonlyIdle = session(document, { status: "idle", can_submit: false, available_actions: [] });
@@ -199,7 +199,7 @@ describe("retired node definition workflow controls", () => {
   });
 
   it("retains mutation, unknown-request, archive, and session-selection locks for controls", async () => {
-    const { graph, id, document } = seedSavedWorkflow("Readonly pending");
+    const { graph, id, document } = await seedSavedWorkflow("Readonly pending");
     await initializeManagement(graph, id);
     const running = session(document, { status: "running", available_actions: ["pause", "close"] });
     attachSession(graph, id, running);
@@ -220,7 +220,7 @@ describe("retired node definition workflow controls", () => {
       { resolution: "pending", request: expect.objectContaining({ action: "pause" }) },
     ]);
 
-    const archivedTarget = seedSavedWorkflow("Archived readonly");
+    const archivedTarget = await seedSavedWorkflow("Archived readonly");
     await initializeManagement(archivedTarget.graph, archivedTarget.id);
     const archivedSession = session(archivedTarget.document, {
       status: "running", available_actions: ["pause", "close"],
@@ -232,7 +232,7 @@ describe("retired node definition workflow controls", () => {
     await archivedTarget.graph.closeRun();
     expect(graphTransport.send).toHaveBeenCalledOnce();
 
-    const deletedTarget = seedSavedWorkflow("Deleted readonly");
+    const deletedTarget = await seedSavedWorkflow("Deleted readonly");
     await initializeManagement(deletedTarget.graph, deletedTarget.id);
     const deletedSession = session(deletedTarget.document, {
       status: "running", available_actions: ["pause", "close"],
@@ -246,7 +246,7 @@ describe("retired node definition workflow controls", () => {
 
     const nextId = crypto.randomUUID();
     const selection = deferred<GraphSession>();
-    const switching = seedSavedWorkflow("Selecting readonly session");
+    const switching = await seedSavedWorkflow("Selecting readonly session");
     await initializeManagement(switching.graph, switching.id);
     const current = session(switching.document, { status: "running", available_actions: ["pause"] });
     attachSession(switching.graph, switching.id, current);

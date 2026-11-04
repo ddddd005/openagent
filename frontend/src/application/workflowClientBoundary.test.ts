@@ -1,14 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { graphApplicationQuery, readGraphReceipt, sendGraphCommand } from "../adapters/workflowApplicationApi";
-import { WorkbenchApiError } from "../adapters/workbenchApi";
 import {
   graphClone, newGraph, type GraphEntry, type GraphSession,
 } from "../domain/workflowGraph";
-import {
-  createGraphCommand, dispatchGraphCommand, type GraphCommandPorts,
-} from "./workflowCommands";
 import { createWorkflowManagementRequests, type WorkflowManagementRequestPorts } from "./workflowManagementRequests";
 import { memoryRequestEvidence } from "../testUtils/requestEvidence";
+import { createGraphCommand } from "./workflowCommands";
+import { WorkbenchApiError } from "../adapters/workbenchApi";
 
 type StartedSession = GraphSession & { active_chain_run_id: string };
 
@@ -25,7 +23,7 @@ function fixture() {
   };
   const entry: GraphEntry = {
     document, saved_document: graphClone(document), saved_revision: 1,
-    session_id: session.workflow_session_id, pending: null,
+    session_id: session.workflow_session_id,
   };
   const command = createGraphCommand(`/api/graph/sessions/${session.workflow_session_id}/runs`, {
     expected_revision: 1, inputs: { event: { type: "plugin.input", payload: ["original"] } },
@@ -54,17 +52,6 @@ function envelope(session: StartedSession, key: unknown) {
   };
 }
 
-function ports(overrides: Partial<GraphCommandPorts> = {}): GraphCommandPorts {
-  return {
-    persist: () => true,
-    request: sendGraphCommand,
-    readReceipt: readGraphReceipt,
-    readDefinition: async () => { throw new Error("No definition lookup expected"); },
-    current: () => true,
-    accept: vi.fn(),
-    ...overrides,
-  };
-}
 function managed(state: ReturnType<typeof fixture>, overrides: Partial<WorkflowManagementRequestPorts> = {}) {
   const evidence = memoryRequestEvidence(), accept = vi.fn();
   const application = createWorkflowManagementRequests({
@@ -73,18 +60,13 @@ function managed(state: ReturnType<typeof fixture>, overrides: Partial<WorkflowM
   });
   return { evidence, accept, channel: application.forWorkflow(state.document.workflow_definition_id) };
 }
-function receiptEnvelope(session: StartedSession, key: unknown) {
-  const value = envelope(session, key);
-  return { schema_version: 1, kind: "workflow.application-receipt-read", outcome: "matched",
-    reason_code: "receipt_matched", receipt: value.receipt, result: value.result };
-}
 
 const response = (value: unknown) => new Response(JSON.stringify(value));
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("workflow client transport boundary", () => {
   it("reads the frozen outbox after an unknown submission without dispatching another command", async () => {
-    const state = fixture(), { entry, session, command } = state;
+    const state = fixture(), { session, command } = state;
     const original = graphClone(command), sent: unknown[] = [], persisted: unknown[] = [];
     let attempts = 0;
     vi.stubGlobal("fetch", vi.fn(async (path: string, init: RequestInit) => {
@@ -105,7 +87,6 @@ describe("workflow client transport boundary", () => {
     expect(persisted[0]).toEqual({ ...original.body, session_id: session.workflow_session_id });
     command.body.inputs = { event: { payload: ["later caller mutation"] } };
     command.body.idempotency_key = crypto.randomUUID();
-    entry.external_inputs = { event: { payload: ["later editor draft"] } };
     expect(await boundary.channel.reconcile()).toBe(true);
     const expected = {
       operation: "run.start",
@@ -115,15 +96,6 @@ describe("workflow client transport boundary", () => {
     expect(boundary.accept).toHaveBeenCalledTimes(1);
     expect(boundary.channel.pending.value).toBeNull();
     expect([...boundary.evidence.records.values()][0]?.request).toEqual(expected.parameters);
-  });
-
-  it("does not submit until the complete original outbox is persisted", async () => {
-    const { entry, command } = fixture();
-    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
-    await expect(dispatchGraphCommand(entry, command, ports({ persist: () => false })))
-      .rejects.toMatchObject({ kind: "unavailable" });
-    expect(fetcher).not.toHaveBeenCalled();
-    expect(entry.pending).toBeNull();
   });
 
   it("does not expose an empty service result as an accepted command", async () => {
@@ -153,16 +125,6 @@ describe("workflow client transport boundary", () => {
     expect(boundary.accept).not.toHaveBeenCalled();
     expect(boundary.channel.pendingCommand.value).toEqual(command);
     expect(boundary.evidence.ports.resolve).not.toHaveBeenCalled();
-  });
-
-  it("does not accept a valid command receipt into a view whose session basis expired", async () => {
-    const { entry, session, command } = fixture();
-    entry.pending = graphClone(command);
-    vi.stubGlobal("fetch", vi.fn(async () => response(receiptEnvelope(session, command.body.idempotency_key))));
-    const boundary = ports({ current: () => false });
-    await expect(dispatchGraphCommand(entry, command, boundary, true)).rejects.toMatchObject({ kind: "unknown" });
-    expect(boundary.accept).not.toHaveBeenCalled();
-    expect(entry.pending).toEqual(command);
   });
 
   it("retains the exact request after receipt acceptance if local confirmation cannot be saved", async () => {
@@ -214,73 +176,6 @@ describe("workflow client transport boundary", () => {
     expect(parameters).toEqual(original);
   });
 
-  it.each([404, 409, 410, 500])("keeps the original pending after a receipt reader fails with HTTP %s", async status => {
-    const { entry, command } = fixture(); entry.pending = graphClone(command);
-    const before = graphClone(entry);
-    const boundary = ports({
-      request: vi.fn(), persist: vi.fn(),
-      readReceipt: vi.fn(async () => { throw new WorkbenchApiError("rejected", "read failed", status, "stale_revision"); }),
-    });
-    await expect(dispatchGraphCommand(entry, command, boundary, true)).rejects.toMatchObject({ status });
-    expect(entry).toEqual(before); expect(boundary.request).not.toHaveBeenCalled();
-    expect(boundary.persist).not.toHaveBeenCalled(); expect(boundary.accept).not.toHaveBeenCalled();
-  });
-
-  it.each(["false", "throw"])("preserves original receipt evidence without invoking retired confirmation: %s", async failure => {
-    const { entry, command, session } = fixture(); entry.pending = graphClone(command);
-    const persist = vi.fn(() => { if (failure === "throw") throw new Error("disk"); return false; });
-    const boundary = ports({
-      request: vi.fn(), readReceipt: vi.fn(async () => session),
-      persist,
-    });
-    await expect(dispatchGraphCommand(entry, command, boundary, true))
-      .resolves.toMatchObject({ kind: "session", session });
-    expect(entry.pending).toEqual(command); expect(boundary.accept).not.toHaveBeenCalled();
-    expect(persist).not.toHaveBeenCalled();
-    expect(boundary.request).not.toHaveBeenCalled();
-  });
-
-  it.each(["body", "key", "cleared", "rejected"])(
-    "does not let a late receipt read overwrite a newer pending state: %s", async change => {
-      const { entry, command, session } = fixture(); entry.pending = graphClone(command);
-      let finish!: (value: unknown) => void, reject!: (failure: unknown) => void;
-      const boundary = ports({ request: vi.fn(), persist: vi.fn(),
-        readReceipt: () => new Promise((resolve, fail) => { finish = resolve; reject = fail; }) });
-      const reading = dispatchGraphCommand(entry, command, boundary, true);
-      const replacement = graphClone(command);
-      if (change === "key" || change === "rejected") replacement.body.idempotency_key = crypto.randomUUID();
-      else replacement.body.inputs = { original: "newer request with same key" };
-      entry.pending = change === "cleared" ? null : replacement;
-      entry.diagnostics = [{ reason_code: "newer", message: "retain newer state" }];
-      const newer = graphClone(entry);
-      if (change === "rejected") reject(new WorkbenchApiError("rejected", "old read rejection", 409));
-      else finish(session);
-      await expect(reading).rejects.toBeInstanceOf(WorkbenchApiError);
-      expect(entry).toEqual(newer); expect(boundary.accept).not.toHaveBeenCalled();
-      expect(boundary.persist).not.toHaveBeenCalled(); expect(boundary.request).not.toHaveBeenCalled();
-    });
-
-  it("does not overwrite a newer outbox when an older read-only receipt arrives", async () => {
-    const { entry, command, session } = fixture(); entry.pending = graphClone(command);
-    const newer = graphClone(command); newer.body.idempotency_key = crypto.randomUUID();
-    let finish!: (value: StartedSession) => void;
-    const persist = vi.fn(), boundary = ports({ request: vi.fn(), persist,
-      readReceipt: () => new Promise(resolve => { finish = resolve; }) });
-    const reading = dispatchGraphCommand(entry, command, boundary, true);
-    entry.pending = graphClone(newer); finish(session);
-    await expect(reading).rejects.toMatchObject({ kind: "unknown" });
-    expect(entry.pending).toEqual(newer); expect(boundary.request).not.toHaveBeenCalled();
-    expect(persist).not.toHaveBeenCalled();
-    expect(boundary.accept).not.toHaveBeenCalled();
-  });
-
-  it("does not manufacture a receipt-read request when neither pending nor a retained migration coordinate exists", async () => {
-    const { entry, command } = fixture(), boundary = ports({ request: vi.fn(), readReceipt: vi.fn(), persist: vi.fn() });
-    await expect(dispatchGraphCommand(entry, command, boundary, true)).rejects.toMatchObject({ kind: "unknown" });
-    expect(entry.pending).toBeNull(); expect(boundary.readReceipt).not.toHaveBeenCalled();
-    expect(boundary.request).not.toHaveBeenCalled(); expect(boundary.persist).not.toHaveBeenCalled();
-  });
-
   it("clears an initial definitive rejection but keeps an initial identity conflict unresolved", async () => {
     for (const code of ["stale_revision", "idempotency_conflict"]) {
       const state = fixture(), readReceipt = vi.fn();
@@ -293,18 +188,5 @@ describe("workflow client transport boundary", () => {
       expect([...boundary.evidence.records.values()][0]?.resolution)
         .toBe(code === "stale_revision" ? "verified" : "pending");
     }
-  });
-
-  it("rejects a new copy before storage and preserves historical rejection evidence", async () => {
-    const { entry, command } = fixture();
-    command.action = "copy"; command.path = command.path.replace("/runs", "/copy");
-    command.body.document = graphClone(entry.document);
-    const rejected = graphClone(command); entry.rejected_copy = rejected;
-    command.body.idempotency_key = crypto.randomUUID();
-    const boundary = ports({ persist: vi.fn(() => false), request: vi.fn() });
-    await expect(dispatchGraphCommand(entry, command, boundary)).rejects.toMatchObject({ kind: "unavailable" });
-    expect(entry.pending).toBeNull(); expect(entry.rejected_copy).toEqual(rejected);
-    expect(boundary.request).not.toHaveBeenCalled();
-    expect(boundary.persist).not.toHaveBeenCalled();
   });
 });

@@ -46,6 +46,6 @@ export function frontendNodeFixture(version = "2") {
       readers: [node.node_binding_id], writers: [node.node_binding_id] });
   }
   const entry: GraphEntry = { document, saved_document: graphClone(document), saved_revision: 1,
-    session_id: null, pending: null };
+    session_id: null};
   return { document, inputs, nodes, entry, catalog: [graphClone(editableInputType), graphClone(type)] };
 }

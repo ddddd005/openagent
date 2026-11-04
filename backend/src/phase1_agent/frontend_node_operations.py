@@ -166,7 +166,17 @@ class BoundFrontendNodeOperations:
                 component_id="tools.editable-input", component_version="1", changes={"text": request["text"]},
                 expected_edit_sequence=expected_edit_sequence, confirm_derivation=confirm_derivation)
 
-        return self._service._configuration_change(_OPERATIONS["patch_input"], idempotency_key, request, change)
+        # An exact accepted replay stays available while another modification is
+        # in flight; only real new modifications take the shared entitlement.
+        replayed = self._service._replayed_configuration(
+            _OPERATIONS["patch_input"], idempotency_key, request)
+        if replayed is not None:
+            return replayed
+        # The narrow patch shares the same per-workflow modification entitlement
+        # as the complete definition save; a busy workflow is rejected, not queued.
+        with self._service._modification_gate(self.workflow_definition_id):
+            return self._service._configuration_change(
+                _OPERATIONS["patch_input"], idempotency_key, request, change)
 
     def read_snapshot(self):
         return self._service.read_frontend_node_snapshot(

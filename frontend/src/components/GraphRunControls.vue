@@ -4,8 +4,10 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { graphObject } from "../domain/workflowGraph";
 import { readGraphInputDeclarations, type GraphInputDeclarations } from "../adapters/graphInputDeclarationsApi";
+import { availableControlLabels, closeRunConsequences } from "../domain/runClosePresentation";
 const graph = useWorkflowGraphStore();
 const editing = ref(false);
+const closeOpen = ref(false);
 const input = ref("");
 const menuOpen = ref(false);
 const applying = ref(false);
@@ -40,7 +42,16 @@ const agentActions = computed(() => graph.session?.available_actions?.filter(act
   ["retry_archive", "retry_acceptance", "retry_failed_node"].includes(action)) ?? []);
 const activeAgent = computed(() => graph.session?.nodes.find(node =>
   ["paused", "budget_exhausted", "archive_failed"].includes(node.status)));
-watch(() => graph.session?.workflow_session_id, () => { editing.value = false; menuOpen.value = false; });
+const availableActions = computed(() => availableControlLabels(graph.session?.available_actions));
+function requestClose() {
+  if (!graph.session?.available_actions?.includes("close") || graph.controlLocked) return;
+  closeOpen.value = true;
+}
+async function confirmClose() {
+  closeOpen.value = false;
+  await graph.closeRun();
+}
+watch(() => graph.session?.workflow_session_id, () => { editing.value = false; menuOpen.value = false; closeOpen.value = false; });
 function openInput() { if (!input.value) input.value = JSON.stringify(graph.active?.external_inputs ?? {}, null, 2); editing.value = true; }
 async function apply(event: Event) {
   if (applying.value || graph.editorLocked) return;
@@ -63,7 +74,7 @@ async function apply(event: Event) {
       <Pause v-if="graph.primaryAction === 'pause'" :size="14" fill="currentColor" /><Play v-else :size="14" fill="currentColor" />{{ graph.statusLabel }}
     </button>
     <button type="button" title="刷新运行" aria-label="刷新运行" :disabled="!!graph.busy" @click="graph.refresh()"><RefreshCw :size="14" /></button>
-    <button v-if="graph.session?.available_actions?.includes('close')" type="button" title="关闭本次运行" aria-label="关闭本次运行" :disabled="graph.controlLocked" @click="graph.closeRun()"><X :size="14" /></button>
+    <button v-if="graph.session?.available_actions?.includes('close')" type="button" title="关闭本次运行（显式控制）" aria-label="关闭本次运行" :disabled="graph.controlLocked" @click="requestClose"><X :size="14" /></button>
     <button v-if="graph.pending" type="button" title="核实原请求" aria-label="核实原请求" :disabled="!!graph.busy" @click="graph.reconcile()"><RotateCcw :size="14" /></button>
     <div v-if="agentActions.length" class="graph-agent-menu-anchor"><button type="button" title="运行操作" aria-label="运行操作" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen"><MoreHorizontal :size="15" /></button>
       <section v-if="menuOpen" class="graph-agent-menu" aria-label="运行操作"><strong v-if="activeAgent">{{ activeAgent.label }} · {{ activeAgent.run_id?.slice(0,8) }}</strong>
@@ -83,6 +94,15 @@ async function apply(event: Event) {
     <p v-if="inputError" role="status">{{ inputError }}</p>
     <details :open="!!inputError || !parsedInput || !declarations?.inputs.length"><summary>高级 JSON / 未声明输入</summary><textarea v-model="input" rows="8" aria-label="具名输入 JSON" :disabled="graph.editorLocked || applying" /></details>
     <footer><button type="submit" :disabled="graph.editorLocked || applying">应用到当前会话输入</button></footer></form></div></Teleport>
+  <Teleport to="body"><div v-if="closeOpen" class="graph-input-shade" @click.self="closeOpen = false"><section class="graph-input-dialog" role="dialog" aria-label="关闭本次运行确认">
+    <header><strong>关闭本次运行（显式控制）</strong><button type="button" title="取消" aria-label="取消关闭运行" @click="closeOpen = false"><X :size="16" /></button></header>
+    <p v-for="(consequence, index) in closeRunConsequences" :key="index">{{ consequence }}</p>
+    <section class="close-actions"><strong>当前允许的运行操作</strong>
+      <ul v-if="availableActions.length"><li v-for="(action, index) in availableActions" :key="index">{{ action }}</li></ul>
+      <p v-else>当前没有允许的运行操作。</p>
+    </section>
+    <footer><button type="button" @click="closeOpen = false">取消</button><button type="button" :disabled="graph.controlLocked" aria-label="确认关闭本次运行" @click="confirmClose">确认关闭</button></footer>
+  </section></div></Teleport>
 </template>
 <style scoped>
 .graph-run-controls { display:flex; align-items:center; gap:5px; }
@@ -98,6 +118,9 @@ button { display:inline-flex; align-items:center; justify-content:center; gap:5p
 :disabled { opacity:.5; }
 .graph-input-shade { position:fixed; inset:0; z-index:150; display:grid; place-items:center; background:#11111166; }
 .graph-input-dialog { width:440px; max-width:calc(100vw - 32px); max-height:calc(100dvh - 48px); overflow:auto; box-sizing:border-box; padding:15px; border:1px solid #54545b; border-radius:5px; background:#2c2c32; color:#dedee5; }
+.graph-input-dialog p { color:#d7d7dd; }
+.close-actions { padding:8px 0; border-top:1px solid #45454c; border-bottom:1px solid #45454c; margin-bottom:10px; }
+.close-actions ul { margin:6px 0 0; padding-left:18px; font-size:11px; }
 .named-input { display:grid; gap:5px; font-size:12px; margin-bottom:12px; min-width:0; overflow-wrap:anywhere; }
 small,summary { font-size:11px; color:#b8c4be; } p { font-size:11px; color:#e4b59b; overflow-wrap:anywhere; }
 header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; font-size:13px; }

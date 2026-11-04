@@ -35,9 +35,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function seedSavedWorkflow(name: string) {
+async function seedSavedWorkflow(name: string) {
   const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
-  const id = graph.createWorkflow();
+  const id = await graph.createWorkflow();
   const document: GraphDocument = {
     schema_version: 3, workflow_definition_id: id, revision: 4, edit_sequence: 8,
     name, nodes: [], edges: [], object_bindings: [], package_lock: [],
@@ -45,7 +45,7 @@ function seedSavedWorkflow(name: string) {
   };
   expect(isGraphDocument(document)).toBe(true);
   graph.entries[id] = { document: graphClone(document), saved_document: graphClone(document),
-    saved_revision: document.revision, session_id: null, pending: null };
+    saved_revision: document.revision, session_id: null};
   workspace.markWorkflowSaved(id, name);
   return { graph, workspace, id, document };
 }
@@ -96,7 +96,7 @@ function storedEvidence(operation: string, ownerId: string) {
 
 describe("workflow management requests installed in the graph store", () => {
   it("creates a session for the exact saved definition and binds that accepted target", async () => {
-    const { graph, id, document } = seedSavedWorkflow("Saved schema 3");
+    const { graph, id, document } = await seedSavedWorkflow("Saved schema 3");
     await initializeManagement(graph, id);
     const created = session(document);
     const { send } = transport();
@@ -120,7 +120,7 @@ describe("workflow management requests installed in the graph store", () => {
   });
 
   it("archives only the requested definition using its saved revision and original evidence", async () => {
-    const { graph, workspace, id, document } = seedSavedWorkflow("Archive target");
+    const { graph, workspace, id, document } = await seedSavedWorkflow("Archive target");
     await initializeManagement(graph, id);
     const { send } = transport();
     send.mockResolvedValue(managementResult(document, "archive"));
@@ -138,8 +138,8 @@ describe("workflow management requests installed in the graph store", () => {
   });
 
   it("deletes only the requested definition and leaves a different workflow selected", async () => {
-    const target = seedSavedWorkflow("Delete target");
-    const other = seedSavedWorkflow("Other workflow");
+    const target = await seedSavedWorkflow("Delete target");
+    const other = await seedSavedWorkflow("Other workflow");
     target.workspace.openWorkflow(target.id);
     await initializeManagement(target.graph, other.id);
     await initializeManagement(target.graph, target.id);
@@ -161,7 +161,7 @@ describe("workflow management requests installed in the graph store", () => {
   });
 
   it("archives the exact session queried for the target workflow", async () => {
-    const { graph, id, document } = seedSavedWorkflow("Session archive target");
+    const { graph, id, document } = await seedSavedWorkflow("Session archive target");
     await initializeManagement(graph, id);
     const target = session(document);
     const archived = session(document, { ...target, archived: true, readonly: true,
@@ -171,7 +171,6 @@ describe("workflow management requests installed in the graph store", () => {
     const { send } = transport();
     const sessionRead = vi.spyOn(workflowManagementQueries, "session")
       .mockResolvedValueOnce(target).mockResolvedValueOnce(archived);
-    vi.spyOn(workflowManagementQueries, "sessions").mockResolvedValue([archived]);
     send.mockResolvedValue(managementResult(document, "archive", target.workflow_session_id, target.revision));
 
     expect(await graph.manageSession(target.workflow_session_id, "archive", id)).toBe(true);
@@ -188,7 +187,7 @@ describe("workflow management requests installed in the graph store", () => {
   });
 
   it("deletes only the requested session and retains its sibling session", async () => {
-    const { graph, id, document } = seedSavedWorkflow("Session delete target");
+    const { graph, id, document } = await seedSavedWorkflow("Session delete target");
     await initializeManagement(graph, id);
     const target = session(document), sibling = session(document);
     graph.entries[id].session_id = target.workflow_session_id;
@@ -214,7 +213,7 @@ describe("workflow management requests installed in the graph store", () => {
   });
 
   it("does not expose the retired session data write wrapper", async () => {
-    const { graph, id } = seedSavedWorkflow("Data target");
+    const { graph, id } = await seedSavedWorkflow("Data target");
     await initializeManagement(graph, id);
     expect("writeData" in graph).toBe(false);
     expect([...evidence.records.values()].filter(record =>
@@ -222,7 +221,7 @@ describe("workflow management requests installed in the graph store", () => {
   });
 
   it("reopens an unknown create under the same owner and reads its original receipt without resending", async () => {
-    const first = seedSavedWorkflow("Unknown create");
+    const first = await seedSavedWorkflow("Unknown create");
     const firstRows = graphClone(first.workspace.workflows);
     await initializeManagement(first.graph, first.id);
     const savedEntry = graphClone(first.graph.entries[first.id]);
@@ -256,8 +255,8 @@ describe("workflow management requests installed in the graph store", () => {
   });
 
   it("binds a late create receipt to its source workflow without changing another page or session", async () => {
-    const source = seedSavedWorkflow("Create source");
-    const other = seedSavedWorkflow("Displayed workflow");
+    const source = await seedSavedWorkflow("Create source");
+    const other = await seedSavedWorkflow("Displayed workflow");
     await initializeManagement(source.graph, source.id);
     await initializeManagement(other.graph, other.id);
     const otherSession = session(other.document);

@@ -69,7 +69,7 @@ describe("workflow directory consumer separation", () => {
   it("refreshes only the directory projection from definition summaries", async () => {
     const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
     graph.catalog = [textType];
-    const draftId = graph.createWorkflow();
+    const draftId = await graph.createWorkflow();
     workspace.updateWorkflowProjection(draftId, "Local draft title", 0);
     installCleanConfiguration(graph);
     const formal = definitionRow({ display_name: "Backend title", node_count: 4, session_count: 2 });
@@ -249,8 +249,10 @@ describe("workflow directory consumer separation", () => {
     expect(graph.entries[id]!.saved_document!.edit_sequence).toBeUndefined();
     expect(graph.fixedOnly).toBe(true);
     expect(graph.locked).toBe(true);
-    expect(graph.renameWorkflow("Should not be accepted")).toBeNull();
-    expect(useWorkbenchNoticesStore().error?.reason).toContain("没有正式 current 配置");
+    expect(await graph.renameWorkflow("Should not be accepted")).toMatchObject({ outcome: "failed" });
+    const reasons = useWorkbenchNoticesStore().notices.map(row => row.reason);
+    expect(reasons.some(reason => reason.includes("没有正式 current 配置"))).toBe(true);
+    expect(reasons.some(reason => reason.includes("固定修订"))).toBe(true);
   });
 
   it("selects a session through session.read while the list stays on summaries", async () => {

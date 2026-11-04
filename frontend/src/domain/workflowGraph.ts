@@ -93,6 +93,7 @@ export interface GraphPort {
   required: boolean;
   multiple: boolean;
   data_schema_version?: number;
+  accepted_types?: { data_type: string; data_schema_version: number }[];
 }
 export interface GraphNodeType {
   component_id: string;
@@ -126,14 +127,26 @@ export interface GraphNodeType {
   [key: string]: unknown;
   port_modes?: Record<string, { inputs: GraphPort[]; outputs: GraphPort[] }>;
 }
+export interface GraphOccupyingSession {
+  workflow_session_id: string;
+  active_chain_run_id: string | null;
+}
 export interface GraphDiagnostic {
   reason_code: string;
   message: string;
   node_id?: string;
   port_id?: string;
   edge_id?: string;
+  /** Q06-1: object-key references can be located without guessing field names. */
+  object_key?: string;
   dependent_outputs?: string[];
   phase?: string;
+  path?: string;
+  expected?: unknown;
+  actual?: unknown;
+  failure_stage?: string;
+  /** G21 run-lock diagnostics name the sessions that actually occupy the workflow. */
+  occupying_sessions?: GraphOccupyingSession[];
   code?: string;
   cause_code?: string;
   step?: string;
@@ -222,14 +235,11 @@ export interface GraphEntry {
   session_document?: GraphDocument;
   latest_published_revision?: number;
   session_id: string | null;
-  pending: GraphCommand | null;
-  rejected_copy?: GraphCommand;
   saved_document?: GraphDocument;
   /** Formal fixed revision exists but no current configuration: read-only display. */
   fixed_only?: boolean;
   diagnostics?: GraphDiagnostic[];
   external_inputs?: Record<string, unknown>;
-  state_mappings?: { source_node_id: string; target_node_id: string; action: "copy" | "reset" }[];
 }
 export const graphClone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 export const graphObject = (value: unknown): value is Record<string, unknown> =>
@@ -473,6 +483,32 @@ function isGraphSchema3Document(value: Record<string, unknown>): boolean {
   })) return false;
   return new TextEncoder().encode(JSON.stringify(value)).length <= 4_000_000;
 }
+export interface GraphDanglingEdgeIssue {
+  reason_code: "graph_dangling_edge";
+  message: string;
+  edge_id: string;
+  node_id: string;
+  field: "source_node_id" | "target_node_id";
+  /** JSON Pointer into the saved document for the exact endpoint field. */
+  path: string;
+}
+/**
+ * Q05-1: ordinary data edges must reference existing nodes at save time. The compiler
+ * checks the same rule independently; this helper only localizes the save structure
+ * error (edge id + missing node + endpoint field) without replicating the compiler.
+ */
+export function graphDanglingEdgeIssues(document: Pick<GraphDocument, "nodes" | "edges">): GraphDanglingEdgeIssue[] {
+  const nodes = new Set(document.nodes.map(node => node.node_binding_id));
+  return document.edges.flatMap((edge, index) => {
+    const missing: GraphDanglingEdgeIssue["field"][] = [];
+    if (!nodes.has(edge.source_node_id)) missing.push("source_node_id");
+    if (!nodes.has(edge.target_node_id)) missing.push("target_node_id");
+    return missing.map(field => ({ reason_code: "graph_dangling_edge" as const,
+      edge_id: edge.edge_id, node_id: edge[field], field,
+      path: `/edges/${index}/${field}`,
+      message: `数据边 ${edge.edge_id} 的 ${field} 指向不存在的节点 ${edge[field]}` }));
+  });
+}
 export function isGraphDocument(value: unknown): value is GraphDocument {
   if (graphObject(value) && value.schema_version === 3) return isGraphSchema3Document(value);
   if (!graphObject(value) || value.schema_version !== 1 && value.schema_version !== 2 || !graphUuid(value.workflow_definition_id)
@@ -514,10 +550,16 @@ export function isGraphDocument(value: unknown): value is GraphDocument {
   });
 }
 export function isGraphCatalog(value: unknown): value is GraphNodeType[] {
-  const ports = (v: unknown) => Array.isArray(v) && v.every(p => graphObject(p)
+  const ports = (v: unknown, input: boolean) => Array.isArray(v) && v.every(p => graphObject(p)
     && typeof p.port_id === "string" && typeof p.data_type === "string"
     && typeof p.required === "boolean" && typeof p.multiple === "boolean"
-    && (p.data_schema_version === undefined || positive(p.data_schema_version)));
+    && (p.data_schema_version === undefined || positive(p.data_schema_version))
+    && (p.accepted_types === undefined || input && Array.isArray(p.accepted_types)
+      && p.accepted_types.every(item => graphObject(item)
+        && graphExactKeys(item, ["data_type", "data_schema_version"])
+        && boundedName(item.data_type) && positive(item.data_schema_version)
+        && !(item.data_type === p.data_type && item.data_schema_version === (p.data_schema_version ?? 1)))
+      && new Set(p.accepted_types.map(item => `${item.data_type}@${item.data_schema_version}`)).size === p.accepted_types.length));
   const providedTypes = (v: unknown) => {
     if (v === undefined) return true;
     if (!Array.isArray(v) || !v.every(item => graphObject(item)
@@ -534,7 +576,7 @@ export function isGraphCatalog(value: unknown): value is GraphNodeType[] {
     && typeof type.component_id === "string" && typeof type.component_version === "string"
     && typeof type.display_name === "string" && typeof type.category === "string"
     && graphObject(type.config_schema) && graphObject(type.default_config)
-    && ports(type.inputs) && ports(type.outputs) && typeof type.is_output === "boolean"
+    && ports(type.inputs, true) && ports(type.outputs, false) && typeof type.is_output === "boolean"
     && typeof type.executable === "boolean"
     && (type.input_storage === undefined || ["inline", "references"].includes(String(type.input_storage)))
     && providedTypes(type.provided_session_item_types)
@@ -552,7 +594,7 @@ export function isGraphCatalog(value: unknown): value is GraphNodeType[] {
           && typeof target.component_id === "string" && target.component_id.length > 0
           && typeof target.component_version === "string" && target.component_version.length > 0)))
     && (type.port_modes === undefined || graphObject(type.port_modes)
-      && Object.values(type.port_modes).every(mode => graphObject(mode) && ports(mode.inputs) && ports(mode.outputs))))
+      && Object.values(type.port_modes).every(mode => graphObject(mode) && ports(mode.inputs, true) && ports(mode.outputs, false))))
     && new Set(value.map(type => `${type.component_id}@${type.component_version}`)).size === value.length;
 }
 export function isGraphSession(value: unknown, definitionId?: string): value is GraphSession {

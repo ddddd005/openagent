@@ -14,7 +14,9 @@ export function graphConnectionIssue(document: GraphDocument, catalog: GraphNode
   const output = nodePorts(sourceType, source, "outputs").find(port => port.port_id === edge.source_port_id);
   const input = nodePorts(targetType, target, "inputs").find(port => port.port_id === edge.target_port_id);
   if (!output || !input) return "端口缺失或模式已变化，请核对连线";
-  if (output.data_type !== input.data_type || (output.data_schema_version ?? 1) !== (input.data_schema_version ?? 1))
+  const version = output.data_schema_version ?? 1;
+  if (!(output.data_type === input.data_type && version === (input.data_schema_version ?? 1))
+    && !input.accepted_types?.some(type => type.data_type === output.data_type && type.data_schema_version === version))
     return `端口不兼容：${output.data_type}@${output.data_schema_version ?? 1} → ${input.data_type}@${input.data_schema_version ?? 1}`;
   if (document.edges.some(row => Object.entries(edge).every(([key, value]) => row[key as keyof GraphEdge] === value)))
     return "这条连线已存在";

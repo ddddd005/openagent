@@ -12,6 +12,7 @@ import * as preloadsDomain from "../domain/sessionPreloads";
 import * as workspaceModule from "../stores/workspace";
 import * as volatileFormModule from "../composables/useVolatileFormState";
 import * as noticesModule from "../stores/workbenchNotices";
+import * as diagnosticPresentation from "../domain/diagnosticPresentation";
 import { useWorkflowGraphStore } from "../stores/workflowGraph";
 import { useWorkspaceStore } from "../stores/workspace";
 import { preloadPlainType, preloadVariableType } from "../testUtils/sessionPreloadFixture";
@@ -95,7 +96,8 @@ function compileClient(filename: string, additionalModules: Record<string, unkno
   const modules: Record<string, unknown> = { vue: Vue, "lucide-vue-next": icons,
     "../stores/workflowGraph": graphModule, "../domain/workflowGraph": graphDomain, "../domain/sessionPreloads": preloadsDomain,
     "../stores/workspace": workspaceModule, "../stores/workbenchNotices": noticesModule,
-    "../composables/useVolatileFormState": volatileFormModule, ...additionalModules };
+    "../composables/useVolatileFormState": volatileFormModule,
+    "../domain/diagnosticPresentation": diagnosticPresentation, ...additionalModules };
   const exports: Record<string, any> = {};
   new Function("require", "exports", output)((name: string) => {
     if (!Object.hasOwn(modules, name)) throw new Error(`Unexpected client import ${name}`);
@@ -110,46 +112,19 @@ async function mount(inWorkspace = false) {
   vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
   const graph = useWorkflowGraphStore();
   graph.dataTypes = [preloadVariableType, preloadPlainType]; graph.executionPackageLock = [...frontendExecutionLock];
-  const id = graph.createWorkflow(); await vi.waitFor(() => expect(graph.editorLocked).toBe(false));
+  const id = await graph.createWorkflow(); await vi.waitFor(() => expect(graph.editorLocked).toBe(false));
   const preloads = compileClient("./GraphSessionPreloads.vue");
   const stub = { default: { render: () => Vue.h("div") } };
   const component = inWorkspace ? compileClient("./WorkflowWorkspace.vue", {
     "./GraphSessionPreloads.vue": { default: preloads }, "./GraphWorkbench.vue": stub,
     "./GraphHistory.vue": stub, "./GraphRunControls.vue": stub,
+    "./GraphDiagnosticList.vue": stub,
   }) : preloads;
   const root = element("root"), app = renderer.createApp(component);
   app.use(pinia); app.mount(root); unmount = () => app.unmount();
   return { root, graph, id };
 }
 describe("preload editor interactions", () => {
-  it("keeps request verification available after dismissing a notice and does not merge different request keys", async () => {
-    const { root, graph, id } = await mount(true);
-    const notices = noticesModule.useWorkbenchNoticesStore();
-    const original = { action: "create", path: "/api/graph/sessions",
-      body: { workflow_definition_id: id, definition_revision: 1, idempotency_key: crypto.randomUUID() } };
-    graph.entries[id]!.pending = original;
-    await nextTick();
-    const first = notices.notices.find(row => row.severity === "major")!;
-    expect(first).toBeDefined();
-    expect(all(root).some(node => String(node.props.class).includes("model-pending-banner"))).toBe(false);
-    notices.dismiss(first.id);
-    expect(graph.entries[id]!.pending).toEqual(original);
-    expect(graph.editorLocked).toBe(true);
-    await click(root, "工作流原请求");
-    expect(label(portal, "工作流原请求核实")).toBeDefined();
-    await click(portal, "关闭原请求面板");
-    expect(graph.entries[id]!.pending).toEqual(original);
-    graph.receiptChecks[id] = "原请求待核实";
-    await nextTick();
-    const before = notices.notices.length;
-    graph.entries[id]!.pending = { ...original, body: { ...original.body, idempotency_key: crypto.randomUUID() } };
-    await nextTick();
-    expect(notices.notices.length).toBe(before + 1);
-    const after = notices.notices.length;
-    graph.selectedNodeIds = [];
-    await nextTick();
-    expect(notices.notices.length).toBe(after);
-  });
   it("opens the data view from the Workspace toolbar without requiring a session", async () => {
     const { root, graph } = await mount(true);
     expect(all(root).some(node => node.props["aria-label"] === "新增预加载项")).toBe(false);
@@ -191,7 +166,7 @@ describe("preload editor interactions", () => {
     expect(graph.document!.session_preloads![0]!.value).toEqual({ label: "explicit" });
     await click(root, "新增预加载项");
     const staleForm = all(root).find(node => node.tag === "form")!;
-    graph.createWorkflow();
+    graph.createWorkflow; await graph.createWorkflow();
     staleForm.props.onSubmit({ preventDefault() {} });
     expect(graph.document!.session_preloads).toBeUndefined();
     await nextTick();
@@ -209,7 +184,7 @@ describe("preload editor interactions", () => {
   it("writes private ownership and checked ACL, and preserves an unassigned variable", async () => {
     const { root, graph } = await mount();
     graph.catalog = [...variableCatalog];
-    const owner = graph.addNode("tools.variable-to-content@1", { x: 0, y: 0 })!;
+    const owner = (await graph.addNode("tools.variable-to-content@1", { x: 0, y: 0 }))!;
     await nextTick();
     await click(root, "新增预加载项");
     await model(root, "预加载对象键", "private/score");

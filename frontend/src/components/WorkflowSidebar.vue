@@ -69,12 +69,12 @@ function openWorkflow(id: string) { leaveEditor(() => workspace.openWorkflow(id)
         </button>
         <button v-if="workspace.selectedWorkflowId === workflow.id && !workflow.archived"
           class="workbench-tool-button workflow-archive" type="button" title="归档工作流" aria-label="归档工作流"
-          :disabled="workflow.copyPending || !!graph.busy || !!graph.entries[workflow.id]?.pending || !graph.entries[workflow.id]?.saved_revision"
+          :disabled="workflow.copyPending || !!graph.busy || !graph.entries[workflow.id]?.saved_revision"
           @click.stop="manageWorkflow(workflow.id, 'archive')"><Archive :size="13" />
         </button>
         <button v-if="workspace.selectedWorkflowId === workflow.id" class="workbench-tool-button workflow-delete"
           type="button" title="删除工作流" aria-label="删除工作流"
-          :disabled="workflow.copyPending || !!graph.busy || !!graph.entries[workflow.id]?.pending || !graph.entries[workflow.id]?.saved_revision"
+          :disabled="workflow.copyPending || !!graph.busy || !graph.entries[workflow.id]?.saved_revision"
           @click.stop="manageWorkflow(workflow.id, 'delete')"><Trash2 :size="13" />
         </button>
         <button v-if="workspace.selectedWorkflowId === workflow.id && workspace.activeWorkflowId !== workflow.id"

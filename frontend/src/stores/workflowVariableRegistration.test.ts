@@ -22,12 +22,12 @@ async function setup() {
   vi.spyOn(requestEvidencePorts, "resolve").mockImplementation(evidence.ports.resolve);
   const graph = useWorkflowGraphStore();
   graph.catalog = graphClone(variableCatalog); graph.executionPackageLock = graphClone(frontendExecutionLock);
-  const id = graph.createWorkflow();
+  const id = await graph.createWorkflow();
   await vi.waitFor(() => expect(graph.locked).toBe(false));
   return { graph, id, evidence };
 }
 async function savedSession() {
-  const f = await setup(), nodeId = f.graph.addNode("tools.variable-register@2", { x: 0, y: 0 })!;
+  const f = await setup(), nodeId = (await f.graph.addNode("tools.variable-register@2", { x: 0, y: 0 }))!;
   const binding = f.graph.document!.object_bindings![0]!;
   const session = frontendSession(f.id); session.status = "idle";
   session.objects = { [binding.object_key]: { revision_id: crypto.randomUUID(), revision: 1,
@@ -57,11 +57,11 @@ function sessionResponse(session: GraphSession, operation: string, parameters: R
 describe("unified variable provider registration", () => {
   it("creates independent own items and self ACL without a session or implicit consumer keys", async () => {
     const { graph, id } = await setup();
-    const first = graph.addNode("tools.variable-register@2", { x: 0, y: 0 })!;
-    const second = graph.addNode("tools.variable-register@2", { x: 200, y: 0 })!;
-    const assign = graph.addNode("tools.variable-assign@1", { x: 400, y: 0 })!;
-    const read = graph.addNode("tools.variable-to-content@1", { x: 600, y: 0 })!;
-    const replace = graph.addNode("tools.variable-replace-all@1", { x: 800, y: 0 })!;
+    const first = (await graph.addNode("tools.variable-register@2", { x: 0, y: 0 }))!;
+    const second = (await graph.addNode("tools.variable-register@2", { x: 200, y: 0 }))!;
+    const assign = (await graph.addNode("tools.variable-assign@1", { x: 400, y: 0 }))!;
+    const read = (await graph.addNode("tools.variable-to-content@1", { x: 600, y: 0 }))!;
+    const replace = (await graph.addNode("tools.variable-replace-all@1", { x: 800, y: 0 }))!;
     const items = graph.document!.object_bindings!;
     expect(items).toHaveLength(2); expect(new Set(items.map(item => item.object_key)).size).toBe(2);
     for (const nodeId of [first, second]) {
@@ -85,14 +85,15 @@ describe("unified variable provider registration", () => {
 
   it("copies only selected consumers onto the new provider key, ACL and exact registration event", async () => {
     const { graph } = await setup();
-    const provider = graph.addNode("tools.variable-register@2", { x: 0, y: 0 })!;
-    const selectedReader = graph.addNode("tools.variable-to-content@1", { x: 200, y: 0 })!;
-    const remainingReader = graph.addNode("tools.variable-to-content@1", { x: 400, y: 0 })!;
+    const provider = (await graph.addNode("tools.variable-register@2", { x: 0, y: 0 }))!;
+    const selectedReader = (await graph.addNode("tools.variable-to-content@1", { x: 200, y: 0 }))!;
+    const remainingReader = (await graph.addNode("tools.variable-to-content@1", { x: 400, y: 0 }))!;
     const item = graphClone(graph.document!.object_bindings![0]!);
     item.readers.push(selectedReader, remainingReader);
-    graph.setObjectBindings([item]);
-    for (const reader of [selectedReader, remainingReader]) graph.patchNode(reader, { config: { object_key: item.object_key } });
-    graph.selectedNodeIds = [provider, selectedReader]; graph.duplicateSelection();
+    await graph.setObjectBindings([item]);
+    for (const reader of [selectedReader, remainingReader])
+      await graph.patchNode(reader, { config: { object_key: item.object_key } });
+    graph.selectedNodeIds = [provider, selectedReader]; await graph.duplicateSelection();
     const copiedProvider = graph.document!.nodes.find(node => node.component_id === "tools.variable-register"
       && node.node_binding_id !== provider)!;
     const copyReader = graph.document!.nodes.find(node => graph.selectedNodeIds.includes(node.node_binding_id)
@@ -112,33 +113,33 @@ describe("unified variable provider registration", () => {
   });
 
   it("preserves its item on exact replacement, removes its event when retired and keeps other manual events", async () => {
-    const { graph } = await setup(), provider = graph.addNode("tools.variable-register@2", { x: 0, y: 0 })!;
-    const reader = graph.addNode("tools.variable-to-content@1", { x: 200, y: 0 })!;
+    const { graph } = await setup(), provider = (await graph.addNode("tools.variable-register@2", { x: 0, y: 0 }))!;
+    const reader = (await graph.addNode("tools.variable-to-content@1", { x: 200, y: 0 }))!;
     const original = graphClone(graph.document!.object_bindings![0]!);
     const manual = { ...variableRegistrationEvent(reader), event_id: "manual.read", display_name: "Manual read" };
-    graph.setEventBindings([...graph.document!.event_bindings!, manual]);
-    graph.replaceNode(provider, "tools.variable-register@2");
+    await graph.setEventBindings([...graph.document!.event_bindings!, manual]);
+    await graph.replaceNode(provider, "tools.variable-register@2");
     expect(graph.document!.object_bindings).toEqual([original]);
     expect(graph.document!.nodes.find(node => node.node_binding_id === provider)!.config.object_key).toBe(original.object_key);
     expect(graph.document!.event_bindings!.filter(event => event.event_id === variableRegistrationEvent(provider).event_id)).toHaveLength(1);
     expect(Object.hasOwn(graph.document!, "execution_roots")).toBe(false);
     expect(isGraphDocument(graph.document)).toBe(true);
-    graph.replaceNode(provider, "tools.variable-assign@1");
+    await graph.replaceNode(provider, "tools.variable-assign@1");
     expect(graph.document!.object_bindings).toEqual([]);
     expect(graph.document!.event_bindings).toEqual([manual]);
     expect(graph.document!.nodes.find(node => node.node_binding_id === provider)!.config.object_key).toBe("");
-    const added = graph.addNode("tools.variable-register@2", { x: 400, y: 0 })!;
-    graph.selectedNodeIds = [added]; graph.removeSelection();
+    const added = (await graph.addNode("tools.variable-register@2", { x: 400, y: 0 }))!;
+    graph.selectedNodeIds = [added]; await graph.removeSelection();
     expect(graph.document!.event_bindings).toEqual([manual]);
   });
 
   it("preserves a denied copied consumer's source key instead of treating a matching type as authorization", async () => {
     const { graph } = await setup();
-    const provider = graph.addNode("tools.variable-register@2", { x: 0, y: 0 })!;
-    const reader = graph.addNode("tools.variable-to-content@1", { x: 200, y: 0 })!;
+    const provider = (await graph.addNode("tools.variable-register@2", { x: 0, y: 0 }))!;
+    const reader = (await graph.addNode("tools.variable-to-content@1", { x: 200, y: 0 }))!;
     const key = graph.document!.object_bindings![0]!.object_key;
-    graph.patchNode(reader, { config: { object_key: key } });
-    graph.selectedNodeIds = [provider, reader]; graph.duplicateSelection();
+    await graph.patchNode(reader, { config: { object_key: key } });
+    graph.selectedNodeIds = [provider, reader]; await graph.duplicateSelection();
     const copiedReader = graph.document!.nodes.find(node => graph.selectedNodeIds.includes(node.node_binding_id)
       && node.component_id === "tools.variable-to-content")!;
     const copiedProvider = graph.document!.nodes.find(node => graph.selectedNodeIds.includes(node.node_binding_id)
@@ -208,7 +209,7 @@ describe("explicit variable registration interaction", () => {
   });
 
   it("accepts a late receipt on the original session after the user switches workflow", async () => {
-    const f = await savedSession(), other = f.graph.createWorkflow()!;
+    const f = await savedSession(), other = (await f.graph.createWorkflow())!;
     useWorkspaceStore().openWorkflow(f.id);
     let finish!: (value: Response) => void;
     let parameters!: Record<string, unknown>;

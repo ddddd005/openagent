@@ -1,4 +1,12 @@
-"""Local drafts never become executable facts or consumer management access."""
+"""Local drafts never become executable facts or consumer management access.
+
+S4-05a retired ``LocalDraftStore.save`` together with the draft write dispatch
+paths.  These tests keep the read/list/receipt/validation surface and seed
+accepted drafts as raw native rows (see ``seed_local_draft``).  Dropped with the
+retired writer: draft CAS conflicts, draft idempotency conflicts, tombstone
+sequence advance, ``after_draft_write`` fault injection, writer transaction
+rollback, write-time owner checks and write-time secret rejection.
+"""
 
 from contextlib import closing
 from copy import deepcopy
@@ -10,15 +18,16 @@ import pytest
 from phase1_agent.contract_errors import ContractValidationError
 from phase1_agent.contract_json import canonical_bytes
 from phase1_agent.graph_application import GraphApplication
-from phase1_agent.graph_application_identity import application_command_receipt, bind_application_command
+from phase1_agent.graph_application_identity import application_command_receipt
 from phase1_agent.graph_drafts import (
-    LocalDraftStore, MAX_DRAFT_BYTES, MAX_DRAFT_SEQUENCE, validate_draft_address, validate_draft_value,
+    MAX_DRAFT_BYTES, MAX_DRAFT_SEQUENCE, validate_draft_address, validate_draft_value,
 )
 from phase1_agent.graph_records import require
 from phase1_agent.graph_http import dispatch_graph
 from phase1_agent.graph_receipts import read_graph_application_receipt
 from phase1_agent.storage import SqliteStore, STORAGE_VERSION
 
+from legacy_consumer_receipt_fixture import seed_local_draft
 from test_graph_service import create, service, text_graph
 
 
@@ -39,12 +48,7 @@ def save(app, target, value, expected=0, key=None, version=1):
     require(type(request["idempotency_key"]) is str and 1 <= len(request["idempotency_key"]) <= 128
             and bool(request["idempotency_key"].strip()),
             "invalid_request", "An idempotency key is required")
-    native_request = {key: item for key, item in request.items() if key != "idempotency_key"}
-    with bind_application_command(operation, scope, request):
-        with closing(app._service._store()) as store:
-            result = LocalDraftStore(store).save(
-                "graph." + operation, deepcopy(native_request), request["idempotency_key"],
-                lambda owner, content: app._service._draft_owner(store, owner, content))
+    result = seed_local_draft(app._service, operation, scope, request)
     receipt = application_command_receipt(
         operation, scope, request, result, authority="service_receipt")
     return {
@@ -89,32 +93,14 @@ def test_draft_roundtrip_invalid_editor_text_and_frozen_receipt(service):
         "reason_code"] == "application_scope_denied"
 
 
-def test_cas_and_idempotency_conflict_leave_newer_record(service):
-    app = GraphApplication(service)
-    target = address()
-    first, request = save(app, target, {"raw": "first"}, key="fixed-key")
-    newer, _ = save(app, target, {"raw": "second"}, expected=1)
-    with pytest.raises(ContractValidationError) as stale:
-        save(app, target, {"raw": "stale"}, expected=1)
-    assert stale.value.reason_code == "stale_draft_sequence"
-    with pytest.raises(ContractValidationError) as retired:
-        app.command("draft.save", {**request, "value": "different"})
-    assert retired.value.reason_code == "not_found"
-    assert app.query("draft.read", {"address": target}) == newer["result"]
-    assert first["result"]["sequence"] == 1
-
-
-def test_null_is_cas_tombstone_not_sequence_reset(service):
+def test_null_is_tombstone_on_read_not_a_sequence_reset(service):
     app = GraphApplication(service)
     target = address()
     assert app.query("draft.read", {"address": target}) is None
-    saved, _ = save(app, target, "draft")
-    deleted, request = save(app, target, None, expected=1)
-    assert deleted["result"]["deleted"] and deleted["result"]["sequence"] == 2
+    deleted, request = save(app, target, None)
+    assert deleted["result"]["deleted"] and deleted["result"]["sequence"] == 1
     assert app.query("draft.read", {"address": target}) == deleted["result"]
     assert app.query("draft.list")["records"] == [deleted["result"]]
-    restored, _ = save(app, target, "restored", expected=2)
-    assert restored["result"]["sequence"] == 3 and not restored["result"]["deleted"]
     assert read_graph_application_receipt(service.database, "draft.save", request)["result"] == deleted["result"]
 
 
@@ -140,12 +126,23 @@ def test_address_rejects_unknown_fields_and_invalid_owners(service, mutation):
 
 @pytest.mark.parametrize("field", ["api_key", "api-key", "apikey", "authorization", "private_key",
                                   "password", "access_token", "credential_value"])
-def test_structured_secrets_do_not_enter_draft_or_receipt(service, field):
+def test_stored_secret_draft_is_rejected_on_read(service, field):
+    """The retired writer no longer rejects secrets; stored-row validation still does."""
     app = GraphApplication(service)
+    target = address()
+    record = {"schema_version": 1, "kind": "workflow.local-draft", "address": target,
+              "format_version": 1, "sequence": 1,
+              "updated_at": "2026-11-04T00:00:00.000Z", "deleted": False,
+              "value": {"form": {field: "secret-test-value"}}}
+    with closing(sqlite3.connect(service.database, isolation_level=None)) as connection:
+        connection.execute(
+            "INSERT INTO local_editor_drafts VALUES(?,?,?,?,?,?,?)",
+            (canonical_bytes(target).decode(), target["scope"], target["kind"],
+             target["workflow_definition_id"], target["workflow_session_id"], 1,
+             canonical_bytes(record).decode()))
     with pytest.raises(ContractValidationError) as failure:
-        save(app, address(), {"form": {field: "secret-test-value"}})
-    assert failure.value.reason_code == "draft_secret_disallowed"
-    assert app.query("draft.list")["records"] == []
+        app.query("draft.read", {"address": target})
+    assert failure.value.reason_code == "storage_contract_violation"
 
 
 @pytest.mark.parametrize("value", [float("nan"), {1: "not JSON"}, {"nested": b"raw"}, object()])
@@ -245,22 +242,15 @@ def test_consumer_cannot_store_management_or_wrong_workflow_commands(service):
     assert consumer.query("consumer.draft.list", {"workflow_definition_id": workflow})["records"] == []
 
 
-def test_consumer_owner_checks_workflow_session_and_selected_client_session(service):
+def test_consumer_list_requires_scope_kind_and_workflow(service):
     workflow, session = consumer_fixture(service)
-    other_workflow, other_session = consumer_fixture(service)
+    other_workflow, _ = consumer_fixture(service)
     consumer = GraphApplication(service, scope="consumer")
-    for target, value in [
-        (address("consumer", "chat-input", workflow, other_session), "not yours"),
-        (address("consumer", "chat-client", workflow), client(workflow, other_session)),
-    ]:
-        with pytest.raises(ContractValidationError) as mismatch:
-            save(consumer, target, value)
-        assert mismatch.value.reason_code == "draft_owner_mismatch"
+    save(consumer, address("consumer", "chat-input", workflow, session), "correct")
     with pytest.raises(ContractValidationError):
         consumer.query("consumer.draft.list", {"kind": "chat-input"})
     with pytest.raises(ContractValidationError):
         consumer.query("consumer.draft.list", {"workflow_definition_id": workflow, "kind": "workbench"})
-    save(consumer, address("consumer", "chat-input", workflow, session), "correct")
     assert consumer.query("consumer.draft.list", {"workflow_definition_id": other_workflow})["records"] == []
 
 
@@ -281,24 +271,7 @@ def test_consumer_list_rejects_damaged_row_coordinates_instead_of_leaking_manage
         consumer.query("consumer.draft.read", {"address": target})
 
 
-def test_draft_transaction_rolls_back_record_and_application_origin(service, monkeypatch):
-    app = GraphApplication(service)
-    target = address()
-    before, _ = save(app, target, "original")
-    with closing(sqlite3.connect(service.database)) as connection:
-        receipts = connection.execute("SELECT * FROM idempotency ORDER BY operation,key").fetchall()
-    def fail(point):
-        if point == "before_commit":
-            raise RuntimeError("disk test failure")
-    monkeypatch.setattr(service, "_fault_injector", fail)
-    with pytest.raises(RuntimeError):
-        save(app, target, "must roll back", expected=1)
-    assert app.query("draft.read", {"address": target}) == before["result"]
-    with closing(sqlite3.connect(service.database)) as connection:
-        assert connection.execute("SELECT * FROM idempotency ORDER BY operation,key").fetchall() == receipts
-
-
-def test_corrupt_draft_or_receipt_is_not_adopted_or_overwritten(service):
+def test_corrupt_draft_or_receipt_is_not_adopted(service):
     app = GraphApplication(service)
     target = address()
     saved, request = save(app, target, "original", key="corrupt-receipt")
@@ -316,8 +289,6 @@ def test_corrupt_draft_or_receipt_is_not_adopted_or_overwritten(service):
     with pytest.raises(ContractValidationError) as failure:
         app.query("draft.read", {"address": target})
     assert failure.value.reason_code == "storage_contract_violation"
-    with pytest.raises(ContractValidationError):
-        save(app, target, "replacement", expected=1)
     with closing(sqlite3.connect(service.database)) as connection:
         assert connection.execute("SELECT payload FROM local_editor_drafts").fetchone()[0] == '{"invalid":"retained"}'
 

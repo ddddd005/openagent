@@ -23,11 +23,11 @@ beforeEach(() => {
 afterEach(() => { disposePinia(pinia); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 async function fixture() {
   const graph = useWorkflowGraphStore(), workspace = useWorkspaceStore();
-  const id = graph.createWorkflow(), document = graphClone(graph.document!);
+  const id = await graph.createWorkflow(), document = graphClone(graph.document!);
   await vi.waitFor(() => expect(graph.locked).toBe(false));
   document.revision = 1;
   graph.entries[id] = { document, saved_document: graphClone(document), saved_revision: 1,
-    session_id: null, pending: null };
+    session_id: null};
   workspace.markWorkflowSaved(id);
   return { graph, workspace, id, document };
 }
@@ -51,7 +51,7 @@ function deferred<T>() {
 
 describe("object-scoped workflow lifecycle", () => {
   it("reads the directory summaries including archives without creating entries or losing an independent local draft", async () => {
-    const { graph, workspace, id } = await fixture(), local = graph.createWorkflow();
+    const { graph, workspace, id } = await fixture(), local = await graph.createWorkflow();
     graph.document!.name = "Unpublished user edit";
     const archived = newGraph("Archived backend graph");
     const calls: string[] = [];
@@ -109,14 +109,13 @@ describe("object-scoped workflow lifecycle", () => {
     } }, 409)));
     expect(await graph.manageWorkflow(id, "archive")).toBe(false);
     expect(workspace.activeWorkflow.archived).not.toBe(true);
-    expect(graph.entries[id].pending).toBeNull();
     expect(graph.entries[id].document).toEqual(before.document);
     expect(useWorkbenchNoticesStore().error).not.toBeNull();
   });
   it("deletes only the selected definition and its local session/history projections", async () => {
     const { graph, workspace, id, document } = await fixture(), owned = session(document);
     graph.views[owned.workflow_session_id] = owned; graph.sessionRows[id] = [owned].map(sessionSummaryFromView);
-    const otherId = graph.createWorkflow(), other = graphClone(graph.entries[otherId]);
+    const otherId = await graph.createWorkflow(), other = graphClone(graph.entries[otherId]);
     const otherView = session(other.document);
     graph.views[otherView.workflow_session_id] = otherView; graph.sessionRows[otherId] = [otherView].map(sessionSummaryFromView);
     stubGraphApplicationFetch(vi.fn(async (path, options) => {

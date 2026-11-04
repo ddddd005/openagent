@@ -59,7 +59,7 @@ const policies: Record<string, FamilyPolicy> = {
   "tools.text-to-json": simple("文本转 JSON", "conversion"),
   "tools.json-to-text": simple("JSON 转文本", "conversion"),
   "tools.text-to-prompt": simple("文本转提示词", "conversion"),
-  "tools.prompt-to-text": simple("提示词转文本", "conversion"),
+  "tools.prompt-to-text": { label: "提示词转文本", category: "conversion", preferred: "2" },
   "tools.json-to-prompt": simple("JSON 转提示词", "conversion"),
   "tools.prompt-to-json": simple("提示词转 JSON", "conversion"),
   "tools.variable-register": { label: "变量注册", category: "variables", preferred: "2" },
@@ -70,7 +70,7 @@ const policies: Record<string, FamilyPolicy> = {
   "prompts.item": { ...promptPolicy("提示词条目"), preferred: "3" },
   "prompts.group": promptPolicy("提示词分组"),
   "prompts.source": promptPolicy("提示词材料"),
-  "prompts.summary": promptPolicy("提示词汇总"),
+  "prompts.summary": { ...promptPolicy("提示词/上下文汇总"), preferred: "3" },
   "prompts.assembly": promptPolicy("提示词装配"),
   "prompts.global-reference": promptPolicy("全局提示词引用"),
   "prompts.global-resolve": promptPolicy("全局提示词解析"),
@@ -81,12 +81,12 @@ const policies: Record<string, FamilyPolicy> = {
   "agents.execute": { label: "Agent 执行", category: "agents", preferred: "10" },
   "agents.compaction-policy": { label: "上下文精简策略", category: "agents", preferred: "2" },
   "context.output": { label: "读取 Agent 上下文", category: "context", preferred: "5" },
-  "context.assembly": { label: "上下文装配", category: "context", preferred: "5" },
+  "context.assembly": { label: "输入装配", category: "context", preferred: "7" },
   "context.merge": { label: "写回 Agent 上下文", category: "context", preferred: "6" },
-  "lorebook.item": simple("世界书条目", "tavern"),
-  "lorebook.group": simple("世界书分组", "tavern"),
+  "lorebook.item": { label: "世界书条目", category: "tavern", preferred: "2" },
+  "lorebook.group": { label: "世界书分组", category: "tavern", preferred: "2" },
   "lorebook.global-reference": simple("全局世界书引用", "tavern"),
-  "lorebook.global-activate": simple("世界书触发", "tavern"),
+  "lorebook.global-activate": { label: "世界书触发", category: "tavern", preferred: "2" },
   "frontend.node": { label: "前端节点", category: "presentation", preferred: "2" },
 };
 
@@ -107,7 +107,7 @@ function profileFor(definition: GraphNodeType, policy?: FamilyPolicy): NodeProfi
 export function buildNodeFamilies(catalog: GraphNodeType[]): NodeFamily[] {
   const retired = new Set(["agents.delta", "context.read", "context.save", "context.window",
     "context.advance", "context.project-text", "context.plan", "context.summary-prompt",
-    "context.summary", "context.replace", "tavern.chat.output", "tavern.chat.append", "tavern.chat.presentation"]);
+    "context.summary", "context.replace", "prompts.assembly", "tavern.chat.output", "tavern.chat.append", "tavern.chat.presentation"]);
   const families = new Map<string, GraphNodeType[]>();
   for (const definition of catalog) {
     if (!definition.executable || retired.has(definition.component_id)) continue;
@@ -153,6 +153,20 @@ export function profileForAxis(family: NodeFamily, selected: NodeProfile, axis: 
 
 export function nodeTypeLabel(type: GraphNodeType): string {
   return policies[type.component_id]?.label ?? type.display_name;
+}
+export function nodePortLabel(node: Pick<GraphNode, "component_id" | "component_version">, port: string): string {
+  const key = `${node.component_id}@${node.component_version}`;
+  const labels: Record<string, Record<string, string>> = {
+    "prompts.summary@3": { view: "上下文", input: "提示词材料", summary: "汇总",
+      current_input: "当前输入", output: "汇总" },
+    "context.assembly@7": { view: "上下文", materials: "提示词材料", current_input: "当前输入",
+      tool_prompt: "工具提示词", summary: "汇总", output: "装配结果" },
+    "lorebook.item@2": { structured: "结构内容", text: "文本", output: "命中材料" },
+    "lorebook.group@2": { structured: "结构内容", text: "文本", output: "命中材料" },
+    "lorebook.global-activate@2": { resource: "世界书资源", structured: "结构内容", text: "文本", output: "命中材料" },
+    "tools.prompt-to-text@2": { input: "提示词", output: "文本" },
+  };
+  return labels[key]?.[port] ?? port;
 }
 export function nodeProfileLabel(type: GraphNodeType): string {
   return profileFor(type, policies[type.component_id]).label;
