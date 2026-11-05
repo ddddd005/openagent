@@ -1,0 +1,9 @@
+[project]
+name = "openagent-workflow-cli"
+version = "0.1.0"
+description = "Standard-library HTTP client for the local workflow application"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

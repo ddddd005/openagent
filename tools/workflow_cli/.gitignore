@@ -1,0 +1,2 @@
+# Retained isolated test artifacts are not CLI source.
+.test-tmp-*/

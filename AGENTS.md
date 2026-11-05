@@ -36,6 +36,7 @@
 
 ## Reading Entry Points
 
+- [Harness operations](docs/harness/README.md): start here for current workflow commands, construction, reporting/configuration responsibilities and troubleshooting.
 - [Current cleanup scope and rules](docs/开发新基线-2026-10-16/旧债清理/README.md).
 - [Debt ledger and statistical corrections](docs/开发新基线-2026-10-16/旧债清理/01-旧债清理总账与统计订正-2026-10-17.md).
 - [Historical guidance and evidence navigation](docs/开发新基线-2026-10-16/旧债清理/02-历史指引精简与阅读索引-2026-10-17.md).

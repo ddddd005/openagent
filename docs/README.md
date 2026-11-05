@@ -4,6 +4,7 @@
 
 ## 当前阅读入口
 
+- [Harness 操作入口](harness/README.md)：外部代码助手优先阅读，含快速接手、用户配置与汇报边界，并直达 [CLI 手册](../tools/workflow_cli/README.md)、[工作流搭建](harness/工作流搭建.md)和[排错与已知限制](harness/排错与已知限制.md)。
 - [使用手册](USER-GUIDE.md)：项目用途、三个子功能、工作流搭建、会话数据与日常操作。
 - [Vibe Coding 手册](VIBE-CODING.md)：面向开发模型的架构边界、需求沟通和插件/节点/Agent 工具扩展步骤；当前仅为文档，不是已安装 Skill。
 - [手工工作流包](WORKFLOW_PACKAGES.md)与[会话预加载数据](SESSION_PRELOADS.md)：深入使用与扩展时的专题参考。
